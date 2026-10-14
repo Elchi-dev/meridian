@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,15 @@ func repo(t *testing.T, main string, local ...string) string {
 		}
 	}
 	return root
+}
+
+// rooted turns a path from the root of a Unix file system into one that
+// is absolute where the test runs: Windows needs a drive letter.
+func rooted(unix string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + unix
+	}
+	return unix
 }
 
 func load(t *testing.T, main string, local ...string) Config {
@@ -66,10 +76,10 @@ stats {
     min-ratio = 2.5
 }
 build {
-    dir = "/tmp/meridian-build"
+    dir = "`+rooted("/tmp/meridian-build")+`"
 }
 mutate {
-    scratch = "/var/cache/mutate"
+    scratch = "`+rooted("/var/cache/mutate")+`"
 }
 qemu {
     memory = 2GiB
@@ -81,7 +91,7 @@ qemu {
     stall = 45s
 }
 `)
-	if c.MinRatio != 2.5 || c.BuildDir != "/tmp/meridian-build" || c.MutateScratch != "/var/cache/mutate" {
+	if c.MinRatio != 2.5 || c.BuildDir != rooted("/tmp/meridian-build") || c.MutateScratch != rooted("/var/cache/mutate") {
 		t.Errorf("stats, build or mutate: %+v", c)
 	}
 	want := QEMU{Memory: 2 << 30, CPUs: 12, Accel: "tcg", Code: "/fw/code.fd", Vars: "/fw/vars.fd", Timeout: 90 * time.Second, Stall: 45 * time.Second}
@@ -105,8 +115,8 @@ func TestRelativeFoldersStartAtTheRoot(t *testing.T) {
 }
 
 func TestLocalFileWins(t *testing.T) {
-	c := load(t, "qemu {\n    cpus = 2\n    memory = 1GiB\n}\nbuild { dir = \"a\" }\n", "qemu { cpus = 8 }\nbuild { dir = \"/fast/tmpfs\" }\n")
-	if c.QEMU.CPUs != 8 || c.QEMU.Memory != 1<<30 || c.BuildDir != "/fast/tmpfs" {
+	c := load(t, "qemu {\n    cpus = 2\n    memory = 1GiB\n}\nbuild { dir = \"a\" }\n", "qemu { cpus = 8 }\nbuild { dir = \""+rooted("/fast/tmpfs")+"\" }\n")
+	if c.QEMU.CPUs != 8 || c.QEMU.Memory != 1<<30 || c.BuildDir != rooted("/fast/tmpfs") {
 		t.Fatalf("got %+v", c)
 	}
 }

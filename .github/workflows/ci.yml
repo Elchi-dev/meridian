@@ -84,6 +84,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The macOS runners keep Go in their tool cache without putting it on
+      # the path.
+      - name: Put Go on the path
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if command -v go >/dev/null; then exit 0; fi
+          bin=$(ls -d "$RUNNER_TOOL_CACHE"/go/*/*/bin 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$bin" ]; then echo "$bin" >> "$GITHUB_PATH"; else brew install go; fi
+
+      # Installed once up front: tests that build the images run Cargo in
+      # parallel, and several installs of the same toolchain at once break.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
       - name: Build and test sextant
         working-directory: tools/sextant
         shell: bash

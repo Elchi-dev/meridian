@@ -337,6 +337,36 @@ mod tests {
 	}
 }
 
+func TestFunctionPointerTypesAreNotUnsafeCode(t *testing.T) {
+	f := rustFile(t, `pub struct Table {
+    pub stall: unsafe extern "efiapi" fn(microseconds: usize) -> Status,
+    pub other: unsafe extern /* the default */ "C" fn(),
+    pub plain: unsafe fn(u8),
+    pub rust: unsafe extern fn(),
+}
+unsafe extern "C" fn defined() {}
+pub unsafe fn also_defined() {}
+unsafe impl Sync for Table {}
+#[unsafe(no_mangle)]
+fn entry() {}
+fn call(t: &Table) {
+    unsafe { (t.stall)(1) }
+}
+`)
+	// The two functions, the impl, the attribute and the block.
+	if f.Unsafe != 5 {
+		t.Fatalf("unsafe = %d, want 5", f.Unsafe)
+	}
+}
+
+func TestAnUnsafeAtTheEndOfAFileIsCounted(t *testing.T) {
+	for _, src := range []string{"unsafe", "unsafe extern", "unsafe extern \"C\"", "unsafe fn", "unsafe // fn\n"} {
+		if f := rustFile(t, src); f.Unsafe != 1 {
+			t.Errorf("%q: unsafe = %d, want 1", src, f.Unsafe)
+		}
+	}
+}
+
 func TestUnsafeInWholeTestFileIsNotCounted(t *testing.T) {
 	f := rustFile(t, "#![cfg(test)]\nunsafe fn x() {}\n")
 	if f.Unsafe != 0 {

@@ -27,7 +27,7 @@ sextant:
 - [x] The `.meri` reader, specification and 134-case conformance suite
 - [x] GPT, FAT32 and ISO writers, reproducible
 - [x] Settings from `sextant.meri` and `sextant.local.meri`; `stats` takes `min-ratio` from them
-- [ ] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types
+- [x] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types
 - [x] `mutate` for Rust and Go, each mutant in a private copy of the repository
 - [ ] `mutate` for code only QEMU tests reach: a QEMU test command per crate
 - [ ] `doctor`, with installing after one "y"

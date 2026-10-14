@@ -291,12 +291,36 @@ func parse(fsys fs.FS, p string) (*parsedFile, error) {
 			pf.testLines[ln-1] = true
 		}
 	}
-	for _, t := range toks {
-		if t.Text == "unsafe" {
+	for i, t := range toks {
+		if t.Text == "unsafe" && !isFnPointerType(toks, i) {
 			pf.unsafeLines = append(pf.unsafeLines, t.Line)
 		}
 	}
 	return pf, nil
+}
+
+// isFnPointerType says whether the unsafe at toks[i] starts the type of a
+// function pointer, such as unsafe extern "efiapi" fn(...). Such a type
+// does nothing unsafe itself; calling through it needs an unsafe block,
+// which counts where it is.
+func isFnPointerType(toks []srclex.Token, i int) bool {
+	next := func(j int) int {
+		for j++; j < len(toks) && toks[j].Kind == srclex.Comment; j++ {
+		}
+		return j
+	}
+	j := next(i)
+	if j < len(toks) && toks[j].Text == "extern" {
+		j = next(j)
+		if j < len(toks) && toks[j].Kind == srclex.String {
+			j = next(j)
+		}
+	}
+	if j >= len(toks) || toks[j].Text != "fn" {
+		return false
+	}
+	j = next(j)
+	return j < len(toks) && toks[j].Text == "("
 }
 
 func (pf *parsedFile) count(p string, wholeFileIsTest bool) File {

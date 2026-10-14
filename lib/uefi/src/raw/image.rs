@@ -84,6 +84,20 @@ impl System {
         let base = self.boot_device_path(&mut base)?;
         let mut path = [0u8; PATH_BYTES];
         let len = device_path::with_file(base, file, &mut path).ok_or(Status::INVALID_PARAMETER)?;
+        self.load_image_at(&path[..len])
+    }
+
+    /// Loads the EFI application a whole device path names, such as the
+    /// path of a firmware boot option.
+    ///
+    /// # Errors
+    ///
+    /// `INVALID_PARAMETER` for a path that is broken or has no end node,
+    /// and the statuses of [`System::load_image`].
+    pub fn load_image_at(&self, path: &[u8]) -> Result<Image<'_>, Status> {
+        if device_path::nodes(path).is_none() {
+            return Err(Status::INVALID_PARAMETER);
+        }
         let mut handle = ptr::null_mut();
         // SAFETY: the path is whole and ends in an end node; with no
         // source buffer the firmware reads the file itself.
@@ -91,7 +105,7 @@ impl System {
             (self.boot_services().load_image)(
                 false,
                 self.image(),
-                path[..len].as_ptr(),
+                path.as_ptr(),
                 ptr::null(),
                 0,
                 &raw mut handle,

@@ -8,6 +8,7 @@
 
 pub mod device_path;
 pub mod guid;
+pub mod load_option;
 pub mod memory;
 #[cfg(feature = "qemu-test")]
 pub mod qemu_test;

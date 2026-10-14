@@ -6,6 +6,7 @@
 /// The node that ends a whole device path.
 const END: [u8; 4] = [0x7f, 0xff, 4, 0];
 const MEDIA: u8 = 4;
+const HARD_DRIVE: u8 = 1;
 const FILE_PATH: u8 = 4;
 
 /// Whether a node header is the end of the whole path. An end of one
@@ -31,6 +32,72 @@ pub fn nodes(path: &[u8]) -> Option<&[u8]> {
         }
         at = at.checked_add(len)?;
     }
+}
+
+/// One node of a device path: its type, its subtype and the bytes after
+/// its four byte header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Node<'a> {
+    pub kind: u8,
+    pub subtype: u8,
+    pub data: &'a [u8],
+}
+
+/// The nodes of a whole device path, before its end node.
+#[derive(Clone, Debug)]
+pub struct Nodes<'a>(&'a [u8]);
+
+impl<'a> Iterator for Nodes<'a> {
+    type Item = Node<'a>;
+
+    fn next(&mut self) -> Option<Node<'a>> {
+        let header = self.0.get(..4)?;
+        let len = usize::from(u16::from_le_bytes([header[2], header[3]]));
+        let node = self.0.get(..len)?;
+        self.0 = &self.0[len..];
+        Some(Node {
+            kind: header[0],
+            subtype: header[1],
+            data: node.get(4..)?,
+        })
+    }
+}
+
+/// The nodes of `path`, or `None` when it is broken as [`nodes`] says.
+#[must_use]
+pub fn walk(path: &[u8]) -> Option<Nodes<'_>> {
+    nodes(path).map(Nodes)
+}
+
+/// The file `path` names, as the text of its file path nodes one after the
+/// other, since a firmware may split a name into several. `None` when the
+/// path is broken or names no file, as a whole disk or a firmware
+/// application does.
+#[must_use]
+pub fn file(path: &[u8]) -> Option<impl Iterator<Item = char> + '_> {
+    let mut files = walk(path)?
+        .filter(|n| n.kind == MEDIA && n.subtype == FILE_PATH)
+        .peekable();
+    files.peek()?;
+    let units = files.flat_map(|n| {
+        n.data
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&u| u16::from_le_bytes(u))
+            .take_while(|&u| u != 0)
+    });
+    Some(char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)))
+}
+
+/// The signature of the partition `path` lies on: a GPT partition's GUID,
+/// or an MBR disk's four byte signature followed by zeros.
+#[must_use]
+pub fn partition(path: &[u8]) -> Option<[u8; 16]> {
+    walk(path)?
+        .find(|n| n.kind == MEDIA && n.subtype == HARD_DRIVE)
+        .and_then(|n| n.data.get(20..36))
+        .and_then(|s| s.try_into().ok())
 }
 
 /// Writes `base`, a whole device path, with a file path node for `file`
@@ -75,7 +142,7 @@ mod tests {
 
     /// A device path like OVMF gives a partition: PCI, SATA, then a hard
     /// drive node, then the end.
-    fn partition() -> Vec<u8> {
+    fn sample_partition() -> Vec<u8> {
         let mut p = vec![0x02, 0x01, 0x0c, 0x00, 0xd0, 0x41, 0x03, 0x0a, 0, 0, 0, 0];
         p.extend([0x01, 0x01, 0x06, 0x00, 0x00, 0x1f]);
         p.extend([0x03, 0x12, 0x0a, 0x00, 0, 0, 0xff, 0xff, 0, 0]);
@@ -88,7 +155,7 @@ mod tests {
 
     #[test]
     fn nodes_end_before_the_end_node() {
-        let p = partition();
+        let p = sample_partition();
         assert_eq!(nodes(&p), Some(&p[..p.len() - 4]));
         assert_eq!(nodes(&END), Some(&[][..]), "an empty path");
     }
@@ -124,7 +191,7 @@ mod tests {
 
     #[test]
     fn broken_paths_are_refused() {
-        let p = partition();
+        let p = sample_partition();
         assert_eq!(nodes(&p[..p.len() - 4]), None, "no end node");
         assert_eq!(
             nodes(&[0x01, 0x01, 0x02, 0x00]),
@@ -142,7 +209,7 @@ mod tests {
 
     #[test]
     fn a_file_is_added_before_the_end() {
-        let p = partition();
+        let p = sample_partition();
         let mut out = [0u8; 256];
         let n = with_file(&p, "/EFI/Microsoft/Boot/bootmgfw.efi", &mut out).unwrap();
         let head = p.len() - 4;
@@ -196,7 +263,7 @@ mod tests {
 
     #[test]
     fn the_output_has_to_hold_everything() {
-        let p = partition();
+        let p = sample_partition();
         let need = p.len() + 4 + 2 * 4;
         let mut exact = vec![0u8; need];
         assert_eq!(with_file(&p, "a.e", &mut exact), Some(need));
@@ -215,5 +282,99 @@ mod tests {
         );
         assert_eq!(with_file(&[0x01], "a", &mut out), None, "a broken base");
         assert_eq!(with_file(&END, "caf\u{e9}", &mut out), Some(4 + 10 + 4));
+    }
+
+    fn file_node(text: &str) -> Vec<u8> {
+        let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
+        let mut n = vec![MEDIA, FILE_PATH];
+        n.extend(u16::try_from(4 + 2 * units.len()).unwrap().to_le_bytes());
+        n.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+        n
+    }
+
+    fn text(path: &[u8]) -> Option<String> {
+        file(path).map(Iterator::collect)
+    }
+
+    #[test]
+    fn the_file_comes_from_the_file_path_nodes() {
+        let mut out = vec![0u8; 512];
+        let len = with_file(
+            &sample_partition(),
+            "/EFI/Microsoft/Boot/bootmgfw.efi",
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(
+            text(&out[..len]).as_deref(),
+            Some("\\EFI\\Microsoft\\Boot\\bootmgfw.efi")
+        );
+        let mut split = sample_partition();
+        split.truncate(split.len() - 4);
+        split.extend(file_node("\\EFI\\ubuntu"));
+        split.extend(file_node("\\shimx64.efi"));
+        split.extend(END);
+        assert_eq!(
+            text(&split).as_deref(),
+            Some("\\EFI\\ubuntu\\shimx64.efi"),
+            "names split over nodes join"
+        );
+        assert_eq!(text(&sample_partition()), None, "a partition names no file");
+        assert_eq!(text(&END), None);
+        assert_eq!(text(&sample_partition()[..10]), None, "a broken path");
+    }
+
+    #[test]
+    fn a_file_name_stops_at_its_zero_and_survives_bad_units() {
+        let mut p = file_node("ab");
+        let len = p.len();
+        p[len - 2..].copy_from_slice(&0xd800u16.to_le_bytes());
+        p.extend(END);
+        assert_eq!(
+            text(&p).as_deref(),
+            Some("ab\u{fffd}"),
+            "a lone surrogate, and no zero"
+        );
+        let mut q = file_node("a\0b");
+        q.extend(END);
+        assert_eq!(text(&q).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn the_partition_is_its_hard_drive_node_signature() {
+        assert_eq!(partition(&sample_partition()), Some([0x5a; 16]));
+        let mut gpt = vec![MEDIA, HARD_DRIVE, 0x2a, 0x00];
+        let mut data = vec![0u8; 0x2a - 4];
+        data[20..36].copy_from_slice(&[7; 16]);
+        data[36] = 2;
+        data[37] = 2;
+        gpt.extend(data);
+        gpt.extend(END);
+        assert_eq!(partition(&gpt), Some([7; 16]));
+        let mut short = vec![MEDIA, HARD_DRIVE, 0x10, 0x00];
+        short.extend([0; 12]);
+        short.extend(END);
+        assert_eq!(partition(&short), None, "a node too short to hold one");
+        let mut vendor_first = vec![MEDIA, 3, 44, 0];
+        vendor_first.extend([9; 40]);
+        vendor_first.extend(&gpt);
+        assert_eq!(
+            partition(&vendor_first),
+            Some([7; 16]),
+            "another media node before the hard drive node is skipped"
+        );
+        assert_eq!(partition(&END), None);
+    }
+
+    #[test]
+    fn walking_gives_each_node() {
+        let p = sample_partition();
+        let kinds: Vec<(u8, u8, usize)> = walk(&p)
+            .unwrap()
+            .map(|n| (n.kind, n.subtype, n.data.len()))
+            .collect();
+        assert_eq!(kinds, [(2, 1, 8), (1, 1, 2), (3, 0x12, 6), (4, 1, 0x26)]);
+        assert_eq!(walk(&END).unwrap().count(), 0);
+        assert!(walk(&p[..p.len() - 4]).is_none());
     }
 }

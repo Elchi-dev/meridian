@@ -73,6 +73,7 @@ pub fn run(system: &System, report: &mut impl Report) {
     graphics(system, report);
     images(system, report);
     variables(system, report);
+    boot_options(system, report);
 
     report.check(
         "uefi.keyboard.nothing_waiting",
@@ -703,5 +704,60 @@ fn variables(system: &System, report: &mut impl Report) {
             && system.variable(&probe, &MERIDIAN_VARIABLE, &mut buf).err()
                 == Some(Status::NOT_FOUND),
         "setting no data with no attributes deletes the variable",
+    );
+}
+
+fn boot_options(system: &System, report: &mut impl Report) {
+    use crate::load_option::{self, BOOT_CURRENT, BOOT_ORDER, LoadOption};
+
+    let mut buf = [0u8; 128];
+    let mut order = [0u16; 64];
+    let mut count = 0;
+    if let Some(numbers) = system
+        .variable(&BOOT_ORDER, &GLOBAL_VARIABLE, &mut buf)
+        .ok()
+        .and_then(|(_, data)| load_option::numbers(data))
+    {
+        for (slot, n) in order.iter_mut().zip(numbers) {
+            *slot = n;
+            count += 1;
+        }
+    }
+    let order = &order[..count];
+    report.check(
+        "uefi.boot_order",
+        !order.is_empty(),
+        "OVMF lists its boot options in BootOrder",
+    );
+    let mut two = [0u8; 2];
+    let current = system
+        .variable(&BOOT_CURRENT, &GLOBAL_VARIABLE, &mut two)
+        .ok()
+        .and_then(|(_, data)| load_option::numbers(data)?.next());
+    report.check(
+        "uefi.boot_current",
+        current.is_some_and(|n| order.contains(&n)),
+        "the option the firmware started this image with should be in BootOrder",
+    );
+    let mut whole = 0;
+    for &n in order {
+        let mut data = [0u8; 1024];
+        let option = system
+            .variable(&load_option::variable(n), &GLOBAL_VARIABLE, &mut data)
+            .ok()
+            .and_then(|(_, data)| LoadOption::parse(data));
+        whole += usize::from(option.is_some_and(|o| {
+            o.description().next().is_some() && crate::device_path::walk(o.path).is_some()
+        }));
+    }
+    report.check(
+        "uefi.boot_options",
+        !order.is_empty() && whole == order.len(),
+        "every option in BootOrder should read as a description and a whole device path",
+    );
+    report.check(
+        "uefi.image.broken_path",
+        system.load_image_at(&[4, 4, 2, 0]).err() == Some(Status::INVALID_PARAMETER),
+        "a device path without an end node should not reach the firmware",
     );
 }

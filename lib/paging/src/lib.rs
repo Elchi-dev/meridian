@@ -786,4 +786,24 @@ mod tests {
         );
         assert_eq!(space.translate(&mut heap, 0x4000), None);
     }
+
+    #[test]
+    fn flags_are_the_bits_the_processor_reads() {
+        // Intel SDM volume 3, section 4.5: the bits of a page table entry.
+        let bits = [
+            (Flags::PRESENT, 1u64 << 0),
+            (Flags::WRITABLE, 1 << 1),
+            (Flags::USER, 1 << 2),
+            (Flags::WRITE_THROUGH, 1 << 3),
+            (Flags::NO_CACHE, 1 << 4),
+            (Flags::GLOBAL, 1 << 8),
+            (Flags::NO_EXECUTE, 1 << 63),
+        ];
+        for (flag, bit) in bits {
+            assert_eq!(flag.0, bit, "{flag:?}");
+        }
+        assert_eq!(Flags::WRITABLE.0, 2);
+        assert_eq!(Flags::USER.0, 4);
+        assert_eq!(Flags::WRITE_THROUGH.0, 8);
+    }
 }

@@ -381,6 +381,34 @@ pub fn task_state() -> Option<&'static tables::TaskState> {
     unsafe { (base as *const tables::TaskState).as_ref() }
 }
 
+/// The processor's time stamp counter, which counts at a fixed rate on
+/// every processor Meridian runs on.
+#[must_use]
+pub fn tsc() -> u64 {
+    let (low, high): (u32, u32);
+    // SAFETY: rdtsc only reads the counter.
+    unsafe {
+        asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
+    }
+    u64::from(high) << 32 | u64::from(low)
+}
+
+/// Reads 32 bits from an I/O port.
+///
+/// # Safety
+///
+/// Reading the port must have no effect beyond giving its value, as for
+/// a counter such as the ACPI power management timer.
+#[must_use]
+pub unsafe fn read_port_u32(port: u16) -> u32 {
+    let value: u32;
+    // SAFETY: the caller promises reading has no side effects.
+    unsafe {
+        asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
 /// The address the last page fault was about.
 #[must_use]
 pub fn cr2() -> u64 {

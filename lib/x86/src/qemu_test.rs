@@ -24,6 +24,13 @@ pub fn run(check: &mut impl FnMut(&str, bool, &str)) {
         "a 64-bit processor has the extended leaves",
     );
 
+    let (first, second) = (raw::tsc(), raw::tsc());
+    check(
+        "x86.tsc",
+        second > first && first > 0,
+        "the time stamp counter should have counted since power on, and go on",
+    );
+
     let e = raw::efer();
     check(
         "x86.efer.long_mode",

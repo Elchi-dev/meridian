@@ -30,7 +30,7 @@ sextant:
 - [x] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types
 - [x] `mutate` for Rust and Go, each mutant in a private copy of the repository
 - [x] `mutate` for code only QEMU tests reach: crates with a `qemu-test` feature boot the test image for mutants their host tests miss
-- [ ] `doctor`, with installing after one "y"
+- [x] `doctor`, with installing after one "y"
 - [x] `build`
 - [x] `image` (GPT disk image and ISO), stamped with the commit
 - [x] `run`, in a window or headless, `--debug` waits for GDB

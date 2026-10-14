@@ -15,7 +15,7 @@ system will get its own name later.
 | `help`, `version` | the overview, and the version with the git revision it was built from | works |
 | `stats [--check] [--files] [--min N]` | code and test lines per component; `--check` fails below the minimum and says how many test lines are missing | works |
 | `lint` | the project rules no compiler knows | works |
-| `doctor` | checks every tool and version, prints how to fix each, and installs what is missing after one "y" | being built |
+| `doctor [--yes]` | checks Go, rustup and the pinned toolchain, QEMU, OVMF, KVM and the tools the tests check with, prints how to fix each, and installs what is missing with pacman, apt, dnf, zypper, Homebrew or winget after one "y" | works |
 | `build [part] [--release]` | builds the loader, and later the kernel and everything else, through Cargo | being built |
 | `image` | writes a bootable GPT disk image, and an ISO | being built; the writers work |
 | `run` | boots the image in QEMU with KVM, HVF or WHPX when available, serial output in the terminal | being built |

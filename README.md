@@ -139,7 +139,7 @@ go build -o sextant ./cmd/sextant
 ./sextant ci         # every check CI runs, in its order
 ./sextant stats      # code and test lines per component
 ./sextant lint       # the project rules no compiler knows
-./sextant doctor     # checks and installs the tools you need (not built yet)
+./sextant doctor     # checks the tools you need and installs what is missing
 ```
 
 The first image sextant writes on a machine makes a development key for

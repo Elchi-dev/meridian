@@ -13,7 +13,7 @@ You need:
 
 ```
 cd tools/sextant && go build -o sextant ./cmd/sextant
-./sextant doctor          # checks the tools; not built yet
+./sextant doctor          # checks the tools and installs what is missing
 ```
 
 ## Before every commit

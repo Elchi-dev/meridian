@@ -18,6 +18,7 @@ at 0.x until the native API is stable.
   - A conformance suite of 134 cases: 18 valid documents with their canonical dumps, and 116 invalid ones with their expected errors.
 - **sextant**
   - `help`, and `version` with the git revision it was built from.
+  - `doctor`, which checks Go, rustup and the pinned Rust toolchain, QEMU, OVMF, access to KVM and the tools the tests check sextant's work with, says how to fix what is missing, and installs it with the machine's package manager after one "y".
   - `ci`, every check CI runs in its order: the project rules, the test lines, Go and Rust formatting, clippy for every target, `go vet`, the Go tests with the race detector, the Rust tests and the QEMU test image. CI's linux job runs `sextant ci` itself.
   - `stats`, which counts code and test lines per component. `--check` fails below 1.5 test lines per code line and says how many are missing. Ratios are cut to two decimals, never rounded up.
   - `lint`, which rejects em and en dashes, leftover markers in comments, `todo!()` and `unimplemented!()`, `unsafe` outside `raw` modules, and outside code or files without an accepted decision record.

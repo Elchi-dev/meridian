@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -219,4 +220,162 @@ func TestARunLeavesNoProcessesBehind(t *testing.T) {
 	}
 	syscall.Kill(pid, syscall.SIGKILL)
 	t.Fatalf("sleep %d kept running after its run", pid)
+}
+
+const reportsNiceness = `package m
+
+import (
+	"os"
+	"os/exec"
+	"strconv"
+	"testing"
+)
+
+func TestNiceness(t *testing.T) {
+	out, err := exec.Command("ps", "-o", "nice=", "-p", strconv.Itoa(os.Getpid())).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(os.Getenv("MUTATE_NICE_FILE"), out, 0o644)
+}
+`
+
+func niceness(t *testing.T, ps []byte) int {
+	t.Helper()
+	n, err := strconv.Atoi(strings.TrimSpace(string(ps)))
+	if err != nil {
+		t.Fatalf("ps printed %q: %v", ps, err)
+	}
+	return n
+}
+
+// Mutants run under nice, so a long mutation run leaves the machine usable.
+func TestTestsRunAtALowerPriority(t *testing.T) {
+	for _, tool := range []string{"nice", "ps"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	own, err := exec.Command("ps", "-o", "nice=", "-p", strconv.Itoa(os.Getpid())).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := niceness(t, own)
+	if before >= 19 {
+		t.Skip("this test already runs at the lowest priority, so a lower one cannot be seen")
+	}
+	marker := filepath.Join(t.TempDir(), "nice")
+	t.Setenv("MUTATE_NICE_FILE", marker)
+	root := writeTree(t, map[string]string{"go.mod": goModule, "a.go": goSource, "a_test.go": reportsNiceness})
+	ms, _ := GoMutants("a.go", []byte(goSource))
+	if _, err := (&Runner{Root: root, Jobs: 1, Scratch: t.TempDir()}).Run(context.Background(), ms[:1], map[string]Target{"a.go": {Component: ".", Kind: "go"}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := niceness(t, raw), min(before+15, 19); got != want {
+		t.Fatalf("the tests ran at nice %d, want %d", got, want)
+	}
+}
+
+// nice is a convenience: where it is missing the tests run at normal
+// priority instead of not at all.
+func TestRunnerWorksWithoutNice(t *testing.T) {
+	bin := t.TempDir()
+	for _, tool := range []string{"go", "sh"} {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(p, filepath.Join(bin, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	root := writeTree(t, map[string]string{"go.mod": goModule, "a.go": goSource, "a_test.go": goTests})
+	ms, _ := GoMutants("a.go", []byte(goSource))
+	var picked []Mutant
+	for _, m := range ms {
+		if m.Line == 4 && m.Desc == "< to >=" {
+			picked = append(picked, m)
+		}
+	}
+	results, err := (&Runner{Root: root, Jobs: 1, Scratch: t.TempDir()}).Run(context.Background(), picked, map[string]Target{"a.go": {Component: ".", Kind: "go"}})
+	if err != nil || len(results) != 1 || results[0].Outcome != Killed {
+		t.Fatalf("got %v %v", results, err)
+	}
+}
+
+// A test whose child leaves the process group, and so survives the kill,
+// still holds the output Cargo passed on to it.
+const escapesTheGroup = `pub fn less(a: u8, b: u8) -> bool {
+    a < b
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::CommandExt;
+
+    #[test]
+    fn hangs_when_broken() {
+        if super::less(1, 2) {
+            return;
+        }
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        std::fs::write(std::env::var("MUTATE_PID_FILE").unwrap(), child.id().to_string()).unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+}
+`
+
+func TestAnEscapedProcessDoesNotStallTheRun(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		if os.Getenv("SEXTANT_REQUIRE_TOOLS") == "1" {
+			t.Fatal("cargo is not installed")
+		}
+		t.Skip("cargo is not installed")
+	}
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Setenv("MUTATE_PID_FILE", pidFile)
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(string(raw)); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	root := writeTree(t, map[string]string{
+		"k/Cargo.toml": "[package]\nname = \"k\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+		"k/src/lib.rs": escapesTheGroup,
+	})
+	ms, err := RustMutants("k/src/lib.rs", []byte(escapesTheGroup), func(line int) bool { return line > 4 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var picked []Mutant
+	for _, m := range ms {
+		if m.Desc == "body to { false }" {
+			picked = append(picked, m)
+		}
+	}
+	r := &Runner{Root: root, Jobs: 1, Scratch: t.TempDir(), Timeout: 4 * time.Second}
+	started := time.Now()
+	results, err := r.Run(context.Background(), picked, map[string]Target{"k/src/lib.rs": {Component: "k", Kind: "rust"}})
+	if err != nil || len(results) != 1 || results[0].Outcome != TimedOut {
+		t.Fatalf("got %v %v", results, err)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("the mutant never started the escaping process: %v", err)
+	}
+	if took := time.Since(started); took > 40*time.Second {
+		t.Fatalf("the run took %v; it waited for the escaped process instead of giving up on its output", took)
+	}
 }

@@ -140,21 +140,6 @@ fn frame(
     canvas.fill_rect(at(x + w - thickness), at(y), thickness, h, color);
 }
 
-/// Copies a finished frame of `width` by `height` pixels to the screen,
-/// whose rows are `stride` pixels apart, so the person never sees a frame
-/// half drawn. Rows or pixels that do not fit are left out.
-pub fn present(frame: &[u32], screen: &mut [u32], width: usize, height: usize, stride: usize) {
-    if width == 0 || stride < width {
-        return;
-    }
-    for (row, source) in frame.chunks_exact(width).take(height).enumerate() {
-        let start = row * stride;
-        if let Some(target) = screen.get_mut(start..start + width) {
-            target.copy_from_slice(source);
-        }
-    }
-}
-
 /// The first card to show when only `shown` fit, so the chosen one is
 /// always among them.
 #[must_use]
@@ -652,34 +637,6 @@ mod tests {
         }
         let mut p = drawn(&[], &Menu::new(0, 0, 0), 640, 480);
         assert_eq!(p.at(320, 240), NIGHT, "no cards, nothing in the middle");
-    }
-
-    #[test]
-    fn frames_go_to_the_screen_row_by_row() {
-        let frame: Vec<u32> = (0..12).collect();
-        let mut screen = vec![99; 4 * 5];
-        present(&frame, &mut screen, 4, 3, 5);
-        assert_eq!(&screen[..5], [0, 1, 2, 3, 99], "the padding stays");
-        assert_eq!(&screen[5..10], [4, 5, 6, 7, 99]);
-        assert_eq!(&screen[10..15], [8, 9, 10, 11, 99]);
-        assert_eq!(&screen[15..], [99; 5], "rows past the frame's height stay");
-    }
-
-    #[test]
-    fn a_frame_larger_than_the_screen_is_cut() {
-        let frame = vec![7u32; 4 * 4];
-        let mut screen = vec![0; 4 * 2 + 2];
-        present(&frame, &mut screen, 4, 4, 4);
-        assert_eq!(
-            screen,
-            [7, 7, 7, 7, 7, 7, 7, 7, 0, 0],
-            "a row that does not fit whole is left out"
-        );
-        let mut untouched = vec![1; 8];
-        present(&frame, &mut untouched, 4, 2, 3);
-        assert_eq!(untouched, [1; 8], "a stride below the width draws nothing");
-        present(&frame, &mut untouched, 0, 2, 3);
-        assert_eq!(untouched, [1; 8]);
     }
 
     #[test]

@@ -573,13 +573,17 @@ fn choose(
             Action::Wait => None,
         };
         if let Some(shown) = shown {
-            boot::screen::present(
-                frame.words(),
+            let back = Canvas::new(frame.words(), width, height, width, format);
+            let front = Canvas::new(
                 screen.as_mut_slice(),
                 width,
                 height,
                 fb.stride as usize,
+                format,
             );
+            if let (Some(back), Some(mut front)) = (back, front) {
+                back.copy_to(&mut front, 0, 0, width, height);
+            }
             on_frame(shown, frame.words(), screen.as_slice());
         }
         action = if let Ok(Some(key)) = system.read_key() {

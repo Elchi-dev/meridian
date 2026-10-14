@@ -242,7 +242,7 @@ Settings that apply to one machine, such as `sextant.local.meri`, are layered ov
 
 - An entry in the override replaces the item with the same name in the base, whatever kind that item was, and keeps the base's position in the order. Entries the base does not have are added at the end.
 - A labelled block in the override is merged into the base block with the same name and label, recursively. If the base has none, it is added at the end.
-- Unlabelled blocks are merged one to one when the base and the override each have exactly one with that name. If either side has more than one, the override's unlabelled blocks with that name replace all of the base's.
+- Unlabelled blocks are merged one to one when the base and the override each have exactly one with that name. Otherwise the override's unlabelled blocks with that name replace the base's in order: the first takes the place of the base's first, the second of the second, and so on. Override blocks left over follow right after the place of the base's last one, and base blocks left over are dropped. If the base has no unlabelled block with that name, the override's are added at the end.
 - If the base has an entry where the override has blocks of the same name, the override's blocks replace that entry.
 
 Merging keeps every value's original position, so an error about a merged value points to the file it came from.

@@ -9,5 +9,7 @@ _private = 1
 Key = upper
 key = lower
 true = 1
+A = Z
+amps = 5A
 spaced    =     "lots of space"	# trailing comment
 tight="no spaces"

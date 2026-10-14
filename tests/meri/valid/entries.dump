@@ -9,5 +9,7 @@ _private int 1
 Key word upper
 key word lower
 true int 1
+A word Z
+amps quantity 5 A
 spaced string "lots of space"
 tight string "no spaces"

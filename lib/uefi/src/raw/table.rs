@@ -93,7 +93,7 @@ pub struct BootServices {
     pub start_image: NotCalled,
     pub exit: NotCalled,
     pub unload_image: NotCalled,
-    pub exit_boot_services: NotCalled,
+    pub exit_boot_services: unsafe extern "efiapi" fn(image: Handle, map_key: usize) -> Status,
     pub get_next_monotonic_count: NotCalled,
     pub stall: unsafe extern "efiapi" fn(microseconds: usize) -> Status,
     pub set_watchdog_timer: NotCalled,

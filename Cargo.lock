@@ -7,6 +7,8 @@ name = "boot"
 version = "0.0.0"
 dependencies = [
  "bootinfo",
+ "elf",
+ "paging",
  "uefi",
  "x86",
 ]

@@ -19,12 +19,33 @@
   and to the serial port only when there is no console. OVMF already copies
   its console to the serial port, so writing to both would print every line
   twice.
-- **Then it waits.** There is no kernel yet, so the loader says so, waits
+- **Loading the kernel.** It reads `\meridian\kernel` from the partition
+  it was started from, checks the ELF file (`lib/elf`), makes sure the entry
+  point lies in code, and loads the segments into kernel memory, applying
+  relocations.
+- **The kernel's address space** (`handover.rs`, built with `lib/paging`):
+  - each kernel segment with the rights it asks for, never writable and
+    executable at once
+  - all physical memory, and at least the first 4 GiB, at `0xffff800000000000`,
+    writable and never executable, in 1 GiB pages where the processor has them
+  - the stack below `STACK_TOP` with an unmapped guard page
+  - the loader's own image at its own address, so the instructions right
+    after the switch are still there; nothing else of the lower half, not
+    even address 0
+- **The handover.** Everything the kernel keeps (its image, the stack, the
+  page tables, the boot information) is allocated with the memory type
+  `0x80000000`, so it shows up as kernel memory in the map. The loader reads
+  the final memory map into the boot information, leaves boot services
+  (trying a second time if the map changed in between), turns on no-execute
+  pages and write protection, switches page tables and stack and calls the
+  kernel. If anything fails before that, it says what in a sentence, waits
   for a key and returns to the firmware.
 - **Test image.** Built with the `qemu-test` feature, the loader runs the
-  QEMU checks of `lib/uefi`, `lib/x86` and its own against OVMF, reports each over the
-  serial port and ends QEMU with exit code 33 (all passed) or 35 (something
-  failed). Port 0xf4 is only written in test images. See
+  QEMU checks of `lib/uefi`, `lib/x86` and its own against OVMF, then
+  starts the kernel's test build, which checks the handover. Every check is
+  reported over the serial port, and the run ends with QEMU exit code 33
+  (all passed) or 35 (something failed). A failed loader check ends the run
+  before the kernel starts. Port 0xf4 is only written in test images. See
   [testing.md](../testing.md).
 
 The loader's own `unsafe` code, the entry point and the panic handler, is
@@ -72,8 +93,9 @@ conformance suite as sextant's Go reader.
 
 ### Starting the kernel
 
-- **Its own handover.** Meridian's own boot protocol, not Multiboot or Limine.
-- **Loading.** The loader reads `\meridian\kernel` (ELF64), checks every header field and loads the segments.
-- **Page tables.** It builds the tables: the kernel in the higher half, a direct map of physical memory, and the loader's identity map until the jump.
-- **The handover structure.** The kernel gets its own memory map format, the framebuffer (address, size, stride, pixel format), the ACPI RSDP, the kernel's physical base and the boot choices.
+Loading, the page tables and the handover exist (see above), with
+Meridian's own protocol rather than Multiboot or Limine. Still to come:
+
+- **The framebuffer** (address, size, stride, pixel format) and the boot
+  choices join the boot information.
 - **No flicker.** The framebuffer is handed over as it is, with the boot screen still on it, so the kernel continues from the same picture.

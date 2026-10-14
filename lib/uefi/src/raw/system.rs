@@ -71,6 +71,32 @@ impl System {
         self.image
     }
 
+    /// The physical address of the system table, which the kernel keeps
+    /// for the runtime services.
+    #[must_use]
+    pub fn table_address(&self) -> u64 {
+        self.table.as_ptr() as u64
+    }
+
+    /// Ends boot services, which hands the machine to the loader for good.
+    /// `map_key` must be the key of the memory map read last; when the map
+    /// has changed since, the firmware refuses and the `System` comes back
+    /// to read it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `System` and the firmware's status, `INVALID_PARAMETER`
+    /// for a stale key.
+    pub fn exit_boot_services(self, map_key: usize) -> Result<(), (System, Status)> {
+        // SAFETY: self is consumed, so nothing can call boot services
+        // after this, and the image handle is the one the entry point got.
+        let status = unsafe { (self.boot_services().exit_boot_services)(self.image, map_key) };
+        match status.ok() {
+            Ok(()) => Ok(()),
+            Err(status) => Err((self, status)),
+        }
+    }
+
     #[must_use]
     pub fn header(&self) -> &TableHeader {
         &self.table().hdr
@@ -275,6 +301,18 @@ impl Pages<'_> {
         unsafe { core::slice::from_raw_parts_mut(self.start as *mut u8, len) }
     }
 
+    /// Keeps the pages for as long as the loader runs, as bytes that no
+    /// longer borrow the `System`, so they can still be written while
+    /// boot services are being left. The firmware never takes them back.
+    #[must_use]
+    pub fn keep(mut self) -> &'static mut [u8] {
+        let len = self.bytes().len();
+        // SAFETY: the pages stay allocated, nobody else got them, and the
+        // loader neither frees them nor changes the identity map before it
+        // stops running.
+        unsafe { core::slice::from_raw_parts_mut(self.start as *mut u8, len) }
+    }
+
     /// Gives the pages back to the firmware.
     ///
     /// # Errors
@@ -395,10 +433,12 @@ mod tests {
             bs.as_mut_ptr(),
             core::ptr::null(),
         );
+        let at = (&raw const st) as u64;
         let system = open(&mut st).expect("a valid table");
         assert_eq!(system.firmware_revision(), 0x1_0000);
         assert_eq!(system.header().revision, (2 << 16) + 70);
         assert!(system.image().is_null());
+        assert_eq!(system.table_address(), at);
     }
 
     #[test]

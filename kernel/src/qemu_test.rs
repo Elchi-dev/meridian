@@ -46,8 +46,8 @@ pub fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut impl Write) -
     );
     report.check(
         "kernel.memory.usable",
-        bytes_of(regions, RegionKind::USABLE) >= 256 << 20,
-        "QEMU runs with 512 MiB, so at least half should be free",
+        bytes_of(regions, RegionKind::USABLE) >= 128 << 20,
+        "the test machines have at least 256 MiB, so at least half should be free",
     );
     report.check(
         "kernel.memory.owned",

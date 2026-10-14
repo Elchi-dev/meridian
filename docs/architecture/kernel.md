@@ -1,8 +1,27 @@
 # The kernel
 
-Nothing on this page exists yet. It describes the design decided in
-QUESTIONS.md and the decision records, and the milestone in which each part
-is built.
+This page describes the design decided in QUESTIONS.md and the decision
+records, and the milestone in which each part is built. The first section
+is what exists today; everything after it is still to come.
+
+## What exists today
+
+- **The crate.** `kernel/` builds a position independent ELF file for
+  `x86_64-unknown-none`, linked by `kernel/link.ld` into the top 2 GiB at
+  `0xffffffff80000000`. Code, read-only data and writable data each start
+  on a page of their own, so the loader can map each with exactly its
+  rights. sextant puts the file at `\meridian\kernel` on the EFI partition.
+- **The way in.** The loader calls `kernel_start` with the boot information
+  (`lib/bootinfo`) in `rdi`, on a 64 KiB stack below `STACK_TOP` with an
+  unmapped guard page under it, paging on, no-execute pages and write
+  protection on, and interrupts off. The kernel refuses boot information
+  whose magic, version or size it does not know.
+- **What it does.** It opens COM1 through `lib/x86`, prints its version and
+  how much memory is free and how much it owns, and halts.
+- **Test image.** Built with the `qemu-test` feature, it checks what the
+  loader promised: the direct map, its own image mapped at the right
+  physical memory, the stack, the processor state, the ACPI root pointer,
+  and that boot services are over. It ends the QEMU run with `TESTS DONE`.
 
 ## Shape
 

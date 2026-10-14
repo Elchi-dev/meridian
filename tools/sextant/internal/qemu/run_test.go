@@ -136,23 +136,52 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 	}
 }
 
+// The test image asks for keys with PRESS lines; here the script answers
+// them instead of AnswerPress, so the keys really come from the script.
 func TestAScriptPressesKeysOnTheMachine(t *testing.T) {
 	r := newRig(t)
-	m := r.machine(diskWithLoader(t, false))
-	m.DebugExit = false
-	res, err := Run(context.Background(), m, reliable(Options{
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{
 		Timeout: 2 * time.Minute,
 		Script: []Step{
-			{Wait: "Press any key to return to the firmware.", Keys: []string{"ret"}},
-			{Wait: "Returning to the firmware."},
+			{Wait: "PRESS ret", Keys: []string{"ret"}},
+			{Wait: "PRESS down", Keys: []string{"down"}},
+			{Wait: "TEST uefi.keyboard.arrow ok"},
 		},
 		StopAfterScript: true,
 	}))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 2 || !res.Stopped || res.TimedOut {
+	if res.StepsDone != 3 || !res.Stopped || res.TimedOut {
 		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	}
+	if !strings.Contains(res.Serial, "TEST uefi.keyboard.enter ok") {
+		t.Fatalf("the script's Enter did not arrive:\n%s", res.Serial)
+	}
+}
+
+// The image people boot starts the kernel, which says hello and halts.
+func TestThePlainImageStartsTheKernel(t *testing.T) {
+	r := newRig(t)
+	m := r.machine(diskWithLoader(t, false))
+	m.DebugExit = false
+	res, err := Run(context.Background(), m, reliable(Options{
+		Timeout: 2 * time.Minute,
+		Script: []Step{
+			{Wait: "Meridian boot "},
+			{Wait: "Meridian kernel "},
+			{Wait: "There is nothing more to do yet. Halting."},
+		},
+		StopAfterScript: true,
+	}))
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, res.Serial)
+	}
+	if res.StepsDone != 3 || !res.Stopped || res.TimedOut {
+		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	}
+	if strings.Contains(res.Serial, "TEST ") {
+		t.Fatalf("the plain image ran checks:\n%s", res.Serial)
 	}
 }
 

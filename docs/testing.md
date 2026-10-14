@@ -161,6 +161,6 @@ example a bounds check whose last iteration ends the loop either way. Every
 other survivor gets a better test, or simpler code that has no equivalent
 mutant.
 
-CI is meant to mutate the files changed by each push, and everything once a
-night; until that job exists, mutation runs by hand, the long ones on the
-build machine.
+CI mutates the files each push changes, with the QEMU checks, after the
+other checks passed. A run over everything takes hours and runs by hand on
+the build machine.

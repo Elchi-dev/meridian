@@ -70,6 +70,43 @@ jobs:
         working-directory: tools/sextant
         run: go run ./cmd/sextant test --qemu
 
+  mutate:
+    name: mutation of what changed
+    # Pushes only: they say which commit came before, so the files they
+    # changed are known.
+    if: github.event_name == 'push'
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU and OVMF for the QEMU checks
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq qemu-system-x86 ovmf
+
+      - name: Let the runner user open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Mutate the files this push changed
+        working-directory: tools/sextant
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A new branch, or a push that rewrote history, has no commit
+          # before it here; the parent of the newest one stands in.
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then BEFORE=HEAD~1; fi
+          go run ./cmd/sextant mutate --since "$BEFORE" --jobs 4
+
   sextant:
     name: sextant on ${{ matrix.os }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'

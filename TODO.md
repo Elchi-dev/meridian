@@ -17,7 +17,7 @@ Repository:
 - [x] Decision record 0011 for `actions/checkout`, the only outside action, pinned to a commit hash
 - [x] Ruleset on `main`: CI must be green, no force pushes
 - [x] `mutants.meri` with the known equivalent mutants
-- [ ] Mutation of changed files in CI (`sextant mutate --since origin/main`)
+- [x] Mutation of changed files in CI (`sextant mutate --since` the commit before the push)
 
 sextant:
 

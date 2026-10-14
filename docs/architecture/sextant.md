@@ -61,6 +61,23 @@ GPT with the protective MBR, FAT32 for the EFI partition, and ISO 9660 with
 an El Torito entry for UEFI. All three are written by sextant itself, and
 the same inputs give the same bytes on every machine (ADR 0010).
 
+## Signing
+
+Every image carries a loader signed for Secure Boot. sextant computes the
+loader's Authenticode hash, signs it with RSA-2048 and SHA-256 in a PKCS #7
+SignedData, and puts that in the certificate table, all with Go's standard
+library (`internal/authenticode`). The key and its certificate come from the
+PEM file `sign.key` names. Without one, sextant makes a development key the
+first time it signs and keeps it in the user's settings folder
+(`~/.config/sextant/development-key.pem` on Linux), readable only by its
+owner. A signature does not change from one run to the next, so with the
+same key the same commit still gives the same image; with another key,
+only the signature differs.
+
+The tests check the hash against a second reading of the file through Go's
+`debug/pe`, and have OpenSSL verify the signature, the signed digest and
+the certificate.
+
 ## QEMU
 
 `run` and `test` start QEMU with:

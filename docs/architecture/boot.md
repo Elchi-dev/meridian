@@ -94,7 +94,7 @@ Still to come:
 
 - **The shim** is a prebuilt, Microsoft-signed binary from a Linux distribution, kept under `third-party/` with its own decision record. It goes to `\EFI\BOOT\BOOTX64.EFI`, and shim's default next stage is where `meridian.efi` sits.
 - **The `.sbat` section.** `meridian.efi` carries an `.sbat` section, which current shims require.
-- **Signing.** sextant signs `meridian.efi` with an Authenticode signer of its own, written with Go's standard library.
+- **Signing.** sextant signs `meridian.efi` with an Authenticode signer of its own, written with Go's standard library. Exists; see [sextant.md](sextant.md#signing).
 - **The key.** On the very first boot shim cannot check Meridian's signature yet and opens MokManager. The person picks "Enroll key from disk" and Meridian's certificate once. Every later boot is silent, and no firmware setting has to change.
 - **Release and development keys.** Release images are signed with the project key, kept as a CI secret. Development images use a key that sextant makes on each machine.
 - **The kernel is not checked yet.** Checking its signature needs Meridian's own SHA-256 and signature code; until then the chain of trust ends at the loader.

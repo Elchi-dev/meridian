@@ -31,7 +31,10 @@ type Config struct {
 	// MutateScratch is where sextant mutate keeps its copies of the
 	// repository, absolute, or empty to let it pick a folder.
 	MutateScratch string
-	QEMU          QEMU
+	// SignKey is the PEM file with the key and certificate the loader is
+	// signed with, absolute, or empty for this machine's development key.
+	SignKey string
+	QEMU    QEMU
 }
 
 type QEMU struct {
@@ -131,6 +134,12 @@ func fromDocument(root string, doc *meri.Block) (Config, error) {
 	keep(err)
 	if scratch != "" {
 		c.MutateScratch = absolute(root, scratch)
+	}
+
+	key, err := section(doc, "sign").String("key", "")
+	keep(err)
+	if key != "" {
+		c.SignKey = absolute(root, key)
 	}
 
 	q := section(doc, "qemu")

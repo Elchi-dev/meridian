@@ -216,7 +216,7 @@ func qemuSession(t *testing.T) (*session, *strings.Builder) {
 	var out strings.Builder
 	s := testSession(filepath.Join(os.TempDir(), "sextant-test-build"))
 	s.root = realRoot(t)
-	s.env = Env{Stdout: &out, Stderr: &out}
+	s.env = Env{Stdout: &out, Stderr: &out, ConfigDir: testConfigDir}
 	return s, &out
 }
 

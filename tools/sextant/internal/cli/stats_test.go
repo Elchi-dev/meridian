@@ -28,7 +28,7 @@ func checkout(t *testing.T, files map[string]string) string {
 
 func runIn(dir string, args ...string) result {
 	var out, errOut bytes.Buffer
-	code := Run(args, Env{Dir: dir, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errOut, Version: "test"})
+	code := Run(args, Env{Dir: dir, Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errOut, Version: "test", ConfigDir: testConfigDir})
 	return result{code: code, stdout: out.String(), stderr: errOut.String()}
 }
 

@@ -25,6 +25,10 @@ type Env struct {
 	Stdout  io.Writer
 	Stderr  io.Writer
 	Version string
+	// ConfigDir is the user's settings folder, where sextant keeps what
+	// belongs to this machine, such as its development key. Empty when
+	// the system has none.
+	ConfigDir string
 }
 
 // UsageError marks a mistake in how sextant was called, as opposed to a

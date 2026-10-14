@@ -14,11 +14,15 @@ func main() {
 	// resolve it again with filepath.Abs, which reports the error if it
 	// still cannot be read.
 	dir, _ := os.Getwd()
+	// Without a settings folder, signing needs a key named in the
+	// settings, and says so.
+	configDir, _ := os.UserConfigDir()
 	os.Exit(cli.Run(os.Args[1:], cli.Env{
-		Dir:     dir,
-		Stdin:   os.Stdin,
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
-		Version: version,
+		Dir:       dir,
+		Stdin:     os.Stdin,
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
+		Version:   version,
+		ConfigDir: configDir,
 	}))
 }

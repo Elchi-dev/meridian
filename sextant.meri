@@ -23,6 +23,13 @@ mutate {
     # scratch = "/path/outside/the/repository"
 }
 
+sign {
+    # The loader is signed for Secure Boot with the key and certificate in
+    # this PEM file. Unset, sextant uses a development key it makes once on
+    # each machine and keeps in the user's settings folder.
+    # key = "/path/to/key-and-certificate.pem"
+}
+
 qemu {
     memory = 512MiB
     cpus = 4

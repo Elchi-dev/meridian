@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/authenticode"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/cargo"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/image"
@@ -91,6 +94,80 @@ func (s *session) identity(ctx context.Context) (string, time.Time) {
 	return seed, when
 }
 
+// DevelopmentKeyFile is the name of this machine's development key in
+// sextant's settings folder.
+const DevelopmentKeyFile = "development-key.pem"
+
+// signer is the key the loader is signed with: the one the settings name,
+// or this machine's development key, made the first time it is needed.
+func (s *session) signer() (authenticode.Signer, error) {
+	path := s.settings.SignKey
+	if path == "" {
+		if s.env.ConfigDir == "" {
+			return authenticode.Signer{}, errors.New("there is no settings folder to keep a development key in; set sign.key in sextant.local.meri")
+		}
+		path = filepath.Join(s.env.ConfigDir, "sextant", DevelopmentKeyFile)
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			return s.makeDevelopmentKey(path)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return authenticode.Signer{}, fmt.Errorf("the signing key: %w", err)
+	}
+	signer, err := authenticode.ParseSigner(data)
+	if err != nil {
+		return authenticode.Signer{}, fmt.Errorf("the signing key in %s: %w", path, err)
+	}
+	return signer, nil
+}
+
+// makeDevelopmentKey makes a key for this machine and keeps it where only
+// its owner can read it. It never replaces a key that is there.
+func (s *session) makeDevelopmentKey(path string) (authenticode.Signer, error) {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "an unnamed machine"
+	}
+	signer, err := authenticode.NewSigner("Meridian development key, "+host, time.Now(), rand.Reader)
+	if err != nil {
+		return authenticode.Signer{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return authenticode.Signer{}, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return authenticode.Signer{}, fmt.Errorf("keep the development key: %w", err)
+	}
+	if _, err := f.Write(signer.PEM()); err != nil {
+		f.Close()
+		return authenticode.Signer{}, fmt.Errorf("keep the development key: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return authenticode.Signer{}, err
+	}
+	fmt.Fprintf(s.env.Stderr, "sextant: made a development key for signing the loader: %s\n", path)
+	return signer, nil
+}
+
+// bootFiles are the files of an image of this variant, with the loader
+// signed.
+func (s *session) bootFiles(v variant, loader, kernel []byte) (map[string][]byte, error) {
+	signer, err := s.signer()
+	if err != nil {
+		return nil, err
+	}
+	signed, err := authenticode.Sign(loader, signer)
+	if err != nil {
+		return nil, fmt.Errorf("sign the loader: %w", err)
+	}
+	if v.testMode {
+		return image.TestFiles(signed, kernel), nil
+	}
+	return image.BootFiles(signed, kernel), nil
+}
+
 func (s *session) writeImage(ctx context.Context, v variant, loader, kernel, out string) error {
 	loaderData, err := os.ReadFile(loader)
 	if err != nil {
@@ -100,14 +177,14 @@ func (s *session) writeImage(ctx context.Context, v variant, loader, kernel, out
 	if err != nil {
 		return err
 	}
+	files, err := s.bootFiles(v, loaderData, kernelData)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
 	seed, when := s.identity(ctx)
-	files := image.BootFiles(loaderData, kernelData)
-	if v.testMode {
-		files = image.TestFiles(loaderData, kernelData)
-	}
 	contents := image.Contents{Seed: seed, Time: when, Files: files}
 	if v.iso {
 		return image.ISO(out, contents)

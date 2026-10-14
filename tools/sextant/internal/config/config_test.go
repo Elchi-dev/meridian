@@ -83,6 +83,9 @@ build {
 mutate {
     scratch = "`+rooted("/var/cache/mutate")+`"
 }
+sign {
+    key = "`+rooted("/keys/release.pem")+`"
+}
 qemu {
     memory = 2GiB
     cpus = 12
@@ -93,7 +96,7 @@ qemu {
     stall = 45s
 }
 `)
-	if c.MinRatio != 2.5 || c.BuildDir != filepath.Clean(rooted("/tmp/meridian-build")) || c.MutateScratch != filepath.Clean(rooted("/var/cache/mutate")) {
+	if c.MinRatio != 2.5 || c.BuildDir != filepath.Clean(rooted("/tmp/meridian-build")) || c.MutateScratch != filepath.Clean(rooted("/var/cache/mutate")) || c.SignKey != filepath.Clean(rooted("/keys/release.pem")) {
 		t.Errorf("stats, build or mutate: %+v", c)
 	}
 	want := QEMU{Memory: 2 << 30, CPUs: 12, Accel: "tcg", Code: "/fw/code.fd", Vars: "/fw/vars.fd", Timeout: 90 * time.Second, Stall: 45 * time.Second}
@@ -103,7 +106,7 @@ qemu {
 }
 
 func TestRelativeFoldersStartAtTheRoot(t *testing.T) {
-	root := repo(t, "build { dir = \"out/cargo\" }\nmutate { scratch = \"../mutants\" }\n")
+	root := repo(t, "build { dir = \"out/cargo\" }\nmutate { scratch = \"../mutants\" }\nsign { key = \"keys/dev.pem\" }\n")
 	c, err := Load(root)
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +116,9 @@ func TestRelativeFoldersStartAtTheRoot(t *testing.T) {
 	}
 	if c.MutateScratch != filepath.Join(filepath.Dir(root), "mutants") {
 		t.Fatalf("mutate scratch = %q", c.MutateScratch)
+	}
+	if c.SignKey != filepath.Join(root, "keys", "dev.pem") {
+		t.Fatalf("sign key = %q", c.SignKey)
 	}
 }
 

@@ -12,7 +12,7 @@
 **An operating system written from scratch that runs your Windows programs natively :3**
 
 [![CI](https://github.com/Elchi-dev/meridian/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Elchi-dev/meridian/actions/workflows/ci.yml)
-![Status](https://img.shields.io/badge/status-M0%20foundation-FF8A1C)
+![Status](https://img.shields.io/badge/status-M1%20boot-FF8A1C)
 [![Rust](https://img.shields.io/badge/Rust-1.99.0-B7410E?logo=rust)](rust-toolchain.toml)
 [![Go](https://img.shields.io/badge/Go-1.27-12A4A1?logo=go)](tools/sextant/go.mod)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-22B45E)
@@ -51,21 +51,23 @@ Meridian is my attempt at the one I want:
 - **Power without fear.** The file system keeps snapshots, so a broken
   install or a wrong command can be undone with one click.
 
-> Meridian is at the very beginning. Today there is the build tool, the
-> settings format, the disk image writers, a UEFI loader that boots in QEMU
-> and checks the firmware it runs on, and the first few lines of a kernel:
-> the loader builds its higher-half address space and jumps into it, and
-> the kernel reports the memory it was given. **It does nothing more yet.**
-> Everything below about the running system describes where Meridian is
-> going. [ROADMAP](docs/ROADMAP.md) and [TODO](TODO.md) say exactly what is
+> Meridian is at the very beginning. Today there is the build tool, which
+> writes and signs the boot images itself, the settings format, and a UEFI
+> loader with a boot screen: a card for each system it finds, the log on
+> V, the firmware settings on F, and its settings in `boot.meri`. It loads
+> a higher-half kernel that catches every processor exception on a panic
+> screen with a QR code, and shows the processor, its cores, the memory
+> and a live uptime. **It does nothing more yet.** Everything below about
+> the running system describes where Meridian is going.
+> [ROADMAP](docs/ROADMAP.md) and [TODO](TODO.md) say exactly what is
 > finished.
 
 **It depends on nothing.** The lock files list this workspace and not one
 package besides: no crates, no Go modules. The UEFI bindings, the disk image
 writers, the settings parser, and later the cryptography and TLS, are all
-written here. Every outside file Meridian will ever need (fonts, GPU
+written here. Every outside file Meridian will ever need (the fonts, GPU
 firmware, the signed Secure Boot shim) gets its own decision record before
-it lands. Why each choice was made is in [docs/adr](docs/adr/README.md).
+it lands; the fonts have theirs. Why each choice was made is in [docs/adr](docs/adr/README.md).
 
 ---
 
@@ -109,15 +111,15 @@ Wine or ReactOS ([ADR 0004](docs/adr/0004-clean-room.md)).
 
 | Part | What it is | State today |
 | --- | --- | --- |
-| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | prints a banner, converts the memory map, and its QEMU test image checks firmware and keyboard |
-| [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | not started (M1 to M3) |
-| `lib/uefi` | UEFI types and firmware calls, written from the specification | done for what the loader calls |
-| `lib` | `no_std` crates shared by kernel and userland, tested on the host | `uefi` and `bootinfo` so far |
+| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | boot screen with cards for the systems on the EFI partition, the log, the firmware settings and `boot.meri`; loads the kernel and hands it memory, framebuffer and ACPI; the shim is not in yet |
+| [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | its own descriptor tables, every exception on a panic screen with a QR code, a status screen with cores and a live uptime; no memory manager or interrupts yet (M2) |
+| `lib/uefi` | UEFI types and firmware calls, written from the specification | done for what the loader calls, checked against OVMF |
+| `lib` | `no_std` crates shared by kernel and userland, tested on the host | `acpi`, `bootinfo`, `canvas`, `elf`, `font`, `meri`, `paging`, `qr`, `uefi`, `x86` |
 | `user` | init, the shell, command-line tools, the terminal, the apps | planned (M5, M7) |
 | [`win32`](docs/architecture/win32.md) | PE loader, Meridian's own ntdll, kernel32, user32, gdi32; 64-bit and 32-bit | planned (M6, M8) |
 | [Horizon](docs/architecture/horizon.md) | the desktop | designed, not built (M7) |
 | [Strata](docs/architecture/strata.md) | copy-on-write file system with snapshots, checksums and an instant file index | specified, not built (M4) |
-| [`sextant`](docs/architecture/sextant.md) | the build and dev tool, in Go, runs on Linux, macOS and Windows | `build`, `image`, `run`, `test`, `stats`, `lint`, the `.meri` reader and the GPT, FAT32 and ISO writers work; `doctor` and `mutate` are being built |
+| [`sextant`](docs/architecture/sextant.md) | the build and dev tool, in Go, runs on Linux, macOS and Windows | `build`, `image`, `run`, `test`, `stats`, `lint` and `mutate` work, with the `.meri` reader, the GPT, FAT32 and ISO writers and the Authenticode signer; `doctor` is next |
 
 ---
 
@@ -132,19 +134,23 @@ git clone https://github.com/Elchi-dev/meridian
 cd meridian/tools/sextant
 go build -o sextant ./cmd/sextant
 
-./sextant run        # builds the loader, writes an image, boots it in QEMU
+./sextant run        # builds loader and kernel, writes a signed image, boots it
 ./sextant test       # host tests, then the QEMU test image on real firmware
 ./sextant stats      # code and test lines per component
 ./sextant lint       # the project rules no compiler knows
 ./sextant doctor     # checks and installs the tools you need (not built yet)
 ```
 
+The first image sextant writes on a machine makes a development key for
+signing the loader, kept in your settings folder. `sign.key` in
+`sextant.local.meri` names another one.
+
 ---
 
 ## Planned
 
-What Meridian is meant to do, roughly in the order it gets built. None of
-this exists yet.
+What Meridian is meant to do, roughly in the order it gets built. Only the
+boot menu has started to exist.
 
 - **Windows programs.** Console tools first, then PuTTY and 7-Zip, then the
   official `python.exe` without changes. Microsoft Word is the long-term
@@ -198,28 +204,42 @@ this exists yet.
 
 ## Status
 
-**M0, the foundation, is in progress.** See [ROADMAP](docs/ROADMAP.md).
+**M0, the foundation, and M1, the boot, are in progress.** See
+[ROADMAP](docs/ROADMAP.md).
 
 The test bar holds for every component, from the first commit on:
 
 - At least **1.5 lines of test code for every line of code**, counted
   without comments and blank lines. `sextant stats --check` fails the build
   otherwise.
-- **Mutation testing.** Every change to the code that no test notices fails
-  CI, unless `mutants.meri` explains why it cannot change behaviour.
+- **Mutation testing.** `sextant mutate` changes the code one mutant at a
+  time, and every change no test notices has to get a test, or an entry in
+  `mutants.meri` that explains why it cannot change behaviour. Running it on
+  every change in CI comes next.
 - **No mocks, no stubs.** Firmware code is tested against real firmware in
-  QEMU. The disk images are read back by `fsck.fat`, `sfdisk` and
-  `xorriso`, and QR codes by `zbarimg`.
+  QEMU, with pictures of every screen. The disk images are read back by
+  `fsck.fat`, `sfdisk` and `xorriso`, QR codes by `zbarimg`, and signatures
+  by OpenSSL.
   The `.meri` readers have to pass a shared conformance suite of 134 cases.
 
 On 14 October 2026:
 
 | Component | Code | Tests | Ratio |
 | --- | --- | --- | --- |
-| `boot` | 272 | 476 | 1.75 |
-| `lib/bootinfo` | 28 | 45 | 1.60 |
-| `lib/uefi` | 620 | 956 | 1.54 |
-| `tools/sextant` | 4994 | 8196 | 1.64 |
+| `boot` | 1629 | 2451 | 1.50 |
+| `kernel` | 952 | 1704 | 1.78 |
+| `lib/acpi` | 124 | 306 | 2.46 |
+| `lib/bootinfo` | 164 | 254 | 1.54 |
+| `lib/canvas` | 283 | 425 | 1.50 |
+| `lib/elf` | 265 | 487 | 1.83 |
+| `lib/font` | 908 | 2577 | 2.83 |
+| `lib/meri` | 1240 | 1962 | 1.58 |
+| `lib/paging` | 182 | 491 | 2.69 |
+| `lib/qr` | 496 | 792 | 1.59 |
+| `lib/uefi` | 1494 | 2292 | 1.53 |
+| `lib/x86` | 439 | 674 | 1.53 |
+| `tools/sextant` | 6826 | 12153 | 1.78 |
+| total | 15002 | 26568 | 1.77 |
 
 `sextant stats` prints the current numbers.
 

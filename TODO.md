@@ -13,7 +13,7 @@ Repository:
 - [x] Decision records 0001 to 0006, 0009 and 0010, with index and template
 - [x] Decision records 0007 (assembly inside Rust) and 0008 (unsafe in raw modules), committed with the loader
 - [x] README, roadmap, architecture, testing, TODO, changelog, contributing, security
-- [ ] CI workflow in `.github/workflows/ci.yml`: lint, host tests, QEMU tests with KVM, `stats --check`, mutation of changed files; sextant built and tested on macOS and Windows too
+- [x] CI workflow in `.github/workflows/ci.yml`: lint, host tests, QEMU tests with KVM, `stats --check`; sextant built and tested on macOS and Windows too
 - [x] Decision record 0011 for `actions/checkout`, the only outside action, pinned to a commit hash
 - [x] Ruleset on `main`: CI must be green, no force pushes
 - [x] `mutants.meri` with the known equivalent mutants
@@ -34,7 +34,7 @@ sextant:
 - [x] `build`
 - [x] `image` (GPT disk image and ISO), stamped with the commit
 - [x] `run`, in a window or headless, `--debug` waits for GDB
-- [x] `test --host` and `test --qemu`, reading the serial protocol and exit codes 33 and 35, answering `PRESS` lines, starting the machine again when the firmware stalls
+- [x] `test --host` and `test --qemu`, reading the serial protocol and exit codes 33 and 35, answering `PRESS` and `SCREEN` lines, starting the machine again when the firmware stalls
 - [ ] `ci`
 - [ ] `adr new`
 - [ ] `release`, `flash`, `debug`

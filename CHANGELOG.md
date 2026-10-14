@@ -25,13 +25,17 @@ at 0.x until the native API is stable.
   - Settings from `sextant.meri`, with `sextant.local.meri` for one machine: build directory, QEMU memory, CPUs, accelerator, firmware, timeout and how long the firmware may stay silent.
   - `build`, `image`, `run` and `test`. Images are stamped with the commit, so a commit always gives the same image. `build` puts the loader and the kernel on the EFI partition. `test` boots the QEMU test image, presses the keys it asks for, keeps pictures of the screens it asks for as PNG files, and starts the machine again when the firmware hangs before printing anything.
   - Scripts for a run, whose steps wait for a line, pause, press keys and keep the screen.
+  - Every image carries a loader signed with Authenticode, by the key `sign.key` names or by a development key sextant makes once per machine. Every image also carries a `boot.meri` with the defaults written out.
   - `mutate`, which changes Go and Rust code one mutant at a time in private copies of the repository and runs the tests on each, so tests that cannot fail are found. Known equivalent mutants are listed with a reason in `mutants.meri`.
 - **`lib/uefi`**
   - Status codes with their names and plain-English meanings.
   - GUIDs, the memory map reader, and the UCS-2 console encoder.
   - The system table with its validation, and the firmware tables, written from UEFI 2.10. Only slots Meridian calls have a function type.
   - Pages and the memory map, files and folders on the boot volume, the framebuffer through graphics output, keys without waiting, configuration tables such as ACPI's, device paths, and loading and starting other EFI applications.
+  - Firmware variables, read, written and deleted, and restarting the machine.
 - **The loader (`boot`)**
+  - V shows the log, everything the loader wrote, and F restarts into the firmware's settings where the firmware can do that.
+  - Settings in `\meridian\boot.meri`: the countdown, the system that starts, by name or the one started last, and whether the log comes first.
   - Banner with the firmware vendor and UEFI version, COM1 logging.
   - The firmware memory map turned into kernel regions (`lib/bootinfo`), with usable memory losing every overlap with any other kind.
   - A QEMU test image that runs every crate's checks against real firmware and ends QEMU with its verdict.
@@ -51,11 +55,17 @@ at 0.x until the native API is stable.
   - `lib/meri`: `.meri` documents read in Rust without a heap, event by event or setting by setting, for the loader's settings.
   - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
 
+### Fixed
+
+- sextant cleans absolute folders from its settings, so a folder written with forward slashes on Windows, or with `..` in it, matches the same folder found another way.
+- The kernel no longer reads the task state through an empty task register, which Ubuntu's OVMF leaves behind.
+
 ### Verified
 
-- **Test lines.** 22403 lines of tests for 12554 lines of code, a ratio of 1.78, and every component at 1.5 or more.
-- **sextant.** All tests pass with the race detector, at 6320 lines of code and 11026 lines of tests, a ratio of 1.74.
-- **`lib/uefi`.** 84 host tests pass at a ratio of 1.52. Every field offset of the firmware tables is checked against the specification.
+- **Test lines.** 26568 lines of tests for 15002 lines of code, a ratio of 1.77, and every component at 1.5 or more.
+- **sextant.** All tests pass with the race detector, at 6826 lines of code and 12153 lines of tests, a ratio of 1.78, on Linux, macOS and Windows.
+- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`.
+- **`lib/uefi`.** 97 host tests pass at a ratio of 1.53. Every field offset of the firmware tables is checked against the specification.
 - **Mutation testing.** `sextant mutate` finds no surviving mutant in sextant; a full run takes about an hour and a half. New Rust code is mutated by hand as it is written, and every mutant was killed, or the code was simplified until the mutant disappeared. Two equivalent mutants are listed in `mutants.meri`.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
@@ -76,8 +86,9 @@ at 0.x until the native API is stable.
 
   - Enter and the down arrow, pressed by sextant through the QEMU monitor
 - **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF.
-- **On real firmware.** `sextant test --qemu` runs 150 checks in QEMU with KVM: the loader's and every crate's under the firmware, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its screens, five exceptions caused on purpose, a panic and a stack overflow.
-- **What a person sees.** The boot, status, panic and double fault screens are kept as PNG files. A Go test checks their colours and reads the QR codes with `zbarimg`, and on the plain image checks that only the uptime changes in 2.5 seconds.
+- **On real firmware.** `sextant test --qemu` runs 169 checks in QEMU with KVM: the loader's and every crate's under the firmware, firmware variables, the boot screen, its log and its settings, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its screens, five exceptions caused on purpose, a panic and a stack overflow.
+- **The keys and settings on a real machine.** Go tests press F on OVMF and see its setup after the restart, and boot the plain image with `verbose` and `default = example` and see the log, the countdown and the example starting.
+- **What a person sees.** The boot, log, status, panic and double fault screens are kept as PNG files. A Go test checks their colours and reads the QR codes with `zbarimg`, and on the plain image checks that only the uptime changes in 2.5 seconds.
 - **Another firmware.** CI runs the test image on Ubuntu's OVMF, which found a bug the development PC's OVMF hid: the kernel read the task state through an empty task register. It is fixed.
 - **No machine is left behind.** A test that counts open files before and after two boots, and a test that kills the process that started QEMU and checks QEMU dies with it.
 

@@ -11,11 +11,12 @@ into the big parts, and [the decision records](adr/README.md) say why.
       |
   shim, signed by Microsoft's UEFI CA          planned (M1)
       |
-  meridian.efi, the loader                     exists: banner and firmware checks
-      |   boot menu, other systems, boot.meri
+  meridian.efi, the loader                     exists, signed by sextant
+      |   boot menu, other systems, log, boot.meri
       |   loads the kernel, maps it, hands over memory map and framebuffer
       v
-  kernel                                       planned (M1 to M4)
+  kernel                                       started: exceptions, screens
+                                               (M1 to M4)
       |   memory, CPUs, scheduler, handles and objects, IPC, drivers
       v
   services in user space                       planned (M5, M7)
@@ -74,7 +75,7 @@ The Windows personality: [architecture/win32.md](architecture/win32.md).
 
 - **Nothing hidden.** The System monitor shows every process, handle, driver and mapping.
 - **Readable.** The system log is meant to be read by people.
-- **Verbose boot.** A key held at boot shows every log line.
+- **Verbose boot.** V on the boot screen shows every line the loader wrote, and `verbose = true` in `boot.meri` opens with it.
 - **Documented.** Every system call is documented.
 - **No telemetry.** There is none, ever.
 
@@ -95,11 +96,14 @@ the boot screen on, comes from Meridian's own TrueType rasterizer:
 meridian/
   boot/            UEFI loader (Rust)                                exists
   kernel/          the kernel (Rust and assembly)                    started
+  lib/acpi/        ACPI tables: root pointer, XSDT, MADT, FADT       exists
+  lib/canvas/      rectangles and text on a framebuffer              exists
+  lib/qr/          QR codes for the panic screen                     exists
   lib/uefi/        UEFI types and calls                              exists
   lib/bootinfo/    what the loader hands the kernel                  exists
   lib/elf/         ELF64 reading and loading                         exists
   lib/paging/      x86_64 page tables                                exists
-  lib/x86/         serial port and CPU instructions                  exists
+  lib/x86/         serial port, CPU instructions, descriptor tables  exists
   lib/font/        TrueType parser and rasterizer                    exists
   lib/meri/        .meri reader that needs no heap                   exists
   lib/...          more no_std crates for kernel and userland        planned

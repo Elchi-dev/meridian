@@ -615,8 +615,17 @@ fn mapping_checks<W: Write>(report: &mut Report<'_, W>) {
             && expected::read_at(WINDOW + 4096).is_some(),
         "mapping a page that is mapped already should be refused, and a stack that cannot be whole leave nothing behind",
     );
+    // The page is read right before each unmap, so the processor surely
+    // remembers it and has to be told to forget it.
+    read_word(WINDOW);
     let unmapped = unmap_page(WINDOW);
     let after = expected::read_at(WINDOW);
+    let forgotten = (0..8).all(|_| {
+        map_page(WINDOW, frame, flags).is_ok()
+            && read_word(WINDOW) == 0x0bad_cafe
+            && unmap_page(WINDOW) == Ok(frame)
+            && missing(expected::read_at(WINDOW))
+    });
     let again = unmap_page(WINDOW);
     let freed = FRAMES
         .lock()
@@ -624,7 +633,11 @@ fn mapping_checks<W: Write>(report: &mut Report<'_, W>) {
         .is_some_and(|f| f.free(frame).is_ok());
     report.check(
         "kernel.paging.unmapped",
-        unmapped == Ok(frame) && missing(after) && again == Err(Error::NotMapped(WINDOW)) && freed,
+        unmapped == Ok(frame)
+            && missing(after)
+            && forgotten
+            && again == Err(Error::NotMapped(WINDOW))
+            && freed,
         "an unmapped page should fault at once, give its frame back, and not unmap twice",
     );
 }

@@ -49,6 +49,15 @@ func TestArgsForAMinimalMachineWithAWindow(t *testing.T) {
 	}
 }
 
+func TestAMachineThatRebootsKeepsRunningAfterAReset(t *testing.T) {
+	m := fullMachine()
+	m.Reboot = true
+	got := strings.Join(m.Args(), " ")
+	if strings.Contains(got, "-no-reboot") || !strings.Contains(got, "-nodefaults -vga std") {
+		t.Fatalf("got %s", got)
+	}
+}
+
 func TestCommasInPathsAreDoubled(t *testing.T) {
 	m := fullMachine()
 	m.Disk = "/tmp/a,b/disk.img"

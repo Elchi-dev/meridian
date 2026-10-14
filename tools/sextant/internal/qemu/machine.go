@@ -37,6 +37,9 @@ type Machine struct {
 	Monitor string
 	// GDB makes the machine wait for a debugger on TCP port 1234.
 	GDB bool
+	// Reboot lets a reset start the machine again. Without it QEMU ends
+	// when the machine resets, so a crash that resets cannot loop.
+	Reboot bool
 }
 
 // Exit codes of isa-debug-exit: QEMU exits with (value << 1) | 1, and test
@@ -82,9 +85,11 @@ func (m Machine) Args() []string {
 	for _, accel := range m.Accels {
 		args = append(args, "-accel", accel)
 	}
+	args = append(args, "-nodefaults")
+	if !m.Reboot {
+		args = append(args, "-no-reboot")
+	}
 	args = append(args,
-		"-nodefaults",
-		"-no-reboot",
 		"-vga", "std",
 		"-serial", "stdio",
 		"-drive", "if=pflash,format=raw,readonly=on,file="+escape(m.Firmware.Code),

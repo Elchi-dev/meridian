@@ -41,6 +41,37 @@ pub struct Card<'a> {
     pub name: &'a str,
 }
 
+/// The most other systems the boot screen offers, besides Meridian.
+pub const SYSTEM_LIMIT: usize = 8;
+
+/// The cards of the boot screen: Meridian's first, then one for each other
+/// system, up to [`SYSTEM_LIMIT`] of them.
+pub struct Cards<'a> {
+    cards: [Card<'a>; SYSTEM_LIMIT + 1],
+    len: usize,
+}
+
+impl<'a> Cards<'a> {
+    pub fn new(others: impl IntoIterator<Item = Card<'a>>) -> Cards<'a> {
+        let meridian = Card {
+            kind: Kind::Meridian,
+            name: "Meridian",
+        };
+        let mut cards = [meridian; SYSTEM_LIMIT + 1];
+        let mut len = 1;
+        for (slot, card) in cards[1..].iter_mut().zip(others) {
+            *slot = card;
+            len += 1;
+        }
+        Cards { cards, len }
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[Card<'a>] {
+        &self.cards[..self.len]
+    }
+}
+
 pub const CARD_WIDTH: usize = 200;
 pub const CARD_HEIGHT: usize = 230;
 pub const GAP: usize = 32;
@@ -845,5 +876,35 @@ mod tests {
         )
         .unwrap();
         assert!(ink(&mut q, 56..400, 800 - 36 - 16..800 - 36 + 4) > 100);
+    }
+
+    #[test]
+    fn meridian_comes_first_and_the_others_follow_up_to_the_limit() {
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        let other = |name| Card {
+            kind: Kind::Linux,
+            name,
+        };
+        let none = Cards::new([]);
+        assert_eq!(none.as_slice().len(), 1);
+        assert_eq!(none.as_slice()[0].kind, Kind::Meridian);
+        assert_eq!(none.as_slice()[0].name, "Meridian");
+        let two = Cards::new(names[..2].iter().map(|&n| other(n)));
+        let got: Vec<&str> = two.as_slice().iter().map(|c| c.name).collect();
+        assert_eq!(got, ["Meridian", "a", "b"]);
+        let full = Cards::new(names[..SYSTEM_LIMIT].iter().map(|&n| other(n)));
+        assert_eq!(
+            full.as_slice().len(),
+            SYSTEM_LIMIT + 1,
+            "room for every other system"
+        );
+        assert_eq!(full.as_slice()[SYSTEM_LIMIT].name, "h");
+        let more = Cards::new(names.iter().map(|&n| other(n)));
+        assert_eq!(
+            more.as_slice().len(),
+            SYSTEM_LIMIT + 1,
+            "the rest is left out"
+        );
+        assert_eq!(SYSTEM_LIMIT, 8);
     }
 }

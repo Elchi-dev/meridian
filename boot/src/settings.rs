@@ -16,6 +16,15 @@ use meri::{Code, Document, Error, Str};
 /// Where the settings are, from the root of the partition.
 pub const PATH: &str = "/meridian/boot.meri";
 
+/// The most bytes of the file the loader reads.
+pub const LIMIT: usize = 4096;
+
+/// Whether a file of `size` bytes is short enough to be read.
+#[must_use]
+pub fn fits(size: u64) -> bool {
+    size <= LIMIT as u64
+}
+
 /// The longest countdown, in seconds. A longer one is cut to this, so a
 /// slip of the finger cannot keep a machine waiting for days.
 pub const MAX_TIMEOUT: u32 = 600;
@@ -321,5 +330,14 @@ mod tests {
             .map(Result::unwrap)
             .collect();
         assert_eq!(name, "LastSystem\0");
+    }
+
+    #[test]
+    fn files_up_to_the_limit_are_read() {
+        assert!(fits(0));
+        assert!(fits(4096));
+        assert!(!fits(4097));
+        assert!(!fits(u64::MAX));
+        assert_eq!(LIMIT, 4096);
     }
 }

@@ -16,7 +16,7 @@ use core::mem::size_of;
 use boot::handover::{self, Layout, Problem};
 use boot::log::Log;
 use boot::menu::{Action, Key, Menu};
-use boot::screen::{Card, Kind};
+use boot::screen::{Card, Cards, Kind, SYSTEM_LIMIT};
 use boot::settings::{self, Settings, Start};
 use boot::{KERNEL_PATH, Out, banner, firmware, memory, systems};
 use bootinfo::{
@@ -63,9 +63,12 @@ fn run(system: System, serial: &mut Com1) -> Status {
         system.firmware_revision(),
         system.header().revision,
     );
-    let firmware_settings = firmware_settings_offered(&system);
+    let mut supported = [0u8; 8];
+    let firmware_settings = system
+        .variable(&OS_INDICATIONS_SUPPORTED, &GLOBAL_VARIABLE, &mut supported)
+        .is_ok_and(|(_, data)| offers_firmware_ui(data));
     let _ = describe(&system, firmware_settings, &mut log.tee(&mut out));
-    let mut settings_file = [0u8; SETTINGS_LIMIT];
+    let mut settings_file = [0u8; settings::LIMIT];
     let settings = read_settings(&system, &mut settings_file, &mut log.tee(&mut out));
 
     #[cfg(feature = "qemu-test")]
@@ -75,18 +78,12 @@ fn run(system: System, serial: &mut Com1) -> Status {
     }
 
     let mut others: [Option<Other>; SYSTEM_LIMIT] = Default::default();
-    let found = find_systems(&system, &mut others);
-    let mut cards = [Card {
-        kind: Kind::Meridian,
-        name: "Meridian",
-    }; SYSTEM_LIMIT + 1];
-    for (card, other) in cards[1..].iter_mut().zip(others.iter().flatten()) {
-        *card = Card {
-            kind: other.kind,
-            name: other.name.as_str(),
-        };
-    }
-    let cards = &cards[..=found];
+    find_systems(&system, &mut others);
+    let cards = Cards::new(others.iter().flatten().map(|o| Card {
+        kind: o.kind,
+        name: o.name.as_str(),
+    }));
+    let cards = cards.as_slice();
     log_found(&others, &mut log.tee(serial));
     let mut last_name = [0u8; 64];
     let last = remembered(&system, &mut last_name);
@@ -97,7 +94,7 @@ fn run(system: System, serial: &mut Com1) -> Status {
     };
     #[cfg(feature = "qemu-test")]
     {
-        qemu_test::systems_found(cards, firmware_settings, serial);
+        qemu_test::systems_found(cards, firmware_settings, &log, serial);
         qemu_test::firmware_settings_request(&system, serial);
         qemu_test::settings_read(&choices.settings, choices.default, serial);
         qemu_test::remember_last(&system, serial);
@@ -138,7 +135,7 @@ fn run(system: System, serial: &mut Com1) -> Status {
             other.name.as_str()
         );
         #[cfg(feature = "qemu-test")]
-        qemu_test::other_came_back(status, serial);
+        qemu_test::other_came_back(&system, status, serial);
         round += 1;
     }
 
@@ -148,9 +145,6 @@ fn run(system: System, serial: &mut Com1) -> Status {
     };
     give_up(&system, &problem, serial)
 }
-
-/// The most other systems the boot screen offers.
-const SYSTEM_LIMIT: usize = 8;
 
 /// The log's lines about the machine, read from the firmware.
 fn describe(system: &System, firmware_settings: bool, out: &mut impl Write) -> core::fmt::Result {
@@ -203,13 +197,8 @@ fn log_found(others: &[Option<Other>], out: &mut impl Write) {
 }
 
 /// Adds the systems among the firmware's boot options that have no card
-/// yet to `found`, after the first `count`, and returns how many there
-/// are then.
-fn find_firmware_systems(
-    system: &System,
-    found: &mut [Option<Other>; SYSTEM_LIMIT],
-    mut count: usize,
-) -> usize {
+/// yet to `found`.
+fn find_firmware_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) {
     let mut two = [0u8; 2];
     let current = system
         .variable(&BOOT_CURRENT, &GLOBAL_VARIABLE, &mut two)
@@ -223,10 +212,10 @@ fn find_firmware_systems(
         .ok()
         .and_then(|(_, data)| load_option::numbers(data))
     else {
-        return count;
+        return;
     };
     for number in order {
-        if count == SYSTEM_LIMIT {
+        if found.iter().all(Option::is_some) {
             break;
         }
         let mut data = [0u8; 2048];
@@ -237,12 +226,8 @@ fn find_firmware_systems(
         else {
             continue;
         };
-        let known = |key: &str| {
-            firmware::known_here(
-                key,
-                found[..count].iter().flatten().map(|o| o.path.as_str()),
-            )
-        };
+        let known =
+            |key: &str| firmware::known_here(key, found.iter().flatten().map(|o| o.path.as_str()));
         if firmware::verdict(&option, number, current, own, known) != firmware::Verdict::Offered {
             continue;
         }
@@ -266,7 +251,7 @@ fn find_firmware_systems(
             continue;
         };
         slot.copy_from_slice(option.path);
-        found[count] = Some(Other {
+        let other = Other {
             kind: firmware::kind(file.as_str()),
             name: firmware::name(&option, file.as_str()),
             path,
@@ -275,25 +260,37 @@ fn find_firmware_systems(
                 device,
                 len: option.path.len(),
             }),
-        });
-        count += 1;
+        };
+        put(found, other);
     }
-    count
 }
 
 /// Looks through the folders of \EFI for the loaders of other systems,
-/// then through the firmware's boot options, and returns how many it put
-/// into `found`.
-fn find_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) -> usize {
+/// then through the firmware's boot options, and puts what it finds into
+/// `found`.
+fn find_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) {
+    scan_partition(system, found);
+    find_firmware_systems(system, found);
+}
+
+/// Puts `other` into the first free place of `found`, if there is one.
+fn put(found: &mut [Option<Other>], other: Other) {
+    if let Some(slot) = found.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(other);
+    }
+}
+
+/// Looks through the folders of \EFI on the partition this loader came
+/// from for the loaders of other systems.
+fn scan_partition(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) {
     let Ok(root) = system.boot_volume() else {
-        return 0;
+        return;
     };
     let Ok(mut efi) = root.open("EFI") else {
-        return 0;
+        return;
     };
     let mut buf: EntryBuffer = [0; size_of::<EntryBuffer>()];
-    let mut count = 0;
-    while count < SYSTEM_LIMIT {
+    while found.iter().any(Option::is_none) {
         let Ok(Some(entry)) = efi.next_entry(&mut buf) else {
             break;
         };
@@ -314,16 +311,17 @@ fn find_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) -> u
             let _ = name.write_str(systems::display_name(folder, kind));
             let mut path = Text::new();
             let _ = write!(path, "/EFI/{folder}/{file}");
-            found[count] = Some(Other {
-                kind,
-                name,
-                path,
-                option: None,
-            });
-            count += 1;
+            put(
+                found,
+                Other {
+                    kind,
+                    name,
+                    path,
+                    option: None,
+                },
+            );
         }
     }
-    find_firmware_systems(system, found, count)
 }
 
 /// Starts another system's loader and returns its status if it comes
@@ -429,16 +427,13 @@ struct Choices<'a> {
     default: usize,
 }
 
-/// The most bytes of `boot.meri` the loader reads.
-const SETTINGS_LIMIT: usize = 4096;
-
 /// Reads `\meridian\boot.meri` into `buf` and says in the log what it
 /// found. Without the file, or with one that cannot be read, the defaults
 /// count.
 fn read_settings<'b>(system: &System, buf: &'b mut [u8], out: &mut impl Write) -> Settings<'b> {
     let read = system.boot_volume().and_then(|root| {
         let mut file = root.open(settings::PATH)?;
-        if file.info()?.size > buf.len() as u64 {
+        if !settings::fits(file.info()?.size) {
             return Err(Status::BUFFER_TOO_SMALL);
         }
         file.read_all(buf)
@@ -461,7 +456,8 @@ fn read_settings<'b>(system: &System, buf: &'b mut [u8], out: &mut impl Write) -
         Err(Status::BUFFER_TOO_SMALL) => {
             let _ = writeln!(
                 out,
-                "Settings: boot.meri is longer than {SETTINGS_LIMIT} bytes, so the defaults count"
+                "Settings: boot.meri is longer than {} bytes, so the defaults count",
+                settings::LIMIT
             );
             Settings::default()
         }
@@ -593,15 +589,6 @@ fn choose(
             menu.tick(1)
         };
     }
-}
-
-/// Whether the firmware can be asked to open its settings at the next
-/// start.
-fn firmware_settings_offered(system: &System) -> bool {
-    let mut buf = [0u8; 8];
-    system
-        .variable(&OS_INDICATIONS_SUPPORTED, &GLOBAL_VARIABLE, &mut buf)
-        .is_ok_and(|(_, data)| offers_firmware_ui(data))
 }
 
 /// Asks the firmware to open its settings at the next start and restarts

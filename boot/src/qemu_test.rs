@@ -166,6 +166,7 @@ pub fn chain_options() -> &'static [u16] {
 pub fn systems_found(
     cards: &[boot::screen::Card<'_>],
     firmware_settings: bool,
+    log: &boot::log::Log,
     serial: &mut impl Write,
 ) {
     use boot::screen::Kind;
@@ -189,6 +190,13 @@ pub fn systems_found(
             .get(2)
             .is_some_and(|c| c.kind == Kind::Other && c.name == FIRMWARE_EXAMPLE),
         "the boot option the test image added should be the third card",
+    );
+    let said = |line: &str| log.lines().any(|l| l == line);
+    report.check(
+        "boot.log.found",
+        said("Found example: /EFI/example/grubx64.efi")
+            && said("Found Firmware example in the firmware's boot options: Boot0100, \\EFI\\other\\tool.efi"),
+        "the log should name each system found, and where",
     );
     report.check(
         "boot.firmware_settings.offered",
@@ -333,7 +341,7 @@ pub fn remember_last(system: &System, serial: &mut impl Write) {
 }
 
 /// The example system was started from the boot screen and came back.
-pub fn other_came_back(status: uefi::Status, serial: &mut impl Write) {
+pub fn other_came_back(system: &System, status: uefi::Status, serial: &mut impl Write) {
     use uefi::qemu_test::Report;
 
     let mut report = Serial {
@@ -344,6 +352,12 @@ pub fn other_came_back(status: uefi::Status, serial: &mut impl Write) {
         "boot.systems.started",
         status == CHAINED,
         "choosing the example system should start it, and it should come back with ABORTED",
+    );
+    let mut buf = [0u8; 64];
+    report.check(
+        "boot.settings.last.untouched",
+        crate::remembered(system, &mut buf).is_none(),
+        "the test image's settings name a system, so nothing should be remembered",
     );
     stop_on_failure(&mut report);
 }

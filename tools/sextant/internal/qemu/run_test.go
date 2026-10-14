@@ -277,8 +277,9 @@ func changedArea(t *testing.T, a, b string) pictures.Rectangle {
 }
 
 // F on the boot screen asks the firmware to open its settings at the next
-// start and restarts. OVMF answers with its boot manager menu, which
-// offers its setup.
+// start and restarts. OVMF then starts an application from its own
+// firmware volume instead of the disk: Arch's build its boot manager menu,
+// which offers the setup, and Ubuntu's the setup itself.
 func TestFOpensTheFirmwareSettings(t *testing.T) {
 	r := newRig(t)
 	m := r.machine(diskWithLoader(t, false))
@@ -288,7 +289,7 @@ func TestFOpensTheFirmwareSettings(t *testing.T) {
 		Timeout: 2 * time.Minute,
 		Script: []Step{
 			{Wait: "Firmware settings: F opens them", Keys: []string{"f"}},
-			{Wait: "EFI Firmware Setup"},
+			{Wait: "\" from Fv("},
 		},
 		StopAfterScript: true,
 	}))

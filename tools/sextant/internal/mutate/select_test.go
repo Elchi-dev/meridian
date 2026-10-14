@@ -118,6 +118,37 @@ func TestGather(t *testing.T) {
 	}
 }
 
+func TestCratesWithAQEMUTestFeatureHaveMachineChecks(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"m/Cargo.toml": "[package]\nname = \"m\"\n\n[features]\n# Checks against real firmware.\nqemu-test = [\"x86/qemu-test\"]\n",
+		"m/src/lib.rs": "pub fn f() -> bool { true }\n",
+		"m/src/two.rs": "pub fn g() -> bool { true }\n",
+		"p/Cargo.toml": "[package]\nname = \"p\"\ndescription = \"no qemu-test = [] here\"\n",
+		"p/src/lib.rs": "pub fn f() -> bool { true }\n",
+	})
+	sources := []stats.Source{
+		{Path: "m/src/lib.rs", Lang: srclex.Rust, Component: "m", Kind: "rust"},
+		{Path: "m/src/two.rs", Lang: srclex.Rust, Component: "m", Kind: "rust"},
+		{Path: "p/src/lib.rs", Lang: srclex.Rust, Component: "p", Kind: "rust"},
+	}
+	_, targets, err := Gather(root, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !targets["m/src/lib.rs"].Machine || !targets["m/src/two.rs"].Machine {
+		t.Errorf("m has the feature: %v", targets)
+	}
+	if targets["p/src/lib.rs"].Machine {
+		t.Error("p only mentions it inside a string")
+	}
+	if err := os.Remove(filepath.Join(root, "p", "Cargo.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Gather(root, sources); err == nil {
+		t.Fatal("a crate without its manifest should be reported")
+	}
+}
+
 func TestGatherReportsBrokenAndMissingFiles(t *testing.T) {
 	root := writeTree(t, map[string]string{"x/a.go": "package m\n\nfunc (\n", "k/src/lib.rs": "\"open"})
 	_, _, err := Gather(root, []stats.Source{{Path: "x/a.go", Lang: srclex.Go}})

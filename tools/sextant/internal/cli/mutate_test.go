@@ -86,6 +86,25 @@ func TestMutateRunFindsTheSurvivor(t *testing.T) {
 	}
 }
 
+// A crate with QEMU checks: without them, a boundary its host tests miss
+// survives, and is reported as one.
+func TestMutateCanLeaveTheMachineChecksOut(t *testing.T) {
+	needTool(t, "cargo")
+	root := checkout(t, map[string]string{
+		"sextant.local.meri": "mutate {\n    scratch = \"../scratch\"\n}\n",
+		"k/Cargo.toml":       "[package]\nname = \"k\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[features]\nqemu-test = []\n",
+		"k/src/lib.rs":       "pub fn less(a: u8, b: u8) -> bool {\n    a < b\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn less() {\n        assert!(super::less(1, 2) && !super::less(3, 2));\n    }\n}\n",
+	})
+	r := runIn(root, "mutate", "--machine=false", "--jobs", "1")
+	if r.code != ExitFailure || !strings.Contains(r.stdout, "k/src/lib.rs:2: < to <=\n") || !strings.Contains(r.stdout, "  survived   1\n") {
+		t.Fatalf("exit %d\nstdout %s\nstderr %s", r.code, r.stdout, r.stderr)
+	}
+	bad := runIn(root, "mutate", "--machine=sometimes")
+	if bad.code != ExitUsage || !strings.Contains(bad.stderr, "invalid boolean value") {
+		t.Fatalf("exit %d, stderr %q", bad.code, bad.stderr)
+	}
+}
+
 func TestMutateRunPassesWhenEverySurvivorIsAllowed(t *testing.T) {
 	repo := mutateRepo()
 	repo["mutants.meri"] = lessAllow

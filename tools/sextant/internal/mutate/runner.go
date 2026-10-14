@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,9 @@ type Result struct {
 type Target struct {
 	Component string
 	Kind      string
+	// Machine says the component has checks that run in a machine, the
+	// QEMU test image, for code the host tests cannot reach.
+	Machine bool
 }
 
 // Runner applies mutants in private copies of a repository and runs the
@@ -69,6 +73,22 @@ type Runner struct {
 	// Done, when set, is called after every mutant from the worker that
 	// ran it, so it must be safe for concurrent use.
 	Done func(Result)
+	// Machine is the command that runs the machine checks in a worker's
+	// copy, from its root, for a Rust mutant whose component has them and
+	// whose host tests passed. Empty leaves them out. Each copy gets a
+	// sextant.local.meri that builds into the worker's own folder.
+	Machine []string
+}
+
+// machineKey is the timeout key of the machine checks, which are the same
+// for every component.
+const machineKey = "machine"
+
+// localSettings is the sextant.local.meri of a worker's copy: its builds go
+// to the worker's own folder. Forward slashes, since a backslash starts an
+// escape in a .meri string.
+func localSettings(target string) []byte {
+	return []byte("build {\n    dir = \"" + filepath.ToSlash(target) + "\"\n}\n")
 }
 
 // skipCopy are the folders a worker copy leaves out: history and build
@@ -111,19 +131,9 @@ func (r *Runner) Run(ctx context.Context, mutants []Mutant, targets map[string]T
 	}
 	workers := make([]*worker, jobs)
 	for i := range workers {
-		w := &worker{
-			dir:     filepath.Join(scratch, fmt.Sprintf("tree-%d", i)),
-			target:  filepath.Join(scratch, fmt.Sprintf("target-%d", i)),
-			tmp:     filepath.Join(scratch, fmt.Sprintf("tmp-%d", i)),
-			maxFile: maxFile,
-		}
-		if err := copyTree(r.Root, w.dir); err != nil {
+		if workers[i], err = r.newWorker(scratch, i, maxFile); err != nil {
 			return nil, err
 		}
-		if err := os.MkdirAll(w.tmp, 0o755); err != nil {
-			return nil, err
-		}
-		workers[i] = w
 	}
 
 	timeouts := map[string]time.Duration{}
@@ -138,6 +148,17 @@ func (r *Runner) Run(ctx context.Context, mutants []Mutant, targets map[string]T
 		}
 		timeouts[key] = r.timeoutFor(time.Since(started))
 	}
+	if len(r.Machine) > 0 && slices.ContainsFunc(mutants, func(m Mutant) bool { return targets[m.Path].Machine }) {
+		started := time.Now()
+		run := workers[0].run(ctx, workers[0].dir, r.Machine, 0)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if run.err != nil {
+			return nil, fmt.Errorf("the machine checks fail before any mutation, fix them first:\n%s", tail(run.output, 20))
+		}
+		timeouts[machineKey] = r.timeoutFor(time.Since(started))
+	}
 
 	results := make([]Result, len(mutants))
 	next := make(chan int)
@@ -151,7 +172,7 @@ func (r *Runner) Run(ctx context.Context, mutants []Mutant, targets map[string]T
 			for i := range next {
 				m := mutants[i]
 				t := targets[m.Path]
-				outcome, err := w.try(ctx, m, originals[m.Path], t, timeouts[testKey(m.Path, t)])
+				outcome, err := w.try(ctx, m, originals[m.Path], t, timeouts[testKey(m.Path, t)], r.Machine, timeouts[machineKey])
 				if err != nil {
 					mu.Lock()
 					firstErr = firstOf(firstErr, err)
@@ -179,6 +200,27 @@ dispatch:
 		return nil, firstErr
 	}
 	return results, ctx.Err()
+}
+
+// newWorker sets up worker i in scratch: its copy of the repository, its
+// build folder and its temporary folder. With machine checks, the copy's
+// settings send sextant's builds to the worker's build folder as well.
+func (r *Runner) newWorker(scratch string, i int, maxFile int64) (*worker, error) {
+	w := &worker{
+		dir:     filepath.Join(scratch, fmt.Sprintf("tree-%d", i)),
+		target:  filepath.Join(scratch, fmt.Sprintf("target-%d", i)),
+		tmp:     filepath.Join(scratch, fmt.Sprintf("tmp-%d", i)),
+		maxFile: maxFile,
+	}
+	if err := copyTree(r.Root, w.dir); err != nil {
+		return nil, err
+	}
+	if len(r.Machine) > 0 {
+		if err := os.WriteFile(filepath.Join(w.dir, "sextant.local.meri"), localSettings(w.target), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return w, os.MkdirAll(w.tmp, 0o755)
 }
 
 // timeoutFor is the limit for one mutant's test run, given how long the
@@ -214,19 +256,25 @@ type testRun struct {
 // original back. Writing, rather than moving a saved copy into place, gives
 // the file a fresh modification time: Cargo decides what to rebuild by
 // those times and would otherwise keep testing the mutant's binary.
-func (w *worker) try(ctx context.Context, m Mutant, original []byte, t Target, timeout time.Duration) (Outcome, error) {
+//
+// A mutant that survives the host tests of a component with machine checks
+// meets those too, when the runner has a command for them.
+func (w *worker) try(ctx context.Context, m Mutant, original []byte, t Target, timeout time.Duration, machine []string, machineTimeout time.Duration) (Outcome, error) {
 	file := filepath.Join(w.dir, filepath.FromSlash(m.Path))
 	if err := os.WriteFile(file, m.Apply(original), 0o644); err != nil {
 		return 0, err
 	}
-	run := w.test(ctx, m.Path, t, timeout)
+	outcome := classify(t.Kind, w.test(ctx, m.Path, t, timeout))
+	if outcome == Survived && t.Machine && len(machine) > 0 {
+		outcome = classify("machine", w.run(ctx, w.dir, machine, machineTimeout))
+	}
 	if err := os.WriteFile(file, original, 0o644); err != nil {
 		return 0, err
 	}
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
-	return classify(t.Kind, run), nil
+	return outcome, nil
 }
 
 func classify(kind string, run testRun) Outcome {
@@ -264,11 +312,6 @@ func lowPriority(name string, args []string) (string, []string) {
 
 // test runs the tests that cover file. A zero timeout means none.
 func (w *worker) test(ctx context.Context, file string, t Target, timeout time.Duration) testRun {
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
 	var name string
 	var args []string
 	dir := filepath.Join(w.dir, filepath.FromSlash(t.Component))
@@ -287,7 +330,18 @@ func (w *worker) test(ctx context.Context, file string, t Target, timeout time.D
 	default:
 		return testRun{err: fmt.Errorf("%s: no tests for components of kind %q", t.Component, t.Kind)}
 	}
-	name, args = lowPriority(name, args)
+	return w.run(ctx, dir, append([]string{name}, args...), timeout)
+}
+
+// run runs command in dir with the worker's build folder and a temporary
+// folder of its own. A zero timeout means none.
+func (w *worker) run(ctx context.Context, dir string, command []string, timeout time.Duration) testRun {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	name, args := lowPriority(command[0], command[1:])
 	name, args = limitFiles(name, args, w.maxFile)
 
 	// Every run gets a temporary folder of its own, removed right after.

@@ -29,7 +29,7 @@ sextant:
 - [x] Settings from `sextant.meri` and `sextant.local.meri`; `stats` takes `min-ratio` from them
 - [x] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types
 - [x] `mutate` for Rust and Go, each mutant in a private copy of the repository
-- [ ] `mutate` for code only QEMU tests reach: a QEMU test command per crate
+- [x] `mutate` for code only QEMU tests reach: crates with a `qemu-test` feature boot the test image for mutants their host tests miss
 - [ ] `doctor`, with installing after one "y"
 - [x] `build`
 - [x] `image` (GPT disk image and ISO), stamped with the commit

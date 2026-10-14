@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/stats"
 )
 
@@ -290,6 +292,145 @@ func TestRunnerOnARustCrate(t *testing.T) {
 	}
 	if _, err := os.Stat(shared); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("workers must build in their own target folders, not in CARGO_TARGET_DIR from the environment: %v", err)
+	}
+}
+
+// A crate whose host tests miss the boundary that its feature-gated checks
+// catch, standing in for checks that run in the QEMU test image.
+const machineLib = `pub fn less(a: u8, b: u8) -> bool {
+    a < b
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn less() {
+        assert!(super::less(1, 2));
+    }
+}
+
+#[cfg(all(test, feature = "qemu-test"))]
+mod machine {
+    #[test]
+    fn equal_is_not_less() {
+        assert!(!super::less(2, 2));
+    }
+}
+`
+
+func machineCrate(t *testing.T) (string, []Mutant) {
+	t.Helper()
+	if _, err := exec.LookPath("cargo"); err != nil {
+		if os.Getenv("SEXTANT_REQUIRE_TOOLS") == "1" {
+			t.Fatal("cargo is not installed")
+		}
+		t.Skip("cargo is not installed")
+	}
+	root := writeTree(t, map[string]string{
+		"k/Cargo.toml": "[package]\nname = \"k\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[features]\nqemu-test = []\n",
+		"k/src/lib.rs": machineLib,
+	})
+	srcs, err := stats.Sources(os.DirFS(root))
+	if err != nil || len(srcs) != 1 {
+		t.Fatalf("%v %v", srcs, err)
+	}
+	ms, err := RustMutants("k/src/lib.rs", []byte(machineLib), srcs[0].IsTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var picked []Mutant
+	for _, m := range ms {
+		if strings.Contains(m.String(), "< to <=") || strings.Contains(m.String(), "body to { false }") {
+			picked = append(picked, m)
+		}
+	}
+	if len(picked) != 2 {
+		t.Fatalf("mutants: %v", ms)
+	}
+	return root, picked
+}
+
+// machineChecks run only the feature-gated checks, which pass for a less
+// that always says false: only the host tests catch that one.
+var machineChecks = []string{"cargo", "test", "-q", "--manifest-path", "k/Cargo.toml", "--features", "qemu-test", "machine::"}
+
+func TestMachineChecksCatchWhatTheHostTestsMiss(t *testing.T) {
+	root, ms := machineCrate(t)
+	with := map[string]Target{"k/src/lib.rs": {Component: "k", Kind: "rust", Machine: true}}
+	run := func(r *Runner, targets map[string]Target) map[string]Outcome {
+		t.Helper()
+		results, err := r.Run(context.Background(), ms, targets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return outcomes(results)
+	}
+	got := run(&Runner{Root: root, Jobs: 1, Machine: machineChecks}, with)
+	if got["2 < to <="] != Killed {
+		t.Errorf("with the machine checks: %v", got)
+	}
+	if got["1 body to { false }"] != Killed {
+		t.Errorf("a mutant the host tests killed stays killed, whatever the machine checks say: %v", got)
+	}
+	if got := run(&Runner{Root: root, Jobs: 1}, with); got["2 < to <="] != Survived {
+		t.Errorf("without a command for them: %v", got)
+	}
+	without := map[string]Target{"k/src/lib.rs": {Component: "k", Kind: "rust"}}
+	if got := run(&Runner{Root: root, Jobs: 1, Machine: machineChecks}, without); got["2 < to <="] != Survived {
+		t.Errorf("for a component without machine checks: %v", got)
+	}
+}
+
+func TestBrokenMachineChecksStopTheRun(t *testing.T) {
+	root, ms := machineCrate(t)
+	with := map[string]Target{"k/src/lib.rs": {Component: "k", Kind: "rust", Machine: true}}
+	broken := append(slices.Clone(machineChecks[:len(machineChecks)-2]), "--features", "no-such-feature")
+	_, err := (&Runner{Root: root, Jobs: 1, Machine: broken}).Run(context.Background(), ms, with)
+	if err == nil || !strings.Contains(err.Error(), "the machine checks fail before any mutation") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestWorkersGetTheirOwnSettingsOnlyForMachineChecks(t *testing.T) {
+	root := writeTree(t, map[string]string{"sextant.local.meri": "# mine\n", "a.go": "package a\n"})
+	scratch := t.TempDir()
+	w, err := (&Runner{Root: root, Machine: []string{"true"}}).newWorker(scratch, 3, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.target != filepath.Join(scratch, "target-3") || w.dir != filepath.Join(scratch, "tree-3") {
+		t.Fatalf("worker %+v", w)
+	}
+	got, err := os.ReadFile(filepath.Join(w.dir, "sextant.local.meri"))
+	if err != nil || string(got) != string(localSettings(w.target)) {
+		t.Fatalf("settings %q, %v", got, err)
+	}
+	if info, err := os.Stat(w.tmp); err != nil || !info.IsDir() {
+		t.Fatalf("temporary folder: %v", err)
+	}
+	plain, err := (&Runner{Root: root}).newWorker(scratch, 4, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(plain.dir, "sextant.local.meri")); string(got) != "# mine\n" {
+		t.Fatalf("without machine checks the copy keeps the settings it had: %q", got)
+	}
+}
+
+// Each copy builds into its worker's own folder when it runs the machine
+// checks, as sextant reads its settings.
+func TestWorkerCopiesBuildIntoTheirOwnFolder(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "target-0")
+	root := writeTree(t, map[string]string{
+		"sextant.meri":       "build {\n    dir = \"shared\"\n}\n",
+		"sextant.local.meri": string(localSettings(target)),
+	})
+	c, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BuildDir != target {
+		t.Fatalf("build dir %q, want %q", c.BuildDir, target)
 	}
 }
 

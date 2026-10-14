@@ -25,6 +25,7 @@ func runMutate(env Env, args []string) error {
 	since := flags.String("since", "", "only files changed since this git ref")
 	jobs := flags.Int("jobs", 2, "mutants tested at the same time")
 	list := flags.Bool("list", false, "print the mutants without running them")
+	machine := flags.Bool("machine", true, "boot the QEMU test image for Rust mutants the host tests miss in crates with QEMU checks")
 	paths, err := parseInterleaved(flags, args)
 	if err != nil {
 		return usageErrorf("%v", err)
@@ -91,7 +92,15 @@ func runMutate(env Env, args []string) error {
 	defer stop()
 	var mu sync.Mutex
 	done := 0
-	runner := &mutate.Runner{Root: root, Jobs: *jobs, Scratch: scratch, Done: func(r mutate.Result) {
+	var machineChecks []string
+	if *machine {
+		self, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("find sextant itself to run the QEMU checks: %w", err)
+		}
+		machineChecks = []string{self, "test", "--qemu"}
+	}
+	runner := &mutate.Runner{Root: root, Jobs: *jobs, Scratch: scratch, Machine: machineChecks, Done: func(r mutate.Result) {
 		mu.Lock()
 		defer mu.Unlock()
 		done++

@@ -141,6 +141,13 @@ and runs the tests of that component after each change:
 - `true` to `false`
 - a function body replaced by a default result
 
+**Code only the QEMU test image reaches.** A crate with a `qemu-test`
+feature has checks that run against real firmware. When a mutant in such a
+crate survives its host tests, `sextant mutate` boots the QEMU test image in
+the worker's own copy of the repository, built into the worker's own folder,
+and the mutant is killed when a check fails there. `--machine=false` leaves
+this out for a quick run.
+
 **What happens to a mutant:**
 
 - **Killed:** the tests failed, which is what should happen.
@@ -154,4 +161,6 @@ example a bounds check whose last iteration ends the loop either way. Every
 other survivor gets a better test, or simpler code that has no equivalent
 mutant.
 
-CI mutates the files changed by each push, and everything once a night.
+CI is meant to mutate the files changed by each push, and everything once a
+night; until that job exists, mutation runs by hand, the long ones on the
+build machine.

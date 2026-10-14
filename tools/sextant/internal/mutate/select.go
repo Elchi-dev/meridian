@@ -5,6 +5,7 @@ import (
 	"go/build"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/srclex"
@@ -49,6 +50,7 @@ func Pick(sources []stats.Source, paths []string, changed map[string]bool) ([]st
 func Gather(root string, sources []stats.Source) ([]Mutant, map[string]Target, error) {
 	var mutants []Mutant
 	targets := map[string]Target{}
+	machine := map[string]bool{}
 	for _, s := range sources {
 		file := filepath.Join(root, filepath.FromSlash(s.Path))
 		if s.Lang == srclex.Go {
@@ -74,7 +76,29 @@ func Gather(root string, sources []stats.Source) ([]Mutant, map[string]Target, e
 			return nil, nil, fmt.Errorf("%s: %w", s.Path, err)
 		}
 		mutants = append(mutants, found...)
-		targets[s.Path] = Target{Component: s.Component, Kind: s.Kind}
+		has, seen := machine[s.Component]
+		if !seen && s.Kind == "rust" {
+			has, err = hasMachineChecks(filepath.Join(root, filepath.FromSlash(s.Component), "Cargo.toml"))
+			if err != nil {
+				return nil, nil, err
+			}
+			machine[s.Component] = has
+		}
+		targets[s.Path] = Target{Component: s.Component, Kind: s.Kind, Machine: has}
 	}
 	return mutants, targets, nil
+}
+
+// qemuFeature is the line that gives a crate the qemu-test feature, under
+// which its checks against real firmware are built.
+var qemuFeature = regexp.MustCompile(`(?m)^qemu-test\s*=`)
+
+// hasMachineChecks says whether the crate of manifest has checks that run
+// in the QEMU test image.
+func hasMachineChecks(manifest string) (bool, error) {
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		return false, err
+	}
+	return qemuFeature.Match(data), nil
 }

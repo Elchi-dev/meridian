@@ -16,3 +16,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0008](0008-unsafe-in-raw-modules.md) | Keep all unsafe code in raw modules | accepted |
 | [0009](0009-testing-rules.md) | Test every component with real code, and prove the tests can fail | accepted |
 | [0010](0010-sextant-writes-disk-images.md) | Write disk images with sextant itself | accepted |
+| [0011](0011-ci-checkout-only.md) | Run CI on GitHub Actions with actions/checkout as the only action | accepted |

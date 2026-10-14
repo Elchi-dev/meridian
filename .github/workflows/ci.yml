@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: auto
+  SEXTANT_REQUIRE_TOOLS: "1"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  linux:
+    name: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install QEMU, OVMF and the image checking tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq qemu-system-x86 ovmf dosfstools mtools xorriso fdisk
+
+      - name: Let the runner user open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Project rules
+        working-directory: tools/sextant
+        run: |
+          go run ./cmd/sextant lint
+          go run ./cmd/sextant stats --check
+
+      - name: Formatting
+        run: |
+          test -z "$(gofmt -l tools/sextant)" || { gofmt -l tools/sextant; exit 1; }
+          cargo fmt --all -- --check
+
+      - name: Clippy
+        run: |
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p boot --target x86_64-unknown-uefi -- -D warnings
+          cargo clippy --locked -p boot --target x86_64-unknown-uefi --features qemu-test -- -D warnings
+
+      - name: go vet and Go tests with the race detector
+        working-directory: tools/sextant
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: Rust tests
+        run: cargo test --locked --workspace
+
+      - name: The QEMU test image on real firmware
+        working-directory: tools/sextant
+        run: go run ./cmd/sextant test --qemu
+
+  sextant:
+    name: sextant on ${{ matrix.os }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      SEXTANT_REQUIRE_TOOLS: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build and test sextant
+        working-directory: tools/sextant
+        shell: bash
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+          go build -o "$RUNNER_TEMP/sextant" ./cmd/sextant
+          "$RUNNER_TEMP/sextant" version

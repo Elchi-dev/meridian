@@ -156,7 +156,10 @@ func versionLine(version, revision string) string {
 // "+dirty" when the tree had uncommitted changes. Go records both for builds
 // inside a repository.
 func readRevision() string {
-	info, ok := debug.ReadBuildInfo()
+	return revisionOf(debug.ReadBuildInfo())
+}
+
+func revisionOf(info *debug.BuildInfo, ok bool) string {
 	if !ok {
 		return ""
 	}

@@ -26,7 +26,9 @@ func repo(t *testing.T, main string, local ...string) string {
 }
 
 // rooted turns a path from the root of a Unix file system into one that
-// is absolute where the test runs: Windows needs a drive letter.
+// is absolute where the test runs: Windows needs a drive letter. The
+// slashes stay, since a backslash starts an escape in a .meri string;
+// settings come back with the system's own separators.
 func rooted(unix string) string {
 	if runtime.GOOS == "windows" {
 		return "C:" + unix
@@ -91,7 +93,7 @@ qemu {
     stall = 45s
 }
 `)
-	if c.MinRatio != 2.5 || c.BuildDir != rooted("/tmp/meridian-build") || c.MutateScratch != rooted("/var/cache/mutate") {
+	if c.MinRatio != 2.5 || c.BuildDir != filepath.Clean(rooted("/tmp/meridian-build")) || c.MutateScratch != filepath.Clean(rooted("/var/cache/mutate")) {
 		t.Errorf("stats, build or mutate: %+v", c)
 	}
 	want := QEMU{Memory: 2 << 30, CPUs: 12, Accel: "tcg", Code: "/fw/code.fd", Vars: "/fw/vars.fd", Timeout: 90 * time.Second, Stall: 45 * time.Second}
@@ -123,7 +125,7 @@ func TestAbsoluteFoldersAreCleaned(t *testing.T) {
 
 func TestLocalFileWins(t *testing.T) {
 	c := load(t, "qemu {\n    cpus = 2\n    memory = 1GiB\n}\nbuild { dir = \"a\" }\n", "qemu { cpus = 8 }\nbuild { dir = \""+rooted("/fast/tmpfs")+"\" }\n")
-	if c.QEMU.CPUs != 8 || c.QEMU.Memory != 1<<30 || c.BuildDir != rooted("/fast/tmpfs") {
+	if c.QEMU.CPUs != 8 || c.QEMU.Memory != 1<<30 || c.BuildDir != filepath.Clean(rooted("/fast/tmpfs")) {
 		t.Fatalf("got %+v", c)
 	}
 }

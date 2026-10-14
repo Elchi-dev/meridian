@@ -16,7 +16,8 @@ Repository:
 - [ ] CI workflow in `.github/workflows/ci.yml`: lint, host tests, QEMU tests with KVM, `stats --check`, mutation of changed files; sextant built and tested on macOS and Windows too
 - [x] Decision record 0011 for `actions/checkout`, the only outside action, pinned to a commit hash
 - [x] Ruleset on `main`: CI must be green, no force pushes
-- [ ] `mutants.meri` with the known equivalent mutants
+- [x] `mutants.meri` with the known equivalent mutants
+- [ ] Mutation of changed files in CI (`sextant mutate --since origin/main`)
 
 sextant:
 
@@ -27,7 +28,8 @@ sextant:
 - [x] GPT, FAT32 and ISO writers, reproducible
 - [x] Settings from `sextant.meri` and `sextant.local.meri`; `stats` takes `min-ratio` from them
 - [ ] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types
-- [ ] `mutate` for Rust and Go
+- [x] `mutate` for Rust and Go, each mutant in a private copy of the repository
+- [ ] `mutate` for code only QEMU tests reach: a QEMU test command per crate
 - [ ] `doctor`, with installing after one "y"
 - [x] `build`
 - [x] `image` (GPT disk image and ISO), stamped with the commit

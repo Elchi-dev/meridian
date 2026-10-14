@@ -42,6 +42,8 @@ at 0.x until the native API is stable.
   - Loading the kernel: the ELF file is checked and relocated (`lib/elf`), the kernel gets its own page tables with a direct map of memory (`lib/paging`), and the handover (`lib/bootinfo`) carries the memory map, the framebuffer and the ACPI root pointer.
   - A boot screen with a card for each system, a countdown, and the arrow keys and Enter.
   - Other systems on the boot partition, such as Windows Boot Manager, GRUB and systemd-boot, are found and started from their cards.
+  - The firmware's own boot options are offered as cards too, for systems on other disks. An option the loader cannot load from its path is left to the firmware through `BootNext` and a restart.
+  - An `.sbat` section, which current shims require.
 - **The kernel**
   - Its own GDT, task state and IDT. Every processor exception is shown in plain words, and double faults run on a stack of their own, so running out of stack still ends on the panic screen.
   - A status screen with the processor, its cores, how long the machine has been up, kept current, and the memory map as a bar.

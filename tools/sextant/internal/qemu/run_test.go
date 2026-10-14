@@ -164,18 +164,9 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 		"\nFirmware settings: F opens them\n",
 		"\nSettings: timeout 3 s, default example, verbose\n",
 		"\nFound example: /EFI/example/grubx64.efi\n",
-		"\nexample came back with " + "the operation was aborted",
-	} {
-		if !strings.Contains(res.Serial, line) {
-			t.Errorf("the loader's log should say %q:\n%s", line, res.Serial)
-		}
-	}
-	for _, line := range []string{
-		"\nScreen: 1280 x 800\n",
-		"\nSecure Boot: off, this firmware does not have it\n",
-		"\nFirmware settings: F opens them\n",
-		"\nFound example: /EFI/example/grubx64.efi\n",
-		"\nexample came back with ",
+		"\nFound Firmware example in the firmware's boot options: Boot0100, \\EFI\\other\\tool.efi\n",
+		"\nexample came back with the operation was aborted (EFI_ABORTED)\n",
+		"\nFirmware example came back with the operation was aborted (EFI_ABORTED)\n",
 	} {
 		if !strings.Contains(res.Serial, line) {
 			t.Errorf("the loader's log should say %q:\n%s", line, res.Serial)
@@ -657,19 +648,27 @@ func checkBootScreen(t *testing.T, path string) {
 	t.Helper()
 	w, h, rgb := openScreen(t, path)
 	night, tangerine := [3]uint32{0x15, 0x17, 0x1a}, [3]uint32{0xff, 0x96, 0x33}
+	teal := [3]uint32{0x1d, 0xb9, 0xb6}
 	for _, at := range [][2]int{{0, 0}, {w - 1, h - 1}} {
 		if got := rgb(at[0], at[1]); got != night {
 			t.Errorf("pixel %v is %x, want the dark background", at, got)
 		}
 	}
-	// Two cards of 200 by 230, 32 apart, in the middle; each tile starts
+	// Three cards of 200 by 230, 32 apart, in the middle; each tile starts
 	// 36 below its card's top, 52 in from its side.
-	left, tileY := (w-432)/2, (h-230)/2+36+2
-	if got := rgb(left+52+2, tileY); got != tangerine {
-		t.Errorf("Meridian's tile corner is %x, want tangerine", got)
+	left, tileY := (w-664)/2, (h-230)/2+36+2
+	tiles := []struct {
+		name  string
+		color [3]uint32
+	}{
+		{"Meridian's", tangerine},
+		{"the example's", [3]uint32{0x33, 0xc6, 0x70}},
+		{"the firmware example's", teal},
 	}
-	if got := rgb(left+232+52+2, tileY); got != [3]uint32{0x33, 0xc6, 0x70} {
-		t.Errorf("the example's tile corner is %x, want grass green", got)
+	for i, tile := range tiles {
+		if got := rgb(left+i*232+52+2, tileY); got != tile.color {
+			t.Errorf("%s tile corner is %x, want %x", tile.name, got, tile.color)
+		}
 	}
 }
 

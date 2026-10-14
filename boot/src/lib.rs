@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod firmware;
 pub mod handover;
 pub mod log;
 pub mod memory;

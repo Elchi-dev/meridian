@@ -76,11 +76,17 @@ func BootFiles(loader, kernel []byte) map[string][]byte {
 // the boot screen to find as another system and start.
 const ExamplePath = "EFI/example/grubx64.efi"
 
+// FirmwareExamplePath is where test images put a third copy of the loader,
+// under a name the partition scan does not know, for a boot option the
+// test image adds to the firmware's list.
+const FirmwareExamplePath = "EFI/other/tool.efi"
+
 // TestFiles are the files of a test image: the boot files with settings
-// of their own, and the loader once more as an example of another system.
+// of their own, and the loader twice more as examples of other systems.
 func TestFiles(loader, kernel []byte) map[string][]byte {
 	files := BootFiles(loader, kernel)
 	files[ExamplePath] = loader
+	files[FirmwareExamplePath] = loader
 	files[SettingsPath] = []byte(testSettings)
 	return files
 }

@@ -77,9 +77,23 @@ carry a second copy of the loader as `\EFI\example\grubx64.efi`, which
 the test image finds, starts from the boot screen with Right and Enter,
 and sees come back.
 
+The firmware's own list counts too. After the scan, the loader reads
+`BootOrder` and each `Boot####` and offers a card for every option that is
+active, not hidden, a boot option rather than an application, and names a
+file. It leaves out the option the firmware started it with
+(`BootCurrent`), and options for a file that has a card already on the
+partition or CD it sits on, so neither Meridian itself nor a system the
+scan found shows twice. Systems on other disks, such as Windows on its
+own drive, come in this way. Such an option is loaded through its whole
+device path; when the loader cannot follow the path, as with the short
+ones Windows writes that start at the partition, it sets `BootNext` and
+restarts, and the firmware starts the option itself. The test image adds
+three options before the loader looks: one it starts from the third card
+and that comes back, one switched off and one for a loader the scan finds
+anyway, which must get no card.
+
 Still to come:
 
-- **The firmware's entries.** The firmware variables `BootOrder` and `Boot####` give the other systems the firmware knows about, with their descriptions and device paths.
 - **Scanning.** The EFI partition is also scanned for well-known loaders: `\EFI\Microsoft\Boot\bootmgfw.efi`, GRUB, systemd-boot.
 - **Starting one.** A chosen system is started through `LoadImage` and `StartImage` on its device path. With Secure Boot on, the firmware checks it, and Windows Boot Manager passes because Microsoft signs it.
 

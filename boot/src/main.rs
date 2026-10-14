@@ -18,7 +18,7 @@ use boot::log::Log;
 use boot::menu::{Action, Key, Menu};
 use boot::screen::{Card, Kind};
 use boot::settings::{self, Settings, Start};
-use boot::{KERNEL_PATH, Out, banner, memory, systems};
+use boot::{KERNEL_PATH, Out, banner, firmware, memory, systems};
 use bootinfo::{
     BootInfo, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, STACK_PAGES, STACK_TOP, Stack,
 };
@@ -26,11 +26,14 @@ use canvas::Text;
 use canvas::{Canvas, Format, Scratch};
 use core::fmt::Write;
 use uefi::Status;
+use uefi::device_path;
 use uefi::guid::{ACPI_20_TABLE, GLOBAL_VARIABLE, MERIDIAN_VARIABLE};
+use uefi::load_option::{self, BOOT_CURRENT, BOOT_NEXT, BOOT_ORDER, LoadOption};
 use uefi::memory::{MemoryType, PAGE_BYTES, PAGE_SIZE};
 use uefi::raw::System;
 use uefi::raw::file::EntryBuffer;
 use uefi::raw::graphics::PixelFormat;
+use uefi::raw::image::PATH_BYTES;
 use uefi::raw::table::ResetType;
 use uefi::variable::{
     Attributes, BOOT_TO_FIRMWARE_UI, OS_INDICATIONS, OS_INDICATIONS_SUPPORTED, SECURE_BOOT,
@@ -66,7 +69,10 @@ fn run(system: System, serial: &mut Com1) -> Status {
     let settings = read_settings(&system, &mut settings_file, &mut log.tee(&mut out));
 
     #[cfg(feature = "qemu-test")]
-    qemu_test::checks(&system, serial);
+    {
+        qemu_test::checks(&system, serial);
+        qemu_test::add_firmware_option(&system, serial);
+    }
 
     let mut others: [Option<Other>; SYSTEM_LIMIT] = Default::default();
     let found = find_systems(&system, &mut others);
@@ -81,14 +87,7 @@ fn run(system: System, serial: &mut Com1) -> Status {
         };
     }
     let cards = &cards[..=found];
-    for other in others.iter().flatten() {
-        let _ = writeln!(
-            log.tee(serial),
-            "Found {}: {}",
-            other.name.as_str(),
-            other.path.as_str()
-        );
-    }
+    log_found(&others, &mut log.tee(serial));
     let mut last_name = [0u8; 64];
     let last = remembered(&system, &mut last_name);
     let choices = Choices {
@@ -132,7 +131,7 @@ fn run(system: System, serial: &mut Com1) -> Status {
         let Some(other) = chosen.checked_sub(1).and_then(|i| others[i].as_ref()) else {
             break;
         };
-        let status = start_other(&system, other.path.as_str());
+        let status = start_other(&system, other, &mut log.tee(serial));
         let _ = writeln!(
             log.tee(serial),
             "{} came back with {status}",
@@ -163,16 +162,128 @@ fn describe(system: &System, firmware_settings: bool, out: &mut impl Write) -> c
     boot::describe(out, screen, secure_boot, firmware_settings)
 }
 
-/// Another system found on the partition.
+/// Another system, found on the partition or among the firmware's boot
+/// options.
 struct Other {
     kind: Kind,
     name: Text<48>,
-    /// Its loader, from the root of the partition.
+    /// Its loader, from the root of its partition.
     path: Text<160>,
+    /// The boot option it is, when the firmware listed it; otherwise its
+    /// loader is on this partition.
+    option: Option<FirmwareOption>,
 }
 
-/// Looks through the folders of \EFI for the loaders of other systems and
-/// returns how many it put into `found`.
+/// One of the firmware's boot options: its number, and the device path of
+/// the loader it starts.
+struct FirmwareOption {
+    number: u16,
+    device: [u8; PATH_BYTES],
+    len: usize,
+}
+
+/// Writes each system found to the log, with where it was found.
+fn log_found(others: &[Option<Other>], out: &mut impl Write) {
+    for other in others.iter().flatten() {
+        let _ = match &other.option {
+            None => writeln!(
+                out,
+                "Found {}: {}",
+                other.name.as_str(),
+                other.path.as_str()
+            ),
+            Some(FirmwareOption { number, .. }) => writeln!(
+                out,
+                "Found {} in the firmware's boot options: Boot{number:04X}, {}",
+                other.name.as_str(),
+                other.path.as_str()
+            ),
+        };
+    }
+}
+
+/// Adds the systems among the firmware's boot options that have no card
+/// yet to `found`, after the first `count`, and returns how many there
+/// are then.
+fn find_firmware_systems(
+    system: &System,
+    found: &mut [Option<Other>; SYSTEM_LIMIT],
+    mut count: usize,
+) -> usize {
+    let mut two = [0u8; 2];
+    let current = system
+        .variable(&BOOT_CURRENT, &GLOBAL_VARIABLE, &mut two)
+        .ok()
+        .and_then(|(_, data)| load_option::numbers(data)?.next());
+    let mut own = [0u8; PATH_BYTES];
+    let own = system.boot_device_path(&mut own).ok();
+    let mut order = [0u8; 256];
+    let Some(order) = system
+        .variable(&BOOT_ORDER, &GLOBAL_VARIABLE, &mut order)
+        .ok()
+        .and_then(|(_, data)| load_option::numbers(data))
+    else {
+        return count;
+    };
+    for number in order {
+        if count == SYSTEM_LIMIT {
+            break;
+        }
+        let mut data = [0u8; 2048];
+        let Some(option) = system
+            .variable(&load_option::variable(number), &GLOBAL_VARIABLE, &mut data)
+            .ok()
+            .and_then(|(_, data)| LoadOption::parse(data))
+        else {
+            continue;
+        };
+        let known = |key: &str| {
+            firmware::known_here(
+                key,
+                found[..count].iter().flatten().map(|o| o.path.as_str()),
+            )
+        };
+        if firmware::verdict(&option, number, current, own, known) != firmware::Verdict::Offered {
+            continue;
+        }
+        let (Some(file), Some(mut path)) = (
+            device_path::file(option.path).and_then(firmware::key),
+            device_path::file(option.path).map(|chars| {
+                let mut text = Text::<160>::new();
+                for c in chars {
+                    let _ = text.write_char(c);
+                }
+                text
+            }),
+        ) else {
+            continue;
+        };
+        if path.as_str().is_empty() {
+            let _ = path.write_str(file.as_str());
+        }
+        let mut device = [0u8; PATH_BYTES];
+        let Some(slot) = device.get_mut(..option.path.len()) else {
+            continue;
+        };
+        slot.copy_from_slice(option.path);
+        found[count] = Some(Other {
+            kind: firmware::kind(file.as_str()),
+            name: firmware::name(&option, file.as_str()),
+            path,
+            option: Some(FirmwareOption {
+                number,
+                device,
+                len: option.path.len(),
+            }),
+        });
+        count += 1;
+    }
+    count
+}
+
+/// Looks through the folders of \EFI for the loaders of other systems,
+/// then through the firmware's boot options, and returns how many it put
+/// into `found`.
 fn find_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) -> usize {
     let Ok(root) = system.boot_volume() else {
         return 0;
@@ -203,28 +314,59 @@ fn find_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) -> u
             let _ = name.write_str(systems::display_name(folder, kind));
             let mut path = Text::new();
             let _ = write!(path, "/EFI/{folder}/{file}");
-            found[count] = Some(Other { kind, name, path });
+            found[count] = Some(Other {
+                kind,
+                name,
+                path,
+                option: None,
+            });
             count += 1;
         }
     }
-    count
+    find_firmware_systems(system, found, count)
 }
 
 /// Starts another system's loader and returns its status if it comes
 /// back. The test image hands it the options that make the loader's own
-/// copy return at once.
-fn start_other(system: &System, path: &str) -> Status {
-    let image = system.load_image(path);
+/// copy return at once. A firmware boot option whose path the firmware
+/// cannot load from here, such as the short paths Windows writes, is left
+/// to the firmware: it starts it after a restart.
+fn start_other(system: &System, other: &Other, out: &mut impl Write) -> Status {
+    let image = match &other.option {
+        None => system.load_image(other.path.as_str()),
+        Some(option) => system.load_image_at(&option.device[..option.len]),
+    };
     #[cfg(feature = "qemu-test")]
     let image = image.and_then(|mut image| {
         image.set_options(qemu_test::chain_options())?;
         Ok(image)
     });
-    match image {
-        Ok(image) => image.start(),
-        Err(status) => status,
+    match (image, &other.option) {
+        (Ok(image), _) => image.start(),
+        (Err(status), Some(option)) if firmware::needs_the_firmware(status) => {
+            let _ = writeln!(
+                out,
+                "{} cannot be started from here ({status}); the firmware starts it after a restart",
+                other.name.as_str()
+            );
+            match request_boot_next(system, option.number) {
+                Ok(()) => system.reset(ResetType::COLD),
+                Err(refused) => refused,
+            }
+        }
+        (Err(status), _) => status,
     }
 }
+
+/// Asks the firmware to start boot option `number` at the next start, once.
+fn request_boot_next(system: &System, number: u16) -> Result<(), Status> {
+    system.set_variable(&BOOT_NEXT, &GLOBAL_VARIABLE, LASTING, &number.to_le_bytes())
+}
+
+/// Variables that survive a restart and that the system can read later.
+const LASTING: Attributes = Attributes::NON_VOLATILE
+    .with(Attributes::BOOTSERVICE_ACCESS)
+    .with(Attributes::RUNTIME_ACCESS);
 
 /// The boot screen in the test image: no countdown, and the checks of the
 /// first menu, the first log and the menu after it.
@@ -353,13 +495,10 @@ fn remember(
     if !matches!(choices.settings.start, Start::Last) || last == Some(name) {
         return;
     }
-    let lasting = Attributes::NON_VOLATILE
-        .with(Attributes::BOOTSERVICE_ACCESS)
-        .with(Attributes::RUNTIME_ACCESS);
     if let Err(status) = system.set_variable(
         &settings::LAST_SYSTEM,
         &MERIDIAN_VARIABLE,
-        lasting,
+        LASTING,
         name.as_bytes(),
     ) {
         let _ = writeln!(out, "Remembering {name} for next time failed: {status}");
@@ -483,11 +622,8 @@ fn request_firmware_settings(system: &System) -> Result<(), Status> {
         .ok()
         .and_then(|(_, data)| u64_value(data))
         .unwrap_or(0);
-    let lasting = Attributes::NON_VOLATILE
-        .with(Attributes::BOOTSERVICE_ACCESS)
-        .with(Attributes::RUNTIME_ACCESS);
     let wanted = (asked | BOOT_TO_FIRMWARE_UI).to_le_bytes();
-    system.set_variable(&OS_INDICATIONS, &GLOBAL_VARIABLE, lasting, &wanted)
+    system.set_variable(&OS_INDICATIONS, &GLOBAL_VARIABLE, LASTING, &wanted)
 }
 
 /// Everything the jump needs, worked out while boot services still run.

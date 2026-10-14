@@ -177,11 +177,18 @@ pub fn systems_found(
     };
     report.check(
         "boot.systems.found",
-        cards.len() == 2
+        cards.len() == 3
             && cards[0].kind == Kind::Meridian
             && cards[1].kind == Kind::Linux
             && cards[1].name == "example",
         "the example system on the test image should be found as a second card",
+    );
+    report.check(
+        "boot.systems.firmware",
+        cards
+            .get(2)
+            .is_some_and(|c| c.kind == Kind::Other && c.name == FIRMWARE_EXAMPLE),
+        "the boot option the test image added should be the third card",
     );
     report.check(
         "boot.firmware_settings.offered",
@@ -405,6 +412,11 @@ pub fn boot_screen(
         );
         // The log comes first; log_screen goes on from there.
         report.press("v");
+    } else if round == 1 {
+        // The firmware's example, the third card.
+        report.press("right");
+        report.press("right");
+        report.press("ret");
     } else {
         report.press("ret");
     }
@@ -489,6 +501,134 @@ pub fn menu_after_log(frame: &[u32], serial: &mut impl Write) {
     report.press("right");
     report.press("ret");
     stop_on_failure(&mut report);
+}
+
+/// The description of the boot option the test image adds.
+const FIRMWARE_EXAMPLE: &str = "Firmware example";
+/// Its number, far from the ones OVMF uses.
+const FIRMWARE_EXAMPLE_NUMBER: u16 = 0x0100;
+
+/// Adds a boot option for the third copy of the loader to the firmware's
+/// list, as an installer of another system would, before the loader looks
+/// for systems. It also asks for it as `BootNext`, reads that back and
+/// takes it back, since starting it that way needs a restart.
+pub fn add_firmware_option(system: &System, serial: &mut impl Write) {
+    use uefi::guid::GLOBAL_VARIABLE;
+    use uefi::load_option::{self, ACTIVE, BOOT_NEXT, BOOT_ORDER};
+    use uefi::qemu_test::Report;
+    use uefi::variable::Attributes;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let lasting = Attributes::NON_VOLATILE
+        .with(Attributes::BOOTSERVICE_ACCESS)
+        .with(Attributes::RUNTIME_ACCESS);
+    // The example the third card stands for, and two that must get no
+    // card: an inactive one, and one for a loader the scan finds anyway.
+    let options = [
+        (
+            FIRMWARE_EXAMPLE_NUMBER,
+            ACTIVE,
+            FIRMWARE_EXAMPLE,
+            "/EFI/other/tool.efi",
+        ),
+        (
+            FIRMWARE_EXAMPLE_NUMBER + 1,
+            0,
+            "Switched off",
+            "/EFI/other/tool.efi",
+        ),
+        (
+            FIRMWARE_EXAMPLE_NUMBER + 2,
+            ACTIVE,
+            "Scanned already",
+            "/EFI/example/grubx64.efi",
+        ),
+    ];
+    let mut order = [0u8; 256];
+    let mut listed = match system.variable(&BOOT_ORDER, &GLOBAL_VARIABLE, &mut order) {
+        Ok((_, data)) => data.len(),
+        Err(_) => 0,
+    };
+    let mut added = true;
+    for (number, attributes, description, file) in options {
+        added &= write_option(system, number, attributes, description, file).is_ok();
+        order[listed..listed + 2].copy_from_slice(&number.to_le_bytes());
+        listed += 2;
+    }
+    let ordered = system.set_variable(&BOOT_ORDER, &GLOBAL_VARIABLE, lasting, &order[..listed]);
+    report.check(
+        "boot.firmware_option.added",
+        added && ordered.is_ok(),
+        "the test image should add its boot options and put them last in BootOrder",
+    );
+    let number = FIRMWARE_EXAMPLE_NUMBER;
+
+    let asked = crate::request_boot_next(system, number);
+    let mut next = [0u8; 2];
+    let back = system
+        .variable(&BOOT_NEXT, &GLOBAL_VARIABLE, &mut next)
+        .ok()
+        .map(|(attributes, data)| {
+            (
+                attributes,
+                load_option::numbers(data).and_then(|mut n| n.next()),
+            )
+        });
+    let undone = system.set_variable(&BOOT_NEXT, &GLOBAL_VARIABLE, Attributes::default(), &[]);
+    let mut gone = [0u8; 2];
+    report.check(
+        "boot.firmware.boot_next",
+        asked.is_ok()
+            && back == Some((lasting, Some(number)))
+            && undone.is_ok()
+            && system
+                .variable(&BOOT_NEXT, &GLOBAL_VARIABLE, &mut gone)
+                .is_err(),
+        "an option the loader cannot start itself should be asked for as BootNext",
+    );
+    stop_on_failure(&mut report);
+}
+
+/// Writes boot option `number` for `file` on this partition, as an
+/// installer would.
+fn write_option(
+    system: &System,
+    number: u16,
+    attributes: u32,
+    description: &str,
+    file: &str,
+) -> Result<(), uefi::Status> {
+    use uefi::raw::image::PATH_BYTES;
+
+    let mut base = [0u8; PATH_BYTES];
+    let mut path = [0u8; PATH_BYTES];
+    let base = system.boot_device_path(&mut base)?;
+    let len = uefi::device_path::with_file(base, file, &mut path)
+        .ok_or(uefi::Status::BUFFER_TOO_SMALL)?;
+    let mut option = [0u8; 2048];
+    let mut at = 0;
+    let mut put = |bytes: &[u8]| {
+        option[at..at + bytes.len()].copy_from_slice(bytes);
+        at += bytes.len();
+    };
+    put(&attributes.to_le_bytes());
+    put(&u16::try_from(len).unwrap_or(0).to_le_bytes());
+    for unit in description.encode_utf16().chain([0]) {
+        put(&unit.to_le_bytes());
+    }
+    put(&path[..len]);
+    let lasting = uefi::variable::Attributes::NON_VOLATILE
+        .with(uefi::variable::Attributes::BOOTSERVICE_ACCESS)
+        .with(uefi::variable::Attributes::RUNTIME_ACCESS);
+    system.set_variable(
+        &uefi::load_option::variable(number),
+        &uefi::guid::GLOBAL_VARIABLE,
+        lasting,
+        &option[..at],
+    )
 }
 
 /// What the loader's copy returns when it was started as a test.

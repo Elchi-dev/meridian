@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod device_path;
 pub mod guid;
 pub mod memory;
 #[cfg(feature = "qemu-test")]

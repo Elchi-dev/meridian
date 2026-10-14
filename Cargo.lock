@@ -37,6 +37,8 @@ name = "kernel"
 version = "0.0.0"
 dependencies = [
  "bootinfo",
+ "canvas",
+ "font",
  "x86",
 ]
 

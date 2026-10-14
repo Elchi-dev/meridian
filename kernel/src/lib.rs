@@ -3,6 +3,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod screen;
+
 use core::fmt::{self, Write};
 
 use bootinfo::{MemoryRegion, RegionKind};
@@ -32,6 +34,28 @@ pub fn covered(regions: &[MemoryRegion], kind: RegionKind, start: u64, len: u64)
     regions
         .iter()
         .any(|r| r.kind == kind && r.start <= start && start.saturating_add(len) <= r.end())
+}
+
+/// Where memory ends: the end of the last region that is not reserved.
+/// Reserved regions above it are devices, such as PCI windows, and can be
+/// far larger than all memory together.
+#[must_use]
+pub fn ram_top(regions: &[MemoryRegion]) -> u64 {
+    regions
+        .iter()
+        .filter(|r| r.kind != RegionKind::RESERVED)
+        .map(MemoryRegion::end)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The regions that start below [`ram_top`]: memory, and the firmware's
+/// pieces in between, without the devices above it.
+#[must_use]
+pub fn memory(regions: &[MemoryRegion]) -> &[MemoryRegion] {
+    let top = ram_top(regions);
+    let count = regions.iter().take_while(|r| r.start < top).count();
+    &regions[..count]
 }
 
 /// A number of bytes, written in the largest binary unit it reaches, with
@@ -94,6 +118,37 @@ mod tests {
             region(0x1020_0000, 4, RegionKind::ACPI_RECLAIMABLE),
             region(0xfee0_0000, 1, RegionKind::RESERVED),
         ]
+    }
+
+    #[test]
+    fn memory_ends_where_the_last_unreserved_region_does() {
+        let mut r = sample();
+        assert_eq!(ram_top(&r), 0x1020_0000 + 4 * 4096);
+        r.push(region(0xfd_0000_0000, 0x30_0000, RegionKind::RESERVED));
+        assert_eq!(
+            ram_top(&r),
+            0x1020_0000 + 4 * 4096,
+            "a device window does not count"
+        );
+        assert_eq!(
+            memory(&r).len(),
+            4,
+            "neither the window nor the APIC page above memory"
+        );
+        assert_eq!(ram_top(&[]), 0);
+        assert_eq!(memory(&[]), []);
+        let only_reserved = [region(0x1000, 1, RegionKind::RESERVED)];
+        assert_eq!(memory(&only_reserved), []);
+        let firmware_inside = [
+            region(0, 4, RegionKind::USABLE),
+            region(0x4000, 2, RegionKind::RESERVED),
+            region(0x6000, 4, RegionKind::USABLE),
+        ];
+        assert_eq!(
+            memory(&firmware_inside).len(),
+            3,
+            "firmware pieces inside memory stay"
+        );
     }
 
     #[test]

@@ -20,6 +20,8 @@ qemu-test = ["x86/qemu-test"]
 
 [dependencies]
 bootinfo = { path = "../lib/bootinfo" }
+canvas = { path = "../lib/canvas" }
+font = { path = "../lib/font" }
 x86 = { path = "../lib/x86" }
 
 [lints]

@@ -6,9 +6,11 @@
 use core::fmt::Write;
 
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK_TOP};
+use canvas::Canvas;
+use canvas::palette::{GRASS, NIGHT, TANGERINE};
 use kernel::{bytes_of, covered, is_tidy};
 
-use crate::raw::{mapped, physical};
+use crate::raw::{self, mapped, physical};
 
 struct Report<'a, W: Write> {
     out: &'a mut W,
@@ -26,7 +28,12 @@ impl<W: Write> Report<'_, W> {
     }
 }
 
-pub fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut impl Write) -> ! {
+pub fn run(
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+    screen: Option<&Canvas<'_>>,
+    serial: &mut impl Write,
+) -> ! {
     let mut report = Report {
         out: serial,
         failed: 0,
@@ -109,7 +116,50 @@ pub fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut impl Write) -
         "the loader should have left the firmware's boot services",
     );
 
+    screen_checks(&mut report, info, screen);
+
     let failed = report.failed;
     let _ = writeln!(report.out, "TESTS DONE {failed} failed");
     x86::raw::qemu_exit(failed == 0)
+}
+
+fn screen_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    info: &BootInfo,
+    screen: Option<&Canvas<'_>>,
+) {
+    report.check(
+        "kernel.screen",
+        screen.is_some_and(|c| {
+            c.width() == info.framebuffer.width as usize
+                && c.pixel(0, 0) == Some(NIGHT)
+                && c.pixel(c.width() - 1, c.height() - 1) == Some(NIGHT)
+                && c.pixel(60, 116) == Some(TANGERINE)
+        }),
+        "the status screen should fill the framebuffer the loader passed on",
+    );
+    report.check(
+        "kernel.screen.title",
+        screen.is_some_and(|c| {
+            (60..260)
+                .flat_map(|x| (60..100).map(move |y| (x, y)))
+                .filter(|&(x, y)| c.pixel(x, y).is_some_and(|p| p != NIGHT))
+                .count()
+                > 400
+        }),
+        "the title should be drawn in the top left",
+    );
+    let bar_top = 56 + 130 + 3 * 32 + 8 + 1;
+    report.check(
+        "kernel.screen.bar",
+        screen.is_some_and(|c| {
+            c.pixel(57, bar_top) == Some(GRASS) && c.pixel(56 + 723, bar_top) == Some(NIGHT)
+        }),
+        "the memory bar should start with free memory and end where it should",
+    );
+    report.check(
+        "kernel.screen.once",
+        raw::screen(&info.framebuffer).is_none(),
+        "the framebuffer should be handed out only once",
+    );
 }

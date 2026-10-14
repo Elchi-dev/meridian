@@ -13,19 +13,40 @@ mod raw;
 use core::fmt::Write;
 
 use bootinfo::{BootInfo, MemoryRegion};
+use canvas::{Canvas, Scratch};
+use kernel::screen::Facts;
 
 fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut impl Write) -> ! {
     let _ = kernel::greet(serial, regions);
-    finish(info, regions, serial)
+    let mut screen = raw::screen(&info.framebuffer);
+    if let Some(canvas) = screen.as_mut() {
+        let brand = x86::brand();
+        let facts = Facts {
+            processor: brand.as_str(),
+            regions,
+        };
+        if let Err(e) = kernel::screen::draw(canvas, &facts, &mut Scratch::new()) {
+            let _ = writeln!(
+                serial,
+                "kernel: the status screen could not be drawn: {e:?}"
+            );
+        }
+    }
+    finish(info, regions, screen.as_ref(), serial)
 }
 
 #[cfg(feature = "qemu-test")]
-fn finish(info: &BootInfo, regions: &[MemoryRegion], serial: &mut impl Write) -> ! {
-    qemu_test::run(info, regions, serial)
+fn finish(
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+    screen: Option<&Canvas<'_>>,
+    serial: &mut impl Write,
+) -> ! {
+    qemu_test::run(info, regions, screen, serial)
 }
 
 #[cfg(not(feature = "qemu-test"))]
-fn finish(_: &BootInfo, _: &[MemoryRegion], serial: &mut impl Write) -> ! {
+fn finish(_: &BootInfo, _: &[MemoryRegion], _: Option<&Canvas<'_>>, serial: &mut impl Write) -> ! {
     let _ = writeln!(serial, "There is nothing more to do yet. Halting.");
     x86::raw::halt()
 }

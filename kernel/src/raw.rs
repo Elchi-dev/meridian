@@ -1,11 +1,12 @@
 //! The way into the kernel and the ways out of it: the entry point the
-//! loader jumps to, and what happens when the kernel has to stop.
+//! loader jumps to, the screen, and what happens when the kernel has to
+//! stop.
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(feature = "qemu-test")]
-use bootinfo::HHDM_BASE;
-use bootinfo::{BootInfo, MemoryRegion};
+use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, MemoryRegion, PixelFormat};
+use canvas::{Canvas, Format};
 use x86::raw::Com1;
 
 #[unsafe(no_mangle)]
@@ -50,6 +51,35 @@ pub fn physical(address: u64, len: usize) -> &'static [u8] {
 pub fn mapped(address: u64, len: usize) -> &'static [u8] {
     // SAFETY: only called with the kernel's own image range.
     unsafe { core::slice::from_raw_parts(address as *const u8, len) }
+}
+
+/// Whether the framebuffer was handed out already.
+static SCREEN_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// The framebuffer as a canvas, reached through the direct map. It is
+/// handed out once, so there is never a second way to write it.
+pub fn screen(fb: &Framebuffer) -> Option<Canvas<'static>> {
+    let format = match fb.format {
+        PixelFormat::RGB => Format::Rgb,
+        PixelFormat::BGR => Format::Bgr,
+        _ => return None,
+    };
+    let (width, height, stride) = (fb.width as usize, fb.height as usize, fb.stride as usize);
+    let len = height
+        .checked_sub(1)?
+        .checked_mul(stride)?
+        .checked_add(width)?;
+    if fb.base == 0
+        || len.checked_mul(4)? as u64 > fb.size
+        || SCREEN_TAKEN.swap(true, Ordering::AcqRel)
+    {
+        return None;
+    }
+    // SAFETY: the loader maps the whole framebuffer in the direct map, the
+    // size check above keeps the slice inside it, and SCREEN_TAKEN makes
+    // this the only slice over it.
+    let pixels = unsafe { core::slice::from_raw_parts_mut((HHDM_BASE + fb.base) as *mut u32, len) };
+    Canvas::new(pixels, width, height, stride, format)
 }
 
 /// Stops for good: halts on a real machine, ends a QEMU test as failed.

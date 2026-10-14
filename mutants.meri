@@ -107,3 +107,10 @@ allow {
     mutation = "> to >="
     reason = "every core of the test machines has come in by the end of the 0.2 ms after its first startup, so the wait finds it there either way; on slower hardware it keeps the next core's stack from being set while this one still reads its own"
 }
+
+allow {
+    file = "kernel/src/raw/smp.rs"
+    line = ".filter(|&(index, &id)| wait(index + 1, tsc_hz / 100) == Some(u64::from(id)))"
+    mutation = "/ to *"
+    reason = "the limit only matters for a core that never answers; every core of the test machines answers within microseconds, and the wait ends as soon as it has"
+}

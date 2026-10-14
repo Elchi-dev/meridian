@@ -102,7 +102,7 @@ func (b *Block) added() {
 		if len(b.Items) <= indexAfter {
 			return
 		}
-		b.index = make(map[string]int, 2*len(b.Items))
+		b.index = map[string]int{}
 		b.labels = map[labelKey]int{}
 		for i := range b.Items {
 			b.indexItem(i)

@@ -741,12 +741,12 @@ func (p *parser) number(at Pos) (Value, *Error) {
 // a lower-case e and without a + in the exponent.
 func floatText(lit []byte) string {
 	out := make([]byte, 0, len(lit))
-	for k, c := range lit {
+	for _, c := range lit {
 		switch {
 		case c == '_':
 		case c == 'E':
 			out = append(out, 'e')
-		case c == '+' && k > 0 && (lit[k-1] == 'e' || lit[k-1] == 'E'):
+		case c == '+':
 		default:
 			out = append(out, c)
 		}

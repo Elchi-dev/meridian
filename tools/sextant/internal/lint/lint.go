@@ -4,10 +4,11 @@ package lint
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"io/fs"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -77,15 +78,8 @@ func Check(fsys fs.FS) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Path != b.Path {
-			return a.Path < b.Path
-		}
-		if a.Line != b.Line {
-			return a.Line < b.Line
-		}
-		return a.Col < b.Col
+	slices.SortFunc(out, func(a, b Finding) int {
+		return cmp.Or(strings.Compare(a.Path, b.Path), cmp.Compare(a.Line, b.Line), cmp.Compare(a.Col, b.Col))
 	})
 	return out, nil
 }

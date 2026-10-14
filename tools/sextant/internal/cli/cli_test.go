@@ -318,3 +318,13 @@ func TestUsageErrorFormatsItsMessage(t *testing.T) {
 		t.Fatalf("message = %q", err.Error())
 	}
 }
+
+func TestRevisionOfABuildWithoutInfo(t *testing.T) {
+	if got := revisionOf(nil, false); got != "" {
+		t.Fatalf("no build info: %q", got)
+	}
+	info := &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "0123456789abcdef"}}}
+	if got := revisionOf(info, true); got != "0123456789ab" {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -188,8 +188,7 @@ func volumeLabel(label string) ([11]byte, error) {
 	var out [11]byte
 	label = strings.ToUpper(label)
 	if label == "" {
-		copy(out[:], "NO NAME    ")
-		return out, nil
+		return padded("NO NAME"), nil
 	}
 	if len(label) > 11 {
 		return out, fmt.Errorf("fat: label %q is longer than 11 characters", label)
@@ -199,8 +198,23 @@ func volumeLabel(label string) ([11]byte, error) {
 			return out, fmt.Errorf("fat: label %q contains %q, which a FAT label cannot hold", label, r)
 		}
 	}
-	copy(out[:], label+strings.Repeat(" ", 11-len(label)))
-	return out, nil
+	return padded(label), nil
+}
+
+// padded lays text into the 11 bytes of a name field, filled with spaces.
+func padded(text string) [11]byte {
+	field := [11]byte{' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '}
+	copy(field[:], text)
+	return field
+}
+
+// shortName lays out an 8.3 name: the base in the first eight bytes and the
+// extension in the last three, each padded with spaces.
+func shortName(base, ext string) [11]byte {
+	field := padded("")
+	copy(field[:8], base)
+	copy(field[8:], ext)
+	return field
 }
 
 type timestamp struct {
@@ -222,7 +236,7 @@ func encodeTime(t time.Time) (timestamp, error) {
 }
 
 func buildTree(files map[string][]byte) (*node, error) {
-	root := &node{dir: true, index: map[string]*node{}}
+	root := &node{index: map[string]*node{}}
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		paths = append(paths, p)
@@ -305,24 +319,22 @@ func checkLongName(name string) error {
 }
 
 func shortNameChar(r rune) bool {
-	return r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r < 0x80 && strings.ContainsRune("$%'-_@~`!(){}^#&", r)
+	return r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("$%'-_@~`!(){}^#&", r)
 }
 
 // plainShortName returns the 8.3 form of a name that is already a valid
 // upper-case short name, and false for anything that needs a long name.
 func plainShortName(name string) ([11]byte, bool) {
-	var sn [11]byte
 	base, ext, hasDot := strings.Cut(name, ".")
 	if base == "" || len(base) > 8 || len(ext) > 3 || hasDot && ext == "" {
-		return sn, false
+		return [11]byte{}, false
 	}
 	for _, r := range base + ext {
 		if !shortNameChar(r) {
-			return sn, false
+			return [11]byte{}, false
 		}
 	}
-	copy(sn[:], base+strings.Repeat(" ", 8-len(base))+ext+strings.Repeat(" ", 3-len(ext)))
-	return sn, true
+	return shortName(base, ext), true
 }
 
 // basisName follows the basis-name generation steps in fatgen103 section 7:
@@ -373,8 +385,7 @@ func assignShortNames(dir *node) {
 		for n := 1; ; n++ {
 			tail := fmt.Sprintf("~%d", n)
 			b := base[:min(len(base), 8-len(tail))] + tail
-			var sn [11]byte
-			copy(sn[:], b+strings.Repeat(" ", 8-len(b))+ext+strings.Repeat(" ", 3-len(ext)))
+			sn := shortName(b, ext)
 			if !taken[sn] {
 				c.shortName, taken[sn] = sn, true
 				break
@@ -506,8 +517,9 @@ func (fs *writer) at(off int64, data []byte) {
 	if fs.err != nil {
 		return
 	}
-	if _, err := fs.w.WriteAt(data, fs.offset+off); err != nil {
-		fs.err = fmt.Errorf("fat: write at byte %d: %w", fs.offset+off, err)
+	at := fs.offset + off
+	if _, err := fs.w.WriteAt(data, at); err != nil {
+		fs.err = fmt.Errorf("fat: write at byte %d: %w", at, err)
 	}
 }
 
@@ -522,11 +534,12 @@ func (fs *writer) writeTree(dir *node, label [11]byte, ts timestamp) {
 	for _, c := range dir.children {
 		if c.dir {
 			fs.writeTree(c, label, ts)
-		} else if len(c.data) > 0 {
-			fs.at(fs.g.clusterOffset(c.first), c.data)
-			if pad := int64(c.clusters)*fs.g.clusterBytes() - int64(len(c.data)); pad > 0 {
-				fs.at(fs.g.clusterOffset(c.first)+int64(len(c.data)), make([]byte, pad))
-			}
+		} else {
+			// The whole cluster run is written, so the tail of the last
+			// cluster holds zeros and not whatever the disk held before.
+			data := make([]byte, int64(c.clusters)*fs.g.clusterBytes())
+			copy(data, c.data)
+			fs.at(fs.g.clusterOffset(c.first), data)
 		}
 	}
 }
@@ -559,9 +572,7 @@ func encodeDir(dir *node, label [11]byte, ts timestamp) []byte {
 }
 
 func dotName(dots string) [11]byte {
-	var sn [11]byte
-	copy(sn[:], dots+strings.Repeat(" ", 11-len(dots)))
-	return sn
+	return padded(dots)
 }
 
 // shortEntry encodes a directory entry from fatgen103 section 6.
@@ -610,7 +621,7 @@ func longEntries(name string, sn [11]byte) []byte {
 		}
 	}
 	sum := shortNameChecksum(sn)
-	out := make([]byte, 0, count*dirEntrySize)
+	var out []byte
 	for seq := count; seq >= 1; seq-- {
 		e := make([]byte, dirEntrySize)
 		e[0] = byte(seq)

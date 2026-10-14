@@ -593,6 +593,8 @@ func TestPlainShortName(t *testing.T) {
 		"A.B":          "A       B  ",
 		"$%'-_@~`":     "$%'-_@~`   ",
 		"!(){}^#&.123": "!(){}^#&123",
+		"ZZZ9.Z9":      "ZZZ9    Z9 ",
+		"A0.9Z":        "A0      9Z ",
 	}
 	for in, want := range valid {
 		sn, ok := plainShortName(in)
@@ -776,6 +778,32 @@ func TestClusterSizeTable(t *testing.T) {
 	g, _ := planGeometry(66601 * 512)
 	if g.fatSectors != 517 || g.clusters != 65535 {
 		t.Errorf("smallest volume: FAT %d sectors, %d clusters; want 517 and 65535", g.fatSectors, g.clusters)
+	}
+}
+
+// The FAT size formula in fatgen103 rounds up. These sizes sit exactly on
+// the rounding edges, where the remainder of the division is zero or one
+// short of the divisor. The values come from a separate implementation of
+// the same formula, written in Python.
+func TestFATSizeOnTheRoundingEdges(t *testing.T) {
+	tests := []struct {
+		sectors, fatSectors, clusters uint32
+	}{
+		{66725, 517, 65659},
+		{66853, 518, 65785},
+		{533032, 520, 66495},
+		{534056, 521, 66622},
+		{131072, 1016, 129008},
+		{1048576, 1023, 130812},
+	}
+	for _, tt := range tests {
+		g, err := planGeometry(int64(tt.sectors) * 512)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.fatSectors != tt.fatSectors || g.clusters != tt.clusters {
+			t.Errorf("%d sectors: FAT of %d sectors, %d clusters; want %d and %d", tt.sectors, g.fatSectors, g.clusters, tt.fatSectors, tt.clusters)
+		}
 	}
 }
 

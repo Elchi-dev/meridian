@@ -28,7 +28,10 @@ type Config struct {
 	MinRatio float64
 	// BuildDir is where Cargo puts its output, absolute.
 	BuildDir string
-	QEMU     QEMU
+	// MutateScratch is where sextant mutate keeps its copies of the
+	// repository, absolute, or empty to let it pick a folder.
+	MutateScratch string
+	QEMU          QEMU
 }
 
 type QEMU struct {
@@ -85,6 +88,15 @@ func read(path string) (*meri.Block, error) {
 	return meri.Parse(filepath.Base(path), src)
 }
 
+// absolute resolves a path from the settings: relative ones start at the
+// repository.
+func absolute(root, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(root, p)
+}
+
 func section(doc *meri.Block, name string) *meri.Block {
 	if blocks := doc.Blocks(name); len(blocks) > 0 {
 		return blocks[len(blocks)-1]
@@ -109,14 +121,15 @@ func fromDocument(root string, doc *meri.Block) (Config, error) {
 		keep(fmt.Errorf("stats.min-ratio must not be negative, got %v", c.MinRatio))
 	}
 
-	build := section(doc, "build")
-	dir, err := build.String("dir", "")
+	dir, err := section(doc, "build").String("dir", "")
 	keep(err)
 	if dir != "" {
-		c.BuildDir = dir
-		if !filepath.IsAbs(dir) {
-			c.BuildDir = filepath.Join(root, dir)
-		}
+		c.BuildDir = absolute(root, dir)
+	}
+	scratch, err := section(doc, "mutate").String("scratch", "")
+	keep(err)
+	if scratch != "" {
+		c.MutateScratch = absolute(root, scratch)
 	}
 
 	q := section(doc, "qemu")

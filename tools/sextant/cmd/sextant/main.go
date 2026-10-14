@@ -10,10 +10,10 @@ import (
 var version = "dev"
 
 func main() {
-	dir, err := os.Getwd()
-	if err != nil {
-		dir = "."
-	}
+	// An empty dir means the working directory as well: the commands
+	// resolve it again with filepath.Abs, which reports the error if it
+	// still cannot be read.
+	dir, _ := os.Getwd()
 	os.Exit(cli.Run(os.Args[1:], cli.Env{
 		Dir:     dir,
 		Stdin:   os.Stdin,

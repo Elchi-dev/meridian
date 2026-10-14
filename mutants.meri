@@ -1,0 +1,18 @@
+# Mutants that no test can kill, because the change cannot alter what the
+# code does. Each entry names the file, the source line as written, the
+# mutation, and why. sextant mutate fails on an entry that matches nothing,
+# so an entry goes away together with the code it describes.
+
+allow {
+    file = "tools/sextant/internal/meri/parse.go"
+    line = "case c >= 0x20 && c < 0x7F:"
+    mutation = ">= to >"
+    reason = "this is a fast path for plain ASCII; a space it no longer takes goes through the general path below, which accepts it the same way"
+}
+
+allow {
+    file = "tools/sextant/internal/meri/parse.go"
+    line = "escaped := false"
+    mutation = "false to true"
+    reason = "the flag only decides whether the result is built from a copy; with or without the copy the string is the same"
+}

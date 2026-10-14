@@ -256,23 +256,29 @@ func (l *lexer) punct(table []string) {
 	l.emit(Punct)
 }
 
+// identStartAt is false at the end of the input, where DecodeRune gives
+// RuneError.
 func (l *lexer) identStartAt(i int) bool {
-	if i >= len(l.src) {
-		return false
-	}
 	r, _ := utf8.DecodeRune(l.src[i:])
 	return r == '_' || unicode.IsLetter(r)
 }
 
 func (l *lexer) ident() {
-	for l.pos < len(l.src) {
+	l.word()
+	l.emit(Ident)
+}
+
+// word moves past identifier characters. At the end of the input
+// DecodeRune reports RuneError, which is no letter, so the loop needs no
+// bound of its own.
+func (l *lexer) word() {
+	for {
 		r, size := utf8.DecodeRune(l.src[l.pos:])
 		if r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			break
+			return
 		}
 		l.pos += size
 	}
-	l.emit(Ident)
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
@@ -305,9 +311,6 @@ func (l *lexer) number() {
 		}
 		if isDigit(l.peek(digitAt)) {
 			l.pos += digitAt
-			for l.pos < len(l.src) && (isDigit(l.src[l.pos]) || l.src[l.pos] == '_') {
-				l.pos++
-			}
 		}
 	}
 	for l.pos < len(l.src) && isHexOrSuffix(l.src[l.pos]) {
@@ -356,8 +359,8 @@ func (l *lexer) rustQuote() error {
 	if l.peek(1) == '\\' {
 		return l.quoted('\'', Char, false)
 	}
-	_, size := utf8.DecodeRune(l.src[min(l.pos+1, len(l.src)):])
-	if size > 0 && l.peek(1+size) == '\'' {
+	_, size := utf8.DecodeRune(l.src[l.pos+1:])
+	if l.peek(1+size) == '\'' {
 		l.pos += 2 + size
 		l.emit(Char)
 		return nil
@@ -366,13 +369,7 @@ func (l *lexer) rustQuote() error {
 		return l.errorf("a quote here starts neither a character nor a lifetime")
 	}
 	l.pos++
-	for l.pos < len(l.src) {
-		r, size := utf8.DecodeRune(l.src[l.pos:])
-		if r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			break
-		}
-		l.pos += size
-	}
+	l.word()
 	l.emit(Lifetime)
 	return nil
 }
@@ -504,9 +501,7 @@ func Classify(lines int, toks []Token) []LineKind {
 			mark = CommentOnly
 		}
 		for ln := t.Line; ln <= t.EndLine && ln <= lines; ln++ {
-			if kinds[ln-1] < mark {
-				kinds[ln-1] = mark
-			}
+			kinds[ln-1] = max(kinds[ln-1], mark)
 		}
 	}
 	return kinds

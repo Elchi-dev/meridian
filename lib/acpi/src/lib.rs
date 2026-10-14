@@ -522,4 +522,24 @@ mod tests {
         let t = sdt(*b"TEST", b"body");
         assert!(checksum_ok(&t));
     }
+
+    #[test]
+    fn tables_and_entries_at_their_shortest_are_read() {
+        let bare = sdt(*b"SSDT", &[]);
+        let ram = Ram {
+            base: 0x1000,
+            bytes: bare,
+        };
+        assert_eq!(
+            table(&ram, 0x1000, b"SSDT").map(<[u8]>::len),
+            Ok(36),
+            "a table can be its header alone"
+        );
+        let t = madt(&[vec![0x7f, 2], lapic(0, 1)]);
+        assert_eq!(
+            processors(&t).map(|p| p.listed),
+            Ok(1),
+            "an entry of only its kind and length is skipped whole"
+        );
+    }
 }

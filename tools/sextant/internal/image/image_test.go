@@ -67,7 +67,8 @@ func TestBootFilesGoWhereFirmwareAndLoaderLook(t *testing.T) {
 
 func TestTestImagesCarryAnExampleSystem(t *testing.T) {
 	got := TestFiles([]byte("efi"), []byte("elf"))
-	if len(got) != 5 || string(got["EFI/example/grubx64.efi"]) != "efi" || string(got["EFI/other/tool.efi"]) != "efi" ||
+	if len(got) != 6 || len(LongName) != 254 || string(got[LongName]) != "long name\n" ||
+		string(got["EFI/example/grubx64.efi"]) != "efi" || string(got["EFI/other/tool.efi"]) != "efi" ||
 		string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" {
 		t.Fatalf("got %v", got)
 	}

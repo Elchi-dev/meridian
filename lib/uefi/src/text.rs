@@ -260,4 +260,14 @@ mod tests {
             (0, 5, 6, 8)
         );
     }
+
+    #[test]
+    fn a_path_may_fill_its_buffer_with_its_zero() {
+        assert_eq!(
+            path("/ab", 4).map(|v| v.len()),
+            Some(3),
+            "three units, then the zero"
+        );
+        assert_eq!(path("/ab", 3), None, "no room for the zero");
+    }
 }

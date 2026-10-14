@@ -37,3 +37,24 @@ allow {
     mutation = "true to false"
     reason = "the flag stops a panic that comes while the panic screen is drawn; the tests cannot cause one there without changing that code, and the planned crashes reset the flag on purpose before each"
 }
+
+allow {
+    file = "lib/uefi/src/raw/file.rs"
+    line = "fn drop(&mut self) {"
+    mutation = "body to {}"
+    reason = "closing only hands the firmware's handle back; no call the firmware offers tells whether a handle is still open, and the loader opens few files before boot services end and take every handle with them"
+}
+
+allow {
+    file = "lib/uefi/src/raw/image.rs"
+    line = "false,"
+    mutation = "false to true"
+    reason = "LoadImage's boot policy only changes what happens for a path that names a device without a file; the loader always names a file, and the firmware loads it the same either way"
+}
+
+allow {
+    file = "lib/uefi/src/raw/image.rs"
+    line = "self.started = true;"
+    mutation = "true to false"
+    reason = "an application that was started and came back is unloaded by the firmware itself, so the unload a forgotten flag would add finds no image and changes nothing the tests can see"
+}

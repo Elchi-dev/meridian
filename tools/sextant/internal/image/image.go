@@ -81,13 +81,19 @@ const ExamplePath = "EFI/example/grubx64.efi"
 // test image adds to the firmware's list.
 const FirmwareExamplePath = "EFI/other/tool.efi"
 
+// LongName is a file at the root of test images whose name is as long as
+// a path the loader opens can be: with its leading slash, 255 characters.
+var LongName = "long-name-" + strings.Repeat("x", 244)
+
 // TestFiles are the files of a test image: the boot files with settings
-// of their own, and the loader twice more as examples of other systems.
+// of their own, the loader twice more as examples of other systems, and a
+// file with a name as long as a path may be.
 func TestFiles(loader, kernel []byte) map[string][]byte {
 	files := BootFiles(loader, kernel)
 	files[ExamplePath] = loader
 	files[FirmwareExamplePath] = loader
 	files[SettingsPath] = []byte(testSettings)
+	files[LongName] = []byte("long name\n")
 	return files
 }
 

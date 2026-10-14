@@ -129,6 +129,7 @@ pub fn run(system: &System, report: &mut impl Report) {
         writeln!(console, "outside the basic plane: \u{1F600}").is_ok(),
         "a character the font lacks must only be a warning",
     );
+    console_on_screen(system, report);
 }
 
 fn covers(map: &MemoryMap<'_>, ty: MemoryType, start: u64, pages: u64) -> bool {
@@ -280,6 +281,8 @@ fn files(system: &System, report: &mut impl Report) {
             == Some(Status::INVALID_PARAMETER),
         "a path longer than the limit should be refused before the firmware sees it",
     );
+
+    long_name(&root, report);
 
     let Ok(mut loader) = root.open(LOADER_PATH) else {
         report.check("uefi.file.open", false, "the loader's own file should open");
@@ -593,6 +596,16 @@ fn images(system: &System, report: &mut impl Report) {
         "the path should end at a media node: the partition or the CD's boot image",
     );
     let mut tiny = [0u8; 8];
+    let mut exact = [0u8; PATH_BYTES];
+    let fits = whole.is_some_and(|(n, _)| {
+        system.boot_device_path(&mut exact[..n]).is_ok()
+            && system.boot_device_path(&mut exact[..n - 1]).err() == Some(Status::BUFFER_TOO_SMALL)
+    });
+    report.check(
+        "uefi.image.device_path_exact",
+        fits,
+        "a buffer exactly as long as the path should hold it, and one byte less not",
+    );
     report.check(
         "uefi.image.device_path_room",
         system.boot_device_path(&mut tiny).err() == Some(Status::BUFFER_TOO_SMALL),
@@ -759,5 +772,54 @@ fn boot_options(system: &System, report: &mut impl Report) {
         "uefi.image.broken_path",
         system.load_image_at(&[4, 4, 2, 0]).err() == Some(Status::INVALID_PARAMETER),
         "a device path without an end node should not reach the firmware",
+    );
+}
+
+/// The test image keeps a file at its root whose path, with the leading
+/// slash, is 255 characters: as long as [`crate::raw::file::PATH_LIMIT`]
+/// allows, with a name long enough to fill most of what its information
+/// can hold.
+fn long_name(root: &File<'_>, report: &mut impl Report) {
+    let mut path = [b'x'; 255];
+    path[0] = b'/';
+    path[1..11].copy_from_slice(b"long-name-");
+    let path = core::str::from_utf8(&path).unwrap_or("");
+    let mut text = [0u8; 16];
+    let read = root.open(path).and_then(|mut file| {
+        let size = file.info()?.size;
+        let n = file.read_all(&mut text)?;
+        Ok((size, n))
+    });
+    report.check(
+        "uefi.file.long_name",
+        read == Ok((10, 10)) && &text[..10] == b"long name\n",
+        "a file whose path is as long as a path may be should open, report its size and read",
+    );
+}
+
+/// OVMF draws its text console into the framebuffer, somewhere it chooses,
+/// so what the console does shows there: the screen is one colour after
+/// clearing, has ink after text, and is one colour again after the next
+/// clear.
+fn console_on_screen(system: &System, report: &mut impl Report) {
+    let Some(mut console) = system.console() else {
+        return;
+    };
+    let plain = || -> Option<bool> {
+        let mut pixels = system.pixels().ok()?;
+        let screen = pixels.as_mut_slice();
+        let first = *screen.first()?;
+        Some(screen.iter().all(|&p| p == first))
+    };
+    let _ = console.clear();
+    let blank = plain();
+    let _ = console.write_str("MMMMMMMM");
+    let written = plain();
+    let _ = console.clear();
+    let cleared = plain();
+    report.check(
+        "uefi.console.on_screen",
+        blank == Some(true) && written == Some(false) && cleared == Some(true),
+        "text should show in the framebuffer, and clearing should take it away",
     );
 }

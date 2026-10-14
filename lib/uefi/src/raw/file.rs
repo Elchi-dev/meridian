@@ -300,15 +300,16 @@ impl<'a> File<'a> {
     ///
     /// Like [`File::read`].
     pub fn read_all(&mut self, buf: &mut [u8]) -> Result<usize, Status> {
+        // A full buffer reads nothing more, which ends the loop as the end
+        // of the file does.
         let mut done = 0;
-        while done < buf.len() {
+        loop {
             let n = self.read(&mut buf[done..])?;
             if n == 0 {
-                break;
+                return Ok(done);
             }
             done += n;
         }
-        Ok(done)
     }
 }
 

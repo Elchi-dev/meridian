@@ -82,10 +82,12 @@ impl Framebuffer {
         u64::from(self.height - 1) * u64::from(self.stride) + u64::from(self.width)
     }
 
-    /// Whether every visible pixel lies in the memory the firmware reports.
+    /// Whether the framebuffer is somewhere and every visible pixel lies in
+    /// the memory the firmware reports.
     #[must_use]
     pub fn is_consistent(&self) -> bool {
-        self.width > 0
+        self.base != 0
+            && self.width > 0
             && self.height > 0
             && self.stride >= self.width
             && self
@@ -131,7 +133,7 @@ impl System {
             stride: info.pixels_per_scan_line,
             format: PixelFormat::from_uefi(info.pixel_format).ok_or(Status::UNSUPPORTED)?,
         };
-        if fb.base == 0 || !fb.is_consistent() {
+        if !fb.is_consistent() {
             return Err(Status::VOLUME_CORRUPTED);
         }
         Ok(fb)
@@ -278,6 +280,7 @@ mod tests {
         assert!(!Framebuffer { stride: 1279, ..fb }.is_consistent());
         assert!(!Framebuffer { width: 0, ..fb }.is_consistent());
         assert!(!Framebuffer { height: 0, ..fb }.is_consistent());
+        assert!(!Framebuffer { base: 0, ..fb }.is_consistent(), "nowhere");
         let padded = Framebuffer {
             stride: 1344,
             size: 1344 * 800 * 4,

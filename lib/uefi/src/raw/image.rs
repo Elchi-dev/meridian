@@ -29,7 +29,7 @@ impl System {
         // which lives as long as the image does.
         let image = unsafe { image.as_ref() };
         let units = image.load_options_size as usize / 2;
-        if image.load_options.is_null() || units == 0 {
+        if image.load_options.is_null() {
             return &[];
         }
         // SAFETY: the firmware, or whoever started this image, put this

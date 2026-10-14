@@ -552,3 +552,56 @@ func TestTokensKeepTheirOwnCopyOfTheText(t *testing.T) {
 		t.Fatalf("token text changed with the source buffer: %q", toks[1].Text)
 	}
 }
+
+func TestMoreLiterals(t *testing.T) {
+	tests := []struct {
+		name string
+		lang Lang
+		src  string
+		want string
+	}{
+		{"byte char escapes", Rust, `b'\'' b'\\' b'\x7f'`, `char:b'\'' char:b'\\' char:b'\x7f'`},
+		{"raw string with three hashes", Rust, `r###"a "## b"### x`, `string:r###"a "## b"### ident:x`},
+		{"raw string spanning lines", Rust, "r\"a\n\nb\"", "string:r\"a\n\nb\""},
+		{"asm string escape", Asm, `.ascii "a\"b"`, `ident:.ascii string:"a\"b"`},
+		{"ld multi-line comment", LinkerScript, "/* a\n * b\n */ ENTRY(x)", "comment:/* a\n * b\n */ ident:ENTRY punct:( ident:x punct:)"},
+		{"go octal and binary", Go, "0o17 0b101 017", "number:0o17 number:0b101 number:017"},
+		{"go float forms", Go, "1. 1.5 1e3 1.5E+3", "number:1 punct:. number:1.5 number:1e3 number:1.5E+3"},
+	}
+	for _, tt := range tests {
+		if got := show(mustLex(t, tt.lang, tt.src)); got != tt.want {
+			t.Errorf("%s:\ngot  %s\nwant %s", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestGoRuneAcrossLines(t *testing.T) {
+	_, err := Lex(Go, []byte("r := 'a\n'"))
+	var lexErr *Error
+	if !errors.As(err, &lexErr) || lexErr.Msg != "char literal runs into the end of the line" || lexErr.Col != 6 {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestClassifyAssemblyAndLinkerScripts(t *testing.T) {
+	tests := []struct {
+		lang Lang
+		src  string
+		want []LineKind
+	}{
+		{Asm, "# entry point\n_start:\n\n    // stack\n    mov rsp, stack_top\n", []LineKind{CommentOnly, Code, Blank, CommentOnly, Code}},
+		{LinkerScript, "/* kernel\n   layout */\nENTRY(_start)\n\nSECTIONS { }\n", []LineKind{CommentOnly, CommentOnly, Code, Blank, Code}},
+		{Go, "package a\r\n\r\n// x\r\nvar b = 1\r\n", []LineKind{Code, Blank, CommentOnly, Code}},
+	}
+	for _, tt := range tests {
+		got := Classify(LineCount([]byte(tt.src)), mustLex(t, tt.lang, tt.src))
+		if len(got) != len(tt.want) {
+			t.Fatalf("%v: %d lines, want %d", tt.lang, len(got), len(tt.want))
+		}
+		for i := range tt.want {
+			if got[i] != tt.want[i] {
+				t.Errorf("%v line %d: got %d, want %d", tt.lang, i+1, got[i], tt.want[i])
+			}
+		}
+	}
+}

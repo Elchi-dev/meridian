@@ -172,6 +172,17 @@ pub fn pm_timer_port(fadt: &[u8]) -> Option<u16> {
         .and_then(|p| u16::try_from(p).ok())
 }
 
+/// How many bits the power management timer counts in: 32 when the
+/// FADT's flags say so, 24 otherwise.
+#[must_use]
+pub fn pm_timer_bits(fadt: &[u8]) -> u32 {
+    if u32_at(fadt, 112).is_some_and(|flags| flags & 1 << 8 != 0) {
+        32
+    } else {
+        24
+    }
+}
+
 /// The frequency of the power management timer, in ticks per second.
 pub const PM_TIMER_HZ: u64 = 3_579_545;
 
@@ -490,6 +501,17 @@ mod tests {
             "an old, short FADT"
         );
         assert_eq!(PM_TIMER_HZ, 3_579_545);
+    }
+
+    #[test]
+    fn the_timer_is_24_bits_unless_the_flags_say_32() {
+        let mut t = fadt(0x608, None);
+        assert_eq!(pm_timer_bits(&t), 24);
+        t[112..116].copy_from_slice(&(1u32 << 8).to_le_bytes());
+        assert_eq!(pm_timer_bits(&t), 32);
+        t[112..116].copy_from_slice(&(!(1u32 << 8)).to_le_bytes());
+        assert_eq!(pm_timer_bits(&t), 24, "only bit 8 matters");
+        assert_eq!(pm_timer_bits(&t[..100]), 24, "a short FADT");
     }
 
     #[test]

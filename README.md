@@ -223,24 +223,26 @@ The test bar holds for every component, from the first commit on:
   by OpenSSL.
   The `.meri` readers have to pass a shared conformance suite of 134 cases.
 
-On 14 October 2026:
+On 15 October 2026:
 
 | Component | Code | Tests | Ratio |
 | --- | --- | --- | --- |
-| `boot` | 1879 | 2975 | 1.58 |
-| `kernel` | 955 | 1800 | 1.88 |
-| `lib/acpi` | 124 | 325 | 2.62 |
-| `lib/bootinfo` | 164 | 254 | 1.54 |
-| `lib/canvas` | 277 | 425 | 1.53 |
+| `boot` | 1882 | 3220 | 1.71 |
+| `kernel` | 1468 | 2372 | 1.61 |
+| `lib/acpi` | 147 | 369 | 2.51 |
+| `lib/bootinfo` | 167 | 262 | 1.56 |
+| `lib/canvas` | 292 | 506 | 1.73 |
 | `lib/elf` | 265 | 523 | 1.97 |
 | `lib/font` | 898 | 2616 | 2.91 |
+| `lib/frames` | 159 | 256 | 1.61 |
+| `lib/heap` | 49 | 120 | 2.44 |
 | `lib/meri` | 1240 | 1962 | 1.58 |
 | `lib/paging` | 182 | 509 | 2.79 |
 | `lib/qr` | 496 | 830 | 1.67 |
-| `lib/uefi` | 1616 | 2596 | 1.60 |
-| `lib/x86` | 483 | 758 | 1.56 |
-| `tools/sextant` | 6944 | 12558 | 1.80 |
-| total | 15523 | 28131 | 1.81 |
+| `lib/uefi` | 1666 | 2666 | 1.60 |
+| `lib/x86` | 634 | 955 | 1.50 |
+| `tools/sextant` | 7712 | 13743 | 1.78 |
+| total | 17257 | 30909 | 1.79 |
 
 `sextant stats` prints the current numbers.
 

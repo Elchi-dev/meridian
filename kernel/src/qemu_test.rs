@@ -433,7 +433,8 @@ fn work_checks<W: Write>(report: &mut Report<'_, W>, others: usize, cycles: u64)
             && back
             && !send(0, squares, 1)
             && !send(others + 1, squares, 1)
-            && wait(others + 1, cycles).is_none(),
+            && wait(others + 1, cycles).is_none()
+            && !send(raw::interrupts::CORES, squares, 1),
         "a busy core should take no second job until it is done, and only other cores that run take jobs",
     );
     // Each job comes with an interrupt. Two that meet while one waits are

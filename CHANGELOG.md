@@ -10,7 +10,8 @@ at 0.x until the native API is stable.
 
 - **Repository**
   - The MIT and Apache-2.0 licences.
-  - Decision records 0001 to 0006, 0009 and 0010.
+  - Decision records 0001 to 0011.
+  - CI on GitHub Actions: lint, the test ratio, formatting, clippy, the Go and Rust tests and the QEMU test image on every push; sextant on macOS and Windows on `main` and weekly.
   - The docs: README, roadmap, architecture, testing, contributing and security.
 - **`.meri`, Meridian's settings format**
   - The specification.
@@ -21,10 +22,16 @@ at 0.x until the native API is stable.
   - `lint`, which rejects em and en dashes, leftover markers in comments, `todo!()` and `unimplemented!()`, `unsafe` outside `raw` modules, and outside code or files without an accepted decision record.
   - A `.meri` reader, with typed getters and layering of a local file over the shared one.
   - GPT, FAT32 and ISO 9660 writers that need no outside tools and give the same bytes for the same inputs on any machine.
+  - Settings from `sextant.meri`, with `sextant.local.meri` for one machine: build directory, QEMU memory, CPUs, accelerator, firmware, timeout and how long the firmware may stay silent.
+  - `build`, `image`, `run` and `test`. Images are stamped with the commit, so a commit always gives the same image. `test` boots the QEMU test image, presses the keys it asks for, and starts the machine again when the firmware hangs before printing anything.
 - **`lib/uefi`**
   - Status codes with their names and plain-English meanings.
   - GUIDs, the memory map reader, and the UCS-2 console encoder.
-  - The system table with its validation, and the firmware tables, written from UEFI 2.10.
+  - The system table with its validation, and the firmware tables, written from UEFI 2.10. Only slots Meridian calls have a function type.
+- **The loader (`boot`)**
+  - Banner with the firmware vendor and UEFI version, COM1 logging.
+  - The firmware memory map turned into kernel regions (`lib/bootinfo`), with usable memory losing every overlap with any other kind.
+  - A QEMU test image that runs every crate's checks against real firmware and ends QEMU with its verdict.
 
 ### Verified
 
@@ -46,7 +53,9 @@ at 0.x until the native API is stable.
   - writing a probe longer than one encoder piece, which arrived whole on the serial mirror
   - a missing glyph being only a warning
 
-  These checks were run by hand with the loader's test image, which is committed together with the loader.
+  - Enter and the down arrow, pressed by sextant through the QEMU monitor
+- **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF; `sextant test --qemu` runs all ten firmware checks in a few seconds.
+- **No machine is left behind.** A test that counts open files before and after two boots, and a test that kills the process that started QEMU and checks QEMU dies with it.
 
 ### Not built yet
 

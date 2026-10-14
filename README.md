@@ -53,7 +53,8 @@ Meridian is my attempt at the one I want:
 
 > Meridian is at the very beginning. Today there is the build tool, the
 > settings format, the disk image writers and a UEFI loader that boots in
-> QEMU and checks the firmware it runs on. **There is no kernel yet.**
+> QEMU, checks the firmware and keyboard it runs on and prepares the memory
+> map for the kernel. **There is no kernel yet.**
 > Everything below about the running system describes where Meridian is
 > going. [ROADMAP](docs/ROADMAP.md) and [TODO](TODO.md) say exactly what is
 > finished.
@@ -107,15 +108,15 @@ Wine or ReactOS ([ADR 0004](docs/adr/0004-clean-room.md)).
 
 | Part | What it is | State today |
 | --- | --- | --- |
-| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | prints a banner, and its QEMU test image checks the firmware |
+| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | prints a banner, converts the memory map, and its QEMU test image checks firmware and keyboard |
 | [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | not started (M1 to M3) |
 | `lib/uefi` | UEFI types and firmware calls, written from the specification | done for what the loader calls |
-| `lib` | `no_std` crates shared by kernel and userland, tested on the host | only `uefi` so far |
+| `lib` | `no_std` crates shared by kernel and userland, tested on the host | `uefi` and `bootinfo` so far |
 | `user` | init, the shell, command-line tools, the terminal, the apps | planned (M5, M7) |
 | [`win32`](docs/architecture/win32.md) | PE loader, Meridian's own ntdll, kernel32, user32, gdi32; 64-bit and 32-bit | planned (M6, M8) |
 | [Horizon](docs/architecture/horizon.md) | the desktop | designed, not built (M7) |
 | [Strata](docs/architecture/strata.md) | copy-on-write file system with snapshots, checksums and an instant file index | specified, not built (M4) |
-| [`sextant`](docs/architecture/sextant.md) | the build and dev tool, in Go, runs on Linux, macOS and Windows | `help`, `version`, `stats`, `lint`, the `.meri` reader and the GPT, FAT32 and ISO writers work; `doctor`, `build`, `image`, `run`, `test` and `mutate` are being built |
+| [`sextant`](docs/architecture/sextant.md) | the build and dev tool, in Go, runs on Linux, macOS and Windows | `build`, `image`, `run`, `test`, `stats`, `lint`, the `.meri` reader and the GPT, FAT32 and ISO writers work; `doctor` and `mutate` are being built |
 
 ---
 
@@ -130,15 +131,12 @@ git clone https://github.com/Elchi-dev/meridian
 cd meridian/tools/sextant
 go build -o sextant ./cmd/sextant
 
-./sextant stats      # code and test lines per component, works today
-./sextant lint       # the project rules no compiler knows, works today
+./sextant run        # builds the loader, writes an image, boots it in QEMU
+./sextant test       # host tests, then the QEMU test image on real firmware
+./sextant stats      # code and test lines per component
+./sextant lint       # the project rules no compiler knows
 ./sextant doctor     # checks and installs the tools you need (not built yet)
-./sextant run        # boots Meridian in QEMU (not built yet)
 ```
-
-Until `run` exists, the loader can be built with
-`cargo build -p boot --target x86_64-unknown-uefi` and booted by hand;
-[docs/testing.md](docs/testing.md) has the QEMU command line.
 
 ---
 
@@ -216,8 +214,10 @@ On 14 October 2026:
 
 | Component | Code | Tests | Ratio |
 | --- | --- | --- | --- |
-| `tools/sextant` | 3873 | 6643 | 1.71 |
-| `lib/uefi` | 620 | 937 | 1.51 |
+| `boot` | 272 | 476 | 1.75 |
+| `lib/bootinfo` | 28 | 45 | 1.60 |
+| `lib/uefi` | 620 | 956 | 1.54 |
+| `tools/sextant` | 4994 | 8196 | 1.64 |
 
 `sextant stats` prints the current numbers.
 

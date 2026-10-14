@@ -605,3 +605,52 @@ func TestClassifyAssemblyAndLinkerScripts(t *testing.T) {
 		}
 	}
 }
+
+// Cases sextant mutate showed were missing.
+func TestBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		lang Lang
+		src  string
+		want string
+	}{
+		{"rust string over two lines", Rust, "\"a\nb\" x", "string:\"a\nb\" ident:x"},
+		{"byte string over two lines", Rust, "b\"a\nb\" x", "string:b\"a\nb\" ident:x"},
+		{"C string over two lines", Rust, "c\"a\nb\" x", "string:c\"a\nb\" ident:x"},
+		{"line comment at the very end", Rust, "x // end", "ident:x comment:// end"},
+		{"lone r is an identifier", Rust, "r + 1", "ident:r punct:+ number:1"},
+		{"exponent with sign", Rust, "1e-3 2E+4", "number:1e-3 number:2E+4"},
+		{"lifetime at the very end", Rust, "&'a", "punct:& lifetime:'a"},
+		{"identifier at the very end", Go, "x := y", "ident:x punct::= ident:y"},
+		{"asm comments do not nest", Asm, "/* a /* b */ x */", "comment:/* a /* b */ ident:x punct:* punct:/"},
+		{"ld comments do not nest", LinkerScript, "/* a /* b */ x */", "comment:/* a /* b */ ident:x punct:* punct:/"},
+		{"asm division", Asm, "x / y", "ident:x punct:/ ident:y"},
+		{"ld division", LinkerScript, "x / y", "ident:x punct:/ ident:y"},
+	}
+	for _, tt := range tests {
+		if got := show(mustLex(t, tt.lang, tt.src)); got != tt.want {
+			t.Errorf("%s:\ngot  %s\nwant %s", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestBoundaryErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		lang Lang
+		src  string
+		msg  string
+	}{
+		{"char escape then a line break", Rust, "'\\a\n'", "char literal runs into the end of the line"},
+		{"lone quote at the very end", Rust, "x '", "a quote here starts neither a character nor a lifetime"},
+		{"asm string over two lines", Asm, "\"a\nb\"", "string literal runs into the end of the line"},
+		{"ld string over two lines", LinkerScript, "\"a\nb\"", "string literal runs into the end of the line"},
+	}
+	for _, tt := range tests {
+		_, err := Lex(tt.lang, []byte(tt.src))
+		var lexErr *Error
+		if !errors.As(err, &lexErr) || lexErr.Msg != tt.msg {
+			t.Errorf("%s: got %v, want %q", tt.name, err, tt.msg)
+		}
+	}
+}

@@ -49,6 +49,7 @@ type command struct {
 
 func commands() []command {
 	return []command{
+		{name: "adr", summary: "Start a new decision record: sextant adr new \"title\"", run: runADR},
 		{name: "build", summary: "Build the bootloader", run: runBuild},
 		{name: "ci", summary: "Run every check CI runs, in its order", run: runCI},
 		{name: "doctor", summary: "Check the tools Meridian needs and install what is missing", run: runDoctor},

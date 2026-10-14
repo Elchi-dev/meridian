@@ -23,11 +23,15 @@ harness on the host.
 
 ### Tests that use real tools as readers
 
-sextant's disk image writers are checked against independent readers:
+sextant's disk image writers, and Meridian's QR codes, are checked against
+independent readers:
 
 - GPT: `sfdisk --json` and `--verify`, and `fdisk -l`
 - FAT32: `fsck.fat -n`, `fatlabel`, `mdir` and `mcopy`
 - ISO: `xorriso -report_el_torito` and `-extract`, and `bsdtar`
+- QR codes: `zbarimg` must read back what `lib/qr` encoded, at every
+  version and level, and every module must match what `qrencode` makes
+  from the same bytes once both use the same mask
 
 Where a tool is missing, its check is skipped with a message naming the
 tool. With `SEXTANT_REQUIRE_TOOLS=1`, which CI on Linux sets, a missing tool

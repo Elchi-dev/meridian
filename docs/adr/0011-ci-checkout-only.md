@@ -14,7 +14,7 @@ CI uses exactly one outside action, `actions/checkout`, pinned to the full commi
 
 - Rust comes from the `rustup` already on the runners, which installs the version `rust-toolchain.toml` pins.
 - Go comes from the runner's Go, which fetches the version `go.mod` asks for (`GOTOOLCHAIN=auto`).
-- QEMU, OVMF and the cross-check tools (`dosfstools`, `mtools`, `xorriso`, `fdisk`) come from Ubuntu's packages.
+- QEMU, OVMF and the cross-check tools (`dosfstools`, `mtools`, `xorriso`, `fdisk`, and `qrencode` and `zbarimg` for the QR codes) come from Ubuntu's packages. Tests only run them to check Meridian's own output; nothing Meridian builds contains or calls them.
 
 Linux runs every check on every push, with KVM enabled for QEMU and `SEXTANT_REQUIRE_TOOLS=1`, so a missing tool fails instead of skipping tests. macOS and Windows build and test sextant on pushes to `main` and once a week, because sextant has to work on every host Samuel might build on.
 

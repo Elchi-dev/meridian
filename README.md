@@ -208,7 +208,8 @@ The test bar holds for every component, from the first commit on:
 - **Mutation testing.** Every change to the code that no test notices fails
   CI, unless `mutants.meri` explains why it cannot change behaviour.
 - **No mocks, no stubs.** Firmware code is tested against real firmware in
-  QEMU. The disk images are read back by `fsck.fat`, `sfdisk` and `xorriso`.
+  QEMU. The disk images are read back by `fsck.fat`, `sfdisk` and
+  `xorriso`, and QR codes by `zbarimg`.
   The `.meri` readers have to pass a shared conformance suite of 131 cases.
 
 On 14 October 2026:

@@ -681,3 +681,33 @@ func TestSourcesAgreeWithCollect(t *testing.T) {
 		t.Fatal("a file that does not lex must be an error")
 	}
 }
+
+func TestTestRegionsAtTheEdgesOfAFile(t *testing.T) {
+	srcs, err := Sources(tree(map[string]string{
+		"k/Cargo.toml": rustPackage,
+		"k/src/lib.rs": "#[cfg(test)]\nmod tests {}\n",
+		"k/src/cut.rs": "fn a() {}\n#[cfg(test)]\nmod",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]Source{}
+	for _, s := range srcs {
+		byPath[s.Path] = s
+	}
+	tests := []struct {
+		path string
+		want map[int]bool
+	}{
+		{"k/src/lib.rs", map[int]bool{1: true, 2: true, 3: false}},
+		{"k/src/cut.rs", map[int]bool{1: false, 2: true, 3: true, 4: false}},
+	}
+	for _, tt := range tests {
+		s := byPath[tt.path]
+		for line, want := range tt.want {
+			if s.IsTest(line) != want {
+				t.Errorf("%s line %d: IsTest = %v, want %v", tt.path, line, !want, want)
+			}
+		}
+	}
+}

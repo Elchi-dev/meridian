@@ -9,7 +9,7 @@ import (
 	"io/fs"
 	"math"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/srclex"
@@ -88,10 +88,10 @@ func Collect(fsys fs.FS) (*Report, error) {
 	}
 	report := &Report{}
 	for _, c := range sc.comps {
-		sort.Slice(c.Files, func(i, j int) bool { return c.Files[i].Path < c.Files[j].Path })
+		slices.SortFunc(c.Files, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
 		report.Components = append(report.Components, c)
 	}
-	sort.Slice(report.Components, func(i, j int) bool { return report.Components[i].Path < report.Components[j].Path })
+	slices.SortFunc(report.Components, func(a, b *Component) int { return strings.Compare(a.Path, b.Path) })
 	return report, nil
 }
 
@@ -334,7 +334,7 @@ type testRegions struct {
 func rustTestRegions(toks []srclex.Token) testRegions {
 	var out testRegions
 	for i := 0; i < len(toks); i++ {
-		if !is(toks, i, "#") {
+		if toks[i].Text != "#" {
 			continue
 		}
 		inner := is(toks, i+1, "!")
@@ -346,7 +346,7 @@ func rustTestRegions(toks []srclex.Token) testRegions {
 			continue
 		}
 		end := matching(toks, open)
-		if end < 0 {
+		if end == -1 {
 			return out
 		}
 		if !isTestCfg(toks[open+1 : end]) {
@@ -356,9 +356,10 @@ func rustTestRegions(toks []srclex.Token) testRegions {
 			out.wholeFile = true
 			return out
 		}
-		last := itemEnd(toks, end+1)
+		// The item, its attributes included, runs from the # to last.
+		last := itemEnd(toks, i)
 		out.lines = append(out.lines, [2]int{toks[i].Line, toks[last].EndLine})
-		if name := moduleName(toks[end+1 : last+1]); name != "" {
+		if name := moduleName(toks[i : last+1]); name != "" {
 			out.modules = append(out.modules, name)
 		}
 		i = last
@@ -417,7 +418,7 @@ func itemEnd(toks []srclex.Token, from int) int {
 			return i
 		case "{", "(", "[":
 			end := matching(toks, i)
-			if end < 0 {
+			if end == -1 {
 				return len(toks) - 1
 			}
 			if toks[i].Text == "{" {

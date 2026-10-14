@@ -35,7 +35,7 @@ func RustMutants(path string, src []byte, isTest func(line int) bool) ([]Mutant,
 			if unaryNot(src, toks, i) {
 				c.add(t.Start, t.End, "", "! to nothing")
 			}
-		case t.Kind == srclex.Punct && swaps[t.Text] != nil:
+		case swaps[t.Text] != nil:
 			if spacedBinary(src, toks, i) && !(t.Text == "|" && armPattern(src, t)) {
 				c.operator(t.Start, t.Text)
 			}
@@ -116,7 +116,7 @@ func endsOperand(t srclex.Token) bool {
 
 func spacedBinary(src []byte, toks []srclex.Token, i int) bool {
 	t := toks[i]
-	return i > 0 && t.Start > 0 && t.End < len(src) &&
+	return i > 0 && t.End < len(src) &&
 		src[t.Start-1] == ' ' && src[t.End] == ' ' && endsOperand(toks[i-1])
 }
 
@@ -147,7 +147,7 @@ func rustBody(c *collector, toks []srclex.Token, fn int) {
 	}
 	params := -1
 	angle := 0
-	for k := name + 1; k < len(toks) && params < 0; k++ {
+	for k := name; k < len(toks) && params == -1; k++ {
 		switch toks[k].Text {
 		case "<":
 			angle++
@@ -163,13 +163,13 @@ func rustBody(c *collector, toks []srclex.Token, fn int) {
 			return
 		}
 	}
-	if params < 0 {
+	if params == -1 {
 		return
 	}
 	afterParams := closer(toks, params) + 1
 	body, retEnd := -1, -1
 	depth := 0
-	for k := afterParams; k < len(toks) && body < 0; k++ {
+	for k := afterParams; k < len(toks) && body == -1; k++ {
 		switch toks[k].Text {
 		case "(", "[":
 			depth++
@@ -189,10 +189,10 @@ func rustBody(c *collector, toks []srclex.Token, fn int) {
 			}
 		}
 	}
-	if body < 0 {
+	if body == -1 {
 		return
 	}
-	if retEnd < 0 {
+	if retEnd == -1 {
 		retEnd = body
 	}
 	end := closer(toks, body)
@@ -200,7 +200,7 @@ func rustBody(c *collector, toks []srclex.Token, fn int) {
 		return
 	}
 	var ret []string
-	if afterParams < len(toks) && toks[afterParams].Text == "->" {
+	if toks[afterParams].Text == "->" {
 		for _, t := range toks[afterParams+1 : retEnd] {
 			ret = append(ret, t.Text)
 		}

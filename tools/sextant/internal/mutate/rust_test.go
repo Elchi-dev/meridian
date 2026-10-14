@@ -316,3 +316,27 @@ func TestRustUnterminatedBodiesGetNoBodyMutant(t *testing.T) {
 		t.Fatalf("unexpected %s", m.Desc)
 	}
 }
+
+func TestRustKeywordsMakeTheNextOperatorUnary(t *testing.T) {
+	if got := rustDescs(t, "const X: u8 = a - y;\n"); got != "- to +" {
+		t.Fatalf("after a name the - is binary, got %q", got)
+	}
+	keywords := []string{
+		"as", "break", "const", "continue", "dyn", "else", "enum", "extern", "fn", "for",
+		"if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+		"return", "static", "struct", "trait", "type", "unsafe", "use", "where", "while",
+	}
+	for _, kw := range keywords {
+		if got := rustDescs(t, "const X: u8 = "+kw+" - y;\n"); got != "" {
+			t.Errorf("after %s the - starts an expression, got %q", kw, got)
+		}
+	}
+}
+
+func TestRustTokensAtTheEndsOfTheFile(t *testing.T) {
+	for _, src := range []string{" - x", "x -", "x = !", "#", "#!", "#[cfg(x = true"} {
+		if got := rustDescs(t, src); got != "" {
+			t.Errorf("%q: got %q", src, got)
+		}
+	}
+}

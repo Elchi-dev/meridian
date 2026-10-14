@@ -90,6 +90,8 @@ pub enum Error {
     AlreadyMapped(u64),
     /// A larger page already covers the address.
     HugePageInTheWay(u64),
+    /// No page is mapped at the address.
+    NotMapped(u64),
 }
 
 #[must_use]
@@ -116,6 +118,13 @@ impl AddressSpace {
     pub fn new(frames: &mut impl Frames) -> Result<AddressSpace, Error> {
         let root = frames.allocate().ok_or(Error::OutOfFrames)?;
         Ok(AddressSpace { root })
+    }
+
+    /// The address space whose level 4 table is at `root`, such as the
+    /// one CR3 holds.
+    #[must_use]
+    pub fn existing(root: u64) -> AddressSpace {
+        AddressSpace { root }
     }
 
     /// The physical address of the level 4 table, which goes into CR3.
@@ -213,6 +222,41 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Takes the 4 KiB page at `virt` out and returns the frame it mapped.
+    /// The tables on the way stay; the processor may still remember the
+    /// page until its entry is flushed from the TLB.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a non-canonical or misaligned address, a larger page that
+    /// covers it, or no page there.
+    pub fn unmap(&mut self, frames: &mut impl Frames, virt: u64) -> Result<u64, Error> {
+        if !is_canonical(virt) {
+            return Err(Error::NotCanonical(virt));
+        }
+        if !virt.is_multiple_of(SIZE_4K) {
+            return Err(Error::Misaligned(virt));
+        }
+        let mut table = self.root;
+        for level in [4, 3, 2] {
+            let entry = frames.table(table)[index(virt, level)];
+            if entry & Flags::PRESENT.0 == 0 {
+                return Err(Error::NotMapped(virt));
+            }
+            if entry & Flags::HUGE != 0 && level != 4 {
+                return Err(Error::HugePageInTheWay(virt));
+            }
+            table = entry & Flags::ADDRESS;
+        }
+        let leaf = &mut frames.table(table)[index(virt, 1)];
+        if *leaf & Flags::PRESENT.0 == 0 {
+            return Err(Error::NotMapped(virt));
+        }
+        let frame = *leaf & Flags::ADDRESS;
+        *leaf = 0;
+        Ok(frame)
+    }
+
     /// Where `virt` leads: the physical address, the leaf entry's flags
     /// and the size of the page it belongs to.
     #[must_use]
@@ -300,6 +344,102 @@ mod tests {
 
     fn space(heap: &mut Heap) -> AddressSpace {
         AddressSpace::new(heap).unwrap()
+    }
+
+    #[test]
+    fn a_page_comes_out_and_its_frame_back() {
+        let mut heap = Heap::new();
+        let mut s = space(&mut heap);
+        let virt = KERNEL + 0x5000;
+        s.map(&mut heap, virt, 0x12_3000, PageSize::Size4K, RW)
+            .unwrap();
+        s.map(&mut heap, virt + SIZE_4K, 0x45_6000, PageSize::Size4K, RW)
+            .unwrap();
+        let tables = heap.used();
+        assert_eq!(s.unmap(&mut heap, virt), Ok(0x12_3000));
+        assert_eq!(s.translate(&mut heap, virt), None);
+        assert_eq!(
+            s.translate(&mut heap, virt + SIZE_4K).map(|t| t.0),
+            Some(0x45_6000),
+            "its neighbour stays"
+        );
+        assert_eq!(heap.used(), tables, "the tables on the way stay");
+        assert_eq!(
+            s.unmap(&mut heap, virt),
+            Err(Error::NotMapped(virt)),
+            "twice"
+        );
+        s.map(&mut heap, virt, 0x78_9000, PageSize::Size4K, RW)
+            .unwrap();
+        assert_eq!(
+            s.translate(&mut heap, virt).map(|t| t.0),
+            Some(0x78_9000),
+            "and in again"
+        );
+    }
+
+    #[test]
+    fn unmapping_needs_a_small_page_that_is_there() {
+        let mut heap = Heap::new();
+        let mut s = space(&mut heap);
+        s.map(&mut heap, HHDM, 0, PageSize::Size2M, RW).unwrap();
+        s.map(&mut heap, HHDM + SIZE_1G, SIZE_1G, PageSize::Size1G, RW)
+            .unwrap();
+        assert_eq!(
+            s.unmap(&mut heap, HHDM + SIZE_4K),
+            Err(Error::HugePageInTheWay(HHDM + SIZE_4K))
+        );
+        assert_eq!(
+            s.unmap(&mut heap, HHDM + SIZE_1G),
+            Err(Error::HugePageInTheWay(HHDM + SIZE_1G))
+        );
+        assert_eq!(
+            s.unmap(&mut heap, KERNEL),
+            Err(Error::NotMapped(KERNEL)),
+            "no table on the way"
+        );
+        assert_eq!(
+            s.unmap(&mut heap, HHDM + SIZE_2M),
+            Err(Error::NotMapped(HHDM + SIZE_2M)),
+            "a table, no page"
+        );
+        assert_eq!(
+            s.unmap(&mut heap, KERNEL + 8),
+            Err(Error::Misaligned(KERNEL + 8))
+        );
+        assert_eq!(
+            s.unmap(&mut heap, 0x8000_0000_0000),
+            Err(Error::NotCanonical(0x8000_0000_0000))
+        );
+        s.map(&mut heap, KERNEL, 0x1000, PageSize::Size4K, RW)
+            .unwrap();
+        assert_eq!(
+            s.unmap(&mut heap, KERNEL + SIZE_4K),
+            Err(Error::NotMapped(KERNEL + SIZE_4K)),
+            "the next entry of a table"
+        );
+    }
+
+    #[test]
+    fn an_existing_space_is_found_by_its_root() {
+        let mut heap = Heap::new();
+        let mut s = space(&mut heap);
+        s.map(&mut heap, KERNEL, 0x4_2000, PageSize::Size4K, RW)
+            .unwrap();
+        let mut again = AddressSpace::existing(s.root());
+        assert_eq!(again.root(), s.root());
+        assert_eq!(
+            again.translate(&mut heap, KERNEL).map(|t| t.0),
+            Some(0x4_2000)
+        );
+        again
+            .map(&mut heap, KERNEL + SIZE_4K, 0x4_3000, PageSize::Size4K, RW)
+            .unwrap();
+        assert_eq!(
+            s.translate(&mut heap, KERNEL + SIZE_4K).map(|t| t.0),
+            Some(0x4_3000),
+            "the same tables"
+        );
     }
 
     #[test]

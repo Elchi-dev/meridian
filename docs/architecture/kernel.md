@@ -93,10 +93,11 @@ startup interrupts through the x2APIC. The trampoline runs from real
 mode through protected mode into long mode on its tables, which map the
 trampoline where it is and the kernel's half as the kernel has it, and
 jumps into the kernel, which switches the core to the kernel's page
-tables and a 16 KiB stack of its own. There it loads the kernel's
-descriptor tables, turns its APIC on and halts: it has no task state of
-its own yet, so it may not take faults on the fault stack, and there is
-no work for it. The test image checks every core came in on its own
+tables and a 16 KiB stack of its own. There it loads the kernel's GDT
+and an IDT of its own with the same gates, turns its APIC on and halts.
+It has no task state of its own yet, so its gates all run on the stack
+it is on: a fault or an NMI there ends in the exception handler rather
+than in a reset of the whole machine. There is no work for it yet. The test image checks every core came in on its own
 stack and the kernel's tables, and that starting them did not wait out
 the time a core that never starts gets.
 

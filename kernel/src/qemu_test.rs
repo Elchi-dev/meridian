@@ -299,6 +299,11 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
             .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1)),
         "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables",
     );
+    report.check(
+        "kernel.smp.idt",
+        raw::interrupts::others_idt_mirrors(),
+        "the other cores' IDT should have every gate, none on a stack only a task state could name",
+    );
     // Each one waits 10 ms after its INIT and twice 0.2 ms after its
     // startups, and no longer when it starts at once.
     report.check(

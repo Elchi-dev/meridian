@@ -47,6 +47,10 @@ struct Tables {
     gdt: [u64; 5],
     tss: TaskState,
     idt: [Gate; 256],
+    /// The IDT the other cores load: the same gates, all on the stack the
+    /// core runs on, since those cores have no task state to name another
+    /// in, and a gate that named one would turn any NMI into a reset.
+    others_idt: [Gate; 256],
     fault_stack: [u8; FAULT_STACK],
 }
 
@@ -60,6 +64,7 @@ static TABLES: Shared = Shared(UnsafeCell::new(Tables {
     gdt: [0; 5],
     tss: TaskState::new(),
     idt: [Gate::MISSING; 256],
+    others_idt: [Gate::MISSING; 256],
     fault_stack: [0; FAULT_STACK],
 }));
 
@@ -98,6 +103,11 @@ pub fn install() {
     let spurious: unsafe extern "C" fn() = spurious_stub;
     t.idt[usize::from(TIMER)] = Gate::interrupt(timer as usize as u64, 0);
     t.idt[usize::from(SPURIOUS)] = Gate::interrupt(spurious as usize as u64, 0);
+    for (other, gate) in t.others_idt.iter_mut().zip(&t.idt) {
+        if gate.is_present() {
+            *other = Gate::interrupt(gate.handler(), 0);
+        }
+    }
     // SAFETY: the tables live in a static, so they stay where they are,
     // the GDT holds the selectors load_gdt uses and the task state at
     // TASK_STATE, and every present gate leads to a stub below.
@@ -122,19 +132,32 @@ pub fn load_on_another_core() {
     // the kernel's selectors, and every present gate leads to a stub.
     unsafe {
         x86::raw::load_gdt(&t.gdt);
-        x86::raw::load_idt(&t.idt);
+        x86::raw::load_idt(&t.others_idt);
     }
 }
 
-/// Whether this processor runs on the kernel's descriptor tables. Only the
-/// test image asks.
+/// Whether this processor runs on the kernel's GDT and the IDT for the
+/// other cores. Only the test image asks.
 #[cfg(feature = "qemu-test")]
 pub fn loaded_here() -> bool {
     // SAFETY: only the addresses of the tables are taken, not their
     // contents.
     let t = unsafe { &*TABLES.0.get() };
     x86::raw::gdt_register().base == (&raw const t.gdt) as u64
-        && x86::raw::idt_register().base == (&raw const t.idt) as u64
+        && x86::raw::idt_register().base == (&raw const t.others_idt) as u64
+}
+
+/// Whether the other cores' IDT has every gate of the first core's, each
+/// on the current stack. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn others_idt_mirrors() -> bool {
+    // SAFETY: install wrote the tables and nothing writes them again.
+    let t = unsafe { &*TABLES.0.get() };
+    t.idt.iter().zip(&t.others_idt).all(|(gate, other)| {
+        gate.is_present() == other.is_present()
+            && gate.handler() == other.handler()
+            && other.stack() == 0
+    }) && t.idt[2].stack() == 1
 }
 
 /// Where the stubs bring every exception and interrupt. A timer tick is

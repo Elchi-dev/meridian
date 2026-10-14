@@ -2,6 +2,7 @@ package mutate
 
 import (
 	"fmt"
+	"go/build"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,12 +44,23 @@ func Pick(sources []stats.Source, paths []string, changed map[string]bool) ([]st
 }
 
 // Gather finds the mutants of every source and says which component tests
-// each file.
+// each file. Go files this platform does not build, such as kill_windows.go
+// on Linux, are skipped: no test here could ever notice their mutants.
 func Gather(root string, sources []stats.Source) ([]Mutant, map[string]Target, error) {
 	var mutants []Mutant
 	targets := map[string]Target{}
 	for _, s := range sources {
-		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(s.Path)))
+		file := filepath.Join(root, filepath.FromSlash(s.Path))
+		if s.Lang == srclex.Go {
+			built, err := build.Default.MatchFile(filepath.Dir(file), filepath.Base(file))
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", s.Path, err)
+			}
+			if !built {
+				continue
+			}
+		}
+		src, err := os.ReadFile(file)
 		if err != nil {
 			return nil, nil, err
 		}

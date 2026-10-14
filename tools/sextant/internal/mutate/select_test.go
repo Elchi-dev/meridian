@@ -136,3 +136,22 @@ func TestGatherReportsBrokenAndMissingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGatherSkipsGoFilesThisPlatformDoesNotBuild(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"x/go.mod":   goModule,
+		"x/a.go":     "package m\n\nvar a = 1 < 2\n",
+		"x/never.go": "//go:build ignore\n\npackage m\n\nvar b = 1 < 2\n",
+	})
+	srcs, err := stats.Sources(os.DirFS(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, targets, err := Gather(root, srcs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 2 || ms[0].Path != "x/a.go" || len(targets) != 1 {
+		t.Fatalf("got %v %v", descs(ms), targets)
+	}
+}

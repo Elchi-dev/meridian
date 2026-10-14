@@ -53,10 +53,12 @@ at 0.x until the native API is stable.
   - A status screen with the processor, its cores, how long the machine has been up, kept current, and the memory map as a bar.
   - A panic screen in plain English with a QR code of the crash summary.
   - Cores from the ACPI MADT, and the time stamp counter measured against the ACPI timer.
+  - A physical frame allocator built from the memory map, and a 4 MiB heap from its frames, so `Box`, `Vec` and `String` work in the kernel. Both sit behind spin locks.
 - **Libraries**
   - `lib/font`: TrueType fonts parsed and rasterized without allocating, with Inter and JetBrains Mono under the SIL Open Font License (decision record 0012).
   - `lib/canvas`: rectangles and text on a framebuffer in either pixel order.
   - `lib/qr`: QR codes of every version and error correction level, without allocating.
+  - `lib/frames`: a bitmap of free units and the physical frame allocator built on it; `lib/heap`: the kernel's heap in blocks of the same bitmap, handed out as offsets.
   - `lib/acpi`: the root pointer, the XSDT, the MADT and the FADT, with their checksums.
   - `lib/meri`: `.meri` documents read in Rust without a heap, event by event or setting by setting, for the loader's settings.
   - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
@@ -92,7 +94,7 @@ at 0.x until the native API is stable.
 
   - Enter and the down arrow, pressed by sextant through the QEMU monitor
 - **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF.
-- **On real firmware.** `sextant test --qemu` runs 187 checks in QEMU with KVM: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its screens, five exceptions caused on purpose, a panic and a stack overflow.
+- **On real firmware.** `sextant test --qemu` runs 200 checks in QEMU with KVM: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its frames and heap, its screens, five exceptions caused on purpose, a panic and a stack overflow.
 - **Boot options on another disk.** A Go test gives the test image a second disk: an option with the whole path to a loader there starts and comes back, and one with the short path Windows uses goes through `BootNext` and a restart, after which the firmware starts it from the second disk.
 - **The keys and settings on a real machine.** Go tests press F on OVMF and see its setup after the restart, and boot the plain image with `verbose` and `default = example` and see the log, the countdown and the example starting.
 - **What a person sees.** The boot, log, status, panic and double fault screens are kept as PNG files. A Go test checks their colours and reads the QR codes with `zbarimg`, and on the plain image checks that only the uptime changes in 2.5 seconds.

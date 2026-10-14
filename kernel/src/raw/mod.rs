@@ -3,6 +3,7 @@
 //! what happens when the kernel has to stop.
 
 pub mod interrupts;
+pub mod memory;
 
 #[cfg(not(test))]
 use core::cell::UnsafeCell;

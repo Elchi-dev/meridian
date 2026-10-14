@@ -58,6 +58,8 @@ dependencies = [
  "bootinfo",
  "canvas",
  "font",
+ "frames",
+ "heap",
  "qr",
  "x86",
 ]

@@ -40,6 +40,7 @@ pub fn run(
     machine: &Machine,
     tsc_hz: Option<u64>,
     display: Option<&Display<'_>>,
+    free: Option<usize>,
     serial: &mut Com1,
 ) -> ! {
     let mut report = Report {
@@ -126,6 +127,7 @@ pub fn run(
     );
 
     machine_checks(&mut report, machine, tsc_hz);
+    memory_checks(&mut report, regions, free);
     screen_checks(&mut report, info, screen);
     handover_screen_checks(&mut report, info, regions, display);
     if screen.is_some() {
@@ -373,6 +375,121 @@ fn handover_screen_checks<W: Write>(
         raw::back_buffer(info, regions).is_none(),
         "the room for a frame should be handed out only once",
     );
+}
+
+fn memory_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    regions: &[MemoryRegion],
+    free: Option<usize>,
+) {
+    use crate::raw::memory::{FRAMES, heap_free};
+    use alloc::boxed::Box;
+    use alloc::format;
+    use alloc::vec::Vec;
+    use frames::FRAME;
+
+    // The bits, the heap and the heap's bits came out of the free frames.
+    let words = frames::Frames::words_for(kernel::ram_top(regions)) as u64;
+    let bits_frames = (words * 8).div_ceil(FRAME);
+    let heap_frames = kernel::HEAP_BYTES as u64 / FRAME;
+    let heap_bits_frames = (heap::Heap::words_for(kernel::HEAP_BYTES) as u64 * 8).div_ceil(FRAME);
+    report.check(
+        "kernel.frames.counted",
+        free.map(|f| f as u64)
+            == Some(kernel::usable_frames(regions) - bits_frames - heap_frames - heap_bits_frames),
+        "every whole free frame above 1 MiB should be free, but for the allocator's own and the heap",
+    );
+
+    let before = frame_checks(report, regions);
+    report.check(
+        "kernel.lock.let_go",
+        !FRAMES.is_locked(),
+        "a lock should be free again once let go",
+    );
+    let empty = heap_free();
+    let boxed = Box::new(0x1234_5678_u64);
+    let numbers: Vec<u32> = (0..100_000).collect();
+    let text = format!("{} frames, {}", before, *boxed);
+    let sum: u64 = numbers.iter().map(|&n| u64::from(n)).sum();
+    report.check(
+        "kernel.heap.used",
+        *boxed == 0x1234_5678
+            && sum == 4_999_950_000
+            && text.ends_with("frames, 305419896")
+            && heap_free() < empty - 400_000,
+        "Box, Vec and String should work on the kernel's heap",
+    );
+    drop((boxed, numbers, text));
+    let mut huge: Vec<u8> = Vec::new();
+    report.check(
+        "kernel.heap.given_back",
+        heap_free() == empty
+            && huge.try_reserve(kernel::HEAP_BYTES + 1).is_err()
+            && heap_free() == empty,
+        "the heap should get everything back, and refuse more than it holds",
+    );
+}
+
+/// Hands out frames, writes them, gives them back, and returns how many
+/// were free before. The lock on the frames is let go on return.
+fn frame_checks<W: Write>(report: &mut Report<'_, W>, regions: &[MemoryRegion]) -> usize {
+    use crate::raw::memory::{FRAMES, fill_frame, frame_holds};
+    use frames::FRAME;
+
+    report.check(
+        "kernel.frames.once",
+        crate::raw::memory::take(regions).is_none(),
+        "the frame allocator should be built once, so its bits have one owner",
+    );
+    let mut frames = FRAMES.lock();
+    report.check(
+        "kernel.lock.held",
+        FRAMES.is_locked(),
+        "a lock should show as held while someone holds it",
+    );
+    let Some(frames) = frames.as_mut() else {
+        report.check(
+            "kernel.frames.handed_out",
+            false,
+            "the frame allocator should be there",
+        );
+        return 0;
+    };
+    let before = frames.free_frames();
+    let mut got = [0u64; 64];
+    for (i, slot) in got.iter_mut().enumerate() {
+        if let Some(a) = frames.alloc() {
+            *slot = a;
+            fill_frame(a, 0x5eed_0000 + i as u64);
+        }
+    }
+    let distinct = got.iter().enumerate().all(|(i, a)| !got[..i].contains(a));
+    report.check(
+        "kernel.frames.handed_out",
+        distinct
+            && got.iter().all(|&a| {
+                a >= frames::LOW && kernel::covered(regions, RegionKind::USABLE, a, FRAME)
+            })
+            && got
+                .iter()
+                .enumerate()
+                .all(|(i, &a)| frame_holds(a, 0x5eed_0000 + i as u64)),
+        "frames should be free memory above 1 MiB, each once, and keep what is written to them",
+    );
+    let given_back = got.iter().all(|&a| frames.free(a).is_ok());
+    let run = frames.alloc_run(512, 512);
+    let run_back = run.is_some_and(|r| (0..512).all(|i| frames.free(r + i * FRAME).is_ok()));
+    report.check(
+        "kernel.frames.given_back",
+        given_back
+            && run.is_some_and(|r| r.is_multiple_of(2 << 20))
+            && run_back
+            && frames.free_frames() == before
+            && frames.free(got[0]).is_err(),
+        "frames should come back, a 2 MiB run too, and not twice",
+    );
+
+    before
 }
 
 fn screen_checks<W: Write>(

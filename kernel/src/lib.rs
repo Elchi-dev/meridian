@@ -91,6 +91,41 @@ pub fn memory(regions: &[MemoryRegion]) -> &[MemoryRegion] {
     &regions[..count]
 }
 
+/// The kernel's heap: 4 MiB of frames on a 2 MiB boundary, the largest
+/// alignment it gives.
+pub const HEAP_BYTES: usize = 4 << 20;
+
+/// The free memory of the map, as start and length, for the frame
+/// allocator.
+pub fn free_ranges(regions: &[MemoryRegion]) -> impl Iterator<Item = (u64, u64)> + '_ {
+    regions
+        .iter()
+        .filter(|r| r.kind == RegionKind::USABLE)
+        .map(|r| (r.start, r.pages * MemoryRegion::PAGE_SIZE))
+}
+
+/// Where the frame allocator keeps its `bytes` of bits: the start of the
+/// first free region above the first MiB with room for them.
+#[must_use]
+pub fn bits_home(regions: &[MemoryRegion], bytes: u64) -> Option<u64> {
+    free_ranges(regions).find_map(|(start, len)| {
+        let first = start.max(frames::LOW);
+        (first.saturating_add(bytes) <= start + len).then_some(first)
+    })
+}
+
+/// How many frames the allocator starts with: every whole frame of free
+/// memory above the first MiB.
+#[must_use]
+pub fn usable_frames(regions: &[MemoryRegion]) -> u64 {
+    free_ranges(regions)
+        .map(|(start, len)| {
+            let first = start.max(frames::LOW).div_ceil(frames::FRAME);
+            ((start + len) / frames::FRAME).saturating_sub(first)
+        })
+        .sum()
+}
+
 /// A number of bytes, written in the largest binary unit it reaches, with
 /// one decimal when that is not a whole number: `1.5 GiB`, `512 MiB`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +163,27 @@ pub fn greet(out: &mut impl Write, regions: &[MemoryRegion]) -> fmt::Result {
         Size(bytes_of(regions, RegionKind::KERNEL)),
         regions.len()
     )
+}
+
+/// What the kernel has to hand out after taking its heap: `frames` free
+/// frames, or nothing when there was no room.
+///
+/// # Errors
+///
+/// Those of `out`.
+pub fn hand_out(out: &mut impl Write, frames: Option<usize>) -> fmt::Result {
+    match frames {
+        Some(n) => writeln!(
+            out,
+            "Memory to hand out: {} in frames, and a heap of {}",
+            Size(n as u64 * frames::FRAME),
+            Size(HEAP_BYTES as u64)
+        ),
+        None => writeln!(
+            out,
+            "kernel: there is no room for the frame allocator or the heap"
+        ),
+    }
 }
 
 /// What the kernel learned about the processor, for the serial log.
@@ -263,6 +319,30 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_allocator_starts_from_the_free_memory_above_one_mib() {
+        let r = sample();
+        assert_eq!(
+            free_ranges(&r).collect::<Vec<_>>(),
+            [(0, 0x9f * 4096), (0x20_0000, 0x1000_0000)]
+        );
+        assert_eq!(usable_frames(&r), 0x1_0000, "the low region gives nothing");
+        assert_eq!(bits_home(&r, 0x2000), Some(0x20_0000));
+        assert_eq!(
+            bits_home(&r, 0x1000_0000),
+            Some(0x20_0000),
+            "exactly the region"
+        );
+        assert_eq!(bits_home(&r, 0x1000_0001), None);
+        assert_eq!(bits_home(&r, u64::MAX), None);
+        // A region across the first MiB counts from there on.
+        let across = [region(0xf_0000, 0x20, RegionKind::USABLE)];
+        assert_eq!(usable_frames(&across), 0x10);
+        assert_eq!(bits_home(&across, 0x10_000), Some(0x10_0000));
+        assert_eq!(bits_home(&across, 0x10_001), None);
+        assert_eq!(HEAP_BYTES % (2 << 20), 0, "a whole number of 2 MiB");
+    }
+
+    #[test]
     fn the_back_buffer_is_one_frame_in_kernel_memory() {
         let r = sample();
         let with = |at: u64, width: u32, height: u32| {
@@ -349,6 +429,22 @@ mod tests {
             format!(
                 "Meridian kernel {VERSION}\nMemory: 256.6 MiB free, 1 MiB taken by the kernel, 5 regions\n"
             )
+        );
+    }
+
+    #[test]
+    fn what_there_is_to_hand_out() {
+        let mut out = String::new();
+        hand_out(&mut out, Some(3 * 256 + 128)).unwrap();
+        assert_eq!(
+            out,
+            "Memory to hand out: 3.5 MiB in frames, and a heap of 4 MiB\n"
+        );
+        out.clear();
+        hand_out(&mut out, None).unwrap();
+        assert_eq!(
+            out,
+            "kernel: there is no room for the frame allocator or the heap\n"
         );
     }
 

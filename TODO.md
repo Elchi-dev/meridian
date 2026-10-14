@@ -81,7 +81,8 @@ Loader and UEFI:
 
 ## M2: Memory and CPUs
 
-- [ ] Physical frame allocator, virtual memory, kernel heap
+- [x] Physical frame allocator and kernel heap (`lib/frames`, `lib/heap`)
+- [ ] Virtual memory: the kernel maps and unmaps pages of its own
 - [ ] Local APIC and x2APIC, HPET and TSC
 - [ ] All cores started
 - [ ] ACPI tables parsed

@@ -23,6 +23,8 @@ acpi = { path = "../lib/acpi" }
 bootinfo = { path = "../lib/bootinfo" }
 canvas = { path = "../lib/canvas" }
 font = { path = "../lib/font" }
+frames = { path = "../lib/frames" }
+heap = { path = "../lib/heap" }
 qr = { path = "../lib/qr" }
 x86 = { path = "../lib/x86" }
 

@@ -82,7 +82,9 @@ is what exists today; everything after it is still to come.
 ## Memory (M2)
 
 - a higher-half kernel, with a direct map of all physical memory
-- a physical frame allocator built from the loader's memory map
+- a physical frame allocator built from the loader's memory map. Exists: `lib/frames` keeps one bit for each 4 KiB frame, set while it is free, in free memory it then takes out for itself, and hands out nothing below the first MiB, which stays for starting the other cores. Single frames come from the lowest free one on; runs of frames come on any power of two alignment
+- the kernel heap. Exists: 4 MiB of frames on a 2 MiB boundary, in blocks of 16 bytes kept in the same kind of bitmap (`lib/heap`), behind Rust's global allocator, so `Box`, `Vec` and `String` work in the kernel. Both sit behind spin locks, ready for more cores
+- the test image hands out frames and checks they are free memory above 1 MiB, each once, and keep what is written to them; takes a 2 MiB run; gives all back; uses the heap and sees every byte come back
 - page tables with NX on everything that is not code, W^X everywhere, and guard pages below every stack
 - SMEP and SMAP on from the start; KASLR from M3
 

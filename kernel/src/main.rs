@@ -5,6 +5,8 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 
+extern crate alloc;
+
 #[cfg(feature = "qemu-test")]
 mod qemu_test;
 #[allow(unsafe_code)]
@@ -27,6 +29,8 @@ fn up(tsc_hz: Option<u64>) -> Option<u64> {
 
 fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     let _ = kernel::greet(serial, regions);
+    let free = raw::memory::take(regions);
+    let _ = kernel::hand_out(serial, free);
     let machine = machine::read(&raw::DirectMap(regions), info.rsdp);
     let tsc_hz = machine
         .pm_timer
@@ -52,7 +56,15 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
             );
         }
     }
-    finish(info, regions, &machine, tsc_hz, display.as_mut(), serial)
+    finish(
+        info,
+        regions,
+        &machine,
+        tsc_hz,
+        display.as_mut(),
+        free,
+        serial,
+    )
 }
 
 #[cfg(feature = "qemu-test")]
@@ -62,9 +74,18 @@ fn finish(
     machine: &Machine,
     tsc_hz: Option<u64>,
     display: Option<&mut Display<'_>>,
+    free: Option<usize>,
     serial: &mut Com1,
 ) -> ! {
-    qemu_test::run(info, regions, machine, tsc_hz, display.map(|d| &*d), serial)
+    qemu_test::run(
+        info,
+        regions,
+        machine,
+        tsc_hz,
+        display.map(|d| &*d),
+        free,
+        serial,
+    )
 }
 
 /// Keeps the uptime on the screen current. There are no interrupts yet to
@@ -76,6 +97,7 @@ fn finish(
     _: &Machine,
     tsc_hz: Option<u64>,
     display: Option<&mut Display<'_>>,
+    _: Option<usize>,
     serial: &mut Com1,
 ) -> ! {
     let _ = writeln!(serial, "There is nothing more to do yet.");

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,9 +192,16 @@ func TestCIRunsInTheRepositoryWithItsBuildFolder(t *testing.T) {
 	}
 	t.Setenv("GITHUB_ACTIONS", "")
 	got, err := ci()
-	want := `"target_directory":"` + filepath.Join(root, "out", "cargo") + `"`
-	if err != nil || !strings.Contains(got, want) || !strings.HasPrefix(got, "== 1/1 where Cargo builds\n") {
+	if err != nil || !strings.HasPrefix(got, "== 1/1 where Cargo builds\n") {
 		t.Fatalf("got %v\n%s", err, got)
+	}
+	var metadata struct {
+		TargetDirectory string `json:"target_directory"`
+	}
+	_, rest, _ := strings.Cut(got, "\n")
+	line, _, _ := strings.Cut(rest, "\n")
+	if err := json.Unmarshal([]byte(line), &metadata); err != nil || metadata.TargetDirectory != filepath.Join(root, "out", "cargo") {
+		t.Fatalf("Cargo builds in %q (%v), not in the folder the settings name\n%s", metadata.TargetDirectory, err, got)
 	}
 	t.Setenv("GITHUB_ACTIONS", "true")
 	if got, err := ci(); err != nil || !strings.HasPrefix(got, "::group::where Cargo builds\n") {

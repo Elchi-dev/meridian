@@ -7,7 +7,7 @@
 //! along each row turns the differences into exact coverage. Up and down
 //! edges cancel, so holes in glyphs come out empty.
 
-use crate::math::{ceil, clamp, floor};
+use crate::math::{ceil, floor};
 use crate::{Error, OutlineSink, Point};
 
 /// How far a flattened curve may stray from the true one, in pixels.
@@ -82,27 +82,19 @@ impl<'a> Rasterizer<'a> {
             (-1.0, p1, p0)
         };
         let h = self.height as f32;
-        let y_start = clamp(top.y, 0.0, h);
-        let y_end = clamp(bottom.y, 0.0, h);
+        let y_start = top.y.clamp(0.0, h);
+        let y_end = bottom.y.clamp(0.0, h);
         if y_start >= y_end {
             return;
         }
         let dxdy = (bottom.x - top.x) / (bottom.y - top.y);
         let mut x = top.x + (y_start - top.y) * dxdy;
         for row in floor(y_start) as usize..ceil(y_end) as usize {
-            let y0 = if (row as f32) > y_start {
-                row as f32
-            } else {
-                y_start
-            };
-            let y1 = if ((row + 1) as f32) < y_end {
-                (row + 1) as f32
-            } else {
-                y_end
-            };
+            let y0 = (row as f32).max(y_start);
+            let y1 = ((row + 1) as f32).min(y_end);
             let dy = y1 - y0;
             let x_next = x + dxdy * dy;
-            self.accumulate(row, x, x_next, dy * dir);
+            self.accumulate(row, x, x_next, dir * dy);
             x = x_next;
         }
     }
@@ -116,8 +108,8 @@ impl<'a> Rasterizer<'a> {
     )]
     fn accumulate(&mut self, row: usize, xa: f32, xb: f32, d: f32) {
         let w = self.width as f32;
-        let (xa, xb) = (clamp(xa, 0.0, w), clamp(xb, 0.0, w));
-        let (x0, x1) = if xa < xb { (xa, xb) } else { (xb, xa) };
+        let (xa, xb) = (xa.clamp(0.0, w), xb.clamp(0.0, w));
+        let (x0, x1) = (xa.min(xb), xa.max(xb));
         let base = row * (self.width + 2);
         let first = floor(x0) as usize;
         let last = ceil(x1) as usize;
@@ -206,7 +198,7 @@ fn to_byte(sum: f32) -> u8 {
 fn segments(p0: Point, c: Point, p2: Point) -> u32 {
     let dx = (p0.x - 2.0 * c.x + p2.x).abs();
     let dy = (p0.y - 2.0 * c.y + p2.y).abs();
-    let spread = if dx > dy { dx } else { dy };
+    let spread = dx.max(dy);
     let mut n = 1;
     while n < MAX_SEGMENTS && spread > 4.0 * TOLERANCE * (n * n) as f32 {
         n += 1;

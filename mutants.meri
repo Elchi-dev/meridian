@@ -58,3 +58,17 @@ allow {
     mutation = "true to false"
     reason = "an application that was started and came back is unloaded by the firmware itself, so the unload a forgotten flag would add finds no image and changes nothing the tests can see"
 }
+
+allow {
+    file = "lib/font/src/raster.rs"
+    line = "let (dir, top, bottom) = if p0.y < p1.y {"
+    mutation = "< to <="
+    reason = "the two only differ for a level edge, which covers no rows and returns before its direction is used"
+}
+
+allow {
+    file = "lib/font/src/raster.rs"
+    line = "sum += cell;"
+    mutation = "+= to -="
+    reason = "coverage is the size of the running sum whichever its sign, since outlines may wind either way, so summing the cells negated gives the same bytes"
+}

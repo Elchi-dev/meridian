@@ -14,16 +14,6 @@ pub(crate) fn ceil(x: f32) -> i32 {
     if (t as f32) < x { t + 1 } else { t }
 }
 
-pub(crate) fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
-    if x < lo {
-        lo
-    } else if x > hi {
-        hi
-    } else {
-        x
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,14 +30,5 @@ mod tests {
             assert_eq!(floor(x), f, "floor({x})");
             assert_eq!(ceil(x), c, "ceil({x})");
         }
-    }
-
-    #[test]
-    fn clamp_keeps_values_in_range() {
-        assert_eq!(clamp(-1.0, 0.0, 4.0), 0.0);
-        assert_eq!(clamp(0.0, 0.0, 4.0), 0.0);
-        assert_eq!(clamp(2.5, 0.0, 4.0), 2.5);
-        assert_eq!(clamp(4.0, 0.0, 4.0), 4.0);
-        assert_eq!(clamp(9.0, 0.0, 4.0), 4.0);
     }
 }

@@ -64,7 +64,7 @@ at 0.x until the native API is stable.
 
 - **Test lines.** 26568 lines of tests for 15002 lines of code, a ratio of 1.77, and every component at 1.5 or more.
 - **sextant.** All tests pass with the race detector, at 6826 lines of code and 12153 lines of tests, a ratio of 1.78, on Linux, macOS and Windows.
-- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`.
+- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest.
 - **`lib/uefi`.** 97 host tests pass at a ratio of 1.53. Every field offset of the firmware tables is checked against the specification.
 - **Mutation testing.** `sextant mutate` finds no surviving mutant in sextant; a full run takes about an hour and a half. New Rust code is mutated by hand as it is written, and every mutant was killed, or the code was simplified until the mutant disappeared. Two equivalent mutants are listed in `mutants.meri`.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.

@@ -97,6 +97,7 @@ Still to come:
 - **Signing.** sextant signs `meridian.efi` with an Authenticode signer of its own, written with Go's standard library. Exists; see [sextant.md](sextant.md#signing).
 - **The key.** On the very first boot shim cannot check Meridian's signature yet and opens MokManager. The person picks "Enroll key from disk" and Meridian's certificate once. Every later boot is silent, and no firmware setting has to change.
 - **Release and development keys.** Release images are signed with the project key, kept as a CI secret. Development images use a key that sextant makes on each machine.
+- **Tested against real firmware.** Ubuntu's OVMF comes with a Secure Boot build and a variable store that holds its "snakeoil" test key as PK, KEK and db, and with that key. A Go test signs the loader with it, and OVMF starts it with Secure Boot on, through to the kernel; the same loader unsigned, or signed with a key nobody enrolled, is refused with "Access Denied". A loader signed over a wrong digest is refused too, so the test can fail.
 - **The kernel is not checked yet.** Checking its signature needs Meridian's own SHA-256 and signature code; until then the chain of trust ends at the loader.
 
 ### Settings

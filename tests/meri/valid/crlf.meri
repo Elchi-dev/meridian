@@ -1,0 +1,12 @@
+a = 1
+b {
+    c = "x"
+}
+t = """
+    line one
+    line two
+    """
+l = [
+  1,
+]
+# comment

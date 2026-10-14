@@ -1,0 +1,13 @@
+name string "Meridian"
+enabled bool true
+verbose bool false
+cpus int 4
+accel word kvm
+arch word x86_64
+level-2 word info
+_private int 1
+Key word upper
+key word lower
+true int 1
+spaced string "lots of space"
+tight string "no spaces"

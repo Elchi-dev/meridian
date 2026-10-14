@@ -1,0 +1,44 @@
+motd = """
+    Welcome to Meridian.
+      Indentation inside the text is kept.
+    """
+empty = """
+    """
+blank-lines = """
+    first
+
+    third
+  
+    """
+long-blank = """
+    a
+      	
+    b
+    """
+tabs = """
+	a	b
+	"""
+no-indent = """
+left
+"""
+backslash = """
+    C:\Meridian\n stays
+    """
+quotes = """
+    "quoted" and "" and a " alone
+    """
+trailing-newline = """
+    line
+
+    """
+in-block {
+    text = """
+        nested
+        """ # comment after
+}
+list = ["""
+    in a list
+    """, after]
+closing-brace { t = """
+    x
+    """ }

@@ -76,7 +76,7 @@ A `}` with no open block is an error (`unexpected-close`). Reaching the end of t
 
 Keys and block names follow the same rule: a letter (`A` to `Z`, `a` to `z`) or `_`, followed by any number of letters, digits, `_` and `-`. They are case-sensitive, so `Size` and `size` are different keys.
 
-A line that should start an item but starts with any other character is an error (`unexpected-character`). After a key, the next thing on the line must be `=`, `{` or a label. Anything else, including the end of the line, is an error (`expected-equals`).
+A line that should start an item but starts with any other character is an error (`unexpected-character`). After a key, the next thing on the line must be `=`, `{` or a label. Anything else, including the end of the line, is an error (`expected-equals`). After a label, the next thing on the line must be `{`; anything else is an error (`expected-brace`).
 
 Within one block:
 
@@ -153,7 +153,7 @@ A string is enclosed in double quotes and stays on one line. Inside it, every ch
 | `\0` | U+0000 |
 | `\u{XXXX}` | the Unicode scalar value with 1 to 6 hexadecimal digits XXXX |
 
-`\u{}` must contain 1 to 6 hexadecimal digits and name a Unicode scalar value: U+D800 to U+DFFF and anything above U+10FFFF are not allowed (`invalid-unicode-escape`). Any other character after `\` is an error (`invalid-escape`). Both are reported at the backslash.
+`\u{}` must contain 1 to 6 hexadecimal digits and name a Unicode scalar value: U+D800 to U+DFFF and anything above U+10FFFF are not allowed (`invalid-unicode-escape`). Anything else after `\`, including the end of the line or of the document, is an error (`invalid-escape`). Both are reported at the backslash.
 
 A string that reaches the end of its line or of the document before its closing quote is an error (`unterminated-string`), reported at the opening quote.
 
@@ -170,7 +170,7 @@ motd = """
 
 - The opening `"""` must be the last thing on its line, apart from whitespace. Anything else after it, including a comment, is an error (`text-opening`), reported at that character.
 - The lines that follow are the content, up to the first line that consists of whitespace followed by `"""`. That closing line ends the text. After the closing `"""` the usual rules for the end of an item apply, so it may be followed by whitespace, a comment, a `}`, or inside a list by `,` or `]`.
-- The whitespace before the closing `"""` is the indentation. It is removed from the start of every content line. A content line made only of spaces and tabs becomes an empty line even when it is shorter than the indentation. Any other content line must start with exactly the same whitespace characters as the indentation; if it does not, that is an error (`text-indent`) reported at column 1 of that line.
+- The whitespace before the closing `"""` is the indentation. It is removed from the start of every content line. A content line made only of spaces and tabs becomes an empty line, whatever its length. Any other content line must start with exactly the same whitespace characters as the indentation; if it does not, that is an error (`text-indent`) reported at column 1 of that line.
 - The content lines are joined with line feeds. The line ending before the closing line is not part of the text, so text never ends in a line feed unless an empty content line is placed before the closing line. Line endings in the content are always line feeds, whether the document uses `LF` or `CR LF`.
 - No escapes are processed in text; a backslash is a backslash. Tabs are allowed, other control characters are not.
 - A document that ends before the closing line is an error (`unterminated-text`), reported at the opening `"""`.
@@ -202,6 +202,7 @@ sextant.meri:4:5: "cpus" is already set on line 2; remove one of them
 | `lone-carriage-return` | a carriage return without a line feed after it |
 | `unexpected-character` | a character that cannot start an item or a value |
 | `expected-equals` | a key without `=`, `{` or a label after it |
+| `expected-brace` | a label without `{` after it |
 | `expected-value` | no value where one must start |
 | `expected-newline` | something after a complete item on the same line |
 | `expected-comma` | two list values without a comma between them |

@@ -1,0 +1,34 @@
+qemu#0 block
+qemu#0.memory quantity 512 MiB
+qemu#0.cpus int 4
+display#0 block "DP-1"
+display#0.scale quantity 125 %
+display#1 block "HDMI-1"
+display#1.scale quantity 100 %
+display#2 block "primary"
+display#2.refresh quantity 60 Hz
+rule#0 block
+rule#0.allow word ssh
+rule#1 block
+rule#1.allow word http
+empty#0 block
+also-empty#0 block
+spaced-empty#0 block
+outer#0 block
+outer#0.middle#0 block
+outer#0.middle#0.inner#0 block
+outer#0.middle#0.inner#0.level int 3
+outer#0.after bool true
+one#0 block
+one#0.two#0 block
+one#0.two#0.three int 3
+same-line#0 block
+same-line#0.first int 1
+same-line#0.second int 2
+quoted#0 block ""
+mixed#0 block "a"
+mixed#1 block
+mixed#2 block
+flag#0 block "true"
+city#0 block "Zürich"
+tabbed#0 block "tab\there"

@@ -1,0 +1,6 @@
+a int 1
+b#0 block
+b#0.c string "x"
+t string "line one\nline two"
+l list 1
+l[0] int 1

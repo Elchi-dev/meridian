@@ -1,0 +1,11 @@
+a int 1
+b#0 block
+b#0.c int 2
+l list 2
+l[0] int 1
+l[1] int 2
+t string "# not a comment inside text"
+label#0 block "x"
+d int 1
+e word kvm
+f string "s"

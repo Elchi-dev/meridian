@@ -7,6 +7,7 @@ pub use canvas::Text;
 
 pub mod clock;
 pub mod exceptions;
+pub mod machine;
 pub mod panic;
 pub mod screen;
 
@@ -39,6 +40,18 @@ pub fn covered(regions: &[MemoryRegion], kind: RegionKind, start: u64, len: u64)
     regions
         .iter()
         .any(|r| r.kind == kind && r.start <= start && start.saturating_add(len) <= r.end())
+}
+
+/// Whether the kernel may read `len` bytes from physical `start` through
+/// the direct map: they lie in one region of the map, of any kind, and
+/// below the end of memory or 4 GiB, which the loader always maps.
+#[must_use]
+pub fn readable(regions: &[MemoryRegion], start: u64, len: u64) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    end <= ram_top(regions).max(4 << 30)
+        && regions.iter().any(|r| r.start <= start && end <= r.end())
 }
 
 /// Where memory ends: the end of the last region that is not reserved.
@@ -100,6 +113,29 @@ pub fn greet(out: &mut impl Write, regions: &[MemoryRegion]) -> fmt::Result {
         Size(bytes_of(regions, RegionKind::KERNEL)),
         regions.len()
     )
+}
+
+/// What the kernel learned about the processor, for the serial log.
+///
+/// # Errors
+///
+/// Fails when the writer does.
+pub fn describe(
+    out: &mut impl Write,
+    machine: &machine::Machine,
+    tsc_hz: Option<u64>,
+) -> fmt::Result {
+    match machine.cores {
+        Some(n) => writeln!(out, "Cores: {n}")?,
+        None => writeln!(out, "Cores: not listed in the ACPI tables")?,
+    }
+    match tsc_hz {
+        Some(hz) => writeln!(out, "Time stamp counter: {} MHz", hz / 1_000_000),
+        None => writeln!(
+            out,
+            "Time stamp counter: not measured, the ACPI timer is missing"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +248,32 @@ mod tests {
     }
 
     #[test]
+    fn only_mapped_regions_are_readable() {
+        let mut r = sample();
+        assert!(readable(&r, 0, 0x9f * 4096));
+        assert!(readable(&r, 0x1020_0000, 4 * 4096), "ACPI tables");
+        assert!(readable(&r, 0x1020_3fff, 1));
+        assert!(!readable(&r, 0x1020_3fff, 2), "past the region's end");
+        assert!(!readable(&r, 0x9f * 4096, 1), "the hole below 1 MiB");
+        assert!(!readable(&r, 0x9e * 4096, 0x2000), "into the hole");
+        assert!(readable(&r, 0xfee0_0000, 4096), "a device below 4 GiB");
+        assert!(!readable(&r, u64::MAX, 2), "no wrap around");
+
+        r.push(region(0x1_0000_0000, 0x100, RegionKind::USABLE));
+        r.push(region(0xfd_0000_0000, 1, RegionKind::RESERVED));
+        assert!(readable(&r, 0x1_0000_0000, 0x10_0000), "memory above 4 GiB");
+        assert!(
+            !readable(&r, 0xfd_0000_0000, 8),
+            "a device window above memory is not mapped"
+        );
+        let high = [region(0x2_0000_0000, 1, RegionKind::RESERVED)];
+        assert!(!readable(&high, 0x2_0000_0000, 8));
+        let low = [region(0xffff_f000, 1, RegionKind::RESERVED)];
+        assert!(readable(&low, 0xffff_f000, 4096), "up to 4 GiB exactly");
+        assert!(!readable(&[], 0, 1));
+    }
+
+    #[test]
     fn sizes_pick_the_largest_unit() {
         let cases = [
             (0, "0 bytes"),
@@ -244,6 +306,23 @@ mod tests {
     }
 
     #[test]
+    fn the_machine_is_described() {
+        let mut out = String::new();
+        let found = machine::Machine {
+            cores: Some(12),
+            pm_timer: Some((0x408, 24)),
+        };
+        describe(&mut out, &found, Some(2_994_999_999)).unwrap();
+        assert_eq!(out, "Cores: 12\nTime stamp counter: 2994 MHz\n");
+        out.clear();
+        describe(&mut out, &machine::Machine::default(), None).unwrap();
+        assert_eq!(
+            out,
+            "Cores: not listed in the ACPI tables\nTime stamp counter: not measured, the ACPI timer is missing\n"
+        );
+    }
+
+    #[test]
     fn greeting_stops_when_the_writer_fails() {
         struct Broken;
         impl Write for Broken {
@@ -252,5 +331,11 @@ mod tests {
             }
         }
         assert!(greet(&mut Broken, &sample()).is_err());
+        assert!(describe(&mut Broken, &machine::Machine::default(), Some(1)).is_err());
+        let known = machine::Machine {
+            cores: Some(1),
+            pm_timer: None,
+        };
+        assert!(describe(&mut Broken, &known, None).is_err());
     }
 }

@@ -188,10 +188,15 @@ pub fn after_panic(screen: Option<&Canvas<'_>>, details: &Details<'_>, serial: &
             );
         }
         2 => {
+            let here = 0u8;
+            let on_fault_stack =
+                raw::interrupts::fault_stack().contains(&((&raw const here) as u64));
             report.check(
                 "kernel.double_fault",
-                details.message.starts_with("double fault: ") && details.location.starts_with("the instruction at 0xffffffff8"),
-                "running out of stack should end on the panic screen as a double fault in the kernel",
+                details.message.starts_with("double fault: ")
+                    && details.location.starts_with("the instruction at 0xffffffff8")
+                    && on_fault_stack,
+                "running out of stack should end on the panic screen as a double fault in the kernel, on the fault stack",
             );
             crash_screen_checks(&mut report, screen, "double-fault");
         }

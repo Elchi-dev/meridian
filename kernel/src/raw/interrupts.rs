@@ -178,6 +178,14 @@ pub fn loaded_here(number: usize) -> bool {
             .is_some_and(|s| s.interrupt_stacks[0] != 0)
 }
 
+/// Where the first core's fault stack lies. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn fault_stack() -> core::ops::Range<u64> {
+    // SAFETY: only the field's address is taken; nothing is read.
+    let base = unsafe { &raw const (*TABLES.0.get()).fault_stack } as u64;
+    base..base + FAULT_STACK as u64
+}
+
 /// Where the stubs bring every exception and interrupt. A timer tick is
 /// counted and acknowledged; a spurious interrupt needs nothing.
 extern "sysv64" fn exception(frame: &mut Frame) {

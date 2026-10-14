@@ -66,6 +66,7 @@ pub fn run(system: &System, report: &mut impl Report) {
     memory(system, report);
     files(system, report);
     tables(system, report);
+    graphics(system, report);
 
     report.press("ret");
     let enter = system.wait_for_key();
@@ -397,5 +398,100 @@ fn tables(system: &System, report: &mut impl Report) {
             (base..base + size).contains(&marker) && (base..base + size).contains(&code)
         }),
         "the loaded image's range should hold its own code and data",
+    );
+}
+
+fn graphics(system: &System, report: &mut impl Report) {
+    let fb = system.framebuffer();
+    report.check(
+        "uefi.gop",
+        fb.is_ok_and(|fb| fb.width >= 640 && fb.height >= 480 && fb.is_consistent()),
+        "OVMF should offer a framebuffer of at least 640 by 480",
+    );
+    report.check(
+        "uefi.gop.format",
+        fb.is_ok_and(|fb| fb.format == crate::raw::graphics::PixelFormat::Bgr),
+        "QEMU's standard VGA under OVMF stores pixels as blue, green, red",
+    );
+    let Ok(mut pixels) = system.pixels() else {
+        report.check(
+            "uefi.gop.write",
+            false,
+            "the framebuffer's pixels should be reachable",
+        );
+        return;
+    };
+    report.check(
+        "uefi.gop.one_at_a_time",
+        system.pixels().err() == Some(Status::ACCESS_DENIED),
+        "a second way to write the pixels must wait for the first",
+    );
+    let (width, height, stride) = (
+        pixels.fb.width as usize,
+        pixels.fb.height as usize,
+        pixels.fb.stride as usize,
+    );
+    let row = &mut pixels.as_mut_slice()[(height - 1) * stride..][..width];
+    let mut kept = [0u32; 64];
+    kept.copy_from_slice(&row[..64]);
+    for (i, p) in (0u32..).zip(row[..64].iter_mut()) {
+        *p = 0x00c0_ffee ^ i;
+    }
+    let back = (0u32..).zip(&row[..64]).all(|(i, &p)| p == 0x00c0_ffee ^ i);
+    row[..64].copy_from_slice(&kept);
+    report.check(
+        "uefi.gop.write",
+        back,
+        "pixels written to the last row should read back",
+    );
+    report.check(
+        "uefi.gop.same_mode",
+        system.framebuffer() == Ok(pixels.fb),
+        "the pixels should describe the mode the firmware reports",
+    );
+    corners(&mut pixels, report);
+    drop(pixels);
+    report.check(
+        "uefi.gop.released",
+        system.pixels().is_ok(),
+        "the pixels should be free again once the first way is gone",
+    );
+}
+
+/// Writes the four corners and the pixel under each top corner, then
+/// reads them back. A wrong stride or row count shows up here as a pixel
+/// written in the wrong place or outside the framebuffer.
+fn corners(pixels: &mut crate::raw::graphics::Pixels<'_>, report: &mut impl Report) {
+    let (w, h, stride) = (
+        pixels.fb.width as usize,
+        pixels.fb.height as usize,
+        pixels.fb.stride as usize,
+    );
+    let spots = [
+        (0, 0),
+        (w - 1, 0),
+        (0, h - 1),
+        (w - 1, h - 1),
+        (0, 1),
+        (w - 1, 1),
+    ];
+    let slice = pixels.as_mut_slice();
+    let mut kept = [0u32; 6];
+    for (k, &(x, y)) in kept.iter_mut().zip(&spots) {
+        *k = slice[y * stride + x];
+    }
+    for (i, &(x, y)) in (0u32..).zip(&spots) {
+        slice[y * stride + x] = 0x0010_2030 + i;
+    }
+    let back = (0u32..)
+        .zip(&spots)
+        .all(|(i, &(x, y))| slice[y * stride + x] == 0x0010_2030 + i);
+    for (&k, &(x, y)) in kept.iter().zip(&spots) {
+        slice[y * stride + x] = k;
+    }
+    report.check(
+        "uefi.gop.corners",
+        back && slice.len() == stride * (h - 1) + w,
+        "each corner and the row below the top should hold its own pixel",
     );
 }

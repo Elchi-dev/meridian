@@ -1,5 +1,6 @@
 //! Safe access to the system table while boot services are running.
 
+use core::cell::Cell;
 use core::fmt;
 use core::ptr::{self, NonNull};
 
@@ -22,6 +23,9 @@ const VENDOR_LIMIT: usize = 128;
 pub struct System {
     image: Handle,
     table: NonNull<SystemTable>,
+    /// Whether a [`super::graphics::Pixels`] is out, so there is only ever
+    /// one way to write the framebuffer at a time.
+    pub(super) pixels_out: Cell<bool>,
 }
 
 impl System {
@@ -51,7 +55,11 @@ impl System {
         if !header_is_valid(hdr, BOOT_SERVICES_SIGNATURE, size_of::<BootServices>()) {
             return None;
         }
-        Some(System { image, table })
+        Some(System {
+            image,
+            table,
+            pixels_out: Cell::new(false),
+        })
     }
 
     fn table(&self) -> &SystemTable {
@@ -363,6 +371,7 @@ impl fmt::Debug for System {
         f.debug_struct("System")
             .field("image", &self.image)
             .field("table", &ptr::from_ref(self.table()))
+            .field("pixels_out", &self.pixels_out.get())
             .finish()
     }
 }

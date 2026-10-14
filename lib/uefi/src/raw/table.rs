@@ -104,7 +104,11 @@ pub struct BootServices {
     pub open_protocol_information: NotCalled,
     pub protocols_per_handle: NotCalled,
     pub locate_handle_buffer: NotCalled,
-    pub locate_protocol: NotCalled,
+    pub locate_protocol: unsafe extern "efiapi" fn(
+        protocol: *const Guid,
+        registration: *mut c_void,
+        interface: *mut *mut c_void,
+    ) -> Status,
     pub install_multiple_protocol_interfaces: NotCalled,
     pub uninstall_multiple_protocol_interfaces: NotCalled,
     pub calculate_crc32: NotCalled,

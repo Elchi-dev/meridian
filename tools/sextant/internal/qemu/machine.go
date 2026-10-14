@@ -26,6 +26,9 @@ type Machine struct {
 	// Disk is a raw disk image, CDROM an ISO image. One of them is set.
 	Disk  string
 	CDROM string
+	// SecondDisk is another raw disk image after Disk, for systems on
+	// another drive.
+	SecondDisk string
 	// Display opens a window. Without it the machine still has a VGA card,
 	// so the firmware offers a framebuffer, but nothing is shown.
 	Display bool
@@ -66,6 +69,9 @@ func (m Machine) Validate() error {
 	}
 	if (m.Disk == "") == (m.CDROM == "") {
 		errs = append(errs, errors.New("give exactly one of a disk image and an ISO image"))
+	}
+	if m.SecondDisk != "" && m.Disk == "" {
+		errs = append(errs, errors.New("a second disk needs a first one"))
 	}
 	if m.Memory < 1<<20 {
 		errs = append(errs, fmt.Errorf("memory of %d bytes is less than 1MiB", m.Memory))
@@ -109,8 +115,10 @@ func (m Machine) Args() []string {
 		"-drive", "if=pflash,format=raw,readonly=on,file="+escape(m.Firmware.Code),
 		"-drive", "if=pflash,format=raw,file="+escape(m.Firmware.Vars),
 	)
-	if m.Disk != "" {
-		args = append(args, "-drive", "format=raw,file="+escape(m.Disk))
+	for _, disk := range []string{m.Disk, m.SecondDisk} {
+		if disk != "" {
+			args = append(args, "-drive", "format=raw,file="+escape(disk))
+		}
 	}
 	if m.CDROM != "" {
 		args = append(args, "-drive", "media=cdrom,format=raw,readonly=on,file="+escape(m.CDROM))

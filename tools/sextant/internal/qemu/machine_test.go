@@ -76,6 +76,26 @@ func TestSecureBootFirmwareGetsSMMAndAProtectedFlash(t *testing.T) {
 	}
 }
 
+func TestASecondDiskComesAfterTheFirst(t *testing.T) {
+	m := fullMachine()
+	m.SecondDisk = "/out/other,disk.img"
+	got := strings.Join(m.Args(), " ")
+	want := "-drive format=raw,file=/out/meridian.img -drive format=raw,file=/out/other,,disk.img -display none"
+	if !strings.Contains(got, want) {
+		t.Fatalf("got %s", got)
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("two disks are a valid machine: %v", err)
+	}
+	m.Disk, m.CDROM = "", "x.iso"
+	if err := m.Validate(); err == nil || err.Error() != "a second disk needs a first one" {
+		t.Fatalf("a second disk beside a CD: %v", err)
+	}
+	if strings.Count(strings.Join(fullMachine().Args(), " "), "format=raw,file=") != 2 {
+		t.Fatal("one disk and the variable store, no empty second drive")
+	}
+}
+
 func TestCommasInPathsAreDoubled(t *testing.T) {
 	m := fullMachine()
 	m.Disk = "/tmp/a,b/disk.img"

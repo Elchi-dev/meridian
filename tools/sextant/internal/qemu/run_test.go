@@ -107,8 +107,13 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 // diskWithLoader writes the real loader onto a disk image.
 func diskWithLoader(t *testing.T, qemuTest bool) string {
 	t.Helper()
+	return diskWithFiles(t, bootFiles(t, qemuTest))
+}
+
+func diskWithFiles(t *testing.T, files map[string][]byte) string {
+	t.Helper()
 	disk := filepath.Join(t.TempDir(), "meridian.img")
-	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: bootFiles(t, qemuTest)}
+	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: files}
 	if err := image.Disk(disk, contents); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +162,7 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 		"\nScreen: 1280 x 800\n",
 		"\nSecure Boot: off, this firmware does not have it\n",
 		"\nFirmware settings: F opens them\n",
+		"\nSettings: timeout 3 s, default example, verbose\n",
 		"\nFound example: /EFI/example/grubx64.efi\n",
 		"\nexample came back with " + "the operation was aborted",
 	} {
@@ -274,6 +280,51 @@ func changedArea(t *testing.T, a, b string) pictures.Rectangle {
 		}
 	}
 	return area
+}
+
+// With verbose set, the boot screen opens with the log, counts down under
+// it and starts the default system when the time is up: here the example,
+// a copy of the loader, which then says hello a second time.
+func TestVerboseSettingsOpenTheLog(t *testing.T) {
+	r := newRig(t)
+	files := bootFiles(t, false)
+	files[image.ExamplePath] = files[image.LoaderPath]
+	files[image.SettingsPath] = []byte("boot {\n    timeout = 2s\n    default = example\n    verbose = true\n}\n")
+	m := r.machine(diskWithFiles(t, files))
+	m.DebugExit = false
+	screens := t.TempDir()
+	res, err := Run(context.Background(), m, reliable(Options{
+		Timeout: 2 * time.Minute,
+		Script: []Step{
+			{Wait: "Settings: timeout 2 s, default example, verbose", Pause: 500 * time.Millisecond, Screen: "verbose"},
+			{Wait: "Meridian boot "},
+		},
+		StopAfterScript: true,
+		Screens:         screens,
+	}))
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, res.Serial)
+	}
+	if res.StepsDone != 2 || !res.Stopped || res.TimedOut {
+		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	}
+	if strings.Contains(res.Serial, "Meridian kernel") {
+		t.Fatalf("Meridian started instead of the example:\n%s", res.Serial)
+	}
+	checkLogScreen(t, filepath.Join(screens, "verbose.png"))
+	_, h, rgb := openScreen(t, filepath.Join(screens, "verbose.png"))
+	night := [3]uint32{0x15, 0x17, 0x1a}
+	ink := 0
+	for y := h - 52; y < h-32; y++ {
+		for x := 56; x < 456; x++ {
+			if rgb(x, y) != night {
+				ink++
+			}
+		}
+	}
+	if ink < 200 {
+		t.Errorf("the countdown under the log has %d lit pixels", ink)
+	}
 }
 
 // F on the boot screen asks the firmware to open its settings at the next

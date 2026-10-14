@@ -253,6 +253,78 @@ pub fn firmware_settings_request(system: &System, serial: &mut impl Write) {
     stop_on_failure(&mut report);
 }
 
+/// The test image's boot.meri sets every value away from its default:
+/// 2500 ms, the example system, and the log first. The test image's boot
+/// screen keeps to its own script, so these are only checked.
+pub fn settings_read(
+    settings: &boot::settings::Settings<'_>,
+    default: usize,
+    serial: &mut impl Write,
+) {
+    use boot::settings::Start;
+    use uefi::qemu_test::Report;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    report.check(
+        "boot.settings.read",
+        settings.timeout == 3
+            && settings.verbose
+            && matches!(settings.start, Start::Named(name) if name == "example"),
+        "the test image's boot.meri should be read: 2500ms, the example system, verbose",
+    );
+    report.check(
+        "boot.settings.default",
+        default == 1,
+        "the example system, the second card, should be chosen first",
+    );
+    stop_on_failure(&mut report);
+}
+
+/// Remembers a system the way `default = last` does, reads it back, and
+/// leaves nothing behind.
+pub fn remember_last(system: &System, serial: &mut impl Write) {
+    use boot::settings::{LAST_SYSTEM, Settings, Start};
+    use uefi::guid::MERIDIAN_VARIABLE;
+    use uefi::qemu_test::Report;
+    use uefi::variable::Attributes;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let choices = crate::Choices {
+        firmware_settings: false,
+        settings: Settings {
+            start: Start::Last,
+            ..Settings::default()
+        },
+        default: 0,
+    };
+    let mut quiet = canvas::Text::<128>::new();
+    let mut buf = [0u8; 64];
+    let before = crate::remembered(system, &mut buf).is_some();
+    crate::remember(system, &choices, None, "Probe system", &mut quiet);
+    let mut buf = [0u8; 64];
+    report.check(
+        "boot.settings.last",
+        !before
+            && crate::remembered(system, &mut buf) == Some("Probe system")
+            && quiet.as_str().is_empty(),
+        "with default = last, the started system should be remembered in LastSystem",
+    );
+    let cleared = system.set_variable(&LAST_SYSTEM, &MERIDIAN_VARIABLE, Attributes::default(), &[]);
+    let mut buf = [0u8; 64];
+    report.check(
+        "boot.settings.last.cleared",
+        cleared.is_ok() && crate::remembered(system, &mut buf).is_none(),
+        "the test should leave no remembered system behind",
+    );
+    stop_on_failure(&mut report);
+}
+
 /// The example system was started from the boot screen and came back.
 pub fn other_came_back(status: uefi::Status, serial: &mut impl Write) {
     use uefi::qemu_test::Report;

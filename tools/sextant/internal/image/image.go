@@ -38,20 +38,50 @@ const LoaderPath = "EFI/BOOT/BOOTX64.EFI"
 // KernelPath is where the loader looks for the kernel.
 const KernelPath = "meridian/kernel"
 
-// BootFiles places the loader and the kernel on the EFI system partition.
+// SettingsPath is where the loader reads its settings.
+const SettingsPath = "meridian/boot.meri"
+
+// Settings is the boot.meri every image starts with: the defaults, written
+// out so a person can see what there is to change.
+const Settings = `# Settings of the Meridian boot screen. They take effect at the next start.
+
+boot {
+    # How long the boot screen waits before it starts the default system.
+    # 0s waits for a key.
+    timeout = 3s
+    # The system that starts when the time is up: meridian, the name on
+    # another system's card, or last for the one started last time.
+    default = meridian
+    # true opens the boot screen with the log instead of the cards.
+    verbose = false
+}
+`
+
+// testSettings are the settings of test images, which the test image
+// checks it read: every value differs from its default.
+const testSettings = `boot {
+    timeout = 2500ms
+    default = example
+    verbose = true
+}
+`
+
+// BootFiles places the loader, the kernel and the settings on the EFI
+// system partition.
 func BootFiles(loader, kernel []byte) map[string][]byte {
-	return map[string][]byte{LoaderPath: loader, KernelPath: kernel}
+	return map[string][]byte{LoaderPath: loader, KernelPath: kernel, SettingsPath: []byte(Settings)}
 }
 
 // ExamplePath is where test images put a second copy of the loader, for
 // the boot screen to find as another system and start.
 const ExamplePath = "EFI/example/grubx64.efi"
 
-// TestFiles are the files of a test image: the boot files, and the
-// loader once more as an example of another system.
+// TestFiles are the files of a test image: the boot files with settings
+// of their own, and the loader once more as an example of another system.
 func TestFiles(loader, kernel []byte) map[string][]byte {
 	files := BootFiles(loader, kernel)
 	files[ExamplePath] = loader
+	files[SettingsPath] = []byte(testSettings)
 	return files
 }
 

@@ -9,6 +9,7 @@ pub mod log;
 pub mod memory;
 pub mod menu;
 pub mod screen;
+pub mod settings;
 pub mod systems;
 
 use core::fmt::{self, Write};

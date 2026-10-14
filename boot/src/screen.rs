@@ -302,13 +302,37 @@ pub fn log_lines_shown(height: usize) -> usize {
     height.saturating_sub(LOG_TOP + LOG_FOOT) / LOG_LINE + 1
 }
 
+/// The line under the log: the countdown while it runs, else how to go
+/// back to the cards.
+#[must_use]
+pub fn log_footer(menu: &Menu, cards: &[Card<'_>]) -> canvas::Text<96> {
+    let mut line = canvas::Text::new();
+    match (menu.seconds_left(), cards.get(menu.selected())) {
+        (Some(s), Some(card)) => {
+            let _ = core::fmt::write(
+                &mut line,
+                format_args!("{} starts in {s} s. Any key stops it.", card.name),
+            );
+        }
+        _ => {
+            let _ = core::fmt::Write::write_str(&mut line, "Any key goes back");
+        }
+    }
+    line
+}
+
 /// Draws the log: everything the loader said, in a monospaced font, as
-/// many of the newest lines as fit.
+/// many of the newest lines as fit, and `footer` under them.
 ///
 /// # Errors
 ///
 /// The font's errors, which only a broken font file causes.
-pub fn draw_log(canvas: &mut Canvas<'_>, log: &Log, scratch: &mut Scratch) -> Result<(), Error> {
+pub fn draw_log(
+    canvas: &mut Canvas<'_>,
+    log: &Log,
+    footer: &str,
+    scratch: &mut Scratch,
+) -> Result<(), Error> {
     let title = Style {
         font: Font::parse(INTER_SEMIBOLD)?,
         px: 30.0,
@@ -340,13 +364,7 @@ pub fn draw_log(canvas: &mut Canvas<'_>, log: &Log, scratch: &mut Scratch) -> Re
         )?;
     }
     let bottom = canvas.height().saturating_sub(LOG_FOOT / 2);
-    canvas.text(
-        &hint,
-        at(LOG_MARGIN),
-        at(bottom),
-        "Any key goes back",
-        scratch,
-    )?;
+    canvas.text(&hint, at(LOG_MARGIN), at(bottom), footer, scratch)?;
     Ok(())
 }
 
@@ -733,7 +751,13 @@ mod tests {
 
     fn drawn_log(log: &Log, width: usize, height: usize) -> Picture {
         let mut p = Picture::new(width, height);
-        draw_log(&mut p.canvas(), log, &mut Scratch::new()).unwrap();
+        draw_log(
+            &mut p.canvas(),
+            log,
+            "Any key goes back",
+            &mut Scratch::new(),
+        )
+        .unwrap();
         p
     }
 
@@ -783,5 +807,43 @@ mod tests {
         );
         let mut empty = drawn_log(&Log::new(), 320, 200);
         assert_eq!(empty.at(319, 199), NIGHT);
+    }
+
+    #[test]
+    fn the_log_footer_counts_down_or_offers_the_way_back() {
+        let counting = Menu::new(3, 2, 4);
+        assert_eq!(
+            log_footer(&counting, &SYSTEMS).as_str(),
+            format!("{} starts in 4 s. Any key stops it.", SYSTEMS[2].name)
+        );
+        assert_eq!(
+            log_footer(&Menu::new(3, 2, 0), &SYSTEMS).as_str(),
+            "Any key goes back"
+        );
+        assert_eq!(
+            log_footer(&counting, &[]).as_str(),
+            "Any key goes back",
+            "no card, no name"
+        );
+    }
+
+    #[test]
+    fn the_footer_is_drawn_under_the_log() {
+        let mut p = Picture::new(1280, 800);
+        draw_log(&mut p.canvas(), &log_of(0..2), "", &mut Scratch::new()).unwrap();
+        assert_eq!(
+            ink(&mut p, 56..300, 800 - 36 - 16..800 - 36 + 4),
+            0,
+            "an empty footer"
+        );
+        let mut q = Picture::new(1280, 800);
+        draw_log(
+            &mut q.canvas(),
+            &log_of(0..2),
+            "Meridian starts in 3 s. Any key stops it.",
+            &mut Scratch::new(),
+        )
+        .unwrap();
+        assert!(ink(&mut q, 56..400, 800 - 36 - 16..800 - 36 + 4) > 100);
     }
 }

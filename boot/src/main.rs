@@ -17,6 +17,7 @@ use boot::handover::{self, Layout, Problem};
 use boot::log::Log;
 use boot::menu::{Action, Key, Menu};
 use boot::screen::{Card, Kind};
+use boot::settings::{self, Settings, Start};
 use boot::{KERNEL_PATH, Out, banner, memory, systems};
 use bootinfo::{
     BootInfo, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, STACK_PAGES, STACK_TOP, Stack,
@@ -25,7 +26,7 @@ use canvas::Text;
 use canvas::{Canvas, Format, Scratch};
 use core::fmt::Write;
 use uefi::Status;
-use uefi::guid::{ACPI_20_TABLE, GLOBAL_VARIABLE};
+use uefi::guid::{ACPI_20_TABLE, GLOBAL_VARIABLE, MERIDIAN_VARIABLE};
 use uefi::memory::{MemoryType, PAGE_BYTES, PAGE_SIZE};
 use uefi::raw::System;
 use uefi::raw::file::EntryBuffer;
@@ -61,6 +62,8 @@ fn run(system: System, serial: &mut Com1) -> Status {
     );
     let firmware_settings = firmware_settings_offered(&system);
     let _ = describe(&system, firmware_settings, &mut log.tee(&mut out));
+    let mut settings_file = [0u8; SETTINGS_LIMIT];
+    let settings = read_settings(&system, &mut settings_file, &mut log.tee(&mut out));
 
     #[cfg(feature = "qemu-test")]
     qemu_test::checks(&system, serial);
@@ -86,19 +89,37 @@ fn run(system: System, serial: &mut Com1) -> Status {
             other.path.as_str()
         );
     }
+    let mut last_name = [0u8; 64];
+    let last = remembered(&system, &mut last_name);
+    let choices = Choices {
+        firmware_settings,
+        settings,
+        default: settings::chosen(settings.start, cards.iter().map(|c| c.name), last),
+    };
     #[cfg(feature = "qemu-test")]
     {
         qemu_test::systems_found(cards, firmware_settings, serial);
         qemu_test::firmware_settings_request(&system, serial);
+        qemu_test::settings_read(&choices.settings, choices.default, serial);
+        qemu_test::remember_last(&system, serial);
     }
 
     // Another system that comes back, or fails to start, brings the boot
     // screen back.
     let mut round = 0;
     loop {
-        let chosen = show_menu(&system, cards, firmware_settings, &log, round, serial);
+        let chosen = show_menu(&system, cards, &choices, &log, round, serial);
         let chosen = match chosen {
-            Choice::System(chosen) => chosen,
+            Choice::System(chosen) => {
+                remember(
+                    &system,
+                    &choices,
+                    last,
+                    cards[chosen].name,
+                    &mut log.tee(serial),
+                );
+                chosen
+            }
             Choice::FirmwareSettings => {
                 let status = open_firmware_settings(&system);
                 let _ = writeln!(
@@ -211,12 +232,12 @@ fn start_other(system: &System, path: &str) -> Status {
 fn show_menu(
     system: &System,
     cards: &[Card<'_>],
-    firmware_settings: bool,
+    choices: &Choices<'_>,
     log: &Log,
     round: u32,
     serial: &mut Com1,
 ) -> Choice {
-    let menu = Menu::new(cards.len(), 0, 0).with_firmware_settings(firmware_settings);
+    let menu = Menu::new(cards.len(), 0, 0).with_firmware_settings(choices.firmware_settings);
     let (mut menus, mut logs) = (0, 0);
     choose(
         system,
@@ -242,18 +263,107 @@ fn show_menu(
     )
 }
 
-/// The boot screen, which starts the chosen system after 3 seconds.
+/// The boot screen as the settings want it.
 #[cfg(not(feature = "qemu-test"))]
 fn show_menu(
     system: &System,
     cards: &[Card<'_>],
-    firmware_settings: bool,
+    choices: &Choices<'_>,
     log: &Log,
     _: u32,
     _: &mut Com1,
 ) -> Choice {
-    let menu = Menu::new(cards.len(), 0, 3).with_firmware_settings(firmware_settings);
+    let menu = Menu::new(cards.len(), choices.default, choices.settings.timeout)
+        .with_firmware_settings(choices.firmware_settings)
+        .with_log_open(choices.settings.verbose);
     choose(system, cards, menu, log, |_, _, _| {})
+}
+
+/// What the boot screen needs besides the cards.
+struct Choices<'a> {
+    firmware_settings: bool,
+    settings: Settings<'a>,
+    /// The card chosen when the screen opens.
+    default: usize,
+}
+
+/// The most bytes of `boot.meri` the loader reads.
+const SETTINGS_LIMIT: usize = 4096;
+
+/// Reads `\meridian\boot.meri` into `buf` and says in the log what it
+/// found. Without the file, or with one that cannot be read, the defaults
+/// count.
+fn read_settings<'b>(system: &System, buf: &'b mut [u8], out: &mut impl Write) -> Settings<'b> {
+    let read = system.boot_volume().and_then(|root| {
+        let mut file = root.open(settings::PATH)?;
+        if file.info()?.size > buf.len() as u64 {
+            return Err(Status::BUFFER_TOO_SMALL);
+        }
+        file.read_all(buf)
+    });
+    let settings = match read {
+        Ok(len) => {
+            let (settings, problem) = settings::read(&buf[..len]);
+            if let Some(problem) = problem {
+                let _ = writeln!(out, "Settings: boot.meri {problem}; the defaults stand in");
+            }
+            settings
+        }
+        Err(Status::NOT_FOUND) => {
+            let _ = writeln!(
+                out,
+                "Settings: there is no boot.meri, so the defaults count"
+            );
+            Settings::default()
+        }
+        Err(Status::BUFFER_TOO_SMALL) => {
+            let _ = writeln!(
+                out,
+                "Settings: boot.meri is longer than {SETTINGS_LIMIT} bytes, so the defaults count"
+            );
+            Settings::default()
+        }
+        Err(status) => {
+            let _ = writeln!(out, "Settings: boot.meri could not be read: {status}");
+            Settings::default()
+        }
+    };
+    let _ = writeln!(out, "Settings: {settings}");
+    settings
+}
+
+/// The name of the system started last, if the loader remembered one.
+fn remembered<'b>(system: &System, buf: &'b mut [u8]) -> Option<&'b str> {
+    let (_, name) = system
+        .variable(&settings::LAST_SYSTEM, &MERIDIAN_VARIABLE, buf)
+        .ok()?;
+    core::str::from_utf8(name).ok()
+}
+
+/// Remembers which system starts, when the settings start the last one
+/// and it is not the one remembered already. Firmware variables live in
+/// flash, so nothing is written that would not change.
+fn remember(
+    system: &System,
+    choices: &Choices<'_>,
+    last: Option<&str>,
+    name: &str,
+    out: &mut impl Write,
+) {
+    if !matches!(choices.settings.start, Start::Last) || last == Some(name) {
+        return;
+    }
+    let lasting = Attributes::NON_VOLATILE
+        .with(Attributes::BOOTSERVICE_ACCESS)
+        .with(Attributes::RUNTIME_ACCESS);
+    if let Err(status) = system.set_variable(
+        &settings::LAST_SYSTEM,
+        &MERIDIAN_VARIABLE,
+        lasting,
+        name.as_bytes(),
+    ) {
+        let _ = writeln!(out, "Remembering {name} for next time failed: {status}");
+    }
 }
 
 /// What the person chose on the boot screen.
@@ -308,17 +418,22 @@ fn choose(
                 let _ = frame.free();
                 return Choice::FirmwareSettings;
             }
-            Action::Redraw => {
+            Action::Redraw | Action::ShowLog => {
+                let shown = if menu.log_open() {
+                    Shown::Log
+                } else {
+                    Shown::Menu
+                };
                 if let Some(mut canvas) = Canvas::new(frame.words(), width, height, width, format) {
-                    let _ = boot::screen::draw(&mut canvas, cards, &menu, &mut scratch);
+                    let _ = match shown {
+                        Shown::Menu => boot::screen::draw(&mut canvas, cards, &menu, &mut scratch),
+                        Shown::Log => {
+                            let footer = boot::screen::log_footer(&menu, cards);
+                            boot::screen::draw_log(&mut canvas, log, footer.as_str(), &mut scratch)
+                        }
+                    };
                 }
-                Some(Shown::Menu)
-            }
-            Action::ShowLog => {
-                if let Some(mut canvas) = Canvas::new(frame.words(), width, height, width, format) {
-                    let _ = boot::screen::draw_log(&mut canvas, log, &mut scratch);
-                }
-                Some(Shown::Log)
+                Some(shown)
             }
             Action::Wait => None,
         };

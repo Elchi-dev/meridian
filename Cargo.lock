@@ -14,6 +14,7 @@ dependencies = [
  "canvas",
  "elf",
  "font",
+ "meri",
  "paging",
  "uefi",
  "x86",

@@ -58,7 +58,7 @@ Loader and UEFI:
 - [x] Start other systems through `LoadImage` and `StartImage`, and come back to the boot screen if they return
 - [ ] Start Windows and Linux on the laptop, with Secure Boot on
 - [x] Rust `.meri` reader passing the conformance suite (`lib/meri`), without allocating
-- [ ] `boot.meri`: the loader reads its settings with `lib/meri`
+- [x] `boot.meri`: the loader reads its settings with `lib/meri`
 - [ ] Shim under `third-party/` with its decision record; `.sbat` section in `meridian.efi`
 - [x] Authenticode signer in sextant; development keys per machine
 - [ ] The release key as a CI secret, which Samuel adds

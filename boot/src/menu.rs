@@ -88,6 +88,16 @@ impl Menu {
         self.firmware_settings
     }
 
+    /// The same menu, opening with the log when `open`, while the
+    /// countdown runs on.
+    #[must_use]
+    pub fn with_log_open(self, open: bool) -> Menu {
+        Menu {
+            log_open: open,
+            ..self
+        }
+    }
+
     #[must_use]
     pub fn log_open(&self) -> bool {
         self.log_open
@@ -106,11 +116,11 @@ impl Menu {
 
     /// What a key does. While the log is open, any key closes it.
     pub fn key(&mut self, key: Key) -> Action {
+        let counting = self.left.take().is_some();
         if self.log_open {
             self.log_open = false;
             return Action::Redraw;
         }
-        let counting = self.left.take().is_some();
         match key {
             Key::Log => {
                 self.log_open = true;
@@ -317,6 +327,31 @@ mod tests {
         assert_eq!(m.key(Key::Right), Action::Redraw);
         assert_eq!(m.selected(), 2, "once closed, keys work again");
         assert_eq!(m.key(Key::Enter), Action::Start(2));
+    }
+
+    #[test]
+    fn a_menu_can_open_with_the_log_and_still_count_down() {
+        let mut m = Menu::new(2, 1, 2).with_log_open(true);
+        assert!(m.log_open());
+        assert_eq!(m.tick(10), Action::Redraw, "the second changed");
+        assert!(m.log_open(), "time does not close the log");
+        assert_eq!(m.tick(10), Action::Start(1));
+
+        let mut stopped = Menu::new(2, 1, 2).with_log_open(true);
+        assert_eq!(stopped.key(Key::Right), Action::Redraw);
+        assert!(!stopped.log_open());
+        assert_eq!(
+            stopped.seconds_left(),
+            None,
+            "a key on the log stops the countdown too"
+        );
+        assert_eq!(stopped.selected(), 1);
+        assert!(
+            !Menu::new(2, 0, 2)
+                .with_log_open(true)
+                .with_log_open(false)
+                .log_open()
+        );
     }
 
     #[test]

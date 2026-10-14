@@ -101,9 +101,27 @@ Still to come:
 
 ### Settings
 
-`\meridian\boot.meri` on the EFI partition: timeout, default entry (or
-"last"), verbose. It is read by the Rust `.meri` reader, which passes the same
-conformance suite as sextant's Go reader.
+`\meridian\boot.meri` on the EFI partition, which every image sextant
+writes carries with the defaults spelled out:
+
+```
+boot {
+    timeout = 3s        # 0s waits for a key; at most 10 minutes
+    default = meridian  # a card's name in any case, or last
+    verbose = false     # true opens the boot screen with the log
+}
+```
+
+The loader reads it with `lib/meri`, the Rust `.meri` reader, which passes
+the same conformance suite as sextant's Go reader and needs no heap. A
+setting that is missing or wrong keeps its default, and the log says which
+line was wrong and why. With `default = last`, the loader keeps the name of
+the system it starts in the firmware variable `LastSystem` of Meridian's
+own vendor GUID, and writes it only when it changes, since firmware
+variables live in flash. With `verbose = true` the countdown runs under the
+log, and its line says which system starts when. Exists; the test image
+checks it read its own `boot.meri`, and a Go test boots the plain image
+with `verbose` and `default = example` and sees the example start.
 
 ### Starting the kernel
 

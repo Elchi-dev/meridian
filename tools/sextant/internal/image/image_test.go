@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/meri"
 )
 
 var stamp = time.Date(2026, 10, 14, 5, 0, 0, 0, time.UTC)
@@ -56,31 +59,73 @@ func sum(t *testing.T, path string) [32]byte {
 
 func TestBootFilesGoWhereFirmwareAndLoaderLook(t *testing.T) {
 	got := BootFiles([]byte("efi"), []byte("elf"))
-	if len(got) != 2 || string(got["EFI/BOOT/BOOTX64.EFI"]) != "efi" || string(got["meridian/kernel"]) != "elf" {
+	if len(got) != 3 || string(got["EFI/BOOT/BOOTX64.EFI"]) != "efi" || string(got["meridian/kernel"]) != "elf" ||
+		string(got["meridian/boot.meri"]) != Settings {
 		t.Fatalf("got %v", got)
 	}
 }
 
 func TestTestImagesCarryAnExampleSystem(t *testing.T) {
 	got := TestFiles([]byte("efi"), []byte("elf"))
-	if len(got) != 3 || string(got["EFI/example/grubx64.efi"]) != "efi" || string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" {
+	if len(got) != 4 || string(got["EFI/example/grubx64.efi"]) != "efi" || string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" {
 		t.Fatalf("got %v", got)
 	}
-	if len(BootFiles([]byte("efi"), []byte("elf"))) != 2 {
+	if string(got[SettingsPath]) != testSettings {
+		t.Fatal("test images carry settings of their own")
+	}
+	if len(BootFiles([]byte("efi"), []byte("elf"))) != 3 {
 		t.Fatal("plain images carry no example")
 	}
 }
 
-// The loader is written in Rust, so this reads its source to make sure it
-// looks for the kernel where BootFiles puts it.
-func TestTheLoaderLooksWhereTheKernelGoes(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "boot", "src", "lib.rs"))
-	if err != nil {
-		t.Fatal(err)
+// The settings files are read with sextant's own .meri reader, which
+// passes the same conformance suite as the loader's.
+func TestTheSettingsFilesSayWhatTheyShould(t *testing.T) {
+	cases := []struct {
+		name, src string
+		timeout   time.Duration
+		start     string
+		verbose   bool
+	}{
+		{"boot.meri", Settings, 3 * time.Second, "meridian", false},
+		{"test boot.meri", testSettings, 2500 * time.Millisecond, "example", true},
 	}
-	want := `pub const KERNEL_PATH: &str = "/` + KernelPath + `";`
-	if !strings.Contains(string(src), want) {
-		t.Fatalf("boot/src/lib.rs should say %s", want)
+	for _, c := range cases {
+		doc, err := meri.Parse(c.name, []byte(c.src))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		blocks := doc.Blocks("boot")
+		if len(blocks) != 1 {
+			t.Fatalf("%s: %d boot blocks", c.name, len(blocks))
+		}
+		boot := blocks[0]
+		timeout, err1 := boot.Duration("timeout", 0)
+		start, err2 := boot.String("default", "")
+		verbose, err3 := boot.Bool("verbose", !c.verbose)
+		if err := errors.Join(err1, err2, err3); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if timeout != c.timeout || start != c.start || verbose != c.verbose {
+			t.Errorf("%s: timeout %v, default %q, verbose %v", c.name, timeout, start, verbose)
+		}
+	}
+}
+
+// The loader is written in Rust, so this reads its source to make sure it
+// looks for the kernel and the settings where BootFiles puts them.
+func TestTheLoaderLooksWhereTheKernelGoes(t *testing.T) {
+	for file, want := range map[string]string{
+		"lib.rs":      `pub const KERNEL_PATH: &str = "/` + KernelPath + `";`,
+		"settings.rs": `pub const PATH: &str = "/` + SettingsPath + `";`,
+	} {
+		src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "boot", "src", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), want) {
+			t.Errorf("boot/src/%s should say %s", file, want)
+		}
 	}
 }
 

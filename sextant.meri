@@ -1,0 +1,8 @@
+# Settings for sextant, the Meridian build tool. This file also marks the
+# root of the repository. Settings for one machine only go in
+# sextant.local.meri, which git ignores.
+
+stats {
+    # Lines of tests for every line of code, per component.
+    min-ratio = 1.5
+}

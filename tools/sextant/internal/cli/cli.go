@@ -20,6 +20,7 @@ const (
 
 // Env is everything a command may touch outside its arguments.
 type Env struct {
+	Dir     string
 	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
@@ -45,6 +46,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{name: "help", summary: "Show the commands, or details for one command", run: runHelp},
+		{name: "stats", summary: "Count lines of code and tests per component", run: runStats},
 		{name: "version", summary: "Print the version of sextant", run: runVersion},
 	}
 }

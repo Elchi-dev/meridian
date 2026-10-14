@@ -299,6 +299,7 @@ func (w *worker) test(ctx context.Context, file string, t Target, timeout time.D
 	killTree(cmd)
 	out, err := cmd.CombinedOutput()
 	reapTree(cmd)
+	sweep(tmp)
 	return testRun{err: err, output: out, timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
 }
 

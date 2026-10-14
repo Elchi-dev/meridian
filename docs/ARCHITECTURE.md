@@ -85,22 +85,29 @@ through a `/proc` style file tree.
 
 Horizon draws everything, first on the CPU into the framebuffer the
 firmware hands over, later on the GPU. Details and the look:
-[architecture/horizon.md](architecture/horizon.md).
+[architecture/horizon.md](architecture/horizon.md). Text everywhere, from
+the boot screen on, comes from Meridian's own TrueType rasterizer:
+[architecture/fonts.md](architecture/fonts.md).
 
 ## Repository layout
 
 ```
 meridian/
   boot/            UEFI loader (Rust)                                exists
-  kernel/          the kernel (Rust and assembly)                    planned
+  kernel/          the kernel (Rust and assembly)                    started
   lib/uefi/        UEFI types and calls                              exists
-  lib/...          no_std crates shared by kernel and userland       planned
+  lib/bootinfo/    what the loader hands the kernel                  exists
+  lib/elf/         ELF64 reading and loading                         exists
+  lib/paging/      x86_64 page tables                                exists
+  lib/x86/         serial port and CPU instructions                  exists
+  lib/font/        TrueType parser and rasterizer                    exists
+  lib/...          more no_std crates for kernel and userland        planned
   user/            init, shell, command-line tools, terminal, apps   planned
   win32/           PE loader, ntdll, kernel32, user32, gdi32 ...     planned
   tests/meri/      .meri conformance suite                           exists
   tests/win32/     test programs and their Windows outputs           planned
   tools/sextant/   build and dev tool (Go)                           exists
-  third-party/     outside files, each with a decision record        planned
+  third-party/     outside files, each with a decision record        exists
   docs/            these pages, the records, the formats             exists
 ```
 

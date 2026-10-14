@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,12 @@ type Options struct {
 	// AnswerPress presses the key named on every "PRESS <key>" line the
 	// machine writes. Test images use it to check keyboard input.
 	AnswerPress bool
+	// FirmwareStall, when set, gives up on a run whose firmware has not
+	// printed any text after this long, and Attempts says how often to start
+	// the machine before giving up for good. OVMF under KVM sometimes hangs
+	// before it prints anything on some hosts; starting again gets past it.
+	FirmwareStall time.Duration
+	Attempts      int
 }
 
 type Result struct {
@@ -44,6 +51,10 @@ type Result struct {
 	TimedOut  bool
 	StepsDone int
 	Stopped   bool
+	// FirmwareStalled is set when the last attempt stalled before the
+	// firmware printed anything. Attempts counts the machines started.
+	FirmwareStalled bool
+	Attempts        int
 }
 
 // Run boots the machine and waits for QEMU to end, the timeout to pass or
@@ -53,6 +64,21 @@ func Run(ctx context.Context, m Machine, opts Options) (Result, error) {
 	if err := m.Validate(); err != nil {
 		return Result{}, err
 	}
+	attempts := max(opts.Attempts, 1)
+	for attempt := 1; ; attempt++ {
+		res, err := runOnce(ctx, m, opts)
+		res.Attempts = attempt
+		if err != nil || !res.FirmwareStalled || attempt == attempts {
+			return res, err
+		}
+		if opts.Live != nil {
+			fmt.Fprintf(opts.Live, "\nsextant: the firmware printed nothing for %v; starting the machine again (%d of %d)\n",
+				opts.FirmwareStall, attempt+1, attempts)
+		}
+	}
+}
+
+func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 	work, err := os.MkdirTemp("", "sextant-qemu-")
 	if err != nil {
 		return Result{}, err
@@ -87,13 +113,23 @@ func Run(ctx context.Context, m Machine, opts Options) (Result, error) {
 	}
 
 	watcher := &scriptWatcher{steps: opts.Script, address: monitorAddr, stop: cancel, stopAfter: opts.StopAfterScript, answer: opts.AnswerPress}
+	var stalled atomic.Bool
+	if opts.FirmwareStall > 0 {
+		timer := time.AfterFunc(opts.FirmwareStall, func() {
+			if !watcher.sawText.Load() {
+				stalled.Store(true)
+				cancel()
+			}
+		})
+		defer timer.Stop()
+	}
 	serial := watcher.read(stdout, opts.Live)
 	waitErr := cmd.Wait()
 
-	res := Result{Serial: Clean(serial), StepsDone: watcher.done, Stopped: watcher.stopped}
+	res := Result{Serial: Clean(serial), StepsDone: watcher.done, Stopped: watcher.stopped, FirmwareStalled: stalled.Load()}
 	var exit *exec.ExitError
 	switch {
-	case watcher.stopped:
+	case watcher.stopped || res.FirmwareStalled:
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		res.TimedOut = true
 	case errors.As(waitErr, &exit):
@@ -120,6 +156,7 @@ type scriptWatcher struct {
 
 	done      int
 	pressFrom int
+	sawText   atomic.Bool
 	stopped   bool
 	err       error
 	monitor   net.Conn
@@ -137,6 +174,9 @@ func (w *scriptWatcher) read(r io.Reader, live io.Writer) string {
 				_, _ = live.Write(chunk[:n])
 			}
 			clean := Clean(all.String())
+			if strings.TrimSpace(clean) != "" {
+				w.sawText.Store(true)
+			}
 			from = w.advance(clean, from)
 			w.answerPresses(clean)
 		}

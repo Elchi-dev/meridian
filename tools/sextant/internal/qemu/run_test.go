@@ -70,6 +70,14 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+// reliable adds the restart for firmware that stalls before printing
+// anything, which OVMF under KVM does now and then on some hosts.
+func reliable(o Options) Options {
+	o.FirmwareStall = 20 * time.Second
+	o.Attempts = 3
+	return o
+}
+
 // buildLoader builds the real loader with Cargo and returns its bytes.
 func buildLoader(t *testing.T, qemuTest bool) []byte {
 	t.Helper()
@@ -98,7 +106,7 @@ func diskWithLoader(t *testing.T, qemuTest bool) string {
 
 func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 	r := newRig(t)
-	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), Options{Timeout: 2 * time.Minute, AnswerPress: true})
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true}))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
@@ -127,14 +135,14 @@ func TestAScriptPressesKeysOnTheMachine(t *testing.T) {
 	r := newRig(t)
 	m := r.machine(diskWithLoader(t, false))
 	m.DebugExit = false
-	res, err := Run(context.Background(), m, Options{
+	res, err := Run(context.Background(), m, reliable(Options{
 		Timeout: 2 * time.Minute,
 		Script: []Step{
 			{Wait: "Press any key to return to the firmware.", Keys: []string{"ret"}},
 			{Wait: "Returning to the firmware."},
 		},
 		StopAfterScript: true,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
@@ -230,7 +238,7 @@ func TestTheISOBootsFromCD(t *testing.T) {
 	}
 	m := r.machine("")
 	m.Disk, m.CDROM = "", iso
-	res, err := Run(context.Background(), m, Options{Timeout: 2 * time.Minute, AnswerPress: true})
+	res, err := Run(context.Background(), m, reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true}))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
@@ -243,7 +251,7 @@ func TestTheISOBootsFromCD(t *testing.T) {
 // timeout, which shows the keyboard checks really depend on the runner.
 func TestUnansweredKeyPressesHang(t *testing.T) {
 	r := newRig(t)
-	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), Options{Timeout: 15 * time.Second})
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), Options{Timeout: 15 * time.Second, FirmwareStall: 8 * time.Second, Attempts: 3})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -256,11 +264,11 @@ func TestUnansweredKeyPressesHang(t *testing.T) {
 // twice for text that appears once must not finish the script.
 func TestAScriptNeedsTextToAppearAgain(t *testing.T) {
 	r := newRig(t)
-	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), Options{
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{
 		Timeout:     2 * time.Minute,
 		AnswerPress: true,
 		Script:      []Step{{Wait: "TESTS DONE"}, {Wait: "TESTS DONE"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -271,7 +279,7 @@ func TestAScriptNeedsTextToAppearAgain(t *testing.T) {
 
 func TestStopAfterAnEmptyScriptDoesNotStop(t *testing.T) {
 	r := newRig(t)
-	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), Options{Timeout: 2 * time.Minute, AnswerPress: true, StopAfterScript: true})
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true, StopAfterScript: true}))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -302,11 +310,45 @@ func TestRunsLeaveNoFilesOpen(t *testing.T) {
 	}
 	before := openFiles(t)
 	for i := 0; i < 2; i++ {
-		if _, err := Run(context.Background(), r.machine(disk), Options{Timeout: 2 * time.Minute, AnswerPress: true}); err != nil {
+		if _, err := Run(context.Background(), r.machine(disk), reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true})); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if after := openFiles(t); after != before {
 		t.Fatalf("%d files open before two runs, %d after", before, after)
+	}
+}
+
+// A machine whose CPU never starts prints nothing at all, which is exactly
+// what a stalled firmware looks like from outside.
+func TestAStalledMachineIsStartedAgain(t *testing.T) {
+	r := newRig(t)
+	m := r.machine(diskWithLoader(t, true))
+	m.GDB = true
+	var live strings.Builder
+	res, err := Run(context.Background(), m, Options{Timeout: time.Minute, Live: &live, FirmwareStall: 2 * time.Second, Attempts: 2})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !res.FirmwareStalled || res.Attempts != 2 || res.TimedOut {
+		t.Fatalf("stalled %v, attempts %d, timed out %v", res.FirmwareStalled, res.Attempts, res.TimedOut)
+	}
+	if !strings.Contains(live.String(), "sextant: the firmware printed nothing for 2s; starting the machine again (2 of 2)") {
+		t.Fatalf("the restart must be visible, got %q", live.String())
+	}
+	once, err := Run(context.Background(), m, Options{Timeout: time.Minute, FirmwareStall: 2 * time.Second})
+	if err != nil || !once.FirmwareStalled || once.Attempts != 1 {
+		t.Fatalf("without Attempts a stalled machine is started once: %+v, %v", once, err)
+	}
+}
+
+func TestFirmwareThatPrintsIsNotStalled(t *testing.T) {
+	r := newRig(t)
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), Options{Timeout: 2 * time.Minute, AnswerPress: true, FirmwareStall: 20 * time.Second, Attempts: 3})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.FirmwareStalled || res.ExitCode != ExitPass {
+		t.Fatalf("stalled %v, exit %d", res.FirmwareStalled, res.ExitCode)
 	}
 }

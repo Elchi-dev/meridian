@@ -16,3 +16,10 @@ allow {
     mutation = "false to true"
     reason = "the flag only decides whether the result is built from a copy; with or without the copy the string is the same"
 }
+
+allow {
+    file = "lib/x86/src/raw.rs"
+    line = "pub fn enable_no_execute() -> bool {"
+    mutation = "body to { true }"
+    reason = "every firmware the tests run on, OVMF included, turns no-execute pages on before any loader runs, and turning them off to try again would fault on the page tables already using bit 63; the loader's x86.no_execute and the kernel's kernel.no_execute checks still see it on"
+}

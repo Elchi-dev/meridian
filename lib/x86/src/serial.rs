@@ -13,6 +13,30 @@ pub const LINE_STATUS: u16 = 5;
 pub const DATA_READY: u8 = 0x01;
 pub const TRANSMIT_EMPTY: u8 = 0x20;
 
+/// Line control register, and what it holds once the port is set up: 8
+/// data bits, no parity, one stop bit.
+pub const LINE_CONTROL: u16 = 3;
+pub const EIGHT_N_ONE: u8 = 0x03;
+
+/// The port of COM1's register at `offset`.
+#[must_use]
+pub const fn port(offset: u16) -> u16 {
+    COM1 + offset
+}
+
+/// Whether the UART takes the next byte, by its line status.
+#[must_use]
+pub fn can_send(status: u8) -> bool {
+    status & TRANSMIT_EMPTY != 0
+}
+
+/// Whether a byte waits, by its line status. A board without COM1 reads
+/// back 0xff, which looks like data, so 0xff counts as nothing.
+#[must_use]
+pub fn has_data(status: u8) -> bool {
+    status != 0xff && status & DATA_READY != 0
+}
+
 /// How often to poll the line status before giving up on a byte. A board
 /// without COM1 reads back 0xff, which already says "empty"; this bound
 /// only matters for a UART that never drains.
@@ -139,5 +163,35 @@ mod tests {
     fn register_constants() {
         assert_eq!((COM1, LINE_STATUS, TRANSMIT_EMPTY), (0x3f8, 5, 0x20));
         assert_eq!(DATA_READY, 1);
+    }
+
+    #[test]
+    fn registers_sit_above_com1() {
+        assert_eq!(port(0), 0x3f8);
+        assert_eq!(port(LINE_STATUS), 0x3fd);
+        assert_eq!(port(LINE_CONTROL), 0x3fb);
+        let sequence = init_sequence(BASE_BAUD).unwrap();
+        assert_eq!(
+            sequence
+                .iter()
+                .rev()
+                .find(|(offset, _)| *offset == LINE_CONTROL),
+            Some(&(LINE_CONTROL, EIGHT_N_ONE)),
+            "the last line control write leaves 8N1 behind"
+        );
+    }
+
+    #[test]
+    fn the_line_status_says_when_to_send_and_receive() {
+        assert!(can_send(TRANSMIT_EMPTY));
+        assert!(can_send(0xff));
+        assert!(!can_send(0));
+        assert!(!can_send(!TRANSMIT_EMPTY));
+        assert!(has_data(DATA_READY));
+        assert!(has_data(DATA_READY | TRANSMIT_EMPTY));
+        assert!(!has_data(0));
+        assert!(!has_data(!DATA_READY));
+        assert!(!has_data(0xff), "no COM1 at all");
+        assert!(!has_data(0xfe), "0xfe has the data ready bit clear");
     }
 }

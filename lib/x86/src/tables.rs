@@ -17,12 +17,10 @@ const DATA: u64 = 0x00cf_9200_0000_ffff;
 /// and the two entries of the task state segment at `tss`.
 #[must_use]
 pub fn gdt(tss: u64) -> [u64; 5] {
+    // The limit's bits 16 to 19 would go to bits 48 to 51; a task state
+    // smaller than 64 KiB leaves them zero.
     let limit = u64::from(TASK_STATE_SIZE) - 1;
-    let low = (limit & 0xffff)
-        | (tss & 0xff_ffff) << 16
-        | 0x89 << 40
-        | (limit >> 16 & 0xf) << 48
-        | (tss >> 24 & 0xff) << 56;
+    let low = limit | (tss & 0xff_ffff) << 16 | 0x89 << 40 | (tss >> 24 & 0xff) << 56;
     [0, CODE, DATA, low, tss >> 32]
 }
 

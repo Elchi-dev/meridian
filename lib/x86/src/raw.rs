@@ -18,7 +18,7 @@ impl Com1 {
     pub fn open() -> Com1 {
         if let Some(sequence) = serial::init_sequence(serial::BASE_BAUD) {
             for (offset, value) in sequence {
-                outb(serial::COM1 + offset, value);
+                outb(serial::port(offset), value);
             }
         }
         Com1 { _only_com1: () }
@@ -30,9 +30,8 @@ impl Com1 {
     #[must_use]
     pub fn receive(&mut self, polls: u32) -> Option<u8> {
         for _ in 0..polls {
-            let status = inb(serial::COM1 + serial::LINE_STATUS);
-            if status != 0xff && status & serial::DATA_READY != 0 {
-                return Some(inb(serial::COM1));
+            if serial::has_data(inb(serial::port(serial::LINE_STATUS))) {
+                return Some(inb(serial::port(0)));
             }
             core::hint::spin_loop();
         }
@@ -41,12 +40,19 @@ impl Com1 {
 
     fn send(byte: u8) {
         for _ in 0..serial::MAX_POLLS {
-            if inb(serial::COM1 + serial::LINE_STATUS) & serial::TRANSMIT_EMPTY != 0 {
+            if serial::can_send(inb(serial::port(serial::LINE_STATUS))) {
                 break;
             }
             core::hint::spin_loop();
         }
-        outb(serial::COM1, byte);
+        outb(serial::port(0), byte);
+    }
+
+    /// What the line control register holds, which says how the port is
+    /// set up.
+    #[must_use]
+    pub fn line_control(&self) -> u8 {
+        inb(serial::port(serial::LINE_CONTROL))
     }
 }
 
@@ -115,7 +121,7 @@ unsafe fn read_msr(msr: u32) -> u64 {
     unsafe {
         asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
     }
-    u64::from(high) << 32 | u64::from(low)
+    crate::join(high, low)
 }
 
 /// # Safety
@@ -144,14 +150,14 @@ pub fn efer() -> u64 {
 /// Returns whether it is on.
 #[must_use]
 pub fn enable_no_execute() -> bool {
-    if !Features::detect().no_execute {
-        return false;
+    let supported = Features::detect().no_execute;
+    if supported {
+        // SAFETY: before this, bit 63 of an entry was reserved and would
+        // have faulted, so no table in use sets it, and turning it into the
+        // no-execute bit changes no mapping that is already there.
+        unsafe { write_msr(efer::MSR, efer() | efer::NO_EXECUTE_ENABLE) };
     }
-    // SAFETY: before this, bit 63 of an entry was reserved and would have
-    // faulted, so no table in use sets it, and turning it into the
-    // no-execute bit changes no mapping that is already there.
-    unsafe { write_msr(efer::MSR, efer() | efer::NO_EXECUTE_ENABLE) };
-    true
+    supported
 }
 
 #[must_use]
@@ -390,7 +396,40 @@ pub fn tsc() -> u64 {
     unsafe {
         asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
     }
-    u64::from(high) << 32 | u64::from(low)
+    crate::join(high, low)
+}
+
+/// Whether this processor has a place for a number of its own.
+fn cpu_number_supported() -> bool {
+    crate::has_leaf(cpuid(0x8000_0000)[0], 0x8000_0001)
+        && crate::tsc_aux::supported(cpuid(0x8000_0001)[3])
+}
+
+/// Gives this processor a number, which RDTSCP and RDPID hand back, so code
+/// can tell which processor it runs on. Returns whether the processor has
+/// a place for it.
+#[must_use]
+pub fn set_cpu_number(number: u32) -> bool {
+    if !cpu_number_supported() {
+        return false;
+    }
+    // SAFETY: the register exists where RDTSCP does, and it only holds a
+    // number for software to read.
+    unsafe { write_msr(crate::tsc_aux::MSR, u64::from(number)) };
+    true
+}
+
+/// The number [`set_cpu_number`] gave this processor, if it has a place
+/// for one.
+#[must_use]
+pub fn cpu_number() -> Option<u32> {
+    if !cpu_number_supported() {
+        return None;
+    }
+    // SAFETY: the register exists where RDTSCP does, and reading it
+    // changes nothing.
+    let value = unsafe { read_msr(crate::tsc_aux::MSR) };
+    u32::try_from(value & 0xffff_ffff).ok()
 }
 
 /// Reads 32 bits from an I/O port.

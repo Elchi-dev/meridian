@@ -24,6 +24,8 @@ pub fn run(check: &mut impl FnMut(&str, bool, &str)) {
         "a 64-bit processor has the extended leaves",
     );
 
+    registers(check);
+
     let (first, second) = (raw::tsc(), raw::tsc());
     check(
         "x86.tsc",
@@ -252,5 +254,24 @@ pub fn firmware_tables(check: &mut impl FnMut(&str, bool, &str)) {
         "x86.load_idt.untouched",
         raw::idt_entries()[..32] == first,
         "the firmware's gates should be just as they were",
+    );
+}
+
+/// Registers that QEMU's machine answers the same as a real one: COM1's
+/// line control, and the processor number in `IA32_TSC_AUX`.
+fn registers(check: &mut impl FnMut(&str, bool, &str)) {
+    check(
+        "x86.serial.line_control",
+        raw::Com1::open().line_control() == crate::serial::EIGHT_N_ONE,
+        "COM1 should be set to 8 data bits, no parity and one stop bit once opened",
+    );
+    let before = raw::cpu_number();
+    let set = raw::set_cpu_number(0x5a5a_0001);
+    let read = raw::cpu_number();
+    let restored = raw::set_cpu_number(before.unwrap_or(0));
+    check(
+        "x86.cpu_number",
+        set && restored && read == Some(0x5a5a_0001),
+        "QEMU's max processor has RDTSCP, so it should keep a number of its own in IA32_TSC_AUX",
     );
 }

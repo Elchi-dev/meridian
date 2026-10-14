@@ -25,6 +25,33 @@ pub mod efer {
     pub const NO_EXECUTE_ENABLE: u64 = 1 << 11;
 }
 
+/// The register that holds a number for this processor, which RDTSCP and
+/// RDPID hand back (Intel SDM, volume 4, `IA32_TSC_AUX`).
+pub mod tsc_aux {
+    pub const MSR: u32 = 0xc000_0103;
+
+    /// Whether the processor has the register, by EDX of CPUID leaf
+    /// `0x8000_0001`: it comes with RDTSCP.
+    #[must_use]
+    pub fn supported(extended_edx: u32) -> bool {
+        extended_edx & 1 << 27 != 0
+    }
+}
+
+/// The 64-bit value an instruction hands back in two halves, as rdmsr and
+/// rdtsc do in EDX and EAX.
+#[must_use]
+pub fn join(high: u32, low: u32) -> u64 {
+    u64::from(high) << 32 | u64::from(low)
+}
+
+/// Whether CPUID has `leaf`, given the highest leaf of its range that
+/// leaf `0x8000_0000` or leaf 0 reports.
+#[must_use]
+pub fn has_leaf(highest: u32, leaf: u32) -> bool {
+    highest >= leaf
+}
+
 /// What the processor can do, as far as the loader and the kernel care.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Features {
@@ -47,7 +74,7 @@ impl Features {
     /// Asks this processor.
     #[must_use]
     pub fn detect() -> Features {
-        if raw::cpuid(0x8000_0000)[0] < 0x8000_0001 {
+        if !has_leaf(raw::cpuid(0x8000_0000)[0], 0x8000_0001) {
             return Features::default();
         }
         Features::from_extended_edx(raw::cpuid(0x8000_0001)[3])
@@ -90,7 +117,7 @@ pub fn vendor() -> CpuText<12> {
 /// or an empty text on a processor that has none.
 #[must_use]
 pub fn brand() -> CpuText<48> {
-    if raw::cpuid(0x8000_0000)[0] < 0x8000_0004 {
+    if !has_leaf(raw::cpuid(0x8000_0000)[0], 0x8000_0004) {
         return CpuText([0; 48]);
     }
     let [a, b, c] = [0x8000_0002, 0x8000_0003, 0x8000_0004].map(raw::cpuid);
@@ -109,6 +136,42 @@ mod tests {
             let (key, value) = l.split_once(':')?;
             (key.trim() == name).then(|| value.trim().to_string())
         })
+    }
+
+    #[test]
+    fn halves_join_high_first() {
+        assert_eq!(join(0, 0), 0);
+        assert_eq!(join(1, 0), 1 << 32);
+        assert_eq!(join(0, 1), 1);
+        assert_eq!(join(0x0123_4567, 0x89ab_cdef), 0x0123_4567_89ab_cdef);
+        assert_eq!(join(u32::MAX, u32::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn a_leaf_is_there_up_to_the_highest() {
+        assert!(has_leaf(0x8000_0008, 0x8000_0001));
+        assert!(
+            has_leaf(0x8000_0004, 0x8000_0004),
+            "the highest leaf itself"
+        );
+        assert!(!has_leaf(0x8000_0003, 0x8000_0004));
+        assert!(!has_leaf(0, 0x8000_0001));
+    }
+
+    #[test]
+    fn the_processor_number_comes_with_rdtscp() {
+        assert!(tsc_aux::supported(1 << 27));
+        assert!(!tsc_aux::supported(!(1 << 27)));
+        assert!(!tsc_aux::supported(0));
+        assert_eq!(tsc_aux::MSR, 0xc000_0103);
+        if let Some(flags) = cpuinfo("flags") {
+            let edx = raw::cpuid(0x8000_0001)[3];
+            assert_eq!(
+                tsc_aux::supported(edx),
+                flags.split_whitespace().any(|f| f == "rdtscp"),
+                "Linux calls the same bit rdtscp"
+            );
+        }
     }
 
     #[test]

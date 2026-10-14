@@ -249,7 +249,8 @@ func TestOpenSSLVerifiesTheSignature(t *testing.T) {
 		t.Fatalf("openssl accepted content with a changed digest:\n%s", out)
 	}
 	printed, err := exec.Command(openssl, "pkcs7", "-inform", "DER", "-in", sig, "-print_certs", "-noout").CombinedOutput()
-	if err != nil || !strings.Contains(string(printed), "CN=Meridian test key") {
+	// OpenSSL 3.0 writes "CN = name", later versions "CN=name".
+	if err != nil || !strings.Contains(string(printed), "subject=") || !strings.Contains(string(printed), "Meridian test key") {
 		t.Fatalf("openssl pkcs7: %v\n%s", err, printed)
 	}
 }

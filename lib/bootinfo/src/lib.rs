@@ -10,7 +10,7 @@
 use core::mem::size_of;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"MERIDIAN");
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Where the direct map of all physical memory starts: the first address of
 /// the higher half. Physical address `p` is at virtual `HHDM_BASE + p`.
@@ -45,6 +45,11 @@ pub struct BootInfo {
     /// loader: the clock, firmware variables and resetting the machine.
     pub uefi_system_table: u64,
     pub framebuffer: Framebuffer,
+    /// Room for one frame of the framebuffer's width and height, in rows
+    /// `width` pixels apart, which the kernel draws into before it copies
+    /// the frame to the screen; 0 without a framebuffer. Its pages are the
+    /// kernel's in the memory map.
+    pub back_buffer: u64,
 }
 
 /// The screen as the firmware left it, still showing what the loader drew.
@@ -171,6 +176,7 @@ impl BootInfo {
             rsdp: 0,
             uefi_system_table: 0,
             framebuffer: Framebuffer::default(),
+            back_buffer: 0,
         }
     }
 
@@ -201,9 +207,10 @@ impl BootInfo {
         out[96..104].copy_from_slice(&fb.base.to_le_bytes());
         out[104..112].copy_from_slice(&fb.size.to_le_bytes());
         let fields = [fb.width, fb.height, fb.stride, fb.format.0];
-        for (chunk, field) in out[112..].chunks_mut(4).zip(fields) {
+        for (chunk, field) in out[112..128].chunks_mut(4).zip(fields) {
             chunk.copy_from_slice(&field.to_le_bytes());
         }
+        out[128..136].copy_from_slice(&self.back_buffer.to_le_bytes());
         out
     }
 
@@ -249,9 +256,10 @@ mod tests {
                 b.memory.count,
                 b.kernel.size,
                 b.stack.top,
-                b.uefi_system_table
+                b.uefi_system_table,
+                b.back_buffer
             ),
-            (0, 0, 0, 0, 0)
+            (0, 0, 0, 0, 0, 0)
         );
     }
 
@@ -274,8 +282,12 @@ mod tests {
         b.magic = 0x1234;
         assert_eq!(b.check(), Err(Mismatch::Magic(0x1234)));
         let mut b = BootInfo::new();
-        b.version = 2;
-        assert_eq!(b.check(), Err(Mismatch::Version(2)));
+        b.version = 1;
+        assert_eq!(
+            b.check(),
+            Err(Mismatch::Version(1)),
+            "a loader from before the back buffer"
+        );
         let mut b = BootInfo::new();
         b.size -= 8;
         assert_eq!(b.check(), Err(Mismatch::Size(b.size)));
@@ -286,7 +298,7 @@ mod tests {
     #[test]
     fn the_magic_spells_meridian() {
         assert_eq!(&MAGIC.to_le_bytes(), b"MERIDIAN");
-        assert_eq!(VERSION, 1);
+        assert_eq!(VERSION, 2);
     }
 
     #[test]
@@ -302,11 +314,12 @@ mod tests {
             (offset_of!(BootInfo, rsdp), 80),
             (offset_of!(BootInfo, uefi_system_table), 88),
             (offset_of!(BootInfo, framebuffer), 96),
+            (offset_of!(BootInfo, back_buffer), 128),
         ];
         for (got, want) in offsets {
             assert_eq!(got, want);
         }
-        assert_eq!(size_of::<BootInfo>(), 128);
+        assert_eq!(size_of::<BootInfo>(), 136);
         assert_eq!(size_of::<Framebuffer>(), 32);
         assert_eq!(offset_of!(Framebuffer, width), 16);
         assert_eq!(offset_of!(Framebuffer, stride), 24);
@@ -348,12 +361,13 @@ mod tests {
                 stride: 0xff,
                 format: PixelFormat::BGR,
             },
+            back_buffer: 0x1234_5000,
             ..BootInfo::new()
         };
         let b = info.to_bytes();
         assert_eq!(&b[0..8], b"MERIDIAN");
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), VERSION);
-        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 128);
+        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 136);
         let fields = [
             (
                 offset_of!(BootInfo, memory) + offset_of!(MemoryMap, regions),
@@ -395,6 +409,7 @@ mod tests {
         assert_eq!(u32_at(fb + offset_of!(Framebuffer, height)), 0xee);
         assert_eq!(u32_at(fb + offset_of!(Framebuffer, stride)), 0xff);
         assert_eq!(u32_at(fb + offset_of!(Framebuffer, format)), 2);
+        assert_eq!(u64_at(&b, offset_of!(BootInfo, back_buffer)), 0x1234_5000);
     }
 
     #[test]

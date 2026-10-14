@@ -717,11 +717,12 @@ mod tests {
         ];
         let mut page = vec![0xaa; 4096];
         write_info(&mut page, &info, &regions);
-        assert_eq!(&page[..128], &info.to_bytes());
-        assert_eq!(&page[128..152], &regions[0].to_bytes());
-        assert_eq!(&page[152..176], &regions[1].to_bytes());
+        let head = size_of::<BootInfo>();
+        assert_eq!(&page[..head], &info.to_bytes());
+        assert_eq!(&page[head..head + 24], &regions[0].to_bytes());
+        assert_eq!(&page[head + 24..head + 48], &regions[1].to_bytes());
         assert!(
-            page[176..].iter().all(|&b| b == 0xaa),
+            page[head + 48..].iter().all(|&b| b == 0xaa),
             "nothing past the last region"
         );
     }
@@ -734,9 +735,10 @@ mod tests {
             kind: bootinfo::RegionKind::USABLE,
             reserved: 0,
         };
-        let mut page = vec![0; 128 + 2 * 24];
+        let head = size_of::<BootInfo>();
+        let mut page = vec![0; head + 2 * 24];
         write_info(&mut page, &BootInfo::new(), &[region, region]);
-        assert_eq!(&page[152..], &region.to_bytes());
+        assert_eq!(&page[head + 24..], &region.to_bytes());
     }
 
     #[test]
@@ -748,7 +750,7 @@ mod tests {
             kind: bootinfo::RegionKind::USABLE,
             reserved: 0,
         };
-        let mut page = vec![0; 128 + 24 + 10];
+        let mut page = vec![0; size_of::<BootInfo>() + 24 + 10];
         write_info(&mut page, &BootInfo::new(), &[region, region]);
     }
 

@@ -474,6 +474,12 @@ mod tests {
         );
         assert_eq!(cards_layout(640, 480, 9).2, 2);
         assert_eq!(
+            cards_layout(1191, 800, 9).2,
+            4,
+            "a fifth card needs a gap on each side"
+        );
+        assert_eq!(cards_layout(1192, 800, 9).2, 5);
+        assert_eq!(
             cards_layout(100, 100, 3).2,
             1,
             "at least one card, even cut off"
@@ -504,6 +510,11 @@ mod tests {
                 p.at(x, top + 50),
                 if chosen { TANGERINE } else { BORDER },
                 "card {i}'s border"
+            );
+            assert_eq!(
+                p.at(x + 50, top + CARD_HEIGHT - 1),
+                if chosen { TANGERINE } else { BORDER },
+                "card {i}'s bottom edge"
             );
             assert_eq!(
                 p.at(x + 2, top + 50),
@@ -577,6 +588,49 @@ mod tests {
             }
         }
         assert!(dark > 150, "the M should be drawn in ink: {dark}");
+    }
+
+    #[test]
+    fn the_monogram_sits_in_the_middle_of_its_tile() {
+        let mut p = drawn(&SYSTEMS, &Menu::new(3, 0, 0), 1280, 800);
+        let (left, top, _) = cards_layout(1280, 800, 3);
+        let tile = (left + (CARD_WIDTH - TILE) / 2, top + 36);
+        let rows: Vec<usize> = (tile.1..tile.1 + TILE)
+            .filter(|&y| (tile.0..tile.0 + TILE).any(|x| p.at(x, y) == INK))
+            .collect();
+        let (first, last) = (rows[0], rows[rows.len() - 1]);
+        let middle = 2 * tile.1 + TILE;
+        assert!(
+            (first + last).abs_diff(middle) <= 4,
+            "the M from row {first} to {last}, the tile from {} to {}",
+            tile.1,
+            tile.1 + TILE
+        );
+    }
+
+    #[test]
+    fn the_name_is_centred_under_the_tile() {
+        let card = [SYSTEMS[2]];
+        let mut p = drawn(&card, &Menu::new(1, 0, 0), 1280, 800);
+        let (x, top, _) = cards_layout(1280, 800, 1);
+        let name_rows = top + 36 + TILE + 20..top + 36 + TILE + 60;
+        let (mut lo, mut hi) = (usize::MAX, 0);
+        for y in name_rows {
+            for i in x + 4..x + CARD_WIDTH - 4 {
+                if p.at(i, y) != SURFACE {
+                    lo = lo.min(i);
+                    hi = hi.max(i);
+                }
+            }
+        }
+        assert!(
+            hi > lo + 50,
+            "the name is written on the card: {lo} to {hi}"
+        );
+        assert!(
+            (lo + hi).abs_diff(2 * x + CARD_WIDTH) <= 4,
+            "the name from {lo} to {hi} on a card from {x}"
+        );
     }
 
     #[test]
@@ -765,6 +819,17 @@ mod tests {
         assert_eq!(without.at(lo, cap_top + 5), BORDER);
         assert_eq!(without.at(lo + 3, cap_top + 3), SURFACE);
         assert_eq!(without.at(lo + KEY_CAP - 1, cap_top + 5), BORDER);
+        assert_eq!(without.at(lo + 5, cap_top + KEY_CAP - 1), BORDER);
+        let letter: Vec<usize> = (lo + 1..lo + KEY_CAP - 1)
+            .filter(|&x| (cap_top + 1..cap_top + KEY_CAP - 1).any(|y| without.at(x, y) != SURFACE))
+            .collect();
+        assert!(letter.len() > 5, "the V is on its cap: {letter:?}");
+        assert!(
+            (letter[0] + letter[letter.len() - 1]).abs_diff(2 * lo + KEY_CAP) <= 3,
+            "the V from {} to {} on a cap from {lo}",
+            letter[0],
+            letter[letter.len() - 1]
+        );
         assert_eq!(
             without.at(lo + 3, cap_top - 2),
             NIGHT,

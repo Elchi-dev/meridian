@@ -30,10 +30,21 @@ pub const CONSOLE_PROBE: &str = concat!(
 );
 
 pub fn run(system: &System, report: &mut impl Report) {
+    // Distributions name their builds differently ("EDK II" on Arch, with
+    // the distribution in front on Ubuntu), but every OVMF says EDK II.
+    let mut vendor = [0u8; 128];
+    let mut len = 0;
+    for c in system.firmware_vendor() {
+        if len < vendor.len() && c.is_ascii() {
+            vendor[len] = c as u8;
+            len += 1;
+        }
+    }
+    let vendor = core::str::from_utf8(&vendor[..len]).unwrap_or("");
     report.check(
         "uefi.vendor",
-        system.firmware_vendor().eq("EDK II".chars()),
-        "OVMF names itself EDK II; reading the vendor string is broken",
+        vendor.contains("EDK II"),
+        "an OVMF vendor name contains EDK II; reading the vendor string is broken",
     );
     report.check(
         "uefi.table.revision",

@@ -909,3 +909,35 @@ func TestEdgeCharactersAndSizesAreAccepted(t *testing.T) {
 		t.Error("the file with edge characters is missing")
 	}
 }
+
+// With enough directories the path table needs more than one block, and
+// everything after it moves by twice that many blocks, once for each byte
+// order.
+func TestPathTablesSpanningBlocks(t *testing.T) {
+	files := map[string][]byte{}
+	for i := range 300 {
+		files[fmt.Sprintf("DIR%03d/F", i)] = []byte{byte(i)}
+	}
+	img, _, _ := writeImage(t, Image{VolumeID: "MANY", Time: fixedTime, Files: files, BootImage: pattern(2048, 5)})
+	r := &reader{t: t, img: img}
+	p := r.block(16)
+	size := int(r.both32(p[132:140]))
+	if size <= 2048 {
+		t.Fatalf("path table of %d bytes fits one block; the test needs more", size)
+	}
+	l := r.pathTable(binary.LittleEndian.Uint32(p[140:]), size, binary.LittleEndian)
+	m := r.pathTable(binary.BigEndian.Uint32(p[148:]), size, binary.BigEndian)
+	if len(l) != 301 || !slices.Equal(l, m) {
+		t.Fatalf("path tables: %d entries, equal %v", len(l), slices.Equal(l, m))
+	}
+	w := r.walk()
+	for i := range 300 {
+		name := fmt.Sprintf("DIR%03d", i)
+		if e := l[i+1]; e.id != name || e.lba != w.dirs[name].lba {
+			t.Fatalf("path table entry %d is %+v, the directory is at %d", i+2, e, w.dirs[name].lba)
+		}
+		if got := w.files[name+"/F"]; len(got) != 1 || got[0] != byte(i) {
+			t.Fatalf("%s/F reads back as %v", name, got)
+		}
+	}
+}

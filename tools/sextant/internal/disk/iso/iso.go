@@ -4,6 +4,7 @@
 package iso
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -118,9 +119,7 @@ func Write(w io.WriterAt, img Image) (int64, error) {
 		out.block(d.lba, pad(encodeDir(d, ts)))
 	}
 	for _, f := range filesInOrder(root) {
-		if f.size > 0 {
-			out.block(f.lba, pad(f.data))
-		}
+		out.block(f.lba, pad(f.data))
 	}
 	out.block(bootLBA, pad(img.BootImage))
 	if out.err != nil {
@@ -200,7 +199,7 @@ func fileID(name string, dir bool) (string, error) {
 }
 
 func buildTree(files map[string][]byte) (*node, error) {
-	root := &node{dir: true}
+	root := &node{}
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		paths = append(paths, p)
@@ -314,7 +313,7 @@ func encodePathTable(dirs []*node, order binary.ByteOrder) []byte {
 		if d.parent != nil {
 			id, parent = []byte(d.id), d.parent.number
 		}
-		rec := make([]byte, 8, 8+len(id)+1)
+		rec := make([]byte, 8)
 		rec[0] = byte(len(id))
 		order.PutUint32(rec[2:], d.lba)
 		order.PutUint16(rec[6:], uint16(parent))
@@ -392,8 +391,11 @@ func volumeTime(t time.Time) []byte {
 	return append([]byte(s), 0)
 }
 
+// padded is s in a field of n bytes, filled with spaces.
 func padded(s string, n int) []byte {
-	return []byte(s + strings.Repeat(" ", n-len(s)))
+	field := bytes.Repeat([]byte{' '}, n)
+	copy(field, s)
+	return field
 }
 
 // primaryDescriptor encodes the primary volume descriptor of section 8.4.

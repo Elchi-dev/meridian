@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boot", "kernel", "lib/acpi", "lib/bootinfo", "lib/canvas", "lib/elf", "lib/font", "lib/meri", "lib/paging", "lib/qr", "lib/uefi", "lib/x86"]
+members = ["boot", "kernel", "lib/acpi", "lib/bootinfo", "lib/canvas", "lib/elf", "lib/font", "lib/frames", "lib/meri", "lib/paging", "lib/qr", "lib/uefi", "lib/x86"]
 
 [workspace.package]
 version = "0.0.0"

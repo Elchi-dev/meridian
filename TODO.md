@@ -89,7 +89,7 @@ Loader and UEFI:
 - [x] All cores started: INIT and startup through the x2APIC, a trampoline below 640 KiB, each core on its own stack and the kernel's tables
 - [x] The other cores get task states of their own, with fault stacks
 - [x] The other cores' stacks are mapped on their own with an unmapped page below, so one that runs over faults
-- [ ] The other cores get work to do
+- [x] The other cores get work to do: a mailbox each, woken by an interrupt, asleep in between
 - [ ] ACPI tables parsed
 
 ## M3: Processes

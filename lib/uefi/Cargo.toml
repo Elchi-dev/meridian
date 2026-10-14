@@ -1,0 +1,16 @@
+[package]
+name = "uefi"
+description = "UEFI types and firmware calls, written from the UEFI 2.10 specification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Adds the checks a QEMU test image runs against real firmware.
+qemu-test = []
+
+[lints]
+workspace = true

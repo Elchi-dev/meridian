@@ -16,3 +16,8 @@ long-unit quantity 10 furlongs
 e-unit quantity 1 e
 mixed-case quantity 4 KiB
 largest quantity 9223372036854775807 B
+zero-bytes quantity 0 B
+zero-bits quantity 0 bit
+zero-times quantity 0 x
+ohms quantity 0 ohm
+neg-zero-x quantity 0 x

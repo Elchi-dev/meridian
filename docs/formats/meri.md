@@ -114,11 +114,11 @@ A word follows the same rule as a key. The two words `true` and `false` are bool
 
 A decimal integer is an optional `-` followed by digits. `_` may separate digits: it must have a digit on both sides, so `1_000` is valid and `_1`, `1_`, `1__0` are not. A decimal integer with more than one digit cannot start with `0` (`007` is an error; write `7`, or `0o7` for octal).
 
-An integer may also be written as `0x` with hexadecimal digits (`0` to `9`, `a` to `f`, `A` to `F`), `0o` with octal digits or `0b` with binary digits, again with an optional `-` in front and `_` between digits. The prefixes are lower case only.
+An integer may also be written as `0x` with hexadecimal digits (`0` to `9`, `a` to `f`, `A` to `F`), `0o` with octal digits or `0b` with binary digits, again with an optional `-` in front and `_` between digits. The prefixes are lower case, and a prefix only counts as one when the character right after it is a digit of its base. Otherwise the `0` is a decimal number and the letter starts a unit: `0bit` is the quantity 0 with the unit `bit`, `0B` is 0 with the unit `B`, and `0o8` is invalid because `8` follows the unit `o`.
 
 Every integer must fit a signed 64-bit integer, from -9223372036854775808 to 9223372036854775807. A value outside that range is an error (`number-overflow`). `-0x8000_0000_0000_0000` is the smallest integer.
 
-Any malformed number is an error (`invalid-number`) reported where the number starts. That includes a `-` without a digit after it, a prefix without digits, a digit that does not belong to the base, a misplaced `_`, and a letter, digit, `_`, `.` or `%` that directly follows a complete hexadecimal, octal or binary number. As a single exception, a letter or `%` directly after a hexadecimal, octal or binary number that is not a digit of its base is reported as `unit-not-allowed`, because units only exist for decimal numbers.
+Any malformed number is an error (`invalid-number`) reported where the number starts. That includes a `-` without a digit after it, a digit that does not belong to the base, a misplaced `_`, and a letter, digit, `_`, `.` or `%` that directly follows a complete hexadecimal, octal or binary number. As a single exception, a letter or `%` directly after a hexadecimal, octal or binary number that is not a digit of its base is reported as `unit-not-allowed`, because units only exist for decimal numbers.
 
 ### 8.2 Floats
 
@@ -174,6 +174,7 @@ motd = """
 - The content lines are joined with line feeds. The line ending before the closing line is not part of the text, so text never ends in a line feed unless an empty content line is placed before the closing line. Line endings in the content are always line feeds, whether the document uses `LF` or `CR LF`.
 - No escapes are processed in text; a backslash is a backslash. Tabs are allowed, other control characters are not.
 - A document that ends before the closing line is an error (`unterminated-text`), reported at the opening `"""`.
+- The indentation of the content lines can only be checked once the closing line is known. Every other error inside a text is therefore reported before a `text-indent` error, even when it comes later in the text.
 
 Text and quoted strings produce the same type of value.
 
@@ -233,6 +234,7 @@ How a program interprets values is up to the program, but Meridian's readers all
 - Sizes are quantities in bytes with one of these units: `B`, `KB` (1000), `MB`, `GB`, `TB`, `KiB` (1024), `MiB`, `GiB`, `TiB`. The result must be a whole, non-negative number of bytes that fits a signed 64-bit integer, so `1.5KiB` is 1536 bytes and `1.5B` is an error. Conversion is exact; there is no floating point rounding.
 - Durations are quantities with one of these units: `ns`, `us`, `ms`, `s`, `min`, `h`, `d` (24 hours). The result must be a whole number of nanoseconds that fits a signed 64-bit integer. Negative durations are allowed.
 - Units are case-sensitive: `mib` is not a size unit.
+- A value of the wrong type, or a size or duration with an unknown unit, is reported with the code `wrong-type`. A size or duration that is not a whole number of bytes or nanoseconds, a negative size, or one too large for 64 bits is reported with `out-of-range`.
 
 ## 14. Layering
 

@@ -328,8 +328,9 @@ func TestCopyTreeLeavesOutHistoryAndBuildOutput(t *testing.T) {
 	if strings.Join(got, " ") != want {
 		t.Fatalf("copied %v\nwant   %s", got, want)
 	}
+	// Windows keeps no execute bits, so only Unix can show the mode kept.
 	info, err := os.Stat(filepath.Join(dest, "a.go"))
-	if err != nil || info.Mode().Perm() != 0o755 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
 		t.Fatalf("mode not kept: %v %v", info, err)
 	}
 	if link, err := os.Readlink(filepath.Join(dest, "link.go")); err != nil || link != "a.go" {

@@ -549,10 +549,25 @@ func requireTool(t *testing.T, name string) string {
 	return path
 }
 
+// requireUtilLinux is requireTool for the util-linux tools, since macOS
+// has an fdisk of its own that reads and prints differently.
+func requireUtilLinux(t *testing.T, name string) string {
+	t.Helper()
+	path := requireTool(t, name)
+	out, _ := exec.Command(path, "--version").CombinedOutput()
+	if !strings.Contains(string(out), "util-linux") {
+		if os.Getenv("SEXTANT_REQUIRE_TOOLS") == "1" {
+			t.Fatalf("%s is not the one from util-linux and SEXTANT_REQUIRE_TOOLS=1: %s", name, out)
+		}
+		t.Skipf("%s is not the one from util-linux, skipping the cross-check", name)
+	}
+	return path
+}
+
 // sfdisk from util-linux reads the image on its own; if it sees the same
 // table we meant to write, the encoding is right.
 func TestSfdiskReadsTheTable(t *testing.T) {
-	sfdisk := requireTool(t, "sfdisk")
+	sfdisk := requireUtilLinux(t, "sfdisk")
 	_, layout, path := writeImage(t, twoPartitionDisk())
 	out, err := exec.Command(sfdisk, "--json", path).Output()
 	if err != nil {
@@ -602,7 +617,7 @@ func TestSfdiskReadsTheTable(t *testing.T) {
 }
 
 func TestFdiskListsTheDisk(t *testing.T) {
-	fdisk := requireTool(t, "fdisk")
+	fdisk := requireUtilLinux(t, "fdisk")
 	_, layout, path := writeImage(t, espDisk())
 	out, err := exec.Command(fdisk, "-l", path).CombinedOutput()
 	if err != nil {

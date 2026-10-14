@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -123,7 +124,7 @@ func TestMutateUsageErrors(t *testing.T) {
 		{[]string{"mutate", "--fast"}, ExitUsage, "sextant mutate: flag provided but not defined: -fast\n"},
 		{[]string{"mutate", "docs", "--list"}, ExitFailure, "sextant mutate: docs has no Rust or Go code to mutate\n"},
 		{[]string{"mutate", "../elsewhere", "--list"}, ExitFailure, "is outside the repository at"},
-		{[]string{"mutate", "--list", "/"}, ExitFailure, "is outside the repository at"},
+		{[]string{"mutate", "--list", filepath.Dir(root)}, ExitFailure, "is outside the repository at"},
 	}
 	for _, tt := range tests {
 		r := runIn(root, tt.args...)
@@ -197,6 +198,9 @@ func TestMutateSinceOutsideGit(t *testing.T) {
 
 func TestRepoPaths(t *testing.T) {
 	root := filepath.FromSlash("/r/meridian")
+	if runtime.GOOS == "windows" {
+		root = `C:\r\meridian`
+	}
 	got, err := repoPaths(root, filepath.Join(root, "tools"), []string{"sextant", filepath.Join(root, "lib"), "..", "."})
 	if err != nil || strings.Join(got, " ") != "tools/sextant lib . tools" {
 		t.Fatalf("%v %v", got, err)

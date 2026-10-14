@@ -20,7 +20,12 @@ import (
 // named as the QEMU monitor names them ("ret", "down", "esc", "a").
 type Step struct {
 	Wait string
-	Keys []string
+	// Pause waits this long once the text has appeared, before the keys.
+	Pause time.Duration
+	Keys  []string
+	// Screen keeps the machine's screen under this name after the keys,
+	// as a SCREEN line would, but without answering the machine.
+	Screen string
 }
 
 type Options struct {
@@ -221,8 +226,16 @@ func (w *scriptWatcher) advance(clean string, from int) int {
 			return from
 		}
 		from += at + len(step.Wait)
+		time.Sleep(step.Pause)
 		for _, key := range step.Keys {
 			if err := w.press(key); err != nil {
+				w.err = err
+				w.stop()
+				return from
+			}
+		}
+		if step.Screen != "" {
+			if err := w.keep(step.Screen); err != nil {
 				w.err = err
 				w.stop()
 				return from
@@ -264,8 +277,19 @@ func (w *scriptWatcher) answerPresses(clean string) {
 // and then tells the machine to go on with a carriage return, which the
 // firmware's console reads as Enter and the kernel reads as a byte.
 func (w *scriptWatcher) screen(name string) error {
+	if err := w.keep(name); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w.serialIn, "\r"); err != nil {
+		return fmt.Errorf("answer the machine after its screen: %w", err)
+	}
+	return nil
+}
+
+// keep saves the machine's screen as name.png, when screens are kept.
+func (w *scriptWatcher) keep(name string) error {
 	if !screenName(name) {
-		return fmt.Errorf("the machine asked to keep a screen named %q; names are lower case letters, digits and dashes", name)
+		return fmt.Errorf("a screen cannot be named %q; names are lower case letters, digits and dashes", name)
 	}
 	if w.screens != "" {
 		ppm := filepath.Join(w.work, name+".ppm")
@@ -281,9 +305,6 @@ func (w *scriptWatcher) screen(name string) error {
 			return err
 		}
 		w.saved = append(w.saved, out)
-	}
-	if _, err := io.WriteString(w.serialIn, "\r"); err != nil {
-		return fmt.Errorf("answer the machine after its screen: %w", err)
 	}
 	return nil
 }

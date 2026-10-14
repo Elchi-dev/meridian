@@ -160,3 +160,30 @@ func TestABadScreenNameStopsTheRun(t *testing.T) {
 		t.Fatalf("err %v, stopped %v, answer %q", w.err, stopped, answer.String())
 	}
 }
+
+func TestAStepPausesBeforeItsScreen(t *testing.T) {
+	stopped := false
+	w := &scriptWatcher{
+		steps: []Step{{Wait: "ready", Pause: 150 * time.Millisecond, Screen: "Bad Name"}},
+		stop:  func() { stopped = true },
+	}
+	start := time.Now()
+	w.advance("ready\n", 0)
+	if took := time.Since(start); took < 150*time.Millisecond {
+		t.Errorf("the step went on after %v", took)
+	}
+	if w.err == nil || !strings.Contains(w.err.Error(), `named "Bad Name"`) || !stopped || w.done != 0 {
+		t.Fatalf("err %v, stopped %v, done %d", w.err, stopped, w.done)
+	}
+}
+
+func TestAStepScreenWithoutAFolderOnlyGoesOn(t *testing.T) {
+	var answer bytes.Buffer
+	w := &scriptWatcher{steps: []Step{{Wait: "a", Screen: "fine"}, {Wait: "b"}}, serialIn: &answer, stop: func() {}}
+	if from := w.advance("a b", 0); from != 3 || w.done != 2 || w.err != nil {
+		t.Fatalf("from %d, done %d, err %v", from, w.done, w.err)
+	}
+	if answer.Len() != 0 || len(w.saved) != 0 {
+		t.Fatalf("a step's screen is not answered on the serial port: %q, saved %v", answer.String(), w.saved)
+	}
+}

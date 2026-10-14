@@ -280,6 +280,26 @@ impl System {
         unsafe { ((*input).read_key_stroke)(input, &raw mut key) }.ok()?;
         Ok(key)
     }
+
+    /// The next key stroke if one is waiting, without waiting for one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the firmware's status when there is no keyboard input or
+    /// reading fails.
+    pub fn read_key(&self) -> Result<Option<InputKey>, Status> {
+        let input = self.table().con_in;
+        if input.is_null() {
+            return Err(Status::UNSUPPORTED);
+        }
+        let mut key = InputKey::default();
+        // SAFETY: con_in is the firmware's protocol instance, non-null here,
+        // and ReadKeyStroke only writes the key.
+        match unsafe { ((*input).read_key_stroke)(input, &raw mut key) } {
+            Status::NOT_READY => Ok(None),
+            status => status.ok().map(|()| Some(key)),
+        }
+    }
 }
 
 /// Pages the firmware allocated. Boot services run with memory identity
@@ -307,6 +327,14 @@ impl Pages<'_> {
         // SAFETY: the firmware gave these pages to this value alone, and
         // they are identity mapped while boot services run.
         unsafe { core::slice::from_raw_parts_mut(self.start as *mut u8, len) }
+    }
+
+    /// The pages as 32-bit words, such as pixels.
+    pub fn words(&mut self) -> &mut [u32] {
+        let len = self.count * PAGE_BYTES / 4;
+        // SAFETY: the pages are page aligned, so aligned for u32, belong to
+        // this value alone, and every bit pattern is a valid u32.
+        unsafe { core::slice::from_raw_parts_mut(self.start as *mut u32, len) }
     }
 
     /// Keeps the pages for as long as the loader runs, as bytes that no
@@ -581,6 +609,7 @@ mod tests {
         let system = open(&mut st).unwrap();
         assert!(system.console().is_none());
         assert_eq!(system.wait_for_key(), Err(Status::UNSUPPORTED));
+        assert_eq!(system.read_key(), Err(Status::UNSUPPORTED));
     }
 
     #[test]

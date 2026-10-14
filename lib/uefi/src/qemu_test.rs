@@ -68,6 +68,11 @@ pub fn run(system: &System, report: &mut impl Report) {
     tables(system, report);
     graphics(system, report);
 
+    report.check(
+        "uefi.keyboard.nothing_waiting",
+        system.read_key() == Ok(None),
+        "with no key pressed, reading should find nothing and not wait",
+    );
     report.press("ret");
     let enter = system.wait_for_key();
     report.check(
@@ -81,6 +86,20 @@ pub fn run(system: &System, report: &mut impl Report) {
         "uefi.keyboard.arrow",
         down.is_ok_and(|k| k.scan_code == scan::DOWN && k.unicode_char == 0),
         "the down arrow should arrive as its scan code",
+    );
+    report.press("left");
+    let mut left = None;
+    for _ in 0..200 {
+        if let Ok(Some(key)) = system.read_key() {
+            left = Some(key);
+            break;
+        }
+        let _ = system.stall(10_000);
+    }
+    report.check(
+        "uefi.keyboard.read_key",
+        left.is_some_and(|k| k.scan_code == scan::LEFT),
+        "a key pressed while polling should be read without waiting for it",
     );
 
     let Some(mut console) = system.console() else {

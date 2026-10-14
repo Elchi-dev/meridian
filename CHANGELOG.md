@@ -50,7 +50,7 @@ at 0.x until the native API is stable.
   - No flicker into the kernel: the boot screen stays on the screen until the kernel's first frame, drawn in room the loader set aside, replaces it whole.
 - **The kernel**
   - Its own GDT, task state and IDT. Every processor exception is shown in plain words, and double faults run on a stack of their own, so running out of stack still ends on the panic screen.
-  - A status screen with the processor, its cores, how long the machine has been up, kept current, and the memory map as a bar.
+  - A status screen with the processor, its cores and how many of them run, how long the machine has been up, kept current, and the memory map as a bar.
   - A panic screen in plain English with a QR code of the crash summary.
   - Cores from the ACPI MADT, and the time stamp counter measured against the ACPI timer.
   - A physical frame allocator built from the memory map, and a 4 MiB heap from its frames, so `Box`, `Vec` and `String` work in the kernel. Both sit behind spin locks.

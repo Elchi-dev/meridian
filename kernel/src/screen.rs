@@ -17,6 +17,8 @@ static INTER_SEMIBOLD: &[u8] = include_bytes!("../../third-party/fonts/Inter-Sem
 pub struct Facts<'a> {
     pub processor: &'a str,
     pub cores: Option<u32>,
+    /// How many cores run the kernel, this one among them.
+    pub running: u32,
     /// Seconds since the machine was switched on.
     pub up: Option<u64>,
     pub regions: &'a [MemoryRegion],
@@ -29,6 +31,18 @@ const FIRST_ROW: i32 = MARGIN + 130;
 const ROW_HEIGHT: i32 = 32;
 /// The row the uptime is on, which is drawn again as it changes.
 const UPTIME_ROW: i32 = 3;
+
+/// The cores row: how many the MADT lists, and how many of them run.
+#[must_use]
+pub fn cores_text(cores: Option<u32>, running: u32) -> Text<24> {
+    let mut text = Text::new();
+    let _ = match cores {
+        Some(n) if running >= n => write!(text, "{n}, all running"),
+        Some(n) => write!(text, "{n}, {running} running"),
+        None => text.write_str(UNKNOWN),
+    };
+    text
+}
 
 /// The colour each kind of memory gets on the bar and in its legend.
 #[must_use]
@@ -125,15 +139,7 @@ pub fn draw(
     let memory = memory_line(regions);
     let mut kernel = Text::<16>::new();
     let _ = core::fmt::write(&mut kernel, format_args!("{}", crate::VERSION));
-    let mut cores = Text::<16>::new();
-    match facts.cores {
-        Some(n) => {
-            let _ = core::fmt::write(&mut cores, format_args!("{n}"));
-        }
-        None => {
-            let _ = cores.write_str(UNKNOWN);
-        }
-    }
+    let cores = cores_text(facts.cores, facts.running);
     let rows = [
         ("Kernel", kernel.as_str()),
         ("Processor", facts.processor),
@@ -353,6 +359,7 @@ mod tests {
         Facts {
             processor: "Test CPU 9000",
             cores: Some(4),
+            running: 4,
             up: Some(42),
             regions,
         }
@@ -455,6 +462,7 @@ mod tests {
             let facts = Facts {
                 processor: "",
                 cores: None,
+                running: 0,
                 up: None,
                 regions: &[],
             };
@@ -679,13 +687,38 @@ mod tests {
     }
 
     #[test]
+    fn the_cores_row_says_how_many_run() {
+        assert_eq!(cores_text(Some(4), 4).as_str(), "4, all running");
+        assert_eq!(cores_text(Some(4), 5).as_str(), "4, all running");
+        assert_eq!(cores_text(Some(12), 1).as_str(), "12, 1 running");
+        assert_eq!(cores_text(Some(4), 3).as_str(), "4, 3 running");
+        assert_eq!(cores_text(None, 1).as_str(), "unknown");
+        assert_eq!(
+            cores_text(Some(u32::MAX), u32::MAX - 1).as_str(),
+            "4294967295, 4294967294 r",
+            "cut to the room there is"
+        );
+    }
+
+    #[test]
     fn rows_say_what_the_facts_are() {
         let regions = sample();
         let base = picture(&facts(&regions), |_| {});
         assert!(row_says(&base, 0, crate::VERSION));
         assert!(row_says(&base, 1, "Test CPU 9000"));
-        assert!(row_says(&base, 2, "4"));
-        assert!(!row_says(&base, 2, "5"), "the oracle can tell values apart");
+        assert!(row_says(&base, 2, "4, all running"));
+        assert!(
+            !row_says(&base, 2, "5, all running"),
+            "the oracle can tell values apart"
+        );
+        let one = picture(
+            &Facts {
+                running: 1,
+                ..facts(&regions)
+            },
+            |_| {},
+        );
+        assert!(row_says(&one, 2, "4, 1 running"));
         assert!(row_says(&base, 3, "42 s"));
         assert!(row_says(&base, 4, "384.3 MiB free of 384.6 MiB"));
 

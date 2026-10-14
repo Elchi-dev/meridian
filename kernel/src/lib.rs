@@ -221,6 +221,12 @@ pub fn waiting(out: &mut impl Write, period: Option<u32>) -> fmt::Result {
     }
 }
 
+/// How many cores run the kernel when `others` came in besides this one.
+#[must_use]
+pub fn with_this_one(others: u32) -> u32 {
+    others.saturating_add(1)
+}
+
 /// How many processors run the kernel: this one and `others`, of the
 /// `cores` the MADT lists.
 ///
@@ -229,7 +235,7 @@ pub fn waiting(out: &mut impl Write, period: Option<u32>) -> fmt::Result {
 /// Those of `out`.
 pub fn running(out: &mut impl Write, cores: Option<u32>, others: u32) -> fmt::Result {
     match cores {
-        Some(n) => writeln!(out, "Cores running: {} of {n}", others + 1),
+        Some(n) => writeln!(out, "Cores running: {} of {n}", with_this_one(others)),
         None => writeln!(out, "Cores running: 1, as the MADT is missing"),
     }
 }
@@ -533,6 +539,13 @@ mod tests {
             out,
             "kernel: there is no room for the frame allocator or the heap\n"
         );
+    }
+
+    #[test]
+    fn this_core_counts_too() {
+        assert_eq!(with_this_one(0), 1);
+        assert_eq!(with_this_one(3), 4);
+        assert_eq!(with_this_one(u32::MAX), u32::MAX);
     }
 
     #[test]

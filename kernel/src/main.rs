@@ -50,6 +50,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
         let facts = Facts {
             processor: brand.as_str(),
             cores: machine.cores,
+            running: kernel::with_this_one(others),
             up: up(tsc_hz),
             regions,
         };

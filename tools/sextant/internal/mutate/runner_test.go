@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -531,5 +532,21 @@ func TestCopyTreeIntoAFolderInsideTheSource(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "build", "keep.txt")); err != nil {
 		t.Fatalf("other files of that folder are copied: %v", err)
+	}
+}
+
+func TestLowPriority(t *testing.T) {
+	name, args := lowPriority("go", []string{"test", "./x"})
+	got := name + " " + strings.Join(args, " ")
+	want := "go test ./x"
+	if nice, err := exec.LookPath("nice"); err == nil && runtime.GOOS != "windows" {
+		want = nice + " -n 15 go test ./x"
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if name, args := lowPriority("go", []string{"test"}); name != "go" || len(args) != 1 {
+		t.Fatalf("without nice the command runs as it is, got %s %q", name, args)
 	}
 }

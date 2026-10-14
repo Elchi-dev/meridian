@@ -189,6 +189,7 @@ import (
 
 func TestStartsSleep(t *testing.T) {
 	cmd := exec.Command("sleep", "120")
+	cmd.Env = append(os.Environ(), "TMPDIR=/")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,8 @@ func TestStartsSleep(t *testing.T) {
 `
 
 // A test run that passes but leaves a process behind: the runner ends it
-// with the run, not only when a run times out.
+// with the run, not only when a run times out. The process has a temporary
+// folder of its own, so only the kill of the process group can find it.
 func TestARunLeavesNoProcessesBehind(t *testing.T) {
 	root := writeTree(t, map[string]string{"go.mod": goModule, "a.go": goSource, "a_test.go": leavesABackgroundProcess})
 	pidFile := filepath.Join(t.TempDir(), "pid")
@@ -377,5 +379,65 @@ func TestAnEscapedProcessDoesNotStallTheRun(t *testing.T) {
 	}
 	if took := time.Since(started); took > 40*time.Second {
 		t.Fatalf("the run took %v; it waited for the escaped process instead of giving up on its output", took)
+	}
+}
+
+const hangsWhenBroken = `pub fn less(a: u8, b: u8) -> bool {
+    a < b
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hangs_when_broken() {
+        if super::less(1, 2) {
+            return;
+        }
+        std::fs::write(std::env::var("MUTATE_PID_FILE").unwrap(), std::process::id().to_string()).unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+`
+
+// Cargo passes its output on to the test binaries, so a timeout that only
+// ended Cargo would leave the hanging test holding the output until the wait
+// delay ran out. The whole process group ends at the timeout instead.
+func TestATimedOutRustTestEndsAtTheTimeout(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		if os.Getenv("SEXTANT_REQUIRE_TOOLS") == "1" {
+			t.Fatal("cargo is not installed")
+		}
+		t.Skip("cargo is not installed")
+	}
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Setenv("MUTATE_PID_FILE", pidFile)
+	root := writeTree(t, map[string]string{
+		"k/Cargo.toml": "[package]\nname = \"k\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+		"k/src/lib.rs": hangsWhenBroken,
+	})
+	ms, err := RustMutants("k/src/lib.rs", []byte(hangsWhenBroken), func(line int) bool { return line > 4 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var picked []Mutant
+	for _, m := range ms {
+		if m.Desc == "body to { false }" {
+			picked = append(picked, m)
+		}
+	}
+	var ended time.Time
+	r := &Runner{Root: root, Jobs: 1, Scratch: t.TempDir(), Timeout: 4 * time.Second, Done: func(Result) { ended = time.Now() }}
+	results, err := r.Run(context.Background(), picked, map[string]Target{"k/src/lib.rs": {Component: "k", Kind: "rust"}})
+	if err != nil || len(results) != 1 || results[0].Outcome != TimedOut {
+		t.Fatalf("got %v %v", results, err)
+	}
+	info, err := os.Stat(pidFile)
+	if err != nil {
+		t.Fatalf("the mutant never reached its endless loop: %v", err)
+	}
+	if took := ended.Sub(info.ModTime()); took > 4500*time.Millisecond {
+		t.Fatalf("the run ended %v after the test started hanging, past its 4s timeout", took)
 	}
 }

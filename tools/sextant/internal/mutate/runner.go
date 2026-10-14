@@ -252,6 +252,16 @@ func testKey(file string, t Target) string {
 	return t.Kind + ":" + t.Component
 }
 
+// lowPriority runs a test command under nice where there is one, so a long
+// mutation run leaves the machine usable.
+func lowPriority(name string, args []string) (string, []string) {
+	nice, err := exec.LookPath("nice")
+	if err != nil || runtime.GOOS == "windows" {
+		return name, args
+	}
+	return nice, append([]string{"-n", "15", name}, args...)
+}
+
 // test runs the tests that cover file. A zero timeout means none.
 func (w *worker) test(ctx context.Context, file string, t Target, timeout time.Duration) testRun {
 	if timeout > 0 {
@@ -277,10 +287,7 @@ func (w *worker) test(ctx context.Context, file string, t Target, timeout time.D
 	default:
 		return testRun{err: fmt.Errorf("%s: no tests for components of kind %q", t.Component, t.Kind)}
 	}
-	if nice, err := exec.LookPath("nice"); err == nil && runtime.GOOS != "windows" {
-		args = append([]string{"-n", "15", name}, args...)
-		name = nice
-	}
+	name, args = lowPriority(name, args)
 	name, args = limitFiles(name, args, w.maxFile)
 
 	// Every run gets a temporary folder of its own, removed right after.

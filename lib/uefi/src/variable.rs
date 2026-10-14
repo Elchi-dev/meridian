@@ -10,6 +10,9 @@ impl Attributes {
     pub const NON_VOLATILE: Attributes = Attributes(1);
     pub const BOOTSERVICE_ACCESS: Attributes = Attributes(2);
     pub const RUNTIME_ACCESS: Attributes = Attributes(4);
+    /// Written only with a signature over a time stamp, as the Secure
+    /// Boot databases are (section 8.2.2).
+    pub const TIME_BASED_AUTHENTICATED_WRITE_ACCESS: Attributes = Attributes(0x20);
 
     #[must_use]
     pub const fn with(self, other: Attributes) -> Attributes {
@@ -59,6 +62,15 @@ pub const OS_INDICATIONS_SUPPORTED: [u16; 23] = name("OsIndicationsSupported");
 pub const OS_INDICATIONS: [u16; 14] = name("OsIndications");
 /// 1 when the firmware checks signatures as it starts programs.
 pub const SECURE_BOOT: [u16; 11] = name("SecureBoot");
+/// 1 while the firmware has no platform key, and so takes any.
+pub const SETUP_MODE: [u16; 10] = name("SetupMode");
+/// The platform key, which ends Setup Mode once it is written.
+pub const PLATFORM_KEY: [u16; 3] = name("PK");
+/// The keys that may change the signature databases.
+pub const KEY_EXCHANGE_KEY: [u16; 4] = name("KEK");
+/// The signatures and keys of the programs allowed to start, under
+/// [`crate::guid::IMAGE_SECURITY_DATABASE`].
+pub const ALLOWED: [u16; 3] = name("db");
 
 /// The bit of [`OS_INDICATIONS`] that opens the firmware's settings at the
 /// next start.
@@ -93,6 +105,10 @@ mod tests {
         assert_eq!(text(&OS_INDICATIONS), "OsIndications\0");
         assert_eq!(text(&OS_INDICATIONS_SUPPORTED), "OsIndicationsSupported\0");
         assert_eq!(text(&SECURE_BOOT), "SecureBoot\0");
+        assert_eq!(text(&SETUP_MODE), "SetupMode\0");
+        assert_eq!(text(&PLATFORM_KEY), "PK\0");
+        assert_eq!(text(&KEY_EXCHANGE_KEY), "KEK\0");
+        assert_eq!(text(&ALLOWED), "db\0");
         assert_eq!(name::<3>("Ab"), [0x41, 0x62, 0]);
         assert_eq!(name::<1>(""), [0]);
     }
@@ -119,6 +135,21 @@ mod tests {
     #[should_panic(expected = "ASCII")]
     fn names_hold_no_zero() {
         let _ = name::<3>("A\0");
+    }
+
+    #[test]
+    fn attributes_are_the_specifications_bits() {
+        let all = Attributes::NON_VOLATILE
+            .with(Attributes::BOOTSERVICE_ACCESS)
+            .with(Attributes::RUNTIME_ACCESS)
+            .with(Attributes::TIME_BASED_AUTHENTICATED_WRITE_ACCESS);
+        assert_eq!(
+            all,
+            Attributes(0x27),
+            "what the Secure Boot databases carry"
+        );
+        assert!(all.contains(Attributes::TIME_BASED_AUTHENTICATED_WRITE_ACCESS));
+        assert!(!Attributes(7).contains(Attributes::TIME_BASED_AUTHENTICATED_WRITE_ACCESS));
     }
 
     #[test]

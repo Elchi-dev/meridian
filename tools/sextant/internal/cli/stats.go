@@ -44,8 +44,8 @@ func runStats(env Env, args []string) error {
 	failing := report.Failing(*minRatio)
 	for _, c := range failing {
 		missing := c.Missing(*minRatio)
-		fmt.Fprintf(env.Stderr, "%s has %.2f test lines per line of code and needs %.2f: write at least %d more %s of tests.\n",
-			c.Path, c.Ratio(), *minRatio, missing, plural(missing, "line", "lines"))
+		fmt.Fprintf(env.Stderr, "%s has %s test lines per line of code and needs %.2f: write at least %d more %s of tests.\n",
+			c.Path, twoDecimals(c.Ratio()), *minRatio, missing, plural(missing, "line", "lines"))
 	}
 	if len(failing) > 0 {
 		return fmt.Errorf("%d of %d components have fewer than %.2f test lines per line of code", len(failing), len(report.Components), *minRatio)
@@ -78,7 +78,13 @@ func ratio(c *stats.Component) string {
 	if math.IsInf(r, 1) {
 		return "-"
 	}
-	return strconv.FormatFloat(r, 'f', 2, 64)
+	return twoDecimals(r)
+}
+
+// twoDecimals cuts instead of rounding, so 1.497 shows as 1.49 and a
+// component that misses the minimum never prints as if it met it.
+func twoDecimals(r float64) string {
+	return strconv.FormatFloat(math.Floor(r*100+1e-9)/100, 'f', 2, 64)
 }
 
 func unsafeCell(kind string, n int) string {

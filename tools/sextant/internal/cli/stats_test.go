@@ -179,3 +179,27 @@ func TestPlural(t *testing.T) {
 		}
 	}
 }
+
+// A component at 1.497 once printed "has 1.50 test lines per line of code
+// and needs 1.50", which reads as a pass.
+func TestRatiosAreCutNotRounded(t *testing.T) {
+	tests := []struct {
+		r    float64
+		want string
+	}{
+		{1.497, "1.49"},
+		{1.5, "1.50"},
+		{1.4999999, "1.49"},
+		{2.0 / 3.0, "0.66"},
+		{0.83, "0.83"},
+		{1.15, "1.15"},
+		{0.29, "0.29"},
+		{3, "3.00"},
+		{0, "0.00"},
+	}
+	for _, tt := range tests {
+		if got := twoDecimals(tt.r); got != tt.want {
+			t.Errorf("twoDecimals(%v) = %q, want %q", tt.r, got, tt.want)
+		}
+	}
+}

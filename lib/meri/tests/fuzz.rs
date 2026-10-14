@@ -7,7 +7,7 @@
 mod common;
 
 use common::{Rng, suite};
-use meri::{Error, Event, Reader, Value};
+use meri::{Document, Error, Event, Reader, Value};
 
 /// Bytes that change what a document means the most.
 const PIECES: &[&[u8]] = &[
@@ -61,6 +61,7 @@ fn check(src: &[u8]) -> Result<(), Error> {
             Err(err) => {
                 assert!(err.at.line >= 1 && err.at.line <= lines, "{err:?}");
                 assert!(err.at.col >= 1 && err.at.col <= src.len() + 1, "{err:?}");
+                assert_eq!(Document::parse(src).unwrap_err(), err);
                 return Err(err);
             }
         };
@@ -81,11 +82,15 @@ fn check(src: &[u8]) -> Result<(), Error> {
         match value {
             Some(Value::List) => depth += 1,
             Some(Value::Str(s)) => assert_eq!(s.decode(&mut buf).unwrap(), s.to_string()),
+            Some(Value::Quantity(q)) => {
+                let _ = (q.size(), q.duration());
+            }
             _ => {}
         }
         assert!(depth <= meri::MAX_DEPTH);
     }
     assert_eq!(depth, 0, "every block and list that starts ends");
+    assert!(Document::parse(src).is_ok());
     Ok(())
 }
 

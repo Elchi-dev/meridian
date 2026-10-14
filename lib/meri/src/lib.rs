@@ -1,16 +1,19 @@
 //! Reads `.meri` documents, the format of Meridian's settings files, as
 //! `docs/formats/meri.md` specifies it. Nothing here allocates, so the
 //! loader can read `boot.meri` before there is a heap: [`Reader`] hands out
-//! a document one [`Event`] at a time.
+//! a document one [`Event`] at a time, and [`Document`] looks up single
+//! settings by their path.
 
 #![cfg_attr(not(test), no_std)]
 
+mod document;
 mod number;
 mod reader;
 mod text;
 
 use core::fmt;
 
+pub use document::{Document, Item};
 pub use number::{Float, Number, Quantity};
 pub use reader::{Event, MAX_DEPTH, Reader, Value};
 pub use text::{Chars, Str};

@@ -3,8 +3,8 @@ use core::fmt::Write;
 use crate::Code;
 use crate::reader::Value;
 
-/// A float, with the text it was written as, which the canonical dump
-/// shows.
+/// A float, with the text it was written as. The canonical dump shows the
+/// text, and sizes and durations are worked out from it exactly.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Float<'a> {
     pub value: f64,
@@ -23,6 +23,121 @@ pub enum Number<'a> {
 pub struct Quantity<'a> {
     pub number: Number<'a>,
     pub unit: &'a str,
+}
+
+impl Quantity<'_> {
+    /// The size in bytes, for the units `B`, `KB`, `MB`, `GB`, `TB`, `KiB`,
+    /// `MiB`, `GiB` and `TiB`. The result is exact: `1.5KiB` is 1536.
+    ///
+    /// # Errors
+    ///
+    /// [`Code::WrongType`] for any other unit, and [`Code::OutOfRange`] for
+    /// a size that is negative, not a whole number of bytes, or larger than
+    /// `i64::MAX` bytes.
+    pub fn size(&self) -> Result<u64, Code> {
+        let factor = match self.unit {
+            "B" => 1,
+            "KB" => 1000,
+            "MB" => 1_000_000,
+            "GB" => 1_000_000_000,
+            "TB" => 1_000_000_000_000,
+            "KiB" => 1024,
+            "MiB" => 1_048_576,
+            "GiB" => 1_073_741_824,
+            "TiB" => 1_099_511_627_776,
+            _ => return Err(Code::WrongType),
+        };
+        u64::try_from(self.number.scaled(factor)?).map_err(|_| Code::OutOfRange)
+    }
+
+    /// The duration in nanoseconds, for the units `ns`, `us`, `ms`, `s`,
+    /// `min`, `h` and `d`. Durations may be negative.
+    ///
+    /// # Errors
+    ///
+    /// [`Code::WrongType`] for any other unit, and [`Code::OutOfRange`] for
+    /// a duration that is not a whole number of nanoseconds or does not fit
+    /// an `i64`.
+    pub fn duration(&self) -> Result<i64, Code> {
+        let factor = match self.unit {
+            "ns" => 1,
+            "us" => 1000,
+            "ms" => 1_000_000,
+            "s" => 1_000_000_000,
+            "min" => 60_000_000_000,
+            "h" => 3_600_000_000_000,
+            "d" => 86_400_000_000_000,
+            _ => return Err(Code::WrongType),
+        };
+        self.number.scaled(factor)
+    }
+}
+
+impl Number<'_> {
+    /// The number times `factor`, exactly, when that is a whole number that
+    /// fits an `i64`.
+    fn scaled(&self, factor: u64) -> Result<i64, Code> {
+        match self {
+            Number::Int(n) => {
+                i64::try_from(i128::from(*n) * i128::from(factor)).map_err(|_| Code::OutOfRange)
+            }
+            Number::Float(f) => scale_decimal(f.literal, factor),
+        }
+    }
+}
+
+/// Multiplies a decimal float literal by `factor` without rounding. The
+/// digits before the decimal point build an integer; the ones after it are
+/// taken from the right, each step dividing by ten, which only stays whole
+/// when the product is whole. That keeps every step below ten times the
+/// factor however long the literal is.
+fn scale_decimal(literal: &str, factor: u64) -> Result<i64, Code> {
+    let parts = Parts::of(literal);
+    let digits = || parts.digits();
+    let count = digits().count();
+    let point = parts.point();
+    let whole_digits = usize::try_from(point.max(0))
+        .unwrap_or(usize::MAX)
+        .min(count);
+
+    let mut whole: u128 = 0;
+    for d in digits().take(whole_digits) {
+        whole = whole
+            .checked_mul(10)
+            .and_then(|w| w.checked_add(u128::from(d)))
+            .ok_or(Code::OutOfRange)?;
+    }
+    let mut zeros = point.saturating_sub(i64::try_from(count).unwrap_or(i64::MAX));
+    while zeros > 0 && whole != 0 {
+        whole = whole.checked_mul(10).ok_or(Code::OutOfRange)?;
+        zeros -= 1;
+    }
+
+    let mut part: u64 = 0;
+    for d in digits().rev().take(count - whole_digits) {
+        part = tenth(u64::from(d) * factor + part)?;
+    }
+    let mut zeros = point.min(0);
+    while zeros < 0 && part != 0 {
+        part = tenth(part)?;
+        zeros += 1;
+    }
+
+    let total = whole
+        .checked_mul(u128::from(factor))
+        .and_then(|t| t.checked_add(u128::from(part)))
+        .and_then(|t| i128::try_from(t).ok())
+        .ok_or(Code::OutOfRange)?;
+    let total = if parts.negative { -total } else { total };
+    i64::try_from(total).map_err(|_| Code::OutOfRange)
+}
+
+fn tenth(n: u64) -> Result<u64, Code> {
+    if n.is_multiple_of(10) {
+        Ok(n / 10)
+    } else {
+        Err(Code::OutOfRange)
+    }
 }
 
 /// A decimal literal the reader has checked, taken apart.
@@ -56,6 +171,15 @@ impl<'a> Parts<'a> {
         int.chain(self.frac.bytes())
             .filter(u8::is_ascii_digit)
             .map(|d| d - b'0')
+    }
+
+    /// How many of the digits come before the decimal point once the
+    /// exponent has moved it. It can be negative, or more than there are.
+    fn point(&self) -> i64 {
+        let int = self.int.bytes().filter(u8::is_ascii_digit).count();
+        i64::try_from(int)
+            .unwrap_or(i64::MAX)
+            .saturating_add(self.exp)
     }
 }
 

@@ -113,12 +113,9 @@ impl Color {
         let mix = |from: u8, to: u8| {
             let (a, b, c) = (i32::from(from), i32::from(to), i32::from(coverage));
             let d = (b - a) * c;
-            // Rounds to the nearest value, so the result stays between the two.
-            let step = if d >= 0 {
-                (d + 127) / 255
-            } else {
-                (d - 127) / 255
-            };
+            // Rounds half away from zero, so the result stays between the
+            // two.
+            let step = (d + 127 * d.signum()) / 255;
             u8::try_from(a + step).unwrap_or(to)
         };
         Color {
@@ -300,13 +297,11 @@ pub struct Style<'f> {
 /// The visible range of `len` pixels starting at `start`, on an axis of
 /// `size` pixels.
 fn clip(start: i32, len: usize, size: usize) -> (usize, usize) {
-    let offset = usize::try_from(start.unsigned_abs()).unwrap_or(usize::MAX);
-    let (lo, hi) = if start < 0 {
-        (0, len.saturating_sub(offset))
-    } else {
-        (offset, offset.saturating_add(len))
-    };
-    (lo.min(size), hi.min(size))
+    let start = i64::from(start);
+    let end = start.saturating_add(i64::try_from(len).unwrap_or(i64::MAX));
+    let size = i64::try_from(size).unwrap_or(i64::MAX);
+    let on_axis = |at: i64| usize::try_from(at.clamp(0, size)).unwrap_or(0);
+    (on_axis(start), on_axis(end))
 }
 
 /// Where the `offset`th pixel after `start` lands, if it is on the canvas.

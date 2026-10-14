@@ -145,6 +145,13 @@ impl Pointer {
     }
 }
 
+/// Whether a descriptor is a present 64-bit task state segment, available
+/// or busy.
+#[must_use]
+pub fn is_task_state(descriptor: u64) -> bool {
+    descriptor >> 47 & 1 == 1 && matches!(descriptor >> 40 & 0x1f, 0x09 | 0x0b)
+}
+
 /// The exceptions that push an error code onto the stack.
 #[must_use]
 pub fn has_error_code(vector: u8) -> bool {
@@ -290,6 +297,27 @@ mod tests {
             let entries = vec![0u64; len];
             assert_eq!(usize::from(Pointer::to(&entries).limit), len * 8 - 1);
         }
+    }
+
+    #[test]
+    fn task_state_descriptors_are_told_apart() {
+        let table = gdt(0xffff_ffff_8000_9000);
+        assert!(is_task_state(table[3]), "available");
+        assert!(is_task_state(table[3] | 1 << 41), "busy");
+        assert!(!is_task_state(table[3] & !(1 << 47)), "not present");
+        assert!(!is_task_state(table[0]), "the null entry");
+        assert!(
+            !is_task_state(table[1]) && !is_task_state(table[2]),
+            "code and data"
+        );
+        assert!(
+            !is_task_state(table[3] & !(0x1f << 40) | 0x8c << 40),
+            "a call gate"
+        );
+        assert!(
+            !is_task_state(table[3] | 1 << 44),
+            "the system bit must be clear"
+        );
     }
 
     #[test]

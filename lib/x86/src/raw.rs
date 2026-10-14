@@ -365,9 +365,16 @@ pub fn idt_entries() -> &'static [Gate] {
 /// descriptor in the global descriptor table.
 #[must_use]
 pub fn task_state() -> Option<&'static tables::TaskState> {
+    let selector = task_register();
+    if selector == 0 {
+        return None;
+    }
     let entries = gdt_entries();
-    let at = usize::from(task_register() / 8);
+    let at = usize::from(selector / 8);
     let (low, high) = (*entries.get(at)?, *entries.get(at + 1)?);
+    if !tables::is_task_state(low) {
+        return None;
+    }
     let base = (low >> 16 & 0xff_ffff) | (low >> 56 & 0xff) << 24 | high << 32;
     // SAFETY: the processor uses the task state at this address for as
     // long as the task register names it, so it is mapped and stays.

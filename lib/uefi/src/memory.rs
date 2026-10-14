@@ -2,6 +2,8 @@
 
 /// Page size the firmware counts memory in.
 pub const PAGE_SIZE: u64 = 4096;
+/// The same, for sizes of buffers in memory.
+pub const PAGE_BYTES: usize = 4096;
 
 /// `EFI_MEMORY_TYPE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +97,23 @@ pub fn descriptors(
         .map(MemoryDescriptor::read)
 }
 
+/// A memory map as `GetMemoryMap` wrote it.
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryMap<'a> {
+    pub bytes: &'a [u8],
+    /// Changes whenever the map does. `ExitBootServices` only accepts the
+    /// key of the current map.
+    pub key: usize,
+    pub descriptor_size: usize,
+    pub descriptor_version: u32,
+}
+
+impl MemoryMap<'_> {
+    pub fn descriptors(&self) -> impl Iterator<Item = MemoryDescriptor> + '_ {
+        descriptors(self.bytes, self.descriptor_size)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +188,43 @@ mod tests {
         assert_eq!(d.attribute >> 63, 1);
         assert_eq!(d.ty, MemoryType::RUNTIME_SERVICES_CODE);
         assert_eq!(d.end(), 0xff01_0000);
+    }
+
+    #[test]
+    fn map_reads_with_its_own_descriptor_size() {
+        let mut bytes = entry(3, 0x2000, 1, 56);
+        bytes.extend(entry(0x8000_0000, 0x9000, 5, 56));
+        let map = MemoryMap {
+            bytes: &bytes,
+            key: 7,
+            descriptor_size: 56,
+            descriptor_version: 1,
+        };
+        let d: Vec<_> = map
+            .descriptors()
+            .map(|d| (d.ty, d.physical_start, d.pages))
+            .collect();
+        assert_eq!(
+            d,
+            [
+                (MemoryType::BOOT_SERVICES_CODE, 0x2000, 1),
+                (MemoryType(0x8000_0000), 0x9000, 5)
+            ]
+        );
+        let as_40 = MemoryMap {
+            descriptor_size: 40,
+            ..map
+        };
+        assert_ne!(
+            as_40.descriptors().nth(1).map(|d| d.physical_start),
+            Some(0x9000)
+        );
+    }
+
+    #[test]
+    fn page_sizes_agree() {
+        assert_eq!(PAGE_SIZE, 4096);
+        assert_eq!(PAGE_BYTES as u64, PAGE_SIZE);
     }
 
     #[test]

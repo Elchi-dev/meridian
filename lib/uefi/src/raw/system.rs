@@ -6,10 +6,11 @@ use core::ptr::{self, NonNull};
 use super::Handle;
 use super::console::SimpleTextOutput;
 use super::table::{
-    BOOT_SERVICES_SIGNATURE, BootServices, SYSTEM_TABLE_SIGNATURE, SystemTable, TableHeader,
-    header_is_valid,
+    AllocateType, BOOT_SERVICES_SIGNATURE, BootServices, SYSTEM_TABLE_SIGNATURE, SystemTable,
+    TableHeader, header_is_valid,
 };
 use crate::Status;
+use crate::memory::{MemoryMap, MemoryType, PAGE_BYTES};
 use crate::text::{InputKey, Ucs2, decode_ucs2};
 
 /// Longest firmware vendor name read, in UCS-2 units. Real names are short;
@@ -40,9 +41,14 @@ impl System {
         if !header_is_valid(&st.hdr, SYSTEM_TABLE_SIGNATURE, size_of::<SystemTable>()) {
             return None;
         }
-        // SAFETY: a valid system table points at the firmware's boot services.
-        let bs = unsafe { st.boot_services.as_ref()? };
-        if !header_is_valid(&bs.hdr, BOOT_SERVICES_SIGNATURE, size_of::<BootServices>()) {
+        let bs = st.boot_services;
+        if bs.is_null() {
+            return None;
+        }
+        // SAFETY: a valid system table points at the firmware's boot
+        // services. Only the header is read until it has been checked.
+        let hdr = unsafe { &(*bs).hdr };
+        if !header_is_valid(hdr, BOOT_SERVICES_SIGNATURE, size_of::<BootServices>()) {
             return None;
         }
         Some(System { image, table })
@@ -115,6 +121,90 @@ impl System {
         unsafe { (self.boot_services().stall)(microseconds) }.ok()
     }
 
+    /// Allocates `count` contiguous pages of `ty` anywhere in memory and
+    /// clears them. They stay allocated when the returned [`Pages`] is
+    /// dropped; only [`Pages::free`] gives them back.
+    ///
+    /// # Errors
+    ///
+    /// `INVALID_PARAMETER` for no pages at all, otherwise the firmware's
+    /// status, such as `OUT_OF_RESOURCES`.
+    pub fn allocate_pages(&self, ty: MemoryType, count: usize) -> Result<Pages<'_>, Status> {
+        if count == 0 {
+            return Err(Status::INVALID_PARAMETER);
+        }
+        let mut start = 0;
+        // SAFETY: with ANY_PAGES the firmware only writes the address it
+        // chose into start.
+        unsafe {
+            (self.boot_services().allocate_pages)(
+                AllocateType::ANY_PAGES,
+                ty,
+                count,
+                &raw mut start,
+            )
+        }
+        .ok()?;
+        let mut pages = Pages {
+            start,
+            count,
+            system: self,
+        };
+        pages.bytes().fill(0);
+        Ok(pages)
+    }
+
+    /// How many bytes the memory map takes right now. Allocating a buffer
+    /// for it adds a descriptor or two, so leave some room.
+    ///
+    /// # Errors
+    ///
+    /// Returns the firmware's status if it cannot say.
+    pub fn memory_map_size(&self) -> Result<usize, Status> {
+        let (mut size, mut key, mut descriptor_size, mut version) = (0, 0, 0, 0);
+        // SAFETY: a size of 0 makes the firmware only fill in the numbers.
+        let status = unsafe {
+            (self.boot_services().get_memory_map)(
+                &raw mut size,
+                ptr::null_mut(),
+                &raw mut key,
+                &raw mut descriptor_size,
+                &raw mut version,
+            )
+        };
+        match status {
+            Status::SUCCESS | Status::BUFFER_TOO_SMALL => Ok(size),
+            other => Err(other),
+        }
+    }
+
+    /// Writes the current memory map into `buf`.
+    ///
+    /// # Errors
+    ///
+    /// `BUFFER_TOO_SMALL` when the map does not fit, which
+    /// [`System::memory_map_size`] avoids.
+    pub fn memory_map<'b>(&self, buf: &'b mut [u8]) -> Result<MemoryMap<'b>, Status> {
+        let (mut size, mut key, mut descriptor_size, mut version) = (buf.len(), 0, 0, 0);
+        // SAFETY: the firmware writes at most size bytes into buf.
+        unsafe {
+            (self.boot_services().get_memory_map)(
+                &raw mut size,
+                buf.as_mut_ptr(),
+                &raw mut key,
+                &raw mut descriptor_size,
+                &raw mut version,
+            )
+        }
+        .ok()?;
+        Ok(MemoryMap {
+            bytes: &buf[..size.min(buf.len())],
+            key,
+            descriptor_size,
+            descriptor_version: version,
+        })
+    }
+
     /// Blocks until a key is pressed and returns it.
     ///
     /// # Errors
@@ -136,6 +226,44 @@ impl System {
         // SAFETY: the key event fired, so a key stroke is waiting.
         unsafe { ((*input).read_key_stroke)(input, &raw mut key) }.ok()?;
         Ok(key)
+    }
+}
+
+/// Pages the firmware allocated. Boot services run with memory identity
+/// mapped, so the physical address of the pages is also where they are.
+pub struct Pages<'a> {
+    start: u64,
+    count: usize,
+    system: &'a System,
+}
+
+impl Pages<'_> {
+    /// The physical address of the first page.
+    #[must_use]
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub fn bytes(&mut self) -> &mut [u8] {
+        let len = self.count * PAGE_BYTES;
+        // SAFETY: the firmware gave these pages to this value alone, and
+        // they are identity mapped while boot services run.
+        unsafe { core::slice::from_raw_parts_mut(self.start as *mut u8, len) }
+    }
+
+    /// Gives the pages back to the firmware.
+    ///
+    /// # Errors
+    ///
+    /// Returns the firmware's status if it refuses.
+    pub fn free(self) -> Result<(), Status> {
+        // SAFETY: start and count are exactly what AllocatePages returned.
+        unsafe { (self.system.boot_services().free_pages)(self.start, self.count) }.ok()
     }
 }
 
@@ -188,19 +316,6 @@ mod tests {
     use crate::raw::table::{BOOT_SERVICES_SIGNATURE, SYSTEM_TABLE_SIGNATURE};
     use core::mem::{MaybeUninit, size_of};
 
-    // The validation below never calls into the tables, but their typed
-    // slots need some function. These say so loudly if that ever changes.
-    unsafe extern "efiapi" fn never_stall(_: usize) -> Status {
-        panic!("validation must not call Stall")
-    }
-    unsafe extern "efiapi" fn never_wait(
-        _: usize,
-        _: *const super::super::Event,
-        _: *mut usize,
-    ) -> Status {
-        panic!("validation must not call WaitForEvent")
-    }
-
     fn header(signature: u64, size: usize) -> TableHeader {
         TableHeader {
             signature,
@@ -211,17 +326,14 @@ mod tests {
         }
     }
 
-    fn boot_services(signature: u64, size: usize) -> BootServices {
+    /// A boot services table with only its header filled in. Nothing in
+    /// these tests calls into it, and since its function slots hold no
+    /// functions it is never turned into a reference either.
+    fn boot_services(signature: u64, size: usize) -> MaybeUninit<BootServices> {
         let mut bs = MaybeUninit::<BootServices>::zeroed();
-        let p = bs.as_mut_ptr();
-        // SAFETY: zero is a valid value for every field except the two
-        // function pointers, and both are written before assume_init.
-        unsafe {
-            (&raw mut (*p).hdr).write(header(signature, size));
-            (&raw mut (*p).stall).write(never_stall);
-            (&raw mut (*p).wait_for_event).write(never_wait);
-            bs.assume_init()
-        }
+        // SAFETY: writes the header of memory owned right here.
+        unsafe { (&raw mut (*bs.as_mut_ptr()).hdr).write(header(signature, size)) };
+        bs
     }
 
     fn system_table(
@@ -261,7 +373,7 @@ mod tests {
         let mut st = system_table(
             SYSTEM_TABLE_SIGNATURE,
             ST_SIZE,
-            &raw mut bs,
+            bs.as_mut_ptr(),
             core::ptr::null(),
         );
         let system = open(&mut st).expect("a valid table");
@@ -281,7 +393,7 @@ mod tests {
         let mut wrong_sig = system_table(
             BOOT_SERVICES_SIGNATURE,
             ST_SIZE,
-            &raw mut bs,
+            bs.as_mut_ptr(),
             core::ptr::null(),
         );
         assert!(open(&mut wrong_sig).is_none());
@@ -289,7 +401,7 @@ mod tests {
         let mut too_small = system_table(
             SYSTEM_TABLE_SIGNATURE,
             ST_SIZE - 1,
-            &raw mut bs,
+            bs.as_mut_ptr(),
             core::ptr::null(),
         );
         assert!(open(&mut too_small).is_none());
@@ -309,7 +421,7 @@ mod tests {
         let mut st = system_table(
             SYSTEM_TABLE_SIGNATURE,
             ST_SIZE,
-            &raw mut wrong,
+            wrong.as_mut_ptr(),
             core::ptr::null(),
         );
         assert!(open(&mut st).is_none());
@@ -318,7 +430,7 @@ mod tests {
         let mut st = system_table(
             SYSTEM_TABLE_SIGNATURE,
             ST_SIZE,
-            &raw mut short,
+            short.as_mut_ptr(),
             core::ptr::null(),
         );
         assert!(open(&mut st).is_none());
@@ -328,7 +440,12 @@ mod tests {
     fn vendor_is_read_up_to_the_terminator() {
         let mut bs = boot_services(BOOT_SERVICES_SIGNATURE, BS_SIZE);
         let name: Vec<u16> = "EDK II\0garbage".encode_utf16().collect();
-        let mut st = system_table(SYSTEM_TABLE_SIGNATURE, ST_SIZE, &raw mut bs, name.as_ptr());
+        let mut st = system_table(
+            SYSTEM_TABLE_SIGNATURE,
+            ST_SIZE,
+            bs.as_mut_ptr(),
+            name.as_ptr(),
+        );
         let system = open(&mut st).unwrap();
         assert_eq!(system.firmware_vendor().collect::<String>(), "EDK II");
     }
@@ -337,7 +454,12 @@ mod tests {
     fn vendor_names_outside_the_basic_plane_decode() {
         let mut bs = boot_services(BOOT_SERVICES_SIGNATURE, BS_SIZE);
         let name: Vec<u16> = "Firm\u{1F600}ware\0".encode_utf16().collect();
-        let mut st = system_table(SYSTEM_TABLE_SIGNATURE, ST_SIZE, &raw mut bs, name.as_ptr());
+        let mut st = system_table(
+            SYSTEM_TABLE_SIGNATURE,
+            ST_SIZE,
+            bs.as_mut_ptr(),
+            name.as_ptr(),
+        );
         let system = open(&mut st).unwrap();
         assert_eq!(
             system.firmware_vendor().collect::<String>(),
@@ -349,7 +471,12 @@ mod tests {
     fn vendor_without_terminator_stops_at_the_limit() {
         let mut bs = boot_services(BOOT_SERVICES_SIGNATURE, BS_SIZE);
         let name = vec![u16::from(b'x'); VENDOR_LIMIT + 50];
-        let mut st = system_table(SYSTEM_TABLE_SIGNATURE, ST_SIZE, &raw mut bs, name.as_ptr());
+        let mut st = system_table(
+            SYSTEM_TABLE_SIGNATURE,
+            ST_SIZE,
+            bs.as_mut_ptr(),
+            name.as_ptr(),
+        );
         let system = open(&mut st).unwrap();
         assert_eq!(system.firmware_vendor().count(), VENDOR_LIMIT);
     }
@@ -360,12 +487,17 @@ mod tests {
         let mut st = system_table(
             SYSTEM_TABLE_SIGNATURE,
             ST_SIZE,
-            &raw mut bs,
+            bs.as_mut_ptr(),
             core::ptr::null(),
         );
         assert_eq!(open(&mut st).unwrap().firmware_vendor().count(), 0);
         let empty = [0u16];
-        let mut st = system_table(SYSTEM_TABLE_SIGNATURE, ST_SIZE, &raw mut bs, empty.as_ptr());
+        let mut st = system_table(
+            SYSTEM_TABLE_SIGNATURE,
+            ST_SIZE,
+            bs.as_mut_ptr(),
+            empty.as_ptr(),
+        );
         assert_eq!(open(&mut st).unwrap().firmware_vendor().count(), 0);
     }
 
@@ -375,11 +507,27 @@ mod tests {
         let mut st = system_table(
             SYSTEM_TABLE_SIGNATURE,
             ST_SIZE,
-            &raw mut bs,
+            bs.as_mut_ptr(),
             core::ptr::null(),
         );
         let system = open(&mut st).unwrap();
         assert!(system.console().is_none());
         assert_eq!(system.wait_for_key(), Err(Status::UNSUPPORTED));
+    }
+
+    #[test]
+    fn no_pages_is_refused_before_asking_the_firmware() {
+        let mut bs = boot_services(BOOT_SERVICES_SIGNATURE, BS_SIZE);
+        let mut st = system_table(
+            SYSTEM_TABLE_SIGNATURE,
+            ST_SIZE,
+            bs.as_mut_ptr(),
+            core::ptr::null(),
+        );
+        let system = open(&mut st).unwrap();
+        assert_eq!(
+            system.allocate_pages(MemoryType::LOADER_DATA, 0).err(),
+            Some(Status::INVALID_PARAMETER)
+        );
     }
 }

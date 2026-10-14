@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/meri"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/mutate"
@@ -82,7 +83,9 @@ func runMutate(env Env, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Interrupt and terminate cancel the run, which ends every test still
+	// running; a killed sextant cannot, and leaves them to finish alone.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var mu sync.Mutex
 	done := 0
@@ -112,27 +115,37 @@ func runMutate(env Env, args []string) error {
 
 // mutateScratch is where mutation runs keep their copies, builds and
 // temporary folders: mutate.scratch from the settings, else build.dir with
-// mutate added, else out/mutate in the repository. Never the system's
-// temporary folder, which on many machines is RAM: a mutant that loops while
-// writing an image would fill it.
+// mutate added, else sextant/mutate in the user's cache folder. It must lie
+// outside the repository, because the tests' temporary folders go there and
+// some tests rely on those not being inside a checkout. The system's
+// temporary folder is never used: on many machines it is RAM, and a mutant
+// that loops while writing an image would fill it.
 func mutateScratch(root string) (string, error) {
 	settings, err := loadSettings(root)
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(root, "out", "mutate")
-	if build, err := setting(settings, "build", "dir"); err != nil {
-		return "", err
-	} else if build != "" {
-		dir = filepath.Join(build, "mutate")
-	}
+	dir := ""
 	if own, err := setting(settings, "mutate", "scratch"); err != nil {
 		return "", err
 	} else if own != "" {
 		dir = own
+	} else if build, err := setting(settings, "build", "dir"); err != nil {
+		return "", err
+	} else if build != "" {
+		dir = filepath.Join(build, "mutate")
+	} else {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("there is no cache folder for mutation runs (%v); set mutate.scratch in sextant.local.meri", err)
+		}
+		dir = filepath.Join(cache, "sextant", "mutate")
 	}
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(root, dir)
+	}
+	if rel, err := filepath.Rel(root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("the mutation scratch folder %s is inside the repository; point mutate.scratch in sextant.local.meri at a folder outside it", dir)
 	}
 	return dir, os.MkdirAll(dir, 0o755)
 }

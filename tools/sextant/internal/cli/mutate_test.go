@@ -16,9 +16,10 @@ const lessTest = "package m\n\nimport \"testing\"\n\nfunc TestLess(t *testing.T)
 // is never asked, so < to <= survives.
 func mutateRepo() map[string]string {
 	return map[string]string{
-		"m/go.mod":       "module m\n\ngo 1.27.0\n",
-		"m/less.go":      lessGo,
-		"m/less_test.go": lessTest,
+		"sextant.local.meri": "mutate {\n    scratch = \"../scratch\"\n}\n",
+		"m/go.mod":           "module m\n\ngo 1.27.0\n",
+		"m/less.go":          lessGo,
+		"m/less_test.go":     lessTest,
 	}
 }
 
@@ -217,10 +218,29 @@ func TestProgressEveryTwentyFive(t *testing.T) {
 	}
 }
 
-func TestMutateScratchDefaultsToOut(t *testing.T) {
-	root := checkout(t, mutateRepo())
-	dir, err := mutateScratch(root)
-	if err != nil || dir != filepath.Join(root, "out", "mutate") {
+// isolateCache points the user's cache folder at a temporary one, so tests
+// never write into the real cache. Only for tests that start no go command:
+// Go keeps its build cache there too, and an empty one makes every build
+// start from scratch.
+func isolateCache(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, v := range []string{"XDG_CACHE_HOME", "HOME", "LocalAppData"} {
+		t.Setenv(v, dir)
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cache
+}
+
+func TestMutateScratchDefaultsToTheCacheFolder(t *testing.T) {
+	cache := isolateCache(t)
+	repo := mutateRepo()
+	delete(repo, "sextant.local.meri")
+	dir, err := mutateScratch(checkout(t, repo))
+	if err != nil || dir != filepath.Join(cache, "sextant", "mutate") {
 		t.Fatalf("%q %v", dir, err)
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
@@ -229,43 +249,43 @@ func TestMutateScratchDefaultsToOut(t *testing.T) {
 }
 
 func TestMutateScratchFollowsTheSettings(t *testing.T) {
+	isolateCache(t)
 	elsewhere := t.TempDir()
 	tests := []struct {
 		local, want string
 	}{
 		{"build {\n    dir = \"" + filepath.ToSlash(elsewhere) + "\"\n}\n", filepath.Join(elsewhere, "mutate")},
-		{"build {\n    dir = \"out/big\"\n}\n", "out/big/mutate"},
-		{"mutate {\n    scratch = \"/scratch/m\"\n}\nbuild {\n    dir = \"x\"\n}\n", "/scratch/m"},
-		{"mutate {\n    scratch = \"rel\"\n}\n", "rel"},
+		{"mutate {\n    scratch = \"" + filepath.ToSlash(elsewhere) + "/m\"\n}\nbuild {\n    dir = \"/x\"\n}\n", filepath.Join(elsewhere, "m")},
 	}
 	for _, tt := range tests {
 		repo := mutateRepo()
 		repo["sextant.local.meri"] = tt.local
-		root := checkout(t, repo)
-		settings, err := loadSettings(root)
-		if err != nil {
-			t.Fatal(err)
+		dir, err := mutateScratch(checkout(t, repo))
+		if err != nil || dir != tt.want {
+			t.Errorf("%q: %q %v, want %q", tt.local, dir, err, tt.want)
 		}
-		build, _ := setting(settings, "build", "dir")
-		own, _ := setting(settings, "mutate", "scratch")
-		got := own
-		if got == "" {
-			got = filepath.Join(build, "mutate")
-		}
-		if filepath.ToSlash(got) != filepath.ToSlash(tt.want) {
-			t.Errorf("%q: %s, want %s", tt.local, got, tt.want)
+	}
+}
+
+func TestMutateScratchMustBeOutsideTheRepository(t *testing.T) {
+	isolateCache(t)
+	for _, local := range []string{
+		"mutate {\n    scratch = \"in/repo\"\n}\n",
+		"build {\n    dir = \"out\"\n}\n",
+		"mutate {\n    scratch = \".\"\n}\n",
+	} {
+		repo := mutateRepo()
+		repo["sextant.local.meri"] = local
+		_, err := mutateScratch(checkout(t, repo))
+		if err == nil || !strings.Contains(err.Error(), "is inside the repository; point mutate.scratch") {
+			t.Errorf("%q: %v", local, err)
 		}
 	}
 	repo := mutateRepo()
-	repo["sextant.local.meri"] = "build {\n    dir = \"" + filepath.ToSlash(elsewhere) + "\"\n}\n"
-	dir, err := mutateScratch(checkout(t, repo))
-	if err != nil || dir != filepath.Join(elsewhere, "mutate") {
-		t.Fatalf("%q %v", dir, err)
-	}
-	repo["sextant.local.meri"] = "mutate {\n    scratch = \"in/repo\"\n}\n"
+	repo["sextant.local.meri"] = "mutate {\n    scratch = \"../beside\"\n}\n"
 	root := checkout(t, repo)
-	if dir, err := mutateScratch(root); err != nil || dir != filepath.Join(root, "in", "repo") {
-		t.Fatalf("relative settings are relative to the repository: %q %v", dir, err)
+	if dir, err := mutateScratch(root); err != nil || dir != filepath.Join(filepath.Dir(root), "beside") {
+		t.Errorf("a folder beside the repository is fine: %q %v", dir, err)
 	}
 }
 
@@ -278,6 +298,9 @@ func TestMutateScratchRefusesBrokenSettings(t *testing.T) {
 		}
 	}
 	root := checkout(t, mutateRepo())
+	if err := os.Remove(filepath.Join(root, "sextant.local.meri")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(root, "sextant.local.meri"), 0o755); err != nil {
 		t.Fatal(err)
 	}

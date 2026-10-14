@@ -594,7 +594,14 @@ fn delta(data: &[u8], at: &mut usize, flag: u8, short: u8, same: u8) -> Option<i
     let len = coordinate_len(flag, short, same);
     let v = match len {
         0 => 0,
-        1 => i32::from(u8_at(data, *at)?) * if flag & same == 0 { -1 } else { 1 },
+        1 => {
+            let magnitude = i32::from(u8_at(data, *at)?);
+            if flag & same == 0 {
+                -magnitude
+            } else {
+                magnitude
+            }
+        }
         _ => i32::from(i16_at(data, *at)?),
     };
     *at += len;

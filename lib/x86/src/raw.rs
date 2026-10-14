@@ -161,6 +161,14 @@ pub fn enable_no_execute() -> bool {
     supported
 }
 
+/// Drops what this processor remembers about the page at `virt`, so a
+/// changed mapping takes effect.
+pub fn invalidate_page(virt: u64) {
+    // SAFETY: invlpg only empties a TLB entry; the next access reads the
+    // page tables again.
+    unsafe { asm!("invlpg [{}]", in(reg) virt, options(nostack, preserves_flags)) };
+}
+
 /// The physical address of the page table root, with its flags.
 #[must_use]
 pub fn read_cr3() -> u64 {

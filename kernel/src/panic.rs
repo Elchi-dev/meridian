@@ -428,4 +428,74 @@ mod tests {
         // large modules on any screen.
         assert!(code.version() <= 17, "version {}", code.version());
     }
+
+    /// The rows of the text column with ink in them, as bands from their
+    /// first row to their last.
+    fn bands(
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        columns: core::ops::Range<usize>,
+    ) -> Vec<(usize, usize)> {
+        let canvas = Canvas::new(pixels, width, height, width, Format::Bgr).unwrap();
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for y in 0..height {
+            let ink = columns.clone().any(|x| canvas.pixel(x, y) != Some(SUN));
+            match out.last_mut() {
+                Some(band) if ink && band.1 + 1 == y => band.1 = y,
+                _ if ink => out.push((y, y)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_line_of_the_text_stands_apart() {
+        let (w, h) = (1280, 800);
+        let mut px = vec![0u32; w * h];
+        let mut canvas = Canvas::new(&mut px, w, h, w, Format::Bgr).unwrap();
+        let d = Details {
+            message: "a short message",
+            location: "kernel/src/x.rs:1:1",
+        };
+        draw(&mut canvas, &d, &mut Code::new(), &mut Scratch::new()).unwrap();
+        // The text column ends well before the code on the right.
+        let found = bands(&mut px, w, h, MARGIN as usize..600);
+        let explanation = "Something went wrong inside the kernel, and Meridian stopped before it could do any harm. Restart the computer. If this keeps happening, scan the code and send what it says along with your report.";
+        let text_width = {
+            let mut code = Code::new();
+            let mut summary_text = crate::Text::<480>::new();
+            let _ = summary(&d, &mut summary_text);
+            qr::encode(summary_text.as_str().as_bytes(), Ecc::Medium, &mut code).unwrap();
+            let side = code.size() + 2 * QUIET;
+            let module = ((h / 2) / side).clamp(1, 8);
+            w - 2 * MARGIN as usize - side * module - 48
+        };
+        let explained = lines(explanation, u32::try_from(text_width).unwrap()).len();
+        // The title, the explanation, then a label and a line for each of
+        // the message and the place.
+        assert_eq!(found.len(), 1 + explained + 4, "{found:?}");
+        for pair in found.windows(2) {
+            assert!(pair[1].0 > pair[0].1 + 2, "lines too close: {pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_exactly_as_wide_as_the_room_fits() {
+        let font = Font::parse(INTER).unwrap();
+        // Advances are whole font units, so some text is a whole number of
+        // pixels wide; that is the case where a line just fits.
+        let text = (1..200)
+            .map(|n| format!("{} {}", "x".repeat(n), "x".repeat(n)))
+            .find(|t| font.layout(t, 20.0, |_| {}).unwrap().fract() == 0.0)
+            .expect("some text a whole number of pixels wide");
+        let width = font.layout(&text, 20.0, |_| {}).unwrap();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let got = lines(&text, width as u32);
+        assert_eq!(got, std::slice::from_ref(&text), "it fits exactly");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let narrower = lines(&text, width as u32 - 1);
+        assert_eq!(narrower.len(), 2);
+    }
 }

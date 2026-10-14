@@ -384,6 +384,15 @@ mod tests {
         assert_eq!(at(56 + 720, bar_top + 1), SURFACE, "the frame around it");
         assert_eq!(at(56 + 721, bar_top + 1), SURFACE, "two pixels wide");
         assert_eq!(at(56 + 722, bar_top + 1), NIGHT);
+        assert_eq!(
+            at(56 + 100, bar_top + 28),
+            SURFACE,
+            "the frame under the bar"
+        );
+        assert_eq!(at(56 + 100, bar_top + 29), SURFACE);
+        assert_eq!(at(56 + 100, bar_top + 30), NIGHT);
+        assert_eq!(at(56 + 100, bar_top - 2), SURFACE, "and over it");
+        assert_eq!(at(56 + 100, bar_top - 3), NIGHT);
         let legend = bar_top + 28 + 32 - 6;
         assert_eq!(at(60, legend), GRASS);
     }

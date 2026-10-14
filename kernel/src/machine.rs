@@ -267,4 +267,19 @@ mod tests {
         );
         assert_eq!(reads.get(), PATIENCE + 1);
     }
+
+    #[test]
+    fn calibration_stops_on_the_tick_that_makes_10_ms() {
+        // A timer that moves one tick a read reaches 10 ms on exactly the
+        // read that brings the count to it.
+        let reads = Cell::new(0u32);
+        let pm = || {
+            reads.set(reads.get() + 1);
+            reads.get()
+        };
+        let wanted = u32::try_from(PM_TIMER_HZ / 100).unwrap();
+        let hz = calibrate(pm, 32, || u64::from(reads.get()) * 1000);
+        assert_eq!(reads.get(), 1 + wanted, "the first read, then one per tick");
+        assert_eq!(hz, Some(1000 * PM_TIMER_HZ));
+    }
 }

@@ -338,4 +338,14 @@ mod tests {
         };
         assert!(describe(&mut Broken, &known, None).is_err());
     }
+
+    #[test]
+    fn a_device_right_at_the_end_of_memory_is_left_out() {
+        let at_top = [
+            region(0, 4, RegionKind::USABLE),
+            region(0x4000, 1, RegionKind::RESERVED),
+        ];
+        assert_eq!(ram_top(&at_top), 0x4000);
+        assert_eq!(memory(&at_top).len(), 1, "it starts where memory ends");
+    }
 }

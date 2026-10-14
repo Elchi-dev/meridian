@@ -27,6 +27,12 @@ pub fn tsc_hz(tsc: u64, pm: u32) -> Option<u64> {
     u64::try_from(u128::from(tsc) * u128::from(PM_TIMER_HZ) / u128::from(pm)).ok()
 }
 
+/// The uptime to draw again, when the second it shows has passed.
+#[must_use]
+pub fn to_redraw(shown: u64, now: u64) -> Option<u64> {
+    (now != shown).then_some(now)
+}
+
 /// Writes a time span the way the status screen shows how long the
 /// machine has been up: the two largest units, such as `1 h 5 min`.
 ///
@@ -106,5 +112,12 @@ mod tests {
             text(u64::MAX),
             format!("{} d {} h", u64::MAX / 86_400, u64::MAX / 3_600 % 24)
         );
+    }
+
+    #[test]
+    fn the_uptime_is_drawn_again_when_its_second_passed() {
+        assert_eq!(to_redraw(4, 4), None);
+        assert_eq!(to_redraw(4, 5), Some(5));
+        assert_eq!(to_redraw(0, u64::MAX), Some(u64::MAX));
     }
 }

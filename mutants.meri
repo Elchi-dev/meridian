@@ -23,3 +23,17 @@ allow {
     mutation = "body to { true }"
     reason = "every firmware the tests run on, OVMF included, turns no-execute pages on before any loader runs, and turning them off to try again would fault on the page tables already using bit 63; the loader's x86.no_execute and the kernel's kernel.no_execute checks still see it on"
 }
+
+allow {
+    file = "kernel/src/raw/interrupts.rs"
+    line = "if INSTALLED.swap(true, Ordering::AcqRel) {"
+    mutation = "true to false"
+    reason = "the flag keeps a second call from writing the tables while the processor uses them; the kernel calls install once, and a second call would write the same values again, so no check can see the difference"
+}
+
+allow {
+    file = "kernel/src/raw/mod.rs"
+    line = "if PANICKING.swap(true, Ordering::AcqRel) {"
+    mutation = "true to false"
+    reason = "the flag stops a panic that comes while the panic screen is drawn; the tests cannot cause one there without changing that code, and the planned crashes reset the flag on purpose before each"
+}

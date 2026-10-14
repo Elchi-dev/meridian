@@ -79,8 +79,7 @@ fn finish(
     };
     let mut scratch = Scratch::new();
     loop {
-        let now = up(tsc_hz).unwrap_or(shown);
-        if now != shown {
+        if let Some(now) = kernel::clock::to_redraw(shown, up(tsc_hz).unwrap_or(shown)) {
             let _ = kernel::screen::uptime(canvas, Some(now), &mut scratch);
             shown = now;
         }

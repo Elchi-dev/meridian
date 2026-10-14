@@ -20,7 +20,9 @@ qemu-test = ["uefi/qemu-test", "x86/qemu-test"]
 
 [dependencies]
 bootinfo = { path = "../lib/bootinfo" }
+canvas = { path = "../lib/canvas" }
 elf = { path = "../lib/elf" }
+font = { path = "../lib/font" }
 paging = { path = "../lib/paging" }
 uefi = { path = "../lib/uefi" }
 x86 = { path = "../lib/x86" }

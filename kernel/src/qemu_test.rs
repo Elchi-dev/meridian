@@ -122,15 +122,15 @@ pub fn run(
 
     screen_checks(&mut report, info, screen);
     if screen.is_some() {
-        // sextant keeps the picture and answers with a newline.
+        // sextant keeps the picture and answers with a carriage return.
         // The same port, not a new one: opening it again would clear an
         // answer that came quickly.
         let _ = writeln!(report.out, "SCREEN status");
         let answer = report.out.receive(1 << 24);
         report.check(
             "kernel.screen.kept",
-            answer == Some(b'\n'),
-            "sextant should answer SCREEN with a newline on the serial port",
+            answer == Some(b'\r'),
+            "sextant should answer SCREEN with a carriage return on the serial port",
         );
     }
 
@@ -238,8 +238,8 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
         let answer = report.out.receive(1 << 24);
         report.check(
             "kernel.panic.kept",
-            answer == Some(b'\n'),
-            "sextant should answer SCREEN with a newline on the serial port",
+            answer == Some(b'\r'),
+            "sextant should answer SCREEN with a carriage return on the serial port",
         );
     }
 }

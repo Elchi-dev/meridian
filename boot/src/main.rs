@@ -14,14 +14,18 @@ mod raw;
 use core::mem::size_of;
 
 use boot::handover::{self, Layout, Problem};
+use boot::menu::{Action, Key, Menu};
+use boot::screen::{Card, Kind};
 use boot::{KERNEL_PATH, Out, banner, memory};
 use bootinfo::{
     BootInfo, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, STACK_PAGES, STACK_TOP, Stack,
 };
+use canvas::{Canvas, Format, Scratch};
 use uefi::Status;
 use uefi::guid::ACPI_20_TABLE;
 use uefi::memory::{MemoryType, PAGE_BYTES, PAGE_SIZE};
 use uefi::raw::System;
+use uefi::raw::graphics::PixelFormat;
 use x86::Features;
 use x86::raw::Com1;
 
@@ -49,11 +53,86 @@ fn run(system: System, serial: &mut Com1) -> Status {
     #[cfg(feature = "qemu-test")]
     qemu_test::checks(&system, serial);
 
+    let cards = [Card {
+        kind: Kind::Meridian,
+        name: "Meridian",
+    }];
+    #[cfg(feature = "qemu-test")]
+    let chosen = choose(&system, &cards, 0, |frame, screen| {
+        qemu_test::boot_screen(&system, frame, screen, serial);
+    });
+    #[cfg(not(feature = "qemu-test"))]
+    let chosen = choose(&system, &cards, 3, |_, _| {});
+    let _ = chosen;
+
     let (system, problem) = match prepare(&system) {
         Ok(ready) => raw::start(system, ready),
         Err(problem) => (system, problem),
     };
     give_up(&system, &problem, serial)
+}
+
+/// Shows the boot screen until a system is chosen, and returns its index.
+/// Every frame is drawn off the screen first and then copied whole.
+/// `first_frame` sees the first finished frame and the screen after it.
+/// Without a screen, or
+/// without memory for the frame, the first system starts at once.
+fn choose(
+    system: &System,
+    cards: &[Card<'_>],
+    seconds: u32,
+    mut first_frame: impl FnMut(&[u32], &[u32]),
+) -> usize {
+    let Ok(mut screen) = system.pixels() else {
+        return 0;
+    };
+    let fb = screen.fb;
+    let (width, height) = (fb.width as usize, fb.height as usize);
+    let Ok(mut frame) = system.allocate_pages(
+        MemoryType::LOADER_DATA,
+        (width * height * 4).div_ceil(PAGE_BYTES),
+    ) else {
+        return 0;
+    };
+    let format = match fb.format {
+        PixelFormat::Rgb => Format::Rgb,
+        PixelFormat::Bgr => Format::Bgr,
+    };
+    let mut scratch = Scratch::new();
+    let mut menu = Menu::new(cards.len(), 0, seconds);
+    let mut action = Action::Redraw;
+    let mut shown = false;
+    loop {
+        match action {
+            Action::Start(chosen) => {
+                let _ = frame.free();
+                return chosen;
+            }
+            Action::Redraw => {
+                if let Some(mut canvas) = Canvas::new(frame.words(), width, height, width, format) {
+                    let _ = boot::screen::draw(&mut canvas, cards, &menu, &mut scratch);
+                }
+                boot::screen::present(
+                    frame.words(),
+                    screen.as_mut_slice(),
+                    width,
+                    height,
+                    fb.stride as usize,
+                );
+                if !shown {
+                    shown = true;
+                    first_frame(frame.words(), screen.as_slice());
+                }
+            }
+            Action::Wait => {}
+        }
+        action = if let Ok(Some(key)) = system.read_key() {
+            menu.key(Key::from_uefi(key))
+        } else {
+            let _ = system.stall(100_000);
+            menu.tick(1)
+        };
+    }
 }
 
 /// Everything the jump needs, worked out while boot services still run.

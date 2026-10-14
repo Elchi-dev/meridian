@@ -6,6 +6,8 @@
 
 pub mod handover;
 pub mod memory;
+pub mod menu;
+pub mod screen;
 
 use core::fmt::{self, Write};
 

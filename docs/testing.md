@@ -61,8 +61,8 @@ TESTS DONE 1 failed
   names it, such as `ret` or `down`.
 - `SCREEN <name>` asks sextant to keep a picture of the screen. sextant
   saves it as `screens/<name>.png` in the build directory and then sends a
-  newline on the serial port, which the image waits for before it draws
-  anything else. Names are lower case letters, digits and dashes.
+  carriage return on the serial port, which the image waits for before it
+  draws anything else. Under the firmware it arrives as the Enter key. Names are lower case letters, digits and dashes.
 - `TESTS DONE <n> failed` once at the end.
 - **The exit code.** The image then writes to port 0xf4. QEMU exits with
   `(value << 1) | 1`: **33** when everything passed, **35** when something

@@ -154,3 +154,54 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         "the boot information should pass its check and wait for the final map",
     );
 }
+
+/// The boot screen's first frame: check it, have sextant keep it, and
+/// choose the only card with Enter, the way a person would.
+pub fn boot_screen(system: &System, frame: &[u32], screen: &[u32], serial: &mut impl Write) {
+    use canvas::palette::{NIGHT, TANGERINE};
+    use uefi::qemu_test::Report;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let fb = system.framebuffer();
+    // OVMF's framebuffer is blue, green, red, as uefi.gop.format checks.
+    let (night, tangerine) = (
+        NIGHT.encode(canvas::Format::Bgr),
+        TANGERINE.encode(canvas::Format::Bgr),
+    );
+    report.check(
+        "boot.screen.drawn",
+        frame.first() == Some(&night) && frame.iter().filter(|&&p| p == tangerine).count() > 5000,
+        "the boot screen should be dark, with the chosen card's orange tile and frame",
+    );
+    let (width, stride) = fb.map_or((0, 0), |fb| (fb.width as usize, fb.stride as usize));
+    let same = width > 0
+        && frame
+            .chunks_exact(width)
+            .enumerate()
+            .all(|(row, pixels)| screen.get(row * stride..row * stride + width) == Some(pixels));
+    report.check(
+        "boot.screen.presented",
+        same,
+        "the screen should show exactly the frame drawn off it, row for row",
+    );
+    report.check(
+        "boot.screen.shown",
+        system.pixels().is_err() && width > 0,
+        "the screen should still be held by the boot screen while it is shown",
+    );
+    let _ = writeln!(report.out, "SCREEN boot");
+    let answer = system.wait_for_key();
+    report.check(
+        "boot.screen.kept",
+        answer.is_ok_and(|k| k.unicode_char == 0x0d),
+        "sextant should answer SCREEN with a carriage return, read as Enter",
+    );
+    report.press("ret");
+    if report.failed > 0 {
+        let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
+        x86::raw::qemu_exit(false);
+    }
+}

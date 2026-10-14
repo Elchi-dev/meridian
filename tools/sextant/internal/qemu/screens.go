@@ -13,9 +13,9 @@ import (
 )
 
 // A test image that wants its screen kept writes "SCREEN <name>" on a line
-// of its own and waits for a newline on the serial port. The runner saves
-// the screen as <name>.png, when it was asked to keep screens, and sends
-// the newline either way.
+// of its own and waits for a carriage return on the serial port. The
+// runner saves the screen as <name>.png, when it was asked to keep
+// screens, and sends the carriage return either way.
 
 // screenName reports whether name can be a file name of its own: lower
 // case letters, digits and dashes, at most 64 of them.

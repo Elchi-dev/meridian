@@ -131,13 +131,17 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 			t.Errorf("check %s did not run; passed: %v", want, report.Passed)
 		}
 	}
-	want := []string{filepath.Join(screens, "status.png"), filepath.Join(screens, "panic.png"), filepath.Join(screens, "double-fault.png")}
+	var want []string
+	for _, name := range []string{"boot", "status", "panic", "double-fault"} {
+		want = append(want, filepath.Join(screens, name+".png"))
+	}
 	if !slices.Equal(res.Screens, want) {
 		t.Fatalf("screens saved: %v, want %v", res.Screens, want)
 	}
-	checkStatusScreen(t, want[0])
-	checkCrashScreen(t, want[1], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
-	checkCrashScreen(t, want[2], "\nmessage: double fault: a second exception came while the first was being handled")
+	checkBootScreen(t, want[0])
+	checkStatusScreen(t, want[1])
+	checkCrashScreen(t, want[2], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
+	checkCrashScreen(t, want[3], "\nmessage: double fault: a second exception came while the first was being handled")
 	if !strings.Contains(res.Serial, consoleProbe) {
 		t.Errorf("the console probe did not reach the screen whole:\n%s", res.Serial)
 	}
@@ -487,6 +491,25 @@ func openScreen(t *testing.T, path string) (int, int, func(x, y int) [3]uint32) 
 	return b.Dx(), b.Dy(), func(x, y int) [3]uint32 {
 		r, g, bl, _ := img.At(x, y).RGBA()
 		return [3]uint32{r >> 8, g >> 8, bl >> 8}
+	}
+}
+
+// checkBootScreen looks at the loader's boot screen: dark all round, and
+// the one card in the middle, chosen, with its orange tile.
+func checkBootScreen(t *testing.T, path string) {
+	t.Helper()
+	w, h, rgb := openScreen(t, path)
+	night, tangerine := [3]uint32{0x15, 0x17, 0x1a}, [3]uint32{0xff, 0x96, 0x33}
+	for _, at := range [][2]int{{0, 0}, {w - 1, h - 1}} {
+		if got := rgb(at[0], at[1]); got != night {
+			t.Errorf("pixel %v is %x, want the dark background", at, got)
+		}
+	}
+	// The card is 200 by 230 in the middle; its tile starts 36 below its
+	// top and is 96 wide.
+	tileX, tileY := (w-200)/2+52+2, (h-230)/2+36+2
+	if got := rgb(tileX, tileY); got != tangerine {
+		t.Errorf("the tile's corner is %x, want tangerine", got)
 	}
 }
 

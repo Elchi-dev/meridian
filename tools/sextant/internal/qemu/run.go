@@ -261,7 +261,8 @@ func (w *scriptWatcher) answerPresses(clean string) {
 }
 
 // screen saves the machine's screen as name.png, when screens are kept,
-// and then tells the machine to go on.
+// and then tells the machine to go on with a carriage return, which the
+// firmware's console reads as Enter and the kernel reads as a byte.
 func (w *scriptWatcher) screen(name string) error {
 	if !screenName(name) {
 		return fmt.Errorf("the machine asked to keep a screen named %q; names are lower case letters, digits and dashes", name)
@@ -281,7 +282,7 @@ func (w *scriptWatcher) screen(name string) error {
 		}
 		w.saved = append(w.saved, out)
 	}
-	if _, err := io.WriteString(w.serialIn, "\n"); err != nil {
+	if _, err := io.WriteString(w.serialIn, "\r"); err != nil {
 		return fmt.Errorf("answer the machine after its screen: %w", err)
 	}
 	return nil

@@ -48,8 +48,9 @@ Loader and UEFI:
 ## M1: Boot
 
 - [x] TrueType rasterizer in `lib/font`, Inter and JetBrains Mono under one decision record (0012)
-- [ ] Graphical boot screen with OS cards, countdown, `V` for the full log, `F` for firmware settings
-- [ ] Neutral icon for the Windows card, no Microsoft logo
+- [x] Graphical boot screen with OS cards, arrow keys, Enter, countdown, drawn off screen and copied whole
+- [ ] `V` for the full log, `F` for firmware settings on the boot screen
+- [x] Neutral icon for the Windows card (a W on a sky blue tile), no Microsoft logo
 - [ ] Detect other systems from `BootOrder`, `Boot####` and a scan of the EFI partition
 - [ ] Start Windows and Linux through `LoadImage` and `StartImage`
 - [ ] Rust `.meri` reader passing the conformance suite; `boot.meri`

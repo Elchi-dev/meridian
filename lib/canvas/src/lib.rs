@@ -79,7 +79,9 @@ impl Color {
         Color { r, g, b }
     }
 
-    fn encode(self, format: Format) -> u32 {
+    /// The colour as a pixel in `format`.
+    #[must_use]
+    pub fn encode(self, format: Format) -> u32 {
         let (first, third) = match format {
             Format::Rgb => (self.r, self.b),
             Format::Bgr => (self.b, self.r),
@@ -87,7 +89,9 @@ impl Color {
         u32::from_le_bytes([first, self.g, third, 0])
     }
 
-    fn decode(pixel: u32, format: Format) -> Color {
+    /// The colour of a pixel in `format`.
+    #[must_use]
+    pub fn decode(pixel: u32, format: Format) -> Color {
         let [first, g, third, _] = pixel.to_le_bytes();
         match format {
             Format::Rgb => Color {

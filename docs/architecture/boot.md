@@ -57,11 +57,11 @@ halting, the QEMU exit) in `src/raw.rs` (ADR 0008).
 
 ### The boot screen
 
-- **Look.** A graphical screen in Horizon's look, drawn into the GOP framebuffer. The loader keeps an off-screen copy and copies whole frames, so nothing tears.
-- **The menu.** Systems appear as cards: Meridian, plus every other system found. Left and Right choose, Enter starts, a countdown starts the last choice.
+- **Look.** A graphical screen in the boot screens' fixed dark look, drawn into the GOP framebuffer with `lib/canvas` and Inter. The loader draws each frame off the screen and copies it whole, so nothing tears. Cards are solid with a 1 px border and a solid offset shadow; the chosen one gets a tangerine frame and shadow. Exists.
+- **The menu.** Systems appear as cards, each with a tile in its colour and the first letter of its name. Left and Right choose, Enter starts, a countdown of 3 seconds starts the chosen one, and any key stops it. When more systems are found than cards fit, the row follows the choice. Exists, with Meridian as the only card until other systems are found.
 - **Keys.** V shows the full log at any time (the transparency Samuel asked for: "full power if the user is sure he wants it"). F opens the firmware settings.
 - **Text.** A TrueType rasterizer written for Meridian, with grayscale anti-aliasing and no hinting. It is shared with the kernel and Horizon through a `lib/` crate. The font files (Inter and JetBrains Mono) are the only outside files, under one decision record.
-- **The Windows card** gets a neutral icon, not Microsoft's logo.
+- **The Windows card** gets a W on a sky blue tile, not Microsoft's logo.
 
 ### Finding other systems
 

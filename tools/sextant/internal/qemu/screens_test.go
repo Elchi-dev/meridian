@@ -142,11 +142,11 @@ func TestScreenLinesAreAnsweredEvenWithoutKeeping(t *testing.T) {
 	var answer bytes.Buffer
 	w := &scriptWatcher{answer: true, serialIn: &answer, stop: func() {}}
 	w.answerPresses("TEST a ok\nSCREEN status\nSCREEN pan")
-	if answer.String() != "\n" || len(w.saved) != 0 || w.err != nil {
+	if answer.String() != "\r" || len(w.saved) != 0 || w.err != nil {
 		t.Fatalf("answer %q, saved %v, err %v", answer.String(), w.saved, w.err)
 	}
 	w.answerPresses("TEST a ok\nSCREEN status\nSCREEN panic\n")
-	if answer.String() != "\n\n" {
+	if answer.String() != "\r\r" {
 		t.Fatalf("the second, now complete line should be answered once: %q", answer.String())
 	}
 }

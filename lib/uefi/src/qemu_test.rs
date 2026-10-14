@@ -72,6 +72,7 @@ pub fn run(system: &System, report: &mut impl Report) {
     tables(system, report);
     graphics(system, report);
     images(system, report);
+    file_systems(system, report);
     variables(system, report);
     boot_options(system, report);
 
@@ -566,6 +567,23 @@ fn corners(pixels: &mut crate::raw::graphics::Pixels<'_>, report: &mut impl Repo
 
 /// The boot partition's device path, and loading images from it without
 /// starting them: the loader's test image starts one, with options.
+fn file_systems(system: &System, report: &mut impl Report) {
+    use crate::raw::image::PATH_BYTES;
+
+    let mut own = [0u8; PATH_BYTES];
+    let own = system.boot_device_path(&mut own);
+    let (mut listed, mut found) = (0, 0);
+    let walked = system.file_system_paths(|p| {
+        listed += 1;
+        found += usize::from(own.is_ok_and(|own| p == own));
+    });
+    report.check(
+        "uefi.file_systems",
+        walked.is_ok() && listed >= 1 && found == 1,
+        "the firmware's file systems should include the boot partition, once",
+    );
+}
+
 fn images(system: &System, report: &mut impl Report) {
     use crate::device_path::nodes;
     use crate::raw::image::PATH_BYTES;
@@ -595,6 +613,7 @@ fn images(system: &System, report: &mut impl Report) {
         last_type == Some(4),
         "the path should end at a media node: the partition or the CD's boot image",
     );
+
     let mut tiny = [0u8; 8];
     let mut exact = [0u8; PATH_BYTES];
     let fits = whole.is_some_and(|(n, _)| {

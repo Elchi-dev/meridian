@@ -100,6 +100,23 @@ pub fn partition(path: &[u8]) -> Option<[u8; 16]> {
         .and_then(|s| s.try_into().ok())
 }
 
+/// `path` from its hard drive node on, end node included: the short form
+/// that starts at the partition, which the firmware completes by finding
+/// the partition by its signature (UEFI 2.10, section 3.1.2). `None` when
+/// the path is broken or names no partition.
+#[must_use]
+pub fn from_partition(path: &[u8]) -> Option<&[u8]> {
+    let end = nodes(path)?.len() + END.len();
+    let mut at = 0;
+    for node in walk(path)? {
+        if node.kind == MEDIA && node.subtype == HARD_DRIVE {
+            return path.get(at..end);
+        }
+        at += 4 + node.data.len();
+    }
+    None
+}
+
 /// Writes `base`, a whole device path, with a file path node for `file`
 /// before its end, into `out`. `/` in `file` becomes `\`. Returns the
 /// length of the new path, or `None` when `base` is broken, the file name
@@ -364,6 +381,45 @@ mod tests {
             "another media node before the hard drive node is skipped"
         );
         assert_eq!(partition(&END), None);
+    }
+
+    #[test]
+    fn the_short_form_starts_at_the_partition() {
+        let p = sample_partition();
+        let mut whole = [0u8; 256];
+        let n = with_file(&p, "/EFI/tool.efi", &mut whole).unwrap();
+        let whole = &whole[..n];
+        let hd = 12 + 6 + 10;
+        let short = from_partition(whole).unwrap();
+        assert_eq!(
+            short,
+            &whole[hd..],
+            "the hard drive node, the file and the end"
+        );
+        assert_eq!(partition(short), partition(whole));
+        assert_eq!(text(short).as_deref(), Some("\\EFI\\tool.efi"));
+        assert_eq!(from_partition(short), Some(short), "already short");
+        assert_eq!(
+            from_partition(&p),
+            Some(&p[hd..]),
+            "a partition without a file"
+        );
+    }
+
+    #[test]
+    fn without_a_partition_there_is_no_short_form() {
+        let mut disk = vec![0x02, 0x01, 0x0c, 0x00, 0xd0, 0x41, 0x03, 0x0a, 0, 0, 0, 0];
+        disk.extend(END);
+        assert_eq!(from_partition(&disk), None);
+        assert_eq!(from_partition(&END), None);
+        // A CD's boot image is a media node too, but not a hard drive.
+        let mut cd = vec![0x04, 0x02, 0x18, 0x00];
+        cd.extend([0; 0x18 - 4]);
+        cd.extend(END);
+        assert_eq!(from_partition(&cd), None);
+        let mut broken = sample_partition();
+        broken.truncate(broken.len() - 4);
+        assert_eq!(from_partition(&broken), None, "no end node");
     }
 
     #[test]

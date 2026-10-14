@@ -86,7 +86,13 @@ pub struct BootServices {
     ) -> Status,
     pub reserved: NotCalled,
     pub register_protocol_notify: NotCalled,
-    pub locate_handle: NotCalled,
+    pub locate_handle: unsafe extern "efiapi" fn(
+        search_type: u32,
+        protocol: *const Guid,
+        search_key: *const c_void,
+        buffer_size: *mut usize,
+        buffer: *mut Handle,
+    ) -> Status,
     pub locate_device_path: NotCalled,
     pub install_configuration_table: NotCalled,
     pub load_image: unsafe extern "efiapi" fn(

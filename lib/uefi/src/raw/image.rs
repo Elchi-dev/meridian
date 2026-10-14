@@ -9,10 +9,16 @@ use super::file::LoadedImage;
 use super::{Handle, System};
 use crate::Status;
 use crate::device_path;
-use crate::guid::{DEVICE_PATH_PROTOCOL, LOADED_IMAGE_PROTOCOL};
+use crate::guid::{DEVICE_PATH_PROTOCOL, LOADED_IMAGE_PROTOCOL, SIMPLE_FILE_SYSTEM_PROTOCOL};
 
 /// The longest device path the loader builds, in bytes.
 pub const PATH_BYTES: usize = 1024;
+
+/// How many file systems [`System::file_system_paths`] can list.
+const FILE_SYSTEMS: usize = 32;
+
+/// `LocateHandle`'s search for every handle with a given protocol.
+const BY_PROTOCOL: u32 = 2;
 
 impl System {
     fn loaded_image(&self, handle: Handle) -> Result<NonNull<LoadedImage>, Status> {
@@ -48,7 +54,45 @@ impl System {
     pub fn boot_device_path<'b>(&self, out: &'b mut [u8]) -> Result<&'b [u8], Status> {
         // SAFETY: the firmware's own loaded image protocol for this image.
         let device = unsafe { self.loaded_image(self.image())?.as_ref().device_handle };
-        let path = self.protocol::<u8>(device, &DEVICE_PATH_PROTOCOL)?.as_ptr();
+        self.device_path_of(device, out)
+    }
+
+    /// Calls `each` with the device path of every partition or disk the
+    /// firmware can read files from, the one this image came from among
+    /// them. Paths longer than [`PATH_BYTES`] are left out.
+    ///
+    /// # Errors
+    ///
+    /// The firmware's status, and `BUFFER_TOO_SMALL` for a machine with
+    /// more than 32 of them.
+    pub fn file_system_paths(&self, mut each: impl FnMut(&[u8])) -> Result<(), Status> {
+        let mut handles: [Handle; FILE_SYSTEMS] = [ptr::null_mut(); FILE_SYSTEMS];
+        let mut size = size_of_val(&handles);
+        // SAFETY: LocateHandle writes at most size bytes of handles into
+        // the array and sets size to how many bytes it wrote.
+        unsafe {
+            (self.boot_services().locate_handle)(
+                BY_PROTOCOL,
+                &SIMPLE_FILE_SYSTEM_PROTOCOL,
+                ptr::null(),
+                &raw mut size,
+                handles.as_mut_ptr(),
+            )
+        }
+        .ok()?;
+        let mut path = [0u8; PATH_BYTES];
+        let found = (size / size_of::<Handle>()).min(FILE_SYSTEMS);
+        for &handle in &handles[..found] {
+            if let Ok(p) = self.device_path_of(handle, &mut path) {
+                each(p);
+            }
+        }
+        Ok(())
+    }
+
+    /// The device path of `handle`, copied into `out` with its end node.
+    fn device_path_of<'b>(&self, handle: Handle, out: &'b mut [u8]) -> Result<&'b [u8], Status> {
+        let path = self.protocol::<u8>(handle, &DEVICE_PATH_PROTOCOL)?.as_ptr();
         let mut len = 0;
         loop {
             // SAFETY: a device path is a chain of nodes, each starting with

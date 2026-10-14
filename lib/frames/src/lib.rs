@@ -15,6 +15,143 @@ pub const FRAME: u64 = 4096;
 /// leaves behind and, later, the code that starts the other cores.
 pub const LOW: u64 = 1 << 20;
 
+/// Why units could not be given back to a [`Bitmap`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GiveBack {
+    /// The unit lies beyond the ones the bitmap covers.
+    OutOfRange(usize),
+    /// The unit is free already.
+    NotTaken(usize),
+}
+
+/// One bit for each unit of something, such as a frame of memory or a
+/// block of the kernel's heap, set while the unit is free.
+pub struct Bitmap<'a> {
+    bits: &'a mut [u64],
+    free: usize,
+    /// The word the next search for a single unit starts at.
+    next: usize,
+}
+
+impl<'a> Bitmap<'a> {
+    /// A bitmap over `bits` with every unit taken.
+    pub fn taken(bits: &'a mut [u64]) -> Bitmap<'a> {
+        bits.fill(0);
+        Bitmap {
+            bits,
+            free: 0,
+            next: 0,
+        }
+    }
+
+    /// How many units the bits stand for.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bits.len() * 64
+    }
+
+    /// Whether there are no units at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bits.is_empty()
+    }
+
+    /// How many units are free.
+    #[must_use]
+    pub fn free(&self) -> usize {
+        self.free
+    }
+
+    /// Whether `unit` is free; units beyond the bits never are.
+    #[must_use]
+    pub fn is_free(&self, unit: usize) -> bool {
+        self.bits
+            .get(unit / 64)
+            .is_some_and(|w| w >> (unit % 64) & 1 == 1)
+    }
+
+    /// Marks `unit` free or taken and keeps the count of free units.
+    fn set(&mut self, unit: usize, free: bool) {
+        if self.is_free(unit) == free {
+            return;
+        }
+        self.bits[unit / 64] ^= 1 << (unit % 64);
+        if free {
+            self.free += 1;
+        } else {
+            self.free -= 1;
+        }
+    }
+
+    /// Marks the units of `range` free, as far as the bits reach.
+    pub fn release(&mut self, range: core::ops::Range<usize>) {
+        for unit in range.start..range.end.min(self.len()) {
+            self.set(unit, true);
+        }
+    }
+
+    /// Marks the units of `range` taken, as far as the bits reach.
+    pub fn take(&mut self, range: core::ops::Range<usize>) {
+        for unit in range.start..range.end.min(self.len()) {
+            self.set(unit, false);
+        }
+    }
+
+    /// A free unit, now taken, or `None` when there is none.
+    pub fn take_one(&mut self) -> Option<usize> {
+        let words = self.bits.len();
+        for word in (self.next..words).chain(0..self.next) {
+            let bits = self.bits[word];
+            if bits != 0 {
+                let unit = word * 64 + bits.trailing_zeros() as usize;
+                self.set(unit, false);
+                self.next = word;
+                return Some(unit);
+            }
+        }
+        None
+    }
+
+    /// `count` free units in a row, the first a multiple of `align`, now
+    /// taken, or `None` when there are none, `count` is 0 or `align` is
+    /// not a power of two.
+    pub fn take_run(&mut self, count: usize, align: usize) -> Option<usize> {
+        if count == 0 || !align.is_power_of_two() {
+            return None;
+        }
+        let mut first = 0;
+        while first + count <= self.len() {
+            // The last taken unit in the way decides where to look next.
+            match (first..first + count).rev().find(|&u| !self.is_free(u)) {
+                None => {
+                    self.take(first..first + count);
+                    return Some(first);
+                }
+                Some(taken) => first = (taken + 1).next_multiple_of(align),
+            }
+        }
+        None
+    }
+
+    /// Gives `count` units from `first` back, all of them or, when one is
+    /// beyond the bits or free already, none.
+    ///
+    /// # Errors
+    ///
+    /// Names the first unit that cannot be given back.
+    pub fn give_back(&mut self, first: usize, count: usize) -> Result<(), GiveBack> {
+        let end = first.saturating_add(count);
+        if end > self.len() {
+            return Err(GiveBack::OutOfRange(first.max(self.len())));
+        }
+        if let Some(unit) = (first..end).find(|&u| self.is_free(u)) {
+            return Err(GiveBack::NotTaken(unit));
+        }
+        self.release(first..end);
+        Ok(())
+    }
+}
+
 /// Why a frame could not be given back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreeError {
@@ -26,12 +163,9 @@ pub enum FreeError {
     NotTaken(u64),
 }
 
-/// Which frames of memory are free, one bit each in a slice of words.
+/// Which frames of physical memory are free.
 pub struct Frames<'a> {
-    bits: &'a mut [u64],
-    free: usize,
-    /// The word the next search for a single frame starts at.
-    next: usize,
+    bits: Bitmap<'a>,
 }
 
 impl<'a> Frames<'a> {
@@ -45,101 +179,38 @@ impl<'a> Frames<'a> {
     /// inside one of the `free` ranges, given as start and length, and
     /// at or above [`LOW`].
     pub fn new(bits: &'a mut [u64], free: impl IntoIterator<Item = (u64, u64)>) -> Frames<'a> {
-        bits.fill(0);
-        let mut frames = Frames {
-            bits,
-            free: 0,
-            next: 0,
-        };
+        let mut bits = Bitmap::taken(bits);
         for (start, len) in free {
             let first = start.max(LOW).div_ceil(FRAME);
-            let end = (start.saturating_add(len) / FRAME).min(frames.covered());
-            for frame in first..end {
-                frames.set(frame, true);
-            }
+            let end = start.saturating_add(len) / FRAME;
+            bits.release(index(first)..index(end));
         }
-        frames
-    }
-
-    /// How many frames the bits stand for.
-    fn covered(&self) -> u64 {
-        self.bits.len() as u64 * 64
-    }
-
-    fn is_free(&self, frame: u64) -> bool {
-        let (word, bit) = (frame / 64, frame % 64);
-        self.bits[word as usize] >> bit & 1 == 1
-    }
-
-    /// Marks `frame` free or taken and keeps the count of free frames.
-    fn set(&mut self, frame: u64, free: bool) {
-        if self.is_free(frame) == free {
-            return;
-        }
-        let (word, bit) = ((frame / 64) as usize, frame % 64);
-        self.bits[word] ^= 1 << bit;
-        if free {
-            self.free += 1;
-        } else {
-            self.free -= 1;
-        }
+        Frames { bits }
     }
 
     /// How many frames are free.
     #[must_use]
     pub fn free_frames(&self) -> usize {
-        self.free
+        self.bits.free()
     }
 
     /// Takes the frames that hold any of `len` bytes from `start` out of
     /// the free ones, such as the frames these bits are kept in.
     pub fn reserve(&mut self, start: u64, len: u64) {
-        let first = start / FRAME;
-        let end = start
-            .saturating_add(len)
-            .div_ceil(FRAME)
-            .min(self.covered());
-        for frame in first..end {
-            self.set(frame, false);
-        }
+        let end = start.saturating_add(len).div_ceil(FRAME);
+        self.bits.take(index(start / FRAME)..index(end));
     }
 
     /// A free frame, now taken, or `None` when there is none.
     pub fn alloc(&mut self) -> Option<u64> {
-        let words = self.bits.len();
-        for word in (self.next..words).chain(0..self.next) {
-            let bits = self.bits[word];
-            if bits != 0 {
-                let frame = word as u64 * 64 + u64::from(bits.trailing_zeros());
-                self.set(frame, false);
-                self.next = word;
-                return Some(frame * FRAME);
-            }
-        }
-        None
+        self.bits.take_one().map(address)
     }
 
     /// `count` free frames in a row whose first is a multiple of `align`
     /// frames, now taken, or `None` when there are none, `count` is 0 or
     /// `align` is not a power of two.
     pub fn alloc_run(&mut self, count: u64, align: u64) -> Option<u64> {
-        if count == 0 || !align.is_power_of_two() {
-            return None;
-        }
-        let mut first = 0;
-        while first + count <= self.covered() {
-            // The last taken frame in the way decides where to look next.
-            match (first..first + count).rev().find(|&f| !self.is_free(f)) {
-                None => {
-                    for frame in first..first + count {
-                        self.set(frame, false);
-                    }
-                    return Some(first * FRAME);
-                }
-                Some(taken) => first = (taken + 1).next_multiple_of(align),
-            }
-        }
-        None
+        self.bits.take_run(index(count), index(align)).map(address)
     }
 
     /// Gives the frame at `address` back.
@@ -152,16 +223,23 @@ impl<'a> Frames<'a> {
         if !address.is_multiple_of(FRAME) {
             return Err(FreeError::Misaligned(address));
         }
-        let frame = address / FRAME;
-        if frame >= self.covered() {
-            return Err(FreeError::OutOfRange(address));
-        }
-        if self.is_free(frame) {
-            return Err(FreeError::NotTaken(address));
-        }
-        self.set(frame, true);
-        Ok(())
+        self.bits
+            .give_back(index(address / FRAME), 1)
+            .map_err(|e| match e {
+                GiveBack::OutOfRange(_) => FreeError::OutOfRange(address),
+                GiveBack::NotTaken(_) => FreeError::NotTaken(address),
+            })
     }
+}
+
+/// A frame number as an index into the bits; numbers past what a usize
+/// holds are past every bitmap too.
+fn index(frame: u64) -> usize {
+    usize::try_from(frame).unwrap_or(usize::MAX)
+}
+
+fn address(frame: usize) -> u64 {
+    frame as u64 * FRAME
 }
 
 #[cfg(test)]
@@ -170,6 +248,71 @@ mod tests {
     use std::collections::BTreeSet;
 
     const MIB: u64 = 1 << 20;
+
+    #[test]
+    fn a_new_bitmap_has_every_unit_taken() {
+        let mut words = [u64::MAX; 2];
+        let b = Bitmap::taken(&mut words);
+        assert_eq!((b.len(), b.free(), b.is_empty()), (128, 0, false));
+        assert!(!b.is_free(0) && !b.is_free(127) && !b.is_free(128));
+        assert!(Bitmap::taken(&mut []).is_empty());
+    }
+
+    #[test]
+    fn releasing_and_taking_stop_at_the_end() {
+        let mut words = [0; 2];
+        let mut b = Bitmap::taken(&mut words);
+        b.release(120..usize::MAX);
+        assert_eq!(b.free(), 8);
+        assert!(b.is_free(127) && !b.is_free(119) && !b.is_free(128));
+        b.release(126..130);
+        assert_eq!(b.free(), 8, "free already");
+        b.take(125..usize::MAX);
+        assert_eq!(b.free(), 5);
+        b.take(0..0);
+        assert_eq!(b.free(), 5);
+    }
+
+    #[test]
+    fn units_come_back_all_or_none() {
+        let mut words = [0; 1];
+        let mut b = Bitmap::taken(&mut words);
+        b.release(0..64);
+        assert_eq!(b.take_run(10, 1), Some(0));
+        assert_eq!(
+            b.give_back(8, 4),
+            Err(GiveBack::NotTaken(10)),
+            "two of them were free"
+        );
+        assert_eq!(b.free(), 54, "and nothing came back");
+        assert_eq!(b.give_back(58, 4), Err(GiveBack::NotTaken(58)));
+        assert_eq!(b.take_run(4, 4), Some(12));
+        assert_eq!(b.give_back(12, 4), Ok(()));
+        b.take(60..64);
+        assert_eq!(b.give_back(62, 4), Err(GiveBack::OutOfRange(64)));
+        assert_eq!(
+            b.give_back(usize::MAX, 2),
+            Err(GiveBack::OutOfRange(usize::MAX))
+        );
+        assert_eq!(b.give_back(0, 10), Ok(()));
+        assert_eq!(b.give_back(0, 0), Ok(()), "nothing to give back");
+        assert_eq!(b.free(), 60);
+    }
+
+    #[test]
+    fn runs_of_units_keep_to_their_alignment() {
+        let mut words = [0; 4];
+        let mut b = Bitmap::taken(&mut words);
+        b.release(3..200);
+        assert_eq!(b.take_run(2, 16), Some(16));
+        assert_eq!(b.take_run(1, 1), Some(3));
+        assert_eq!(b.take_run(13, 1), Some(18), "the first gap that holds it");
+        assert_eq!(b.take_run(64, 64), Some(64));
+        assert_eq!(b.take_run(64, 64), Some(128));
+        assert_eq!(b.take_run(64, 64), None, "192 on would need units past 199");
+        assert_eq!(b.take_run(8, 64), Some(192));
+        assert_eq!(b.take_one(), Some(4));
+    }
 
     #[test]
     fn the_bits_cover_memory_up_to_its_top() {
@@ -203,8 +346,12 @@ mod tests {
             MIB / FRAME + 16,
             MIB / FRAME + 17,
         ];
-        for frame in 0..f.covered() {
-            assert_eq!(f.is_free(frame), expected.contains(&frame), "frame {frame}");
+        for frame in 0..f.bits.len() {
+            assert_eq!(
+                f.bits.is_free(frame),
+                expected.contains(&(frame as u64)),
+                "frame {frame}"
+            );
         }
     }
 
@@ -213,7 +360,7 @@ mod tests {
         let mut bits = [0; 5];
         let f = Frames::new(&mut bits, [(MIB, u64::MAX), (u64::MAX - 5, 10)]);
         assert_eq!(f.free_frames(), 5 * 64 - (MIB / FRAME) as usize);
-        assert!(f.is_free(5 * 64 - 1));
+        assert!(f.bits.is_free(5 * 64 - 1));
     }
 
     fn sample() -> Vec<u64> {

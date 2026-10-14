@@ -22,6 +22,37 @@ pub const KERNEL_PATH: &str = "/meridian/kernel";
 /// Where the firmware finds this loader when no boot entry names it.
 pub const LOADER_PATH: &str = "/EFI/BOOT/BOOTX64.EFI";
 
+/// The loader's SBAT data, which the shim reads from its `.sbat` section
+/// before it starts it, so a generation of the loader with a security hole
+/// can be refused: the format line, then Meridian's own. The fields are
+/// component, generation, vendor, package, version and URL, as rhboot's
+/// SBAT.md describes them.
+pub const SBAT: &str = concat!(
+    "sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\n",
+    "meridian,1,Meridian,meridian,",
+    env!("CARGO_PKG_VERSION"),
+    ",https://github.com/Elchi-dev/meridian\n",
+);
+
+/// [`SBAT`] as bytes of a fixed size, for the section.
+///
+/// # Panics
+///
+/// When `N` is not the length of the text, which fails the build for the
+/// section's constant.
+#[must_use]
+pub const fn sbat_bytes<const N: usize>() -> [u8; N] {
+    let text = SBAT.as_bytes();
+    assert!(text.len() == N, "N is the length of the SBAT text");
+    let mut out = [0; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = text[i];
+        i += 1;
+    }
+    out
+}
+
 /// Text for the person in front of the machine. It goes to the firmware
 /// console, and to the serial port only when there is no console: firmware
 /// such as OVMF already mirrors its console to the serial port, and writing
@@ -118,6 +149,48 @@ pub fn secure_boot(value: Result<&[u8], uefi::Status>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sbat_has_the_format_line_and_meridians_own() {
+        let lines: Vec<Vec<&str>> = SBAT.lines().map(|l| l.split(',').collect()).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0],
+            [
+                "sbat",
+                "1",
+                "SBAT Version",
+                "sbat",
+                "1",
+                "https://github.com/rhboot/shim/blob/main/SBAT.md"
+            ]
+        );
+        assert_eq!(
+            lines[1],
+            [
+                "meridian",
+                "1",
+                "Meridian",
+                "meridian",
+                VERSION,
+                "https://github.com/Elchi-dev/meridian"
+            ]
+        );
+        assert!(SBAT.ends_with('\n'), "every record ends its line");
+        assert!(SBAT.is_ascii());
+    }
+
+    #[test]
+    fn sbat_bytes_are_the_text() {
+        const N: usize = SBAT.len();
+        assert_eq!(&sbat_bytes::<N>(), SBAT.as_bytes());
+    }
+
+    #[test]
+    #[should_panic(expected = "N is the length")]
+    fn sbat_bytes_need_the_exact_length() {
+        let _ = sbat_bytes::<4>();
+    }
 
     #[test]
     fn version_parts() {

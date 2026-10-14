@@ -59,7 +59,8 @@ Loader and UEFI:
 - [ ] Start Windows and Linux on the laptop, with Secure Boot on
 - [x] Rust `.meri` reader passing the conformance suite (`lib/meri`), without allocating
 - [x] `boot.meri`: the loader reads its settings with `lib/meri`
-- [ ] Shim under `third-party/` with its decision record; `.sbat` section in `meridian.efi`
+- [ ] Shim under `third-party/` with its decision record
+- [x] `.sbat` section in `meridian.efi`
 - [x] Authenticode signer in sextant; development keys per machine
 - [ ] The release key as a CI secret, which Samuel adds
 - [ ] Secure Boot test in QEMU with OVMF's Secure Boot build and enrolled keys

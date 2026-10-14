@@ -20,6 +20,12 @@ use x86::raw::Com1;
 
 use crate::{REGION_LIMIT, Ready};
 
+/// The SBAT data in a section of its own, where the shim looks for it.
+/// `used` keeps it in the image although no code reads it.
+#[unsafe(link_section = ".sbat")]
+#[used]
+static SBAT: [u8; boot::SBAT.len()] = boot::sbat_bytes();
+
 #[unsafe(no_mangle)]
 extern "efiapi" fn efi_main(image: uefi::raw::Handle, table: *mut SystemTable) -> Status {
     let mut serial = Com1::open();

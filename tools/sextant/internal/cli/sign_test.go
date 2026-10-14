@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"debug/pe"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/authenticode"
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/cargo"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/image"
 )
 
@@ -170,5 +172,54 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 		if !bytes.Equal(files[image.KernelPath], kernelData) {
 			t.Errorf("test mode %v: the kernel should be on the image as built", v.testMode)
 		}
+	}
+}
+
+// The shim reads the loader's SBAT data from its .sbat section before it
+// starts it, so the signed loader on the image has to carry it, in release
+// builds too, where link-time optimisation drops what nothing uses.
+func TestTheSignedLoaderCarriesItsSBAT(t *testing.T) {
+	needTool(t, "cargo")
+	s, _ := signingSession(t)
+	s.root = realRoot(t)
+	s.settings.BuildDir = filepath.Join(os.TempDir(), "sextant-test-build")
+	for _, v := range []variant{{}, {release: true}} {
+		loader, err := s.build(cargo.Loader, v).Run(t.Context(), io.Discard, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaderData, _ := os.ReadFile(loader)
+		files, err := s.bootFiles(v, loaderData, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkSBAT(t, files[image.LoaderPath], v.release)
+	}
+}
+
+func checkSBAT(t *testing.T, loader []byte, release bool) {
+	t.Helper()
+	f, err := pe.NewFile(bytes.NewReader(loader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := f.Section(".sbat")
+	if section == nil {
+		t.Fatalf("release %v: the loader has no .sbat section", release)
+	}
+	if section.Characteristics&pe.IMAGE_SCN_MEM_WRITE != 0 || section.Characteristics&pe.IMAGE_SCN_MEM_EXECUTE != 0 {
+		t.Errorf("the .sbat section should be read-only data, has %#x", section.Characteristics)
+	}
+	data, err := section.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data[:section.VirtualSize])
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if len(lines) != 2 ||
+		lines[0] != "sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md" ||
+		!strings.HasPrefix(lines[1], "meridian,1,Meridian,meridian,") ||
+		!strings.HasSuffix(lines[1], ",https://github.com/Elchi-dev/meridian") {
+		t.Fatalf("release %v: the .sbat section says %q", release, text)
 	}
 }

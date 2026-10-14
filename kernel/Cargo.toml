@@ -22,6 +22,7 @@ qemu-test = ["x86/qemu-test"]
 bootinfo = { path = "../lib/bootinfo" }
 canvas = { path = "../lib/canvas" }
 font = { path = "../lib/font" }
+qr = { path = "../lib/qr" }
 x86 = { path = "../lib/x86" }
 
 [lints]

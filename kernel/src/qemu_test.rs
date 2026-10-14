@@ -4,10 +4,12 @@
 //! sextant reads.
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK_TOP};
 use canvas::Canvas;
-use canvas::palette::{GRASS, NIGHT, TANGERINE};
+use canvas::palette::{GRASS, INK, NIGHT, SUN, TANGERINE};
+use kernel::panic::Details;
 use kernel::{bytes_of, covered, is_tidy};
 use x86::raw::Com1;
 
@@ -131,6 +133,70 @@ pub fn run(
         );
     }
 
+    // The last check is the panic screen: the panic handler takes over,
+    // checks what it drew and ends the run.
+    FAILED.store(report.failed, Ordering::Release);
+    PANIC_EXPECTED.store(true, Ordering::Release);
+    panic!("{PANIC_MESSAGE}");
+}
+
+const PANIC_MESSAGE: &str = "a test of the panic screen";
+static FAILED: AtomicU32 = AtomicU32::new(0);
+static PANIC_EXPECTED: AtomicBool = AtomicBool::new(false);
+
+/// Called by the panic handler once the panic screen is drawn.
+pub fn after_panic(screen: Option<&Canvas<'_>>, details: &Details<'_>, serial: &mut Com1) -> ! {
+    let mut report = Report {
+        out: serial,
+        failed: FAILED.load(Ordering::Acquire),
+    };
+    if PANIC_EXPECTED.load(Ordering::Acquire) {
+        report.check(
+            "kernel.panic.message",
+            details.message == PANIC_MESSAGE
+                && details.location.starts_with("kernel/src/qemu_test.rs:"),
+            "the panic screen should get the message and where it came from",
+        );
+        report.check(
+            "kernel.panic.screen",
+            screen.is_some_and(|c| {
+                c.pixel(0, 0) == Some(SUN) && c.pixel(c.width() - 1, c.height() - 1) == Some(SUN)
+            }),
+            "the panic screen should be sun yellow",
+        );
+        report.check(
+            "kernel.panic.code",
+            screen.is_some_and(|c| {
+                let right = (c.width() * 2 / 3..c.width())
+                    .flat_map(|x| (0..c.height() / 2).map(move |y| (x, y)));
+                let (mut ink, mut light) = (0, 0);
+                for (x, y) in right {
+                    match c.pixel(x, y) {
+                        Some(INK) => ink += 1,
+                        Some(p) if p.r == 0xff && p.g == 0xff && p.b == 0xff => light += 1,
+                        _ => {}
+                    }
+                }
+                ink > 2000 && light > 2000
+            }),
+            "the QR code should be drawn on the right",
+        );
+        if screen.is_some() {
+            let _ = writeln!(report.out, "SCREEN panic");
+            let answer = report.out.receive(1 << 24);
+            report.check(
+                "kernel.panic.kept",
+                answer == Some(b'\n'),
+                "sextant should answer SCREEN with a newline on the serial port",
+            );
+        }
+    } else {
+        report.check(
+            "kernel.panic",
+            false,
+            "the kernel panicked before its checks were done",
+        );
+    }
     let failed = report.failed;
     let _ = writeln!(report.out, "TESTS DONE {failed} failed");
     x86::raw::qemu_exit(failed == 0)

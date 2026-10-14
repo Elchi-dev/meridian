@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod panic;
 pub mod screen;
 
 use core::fmt::{self, Write};
@@ -56,6 +57,52 @@ pub fn memory(regions: &[MemoryRegion]) -> &[MemoryRegion] {
     let top = ram_top(regions);
     let count = regions.iter().take_while(|r| r.start < top).count();
     &regions[..count]
+}
+
+/// Text of at most `N` bytes, written with `write!` and no heap. What does
+/// not fit is cut off at a character boundary, and the write that hit the
+/// end reports an error.
+pub struct Text<const N: usize> {
+    bytes: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> Text<N> {
+    #[must_use]
+    pub fn new() -> Text<N> {
+        Text {
+            bytes: [0; N],
+            len: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> Default for Text<N> {
+    fn default() -> Self {
+        Text::new()
+    }
+}
+
+impl<const N: usize> Write for Text<N> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = N - self.len;
+        let mut take = s.len().min(room);
+        while !s.is_char_boundary(take) {
+            take -= 1;
+        }
+        self.bytes[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+        self.len += take;
+        if take < s.len() {
+            Err(fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// A number of bytes, written in the largest binary unit it reaches, with
@@ -149,6 +196,26 @@ mod tests {
             3,
             "firmware pieces inside memory stay"
         );
+    }
+
+    #[test]
+    fn text_fills_up_and_cuts_off() {
+        let mut t = Text::<8>::new();
+        assert!(write!(t, "abc").is_ok());
+        assert!(write!(t, "defgh").is_ok());
+        assert_eq!(t.as_str(), "abcdefgh");
+        assert!(write!(t, "i").is_err());
+        assert_eq!(t.as_str(), "abcdefgh");
+        let mut cut = Text::<5>::default();
+        assert!(
+            write!(cut, "xy\u{e9}\u{e9}").is_err(),
+            "the second e acute does not fit"
+        );
+        assert_eq!(cut.as_str(), "xy\u{e9}");
+        let mut empty = Text::<0>::new();
+        assert!(write!(empty, "a").is_err());
+        assert!(write!(empty, "").is_ok());
+        assert_eq!(empty.as_str(), "");
     }
 
     #[test]

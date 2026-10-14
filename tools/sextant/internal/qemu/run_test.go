@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,7 +131,12 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 			t.Errorf("check %s did not run; passed: %v", want, report.Passed)
 		}
 	}
-	checkStatusScreen(t, res.Screens, filepath.Join(screens, "status.png"))
+	want := []string{filepath.Join(screens, "status.png"), filepath.Join(screens, "panic.png")}
+	if !slices.Equal(res.Screens, want) {
+		t.Fatalf("screens saved: %v, want %v", res.Screens, want)
+	}
+	checkStatusScreen(t, want[0])
+	checkPanicScreen(t, want[1])
 	if !strings.Contains(res.Serial, consoleProbe) {
 		t.Errorf("the console probe did not reach the screen whole:\n%s", res.Serial)
 	}
@@ -460,14 +466,11 @@ func TestQEMUDiesWithTheProcessThatStartedIt(t *testing.T) {
 	t.Fatalf("QEMU (pid %d) kept running after the process that started it was killed", machine)
 }
 
-// checkStatusScreen looks at the picture of the kernel's status screen: the
-// dark background in the corners and the orange line under the title.
-func checkStatusScreen(t *testing.T, saved []string, want string) {
+// openScreen decodes a saved screen and gives its size and a way to read
+// a pixel's colour.
+func openScreen(t *testing.T, path string) (int, int, func(x, y int) [3]uint32) {
 	t.Helper()
-	if len(saved) != 1 || saved[0] != want {
-		t.Fatalf("screens saved: %v, want %s", saved, want)
-	}
-	f, err := os.Open(want)
+	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,17 +483,52 @@ func checkStatusScreen(t *testing.T, saved []string, want string) {
 	if b.Dx() < 640 || b.Dy() < 480 {
 		t.Fatalf("the screen is %v", b)
 	}
-	rgb := func(x, y int) [3]uint32 {
+	return b.Dx(), b.Dy(), func(x, y int) [3]uint32 {
 		r, g, bl, _ := img.At(x, y).RGBA()
 		return [3]uint32{r >> 8, g >> 8, bl >> 8}
 	}
+}
+
+// checkStatusScreen looks at the picture of the kernel's status screen: the
+// dark background in the corners and the orange line under the title.
+func checkStatusScreen(t *testing.T, path string) {
+	t.Helper()
+	w, h, rgb := openScreen(t, path)
 	night, tangerine := [3]uint32{0x15, 0x17, 0x1a}, [3]uint32{0xff, 0x96, 0x33}
-	for _, at := range [][2]int{{0, 0}, {b.Dx() - 1, b.Dy() - 1}, {b.Dx() - 1, 0}} {
+	for _, at := range [][2]int{{0, 0}, {w - 1, h - 1}, {w - 1, 0}} {
 		if got := rgb(at[0], at[1]); got != night {
 			t.Errorf("pixel %v is %x, want the dark background", at, got)
 		}
 	}
 	if got := rgb(60, 116); got != tangerine {
 		t.Errorf("the line under the title is %x, want tangerine", got)
+	}
+}
+
+// checkPanicScreen looks at the panic screen the test image ends with: sun
+// yellow all round, and a QR code a reader turns back into the summary.
+func checkPanicScreen(t *testing.T, path string) {
+	t.Helper()
+	w, h, rgb := openScreen(t, path)
+	sun := [3]uint32{0xff, 0xc6, 0x2b}
+	for _, at := range [][2]int{{0, 0}, {w - 1, h - 1}, {0, h - 1}} {
+		if got := rgb(at[0], at[1]); got != sun {
+			t.Errorf("pixel %v is %x, want sun yellow", at, got)
+		}
+	}
+	if _, err := exec.LookPath("zbarimg"); err != nil {
+		if os.Getenv("SEXTANT_REQUIRE_TOOLS") == "1" {
+			t.Fatal("zbarimg is required but missing")
+		}
+		t.Log("zbarimg is missing; the QR code is not read")
+		return
+	}
+	out, err := exec.Command("zbarimg", "-q", "--raw", path).Output()
+	if err != nil {
+		t.Fatalf("zbarimg found no code: %v", err)
+	}
+	text := string(out)
+	if !strings.HasPrefix(text, "Meridian ") || !strings.Contains(text, "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:") {
+		t.Fatalf("the code says %q", text)
 	}
 }

@@ -10,7 +10,7 @@ and never build something that cannot be tested yet.
 | | Milestone | State |
 | --- | --- | --- |
 | M0 | Foundation | in progress |
-| M1 | Boot | next |
+| M1 | Boot | in progress |
 | M2 | Memory and CPUs | planned |
 | M3 | Processes | planned |
 | M4 | Storage and Strata | planned |

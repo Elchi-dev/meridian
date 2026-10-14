@@ -39,6 +39,7 @@ dependencies = [
  "bootinfo",
  "canvas",
  "font",
+ "qr",
  "x86",
 ]
 

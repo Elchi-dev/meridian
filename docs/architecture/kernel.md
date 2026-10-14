@@ -17,11 +17,28 @@ is what exists today; everything after it is still to come.
   protection on, and interrupts off. The kernel refuses boot information
   whose magic, version or size it does not know.
 - **What it does.** It opens COM1 through `lib/x86`, prints its version and
-  how much memory is free and how much it owns, and halts.
+  how much memory is free and how much it owns, draws the status screen
+  and halts.
+- **The status screen.** In the boot screens' dark look, drawn with
+  `lib/canvas` and Inter: the kernel's version, the processor's name from
+  CPUID, the free memory out of all memory, and the memory map as a bar.
+  Reserved ranges above the end of memory are devices, such as QEMU's
+  12 GiB PCI window, and are left out.
+- **The panic screen.** A panic draws a sun yellow screen that says in
+  plain words what happened and what to do, with the panic message and
+  where it came from, and a QR code of a short summary (version, event,
+  message, place) at error correction level M, made by `lib/qr`. The
+  handler takes the framebuffer even if it was handed out before, keeps its
+  working space out of the stack, and draws only once: a panic while
+  drawing stops at once.
 - **Test image.** Built with the `qemu-test` feature, it checks what the
   loader promised: the direct map, its own image mapped at the right
   physical memory, the stack, the processor state, the ACPI root pointer,
-  and that boot services are over. It ends the QEMU run with `TESTS DONE`.
+  and that boot services are over. It checks its status screen by reading
+  the framebuffer back, then panics on purpose, checks the panic screen
+  the same way and ends the QEMU run with `TESTS DONE`. sextant keeps both
+  screens as PNG files, and a Go test reads the QR code off the panic
+  screen with `zbarimg`.
 
 ## Shape
 
@@ -66,11 +83,10 @@ the Windows personality.
 
 - **Status screen.** The CPU cores found in the ACPI MADT, the memory map
   as a bar, and the uptime, updated live.
-- **Panic screen.** It says in plain English what went wrong and what to do
-  next, and shows a QR code of a short crash summary (build, event, address,
-  instruction pointer, symbol, CPU, uptime). A QR code holds about 2.9 KB, so
-  it is a summary, not a dump. A QEMU test triggers a panic and checks the
-  screen.
+- **Panic screen.** It exists (see above). Still to come in the summary:
+  the build's commit, the instruction pointer and symbol of a CPU
+  exception, the CPU and the uptime. A QR code holds about 2.9 KB, so it
+  stays a summary, not a dump.
 
 ## Drivers
 

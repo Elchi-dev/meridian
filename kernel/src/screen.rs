@@ -6,7 +6,7 @@ use canvas::palette::{BORDER, GRASS, MUTED, NIGHT, SKY, SURFACE, TANGERINE, TEAL
 use canvas::{Canvas, Color, Scratch, Style};
 use font::{Error, Font};
 
-use crate::{Size, bytes_of};
+use crate::{Size, Text, bytes_of};
 
 static INTER: &[u8] = include_bytes!("../../third-party/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../../third-party/fonts/Inter-SemiBold.ttf");
@@ -60,13 +60,13 @@ pub fn memory_bar(
 }
 
 /// How much memory is free, out of all memory.
-fn memory_line(regions: &[MemoryRegion]) -> Line {
+fn memory_line(regions: &[MemoryRegion]) -> Text<96> {
     let free = bytes_of(regions, RegionKind::USABLE);
     let all: u64 = regions
         .iter()
         .map(|r| r.pages * MemoryRegion::PAGE_SIZE)
         .sum();
-    let mut line = Line::new();
+    let mut line = Text::new();
     let _ = core::fmt::write(
         &mut line,
         format_args!("{} free of {}", Size(free), Size(all)),
@@ -106,7 +106,7 @@ pub fn draw(
 
     let regions = crate::memory(facts.regions);
     let memory = memory_line(regions);
-    let mut kernel = Line::new();
+    let mut kernel = Text::<16>::new();
     let _ = core::fmt::write(&mut kernel, format_args!("{}", crate::VERSION));
     let rows = [
         ("Kernel", kernel.as_str()),
@@ -160,42 +160,10 @@ fn to_i32(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX / 2)
 }
 
-/// A line of text built without a heap.
-struct Line {
-    bytes: [u8; 96],
-    len: usize,
-}
-
-impl Line {
-    fn new() -> Line {
-        Line {
-            bytes: [0; 96],
-            len: 0,
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
-    }
-}
-
-impl core::fmt::Write for Line {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let room = self.bytes.len() - self.len;
-        if s.len() > room {
-            return Err(core::fmt::Error);
-        }
-        self.bytes[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
-        self.len += s.len();
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use canvas::Format;
-    use core::fmt::Write;
 
     fn region(start: u64, pages: u64, kind: RegionKind) -> MemoryRegion {
         MemoryRegion {
@@ -295,17 +263,6 @@ mod tests {
         for (kind, color) in kinds {
             assert_eq!(color_of(kind), color, "{kind:?}");
         }
-    }
-
-    #[test]
-    fn lines_refuse_to_overflow() {
-        let mut line = Line::new();
-        assert!(write!(line, "{}", "x".repeat(96)).is_ok());
-        assert_eq!(line.as_str().len(), 96);
-        assert!(write!(line, "y").is_err());
-        let mut line = Line::new();
-        assert!(write!(line, "{}", "z".repeat(97)).is_err());
-        assert_eq!(line.as_str(), "");
     }
 
     fn drawn(width: usize, height: usize) -> Vec<u32> {

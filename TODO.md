@@ -58,11 +58,15 @@ Loader and UEFI:
 - [ ] Secure Boot test in QEMU with OVMF's Secure Boot build and enrolled keys
 - [x] Memory regions for the handover (`lib/bootinfo`)
 - [x] Kernel ELF loading (`lib/elf`), higher-half page tables (`lib/paging`), the handover structure, the jump
-- [ ] Framebuffer in the handover, kept without flicker
+- [x] Framebuffer in the handover
+- [ ] The boot screen kept on the framebuffer until the kernel draws, without flicker
 - [x] Kernel: entry point, serial log, QEMU checks of the handover
-- [ ] Kernel: framebuffer text, GDT, IDT, every exception caught
-- [ ] Status screen: CPU cores from the ACPI MADT, memory map, uptime
-- [ ] Panic screen in plain English with a QR code of the crash summary, checked by a QEMU test
+- [x] Kernel: framebuffer text (`lib/canvas` with `lib/font`)
+- [ ] Kernel: GDT, IDT, every exception caught and shown on the panic screen
+- [x] Status screen: processor, free memory, the memory map as a bar
+- [ ] Status screen: CPU cores from the ACPI MADT, uptime, updated live
+- [x] Panic screen in plain English with a QR code of the crash summary (`lib/qr`), checked by a QEMU test and read back with `zbarimg`
+- [x] sextant keeps the test images' screens as PNG files (`SCREEN <name>`)
 - [ ] Booted on the laptop with Secure Boot on, Windows and Arch Linux still starting from the menu
 
 ## M2: Memory and CPUs

@@ -1,0 +1,38 @@
+qemu {
+    memory = 512MiB
+    cpus = 4
+}
+
+display "DP-1" {
+    scale = 125%
+}
+display "HDMI-1" {
+    scale = 100%
+}
+display primary { refresh = 60Hz }
+
+rule { allow = ssh }
+rule { allow = http }
+
+empty {}
+also-empty { }
+spaced-empty {
+
+}
+
+outer {
+    middle {
+        inner { level = 3 }
+    }
+    after = true
+}
+one { two { three = 3 } }
+same-line { first = 1
+    second = 2 }
+quoted "" { }
+mixed "a" { }
+mixed { }
+mixed { }
+flag true { }
+city "Z\u{fc}rich" { }
+tabbed "tab\there" { }

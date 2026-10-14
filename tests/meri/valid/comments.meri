@@ -1,0 +1,18 @@
+# top
+a = 1 # after value
+b { # after brace
+    # inside
+    c = 2 # after
+} # after close
+l = [ # after bracket
+    1, # after comma
+    # own line
+    2 # after value
+] # after list
+t = """
+    # not a comment inside text
+    """ # after text
+label "x" { } # after empty block
+d = 1#tight
+e = kvm#tight
+f = "s"#tight

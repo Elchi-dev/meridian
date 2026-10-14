@@ -1,0 +1,16 @@
+motd string "Welcome to Meridian.\n  Indentation inside the text is kept."
+empty string ""
+blank-lines string "first\n\nthird\n"
+long-blank string "a\n\nb"
+tabs string "a\tb"
+no-indent string "left"
+backslash string "C:\\Meridian\\n stays"
+quotes string "\"quoted\" and \"\" and a \" alone"
+trailing-newline string "line\n"
+in-block#0 block
+in-block#0.text string "nested"
+list list 2
+list[0] string "in a list"
+list[1] word after
+closing-brace#0 block
+closing-brace#0.t string "x"

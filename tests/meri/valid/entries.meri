@@ -1,0 +1,15 @@
+name = "Meridian"
+enabled = true
+verbose = false
+cpus = 4
+accel = kvm
+arch = x86_64
+level-2 = info
+_private = 1
+Key = upper
+key = lower
+true = 1
+A = Z
+amps = 5A
+spaced    =     "lots of space"	# trailing comment
+tight="no spaces"

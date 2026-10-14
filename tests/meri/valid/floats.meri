@@ -1,0 +1,14 @@
+half = 0.5
+neg = -0.25
+pi = 3.141_592
+avogadro = 6.022e23
+upper-e = 6.022E23
+plus-exp = 1e+9
+minus-exp = 1.5e-3
+no-fraction = 2e10
+grouped-exp = 1e1_0
+trailing-zeros = 1.50
+neg-zero = -0.0
+tiny = 1e-400
+largest = 1.7976931348623157e308
+zero-fraction = 0.0

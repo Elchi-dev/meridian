@@ -1,0 +1,14 @@
+half float 0.5
+neg float -0.25
+pi float 3.141592
+avogadro float 6.022e23
+upper-e float 6.022e23
+plus-exp float 1e9
+minus-exp float 1.5e-3
+no-fraction float 2e10
+grouped-exp float 1e10
+trailing-zeros float 1.50
+neg-zero float -0.0
+tiny float 1e-400
+largest float 1.7976931348623157e308
+zero-fraction float 0.0

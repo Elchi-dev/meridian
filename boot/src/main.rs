@@ -14,6 +14,7 @@ mod raw;
 use core::mem::size_of;
 
 use boot::handover::{self, Layout, Problem};
+use boot::log::Log;
 use boot::menu::{Action, Key, Menu};
 use boot::screen::{Card, Kind};
 use boot::{KERNEL_PATH, Out, banner, memory, systems};
@@ -24,11 +25,16 @@ use canvas::Text;
 use canvas::{Canvas, Format, Scratch};
 use core::fmt::Write;
 use uefi::Status;
-use uefi::guid::ACPI_20_TABLE;
+use uefi::guid::{ACPI_20_TABLE, GLOBAL_VARIABLE};
 use uefi::memory::{MemoryType, PAGE_BYTES, PAGE_SIZE};
 use uefi::raw::System;
 use uefi::raw::file::EntryBuffer;
 use uefi::raw::graphics::PixelFormat;
+use uefi::raw::table::ResetType;
+use uefi::variable::{
+    Attributes, BOOT_TO_FIRMWARE_UI, OS_INDICATIONS, OS_INDICATIONS_SUPPORTED, SECURE_BOOT,
+    offers_firmware_ui, u64_value,
+};
 use x86::Features;
 use x86::raw::Com1;
 
@@ -39,6 +45,7 @@ const REGION_LIMIT: usize = 512;
 const KERNEL_TYPE: MemoryType = MemoryType(KERNEL_MEMORY_TYPE);
 
 fn run(system: System, serial: &mut Com1) -> Status {
+    let mut log = Log::new();
     let mut out = Out {
         screen: system.console(),
         serial: &mut *serial,
@@ -47,11 +54,13 @@ fn run(system: System, serial: &mut Com1) -> Status {
         let _ = screen.clear();
     }
     let _ = banner(
-        &mut out,
+        &mut log.tee(&mut out),
         system.firmware_vendor(),
         system.firmware_revision(),
         system.header().revision,
     );
+    let firmware_settings = firmware_settings_offered(&system);
+    let _ = describe(&system, firmware_settings, &mut log.tee(&mut out));
 
     #[cfg(feature = "qemu-test")]
     qemu_test::checks(&system, serial);
@@ -69,33 +78,49 @@ fn run(system: System, serial: &mut Com1) -> Status {
         };
     }
     let cards = &cards[..=found];
+    for other in others.iter().flatten() {
+        let _ = writeln!(
+            log.tee(serial),
+            "Found {}: {}",
+            other.name.as_str(),
+            other.path.as_str()
+        );
+    }
     #[cfg(feature = "qemu-test")]
-    qemu_test::systems_found(cards, serial);
+    {
+        qemu_test::systems_found(cards, firmware_settings, serial);
+        qemu_test::firmware_settings_request(&system, serial);
+    }
 
     // Another system that comes back, or fails to start, brings the boot
     // screen back.
     let mut round = 0;
     loop {
-        #[cfg(feature = "qemu-test")]
-        let chosen = choose(&system, cards, 0, |frame, screen| {
-            qemu_test::boot_screen(&system, round, frame, screen, serial);
-        });
-        #[cfg(not(feature = "qemu-test"))]
-        let chosen = choose(&system, cards, 3, |_, _| {});
+        let chosen = show_menu(&system, cards, firmware_settings, &log, round, serial);
+        let chosen = match chosen {
+            Choice::System(chosen) => chosen,
+            Choice::FirmwareSettings => {
+                let status = open_firmware_settings(&system);
+                let _ = writeln!(
+                    log.tee(serial),
+                    "The firmware would not open its settings: {status}"
+                );
+                continue;
+            }
+        };
         let Some(other) = chosen.checked_sub(1).and_then(|i| others[i].as_ref()) else {
             break;
         };
         let status = start_other(&system, other.path.as_str());
         let _ = writeln!(
-            serial,
-            "boot: {} came back with {status}",
+            log.tee(serial),
+            "{} came back with {status}",
             other.name.as_str()
         );
         #[cfg(feature = "qemu-test")]
         qemu_test::other_came_back(status, serial);
         round += 1;
     }
-    let _ = round;
 
     let (system, problem) = match prepare(&system) {
         Ok(ready) => raw::start(system, ready),
@@ -106,6 +131,16 @@ fn run(system: System, serial: &mut Com1) -> Status {
 
 /// The most other systems the boot screen offers.
 const SYSTEM_LIMIT: usize = 8;
+
+/// The log's lines about the machine, read from the firmware.
+fn describe(system: &System, firmware_settings: bool, out: &mut impl Write) -> core::fmt::Result {
+    let screen = system.framebuffer().ok().map(|fb| (fb.width, fb.height));
+    let mut buf = [0u8; 8];
+    let secure_boot = system
+        .variable(&SECURE_BOOT, &GLOBAL_VARIABLE, &mut buf)
+        .map(|(_, data)| data);
+    boot::describe(out, screen, secure_boot, firmware_settings)
+}
 
 /// Another system found on the partition.
 struct Other {
@@ -170,19 +205,84 @@ fn start_other(system: &System, path: &str) -> Status {
     }
 }
 
-/// Shows the boot screen until a system is chosen, and returns its index.
-/// Every frame is drawn off the screen first and then copied whole.
-/// `first_frame` sees the first finished frame and the screen after it.
-/// Without a screen, or
-/// without memory for the frame, the first system starts at once.
+/// The boot screen in the test image: no countdown, and the checks of the
+/// first menu, the first log and the menu after it.
+#[cfg(feature = "qemu-test")]
+fn show_menu(
+    system: &System,
+    cards: &[Card<'_>],
+    firmware_settings: bool,
+    log: &Log,
+    round: u32,
+    serial: &mut Com1,
+) -> Choice {
+    let menu = Menu::new(cards.len(), 0, 0).with_firmware_settings(firmware_settings);
+    let (mut menus, mut logs) = (0, 0);
+    choose(
+        system,
+        cards,
+        menu,
+        log,
+        |shown, frame, screen| match shown {
+            Shown::Menu => {
+                menus += 1;
+                match (menus, logs) {
+                    (1, _) => qemu_test::boot_screen(system, round, frame, screen, serial),
+                    (2, 1) => qemu_test::menu_after_log(frame, serial),
+                    _ => {}
+                }
+            }
+            Shown::Log => {
+                logs += 1;
+                if logs == 1 {
+                    qemu_test::log_screen(system, frame, screen, serial);
+                }
+            }
+        },
+    )
+}
+
+/// The boot screen, which starts the chosen system after 3 seconds.
+#[cfg(not(feature = "qemu-test"))]
+fn show_menu(
+    system: &System,
+    cards: &[Card<'_>],
+    firmware_settings: bool,
+    log: &Log,
+    _: u32,
+    _: &mut Com1,
+) -> Choice {
+    let menu = Menu::new(cards.len(), 0, 3).with_firmware_settings(firmware_settings);
+    choose(system, cards, menu, log, |_, _, _| {})
+}
+
+/// What the person chose on the boot screen.
+enum Choice {
+    System(usize),
+    FirmwareSettings,
+}
+
+/// What a frame on the boot screen shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    Menu,
+    Log,
+}
+
+/// Shows the boot screen until a system is chosen, or the firmware's
+/// settings. Every frame is drawn off the screen first and then copied
+/// whole. `on_frame` sees each finished frame, what it shows and the
+/// screen after it. Without a screen, or without memory for the frame, the
+/// first system starts at once.
 fn choose(
     system: &System,
     cards: &[Card<'_>],
-    seconds: u32,
-    mut first_frame: impl FnMut(&[u32], &[u32]),
-) -> usize {
+    mut menu: Menu,
+    log: &Log,
+    mut on_frame: impl FnMut(Shown, &[u32], &[u32]),
+) -> Choice {
     let Ok(mut screen) = system.pixels() else {
-        return 0;
+        return Choice::System(0);
     };
     let fb = screen.fb;
     let (width, height) = (fb.width as usize, fb.height as usize);
@@ -190,39 +290,47 @@ fn choose(
         MemoryType::LOADER_DATA,
         (width * height * 4).div_ceil(PAGE_BYTES),
     ) else {
-        return 0;
+        return Choice::System(0);
     };
     let format = match fb.format {
         PixelFormat::Rgb => Format::Rgb,
         PixelFormat::Bgr => Format::Bgr,
     };
     let mut scratch = Scratch::new();
-    let mut menu = Menu::new(cards.len(), 0, seconds);
     let mut action = Action::Redraw;
-    let mut shown = false;
     loop {
-        match action {
+        let shown = match action {
             Action::Start(chosen) => {
                 let _ = frame.free();
-                return chosen;
+                return Choice::System(chosen);
+            }
+            Action::OpenFirmwareSettings => {
+                let _ = frame.free();
+                return Choice::FirmwareSettings;
             }
             Action::Redraw => {
                 if let Some(mut canvas) = Canvas::new(frame.words(), width, height, width, format) {
                     let _ = boot::screen::draw(&mut canvas, cards, &menu, &mut scratch);
                 }
-                boot::screen::present(
-                    frame.words(),
-                    screen.as_mut_slice(),
-                    width,
-                    height,
-                    fb.stride as usize,
-                );
-                if !shown {
-                    shown = true;
-                    first_frame(frame.words(), screen.as_slice());
-                }
+                Some(Shown::Menu)
             }
-            Action::Wait => {}
+            Action::ShowLog => {
+                if let Some(mut canvas) = Canvas::new(frame.words(), width, height, width, format) {
+                    let _ = boot::screen::draw_log(&mut canvas, log, &mut scratch);
+                }
+                Some(Shown::Log)
+            }
+            Action::Wait => None,
+        };
+        if let Some(shown) = shown {
+            boot::screen::present(
+                frame.words(),
+                screen.as_mut_slice(),
+                width,
+                height,
+                fb.stride as usize,
+            );
+            on_frame(shown, frame.words(), screen.as_slice());
         }
         action = if let Ok(Some(key)) = system.read_key() {
             menu.key(Key::from_uefi(key))
@@ -231,6 +339,40 @@ fn choose(
             menu.tick(1)
         };
     }
+}
+
+/// Whether the firmware can be asked to open its settings at the next
+/// start.
+fn firmware_settings_offered(system: &System) -> bool {
+    let mut buf = [0u8; 8];
+    system
+        .variable(&OS_INDICATIONS_SUPPORTED, &GLOBAL_VARIABLE, &mut buf)
+        .is_ok_and(|(_, data)| offers_firmware_ui(data))
+}
+
+/// Asks the firmware to open its settings at the next start and restarts
+/// the machine. Comes back only when the firmware refused.
+fn open_firmware_settings(system: &System) -> Status {
+    match request_firmware_settings(system) {
+        Ok(()) => system.reset(ResetType::COLD),
+        Err(status) => status,
+    }
+}
+
+/// Sets the bit in `OsIndications` that asks the firmware to open its
+/// settings at the next start, keeping the other bits.
+fn request_firmware_settings(system: &System) -> Result<(), Status> {
+    let mut buf = [0u8; 8];
+    let asked = system
+        .variable(&OS_INDICATIONS, &GLOBAL_VARIABLE, &mut buf)
+        .ok()
+        .and_then(|(_, data)| u64_value(data))
+        .unwrap_or(0);
+    let lasting = Attributes::NON_VOLATILE
+        .with(Attributes::BOOTSERVICE_ACCESS)
+        .with(Attributes::RUNTIME_ACCESS);
+    let wanted = (asked | BOOT_TO_FIRMWARE_UI).to_le_bytes();
+    system.set_variable(&OS_INDICATIONS, &GLOBAL_VARIABLE, lasting, &wanted)
 }
 
 /// Everything the jump needs, worked out while boot services still run.

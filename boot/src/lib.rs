@@ -75,6 +75,45 @@ pub fn banner(
     out.write_char('\n')
 }
 
+/// The log's lines about the machine: the screen's size, Secure Boot from
+/// the `SecureBoot` variable, and whether F can open the firmware's
+/// settings.
+///
+/// # Errors
+///
+/// Fails when the writer does.
+pub fn describe(
+    out: &mut impl Write,
+    screen: Option<(u32, u32)>,
+    secure_boot_variable: Result<&[u8], uefi::Status>,
+    firmware_settings: bool,
+) -> fmt::Result {
+    match screen {
+        Some((width, height)) => writeln!(out, "Screen: {width} x {height}")?,
+        None => writeln!(out, "Screen: none, so there is no boot screen")?,
+    }
+    writeln!(out, "Secure Boot: {}", secure_boot(secure_boot_variable))?;
+    if firmware_settings {
+        writeln!(out, "Firmware settings: F opens them")
+    } else {
+        writeln!(
+            out,
+            "Firmware settings: this firmware cannot be asked to open them"
+        )
+    }
+}
+
+/// What the log says about Secure Boot, from the `SecureBoot` variable.
+#[must_use]
+pub fn secure_boot(value: Result<&[u8], uefi::Status>) -> &'static str {
+    match value {
+        Ok([1]) => "on",
+        Ok([0]) => "off",
+        Err(uefi::Status::NOT_FOUND) => "off, this firmware does not have it",
+        _ => "unknown, the firmware's answer made no sense",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +158,40 @@ mod tests {
         let mut s = String::new();
         banner(&mut s, "".chars(), 0, (2 << 16) + 100).unwrap();
         assert!(s.ends_with("Firmware:  (revision 0x0), UEFI 2.10\n"), "{s}");
+    }
+
+    #[test]
+    fn the_machine_is_described() {
+        let mut s = String::new();
+        describe(&mut s, Some((1280, 800)), Ok(&[1]), true).unwrap();
+        assert_eq!(
+            s,
+            "Screen: 1280 x 800\nSecure Boot: on\nFirmware settings: F opens them\n"
+        );
+        s.clear();
+        describe(&mut s, None, Err(uefi::Status::NOT_FOUND), false).unwrap();
+        assert_eq!(
+            s,
+            "Screen: none, so there is no boot screen\n\
+             Secure Boot: off, this firmware does not have it\n\
+             Firmware settings: this firmware cannot be asked to open them\n"
+        );
+        assert!(describe(&mut Broken, None, Ok(&[0]), true).is_err());
+    }
+
+    #[test]
+    fn secure_boot_is_said_in_words() {
+        assert_eq!(secure_boot(Ok(&[1])), "on");
+        assert_eq!(secure_boot(Ok(&[0])), "off");
+        assert_eq!(
+            secure_boot(Err(uefi::Status::NOT_FOUND)),
+            "off, this firmware does not have it"
+        );
+        let nonsense = "unknown, the firmware's answer made no sense";
+        assert_eq!(secure_boot(Ok(&[2])), nonsense);
+        assert_eq!(secure_boot(Ok(&[1, 0])), nonsense);
+        assert_eq!(secure_boot(Ok(&[])), nonsense);
+        assert_eq!(secure_boot(Err(uefi::Status::DEVICE_ERROR)), nonsense);
     }
 
     struct Broken;

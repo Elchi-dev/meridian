@@ -51,7 +51,7 @@ Loader and UEFI:
 
 - [x] TrueType rasterizer in `lib/font`, Inter and JetBrains Mono under one decision record (0012)
 - [x] Graphical boot screen with OS cards, arrow keys, Enter, countdown, drawn off screen and copied whole
-- [ ] `V` for the full log, `F` for firmware settings on the boot screen
+- [x] `V` for the full log, `F` for firmware settings on the boot screen
 - [x] Neutral icon for the Windows card (a W on a sky blue tile), no Microsoft logo
 - [x] Detect other systems by a scan of the EFI partition
 - [ ] Detect other systems from `BootOrder` and `Boot####`, for loaders outside the EFI partition

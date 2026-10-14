@@ -5,10 +5,12 @@ use canvas::palette::{BORDER, GRASS, INK, MUTED, NIGHT, SKY, SURFACE, TANGERINE,
 use canvas::{Canvas, Color, Scratch, Style};
 use font::{Error, Font};
 
+use crate::log::Log;
 use crate::menu::Menu;
 
 static INTER: &[u8] = include_bytes!("../../third-party/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../../third-party/fonts/Inter-SemiBold.ttf");
+static MONO: &[u8] = include_bytes!("../../third-party/fonts/JetBrainsMono-Regular.ttf");
 
 /// What kind of system a card stands for, which picks its colour and the
 /// letter on its tile. Other systems' logos are not drawn, only letters.
@@ -231,7 +233,121 @@ pub fn draw(
             );
         }
     }
-    centred(canvas, &hint, w / 2, below, line.as_str(), scratch)
+    centred(canvas, &hint, w / 2, below, line.as_str(), scratch)?;
+
+    let mut keys = [("V", "Log"), ("F", "Firmware settings")].as_slice();
+    if !menu.firmware_settings() {
+        keys = &keys[..1];
+    }
+    key_hints(canvas, keys, w / 2, below + KEYS_BELOW, scratch)
+}
+
+/// The side of a key cap in the key hints.
+pub const KEY_CAP: usize = 26;
+/// How far the key hints' baseline is below the line above them.
+pub const KEYS_BELOW: usize = 44;
+const KEY_TO_LABEL: usize = 10;
+const BETWEEN_KEYS: usize = 28;
+
+/// Draws each key in `keys` as a small cap with its letter and its label
+/// next to it, the whole row centred on `centre`.
+fn key_hints(
+    canvas: &mut Canvas<'_>,
+    keys: &[(&str, &str)],
+    centre: usize,
+    baseline: usize,
+    scratch: &mut Scratch,
+) -> Result<(), Error> {
+    let letter = Style {
+        font: Font::parse(INTER_SEMIBOLD)?,
+        px: 15.0,
+        color: TEXT,
+    };
+    let label = Style {
+        font: Font::parse(INTER)?,
+        px: 16.0,
+        color: MUTED,
+    };
+    let mut row = 0;
+    for (i, (_, name)) in keys.iter().enumerate() {
+        if i > 0 {
+            row += BETWEEN_KEYS;
+        }
+        row += KEY_CAP + KEY_TO_LABEL + width_of(&label, name)?;
+    }
+    let mut x = centre.saturating_sub(row / 2);
+    let top = baseline.saturating_sub(KEY_CAP - 7);
+    for (key, name) in keys {
+        canvas.fill_rect(at(x), at(top), KEY_CAP, KEY_CAP, SURFACE);
+        frame(canvas, x, top, KEY_CAP, KEY_CAP, 1, BORDER);
+        centred(canvas, &letter, x + KEY_CAP / 2, baseline, key, scratch)?;
+        x += KEY_CAP + KEY_TO_LABEL;
+        canvas.text(&label, at(x), at(baseline), name, scratch)?;
+        x += width_of(&label, name)? + BETWEEN_KEYS;
+    }
+    Ok(())
+}
+
+/// The left edge of the log and where its title sits.
+pub const LOG_MARGIN: usize = 56;
+/// Where the first line of the log has its baseline.
+pub const LOG_TOP: usize = 150;
+pub const LOG_LINE: usize = 22;
+/// The room kept below the lines for the hint.
+const LOG_FOOT: usize = 72;
+
+/// How many lines of the log fit on a screen `height` pixels tall.
+#[must_use]
+pub fn log_lines_shown(height: usize) -> usize {
+    height.saturating_sub(LOG_TOP + LOG_FOOT) / LOG_LINE + 1
+}
+
+/// Draws the log: everything the loader said, in a monospaced font, as
+/// many of the newest lines as fit.
+///
+/// # Errors
+///
+/// The font's errors, which only a broken font file causes.
+pub fn draw_log(canvas: &mut Canvas<'_>, log: &Log, scratch: &mut Scratch) -> Result<(), Error> {
+    let title = Style {
+        font: Font::parse(INTER_SEMIBOLD)?,
+        px: 30.0,
+        color: TEXT,
+    };
+    let text = Style {
+        font: Font::parse(MONO)?,
+        px: 15.0,
+        color: TEXT,
+    };
+    let hint = Style {
+        font: Font::parse(INTER)?,
+        px: 18.0,
+        color: MUTED,
+    };
+    canvas.fill(NIGHT);
+    canvas.text(&title, at(LOG_MARGIN), at(LOG_MARGIN + 30), "Log", scratch)?;
+    canvas.fill_rect(at(LOG_MARGIN), at(LOG_MARGIN + 46), 64, 6, TANGERINE);
+
+    let shown = log_lines_shown(canvas.height());
+    let skip = log.lines().count().saturating_sub(shown);
+    for (i, line) in log.lines().skip(skip).enumerate() {
+        canvas.text(
+            &text,
+            at(LOG_MARGIN),
+            at(LOG_TOP + i * LOG_LINE),
+            line,
+            scratch,
+        )?;
+    }
+    let bottom = canvas.height().saturating_sub(LOG_FOOT / 2);
+    canvas.text(
+        &hint,
+        at(LOG_MARGIN),
+        at(bottom),
+        "Any key goes back",
+        scratch,
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -570,5 +686,102 @@ mod tests {
     fn every_kind_has_its_own_colour() {
         let colors = [Kind::Meridian, Kind::Windows, Kind::Linux, Kind::Other].map(Kind::color);
         assert_eq!(colors, [TANGERINE, SKY, GRASS, TEAL]);
+    }
+
+    #[test]
+    fn the_keys_below_offer_the_log_and_the_firmware_settings_where_possible() {
+        let (_, top, _) = cards_layout(1280, 800, 3);
+        let baseline = top + CARD_HEIGHT + SHADOW + 56 + KEYS_BELOW;
+        let band = baseline - 20..baseline + 8;
+        let mut without = drawn(&SYSTEMS, &Menu::new(3, 0, 0), 1280, 800);
+        let mut with = drawn(
+            &SYSTEMS,
+            &Menu::new(3, 0, 0).with_firmware_settings(true),
+            1280,
+            800,
+        );
+        let (lo, hi) = ink_span(&mut without, band.clone());
+        let (wide_lo, wide_hi) = ink_span(&mut with, band);
+        assert!((lo + hi).abs_diff(1280) <= 4, "V alone, from {lo} to {hi}");
+        assert!(
+            (wide_lo + wide_hi).abs_diff(1280) <= 4,
+            "V and F, from {wide_lo} to {wide_hi}"
+        );
+        assert!(
+            wide_hi - wide_lo > hi - lo + 150,
+            "F and its label make the row wider"
+        );
+        // The first cap: a frame round a key's face.
+        let cap_top = baseline - (KEY_CAP - 7);
+        assert_eq!(without.at(lo, cap_top + 5), BORDER);
+        assert_eq!(without.at(lo + 3, cap_top + 3), SURFACE);
+        assert_eq!(without.at(lo + KEY_CAP - 1, cap_top + 5), BORDER);
+        assert_eq!(
+            without.at(lo + 3, cap_top - 2),
+            NIGHT,
+            "nothing above the cap"
+        );
+    }
+
+    fn log_of(lines: core::ops::Range<usize>) -> Log {
+        let mut log = Log::new();
+        for i in lines {
+            core::fmt::Write::write_fmt(&mut log, format_args!("boot: line {i}\n")).unwrap();
+        }
+        log
+    }
+
+    fn drawn_log(log: &Log, width: usize, height: usize) -> Picture {
+        let mut p = Picture::new(width, height);
+        draw_log(&mut p.canvas(), log, &mut Scratch::new()).unwrap();
+        p
+    }
+
+    #[test]
+    fn as_many_lines_fit_as_the_screen_allows() {
+        assert_eq!(log_lines_shown(800), (800 - 150 - 72) / 22 + 1);
+        assert_eq!(log_lines_shown(800), 27);
+        assert_eq!(log_lines_shown(LOG_TOP + LOG_FOOT), 1);
+        assert_eq!(log_lines_shown(LOG_TOP + LOG_FOOT + LOG_LINE - 1), 1);
+        assert_eq!(log_lines_shown(LOG_TOP + LOG_FOOT + LOG_LINE), 2);
+        assert_eq!(log_lines_shown(0), 1);
+    }
+
+    #[test]
+    fn the_log_shows_its_newest_lines() {
+        let full = log_of(0..100);
+        let shown = log_lines_shown(800);
+        let newest = log_of(100 - shown..100);
+        let a = drawn_log(&full, 1280, 800);
+        let b = drawn_log(&newest, 1280, 800);
+        assert!(
+            a.pixels == b.pixels,
+            "with more lines than fit, the screen shows the newest {shown}"
+        );
+        let older = drawn_log(&log_of(99 - shown..99), 1280, 800);
+        assert!(
+            older.pixels != b.pixels,
+            "the same number of lines, one older, look different"
+        );
+    }
+
+    #[test]
+    fn the_log_has_a_title_lines_and_a_way_back() {
+        let mut p = drawn_log(&log_of(0..3), 1280, 800);
+        assert_eq!(p.at(0, 0), NIGHT);
+        assert_eq!(p.at(LOG_MARGIN + 2, LOG_MARGIN + 48), TANGERINE);
+        assert!(ink(&mut p, 56..200, 56..90) > 150, "the title");
+        for i in 0..3 {
+            let y = LOG_TOP + i * LOG_LINE;
+            assert!(ink(&mut p, 56..400, y - 12..y + 3) > 100, "line {i}");
+        }
+        let y = LOG_TOP + 3 * LOG_LINE;
+        assert_eq!(ink(&mut p, 56..400, y - 12..y + 3), 0, "only three lines");
+        assert!(
+            ink(&mut p, 56..300, 800 - 36 - 16..800 - 36 + 4) > 100,
+            "the hint"
+        );
+        let mut empty = drawn_log(&Log::new(), 320, 200);
+        assert_eq!(empty.at(319, 199), NIGHT);
     }
 }

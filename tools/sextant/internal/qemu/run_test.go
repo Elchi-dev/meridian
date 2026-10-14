@@ -136,21 +136,44 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 		}
 	}
 	var want []string
-	for _, name := range []string{"boot", "status", "panic", "double-fault"} {
+	for _, name := range []string{"boot", "boot-log", "status", "panic", "double-fault"} {
 		want = append(want, filepath.Join(screens, name+".png"))
 	}
 	if !slices.Equal(res.Screens, want) {
 		t.Fatalf("screens saved: %v, want %v", res.Screens, want)
 	}
 	checkBootScreen(t, want[0])
-	checkStatusScreen(t, want[1])
-	checkCrashScreen(t, want[2], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
-	checkCrashScreen(t, want[3], "\nmessage: double fault: a second exception came while the first was being handled")
+	checkLogScreen(t, want[1])
+	checkStatusScreen(t, want[2])
+	checkCrashScreen(t, want[3], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
+	checkCrashScreen(t, want[4], "\nmessage: double fault: a second exception came while the first was being handled")
 	if !strings.Contains(res.Serial, consoleProbe) {
 		t.Errorf("the console probe did not reach the screen whole:\n%s", res.Serial)
 	}
 	if !strings.Contains(res.Serial, "Meridian boot ") {
 		t.Errorf("no banner in:\n%s", res.Serial)
+	}
+	for _, line := range []string{
+		"\nScreen: 1280 x 800\n",
+		"\nSecure Boot: off, this firmware does not have it\n",
+		"\nFirmware settings: F opens them\n",
+		"\nFound example: /EFI/example/grubx64.efi\n",
+		"\nexample came back with " + "the operation was aborted",
+	} {
+		if !strings.Contains(res.Serial, line) {
+			t.Errorf("the loader's log should say %q:\n%s", line, res.Serial)
+		}
+	}
+	for _, line := range []string{
+		"\nScreen: 1280 x 800\n",
+		"\nSecure Boot: off, this firmware does not have it\n",
+		"\nFirmware settings: F opens them\n",
+		"\nFound example: /EFI/example/grubx64.efi\n",
+		"\nexample came back with ",
+	} {
+		if !strings.Contains(res.Serial, line) {
+			t.Errorf("the loader's log should say %q:\n%s", line, res.Serial)
+		}
 	}
 	if !strings.Contains(res.Serial, "\nCores: 2\n") {
 		t.Errorf("the kernel should find the rig's two processors in:\n%s", res.Serial)
@@ -251,6 +274,33 @@ func changedArea(t *testing.T, a, b string) pictures.Rectangle {
 		}
 	}
 	return area
+}
+
+// F on the boot screen asks the firmware to open its settings at the next
+// start and restarts. OVMF answers with its boot manager menu, which
+// offers its setup.
+func TestFOpensTheFirmwareSettings(t *testing.T) {
+	r := newRig(t)
+	m := r.machine(diskWithLoader(t, false))
+	m.DebugExit = false
+	m.Reboot = true
+	res, err := Run(context.Background(), m, reliable(Options{
+		Timeout: 2 * time.Minute,
+		Script: []Step{
+			{Wait: "Firmware settings: F opens them", Keys: []string{"f"}},
+			{Wait: "EFI Firmware Setup"},
+		},
+		StopAfterScript: true,
+	}))
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, res.Serial)
+	}
+	if res.StepsDone != 2 || !res.Stopped || res.TimedOut {
+		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	}
+	if strings.Contains(res.Serial, "Meridian kernel") {
+		t.Fatalf("the kernel started instead:\n%s", res.Serial)
+	}
 }
 
 func TestADiskWithoutLoaderTimesOut(t *testing.T) {
@@ -568,6 +618,33 @@ func checkBootScreen(t *testing.T, path string) {
 	}
 	if got := rgb(left+232+52+2, tileY); got != [3]uint32{0x33, 0xc6, 0x70} {
 		t.Errorf("the example's tile corner is %x, want grass green", got)
+	}
+}
+
+// checkLogScreen looks at the picture of the loader's log: dark, with the
+// orange line under its title and the lines of text below.
+func checkLogScreen(t *testing.T, path string) {
+	t.Helper()
+	w, h, rgb := openScreen(t, path)
+	night, tangerine := [3]uint32{0x15, 0x17, 0x1a}, [3]uint32{0xff, 0x96, 0x33}
+	for _, at := range [][2]int{{0, 0}, {w - 1, h - 1}} {
+		if got := rgb(at[0], at[1]); got != night {
+			t.Errorf("pixel %v is %x, want the dark background", at, got)
+		}
+	}
+	if got := rgb(58, 104); got != tangerine {
+		t.Errorf("the line under the title is %x, want tangerine", got)
+	}
+	ink := 0
+	for y := 138; y < 153; y++ {
+		for x := 56; x < 356; x++ {
+			if rgb(x, y) != night {
+				ink++
+			}
+		}
+	}
+	if ink < 50 {
+		t.Errorf("the first line of the log has %d lit pixels", ink)
 	}
 }
 

@@ -200,4 +200,74 @@ mod tests {
         assert_eq!(Log::default().lines().count(), 0);
         assert_eq!(EARLY.lines().count(), 0);
     }
+
+    /// The log's rules written the plain way, with a heap: split at line
+    /// feeds, drop carriage returns, go on in a new line where a character
+    /// would not fit, keep the newest lines.
+    struct Model {
+        lines: Vec<String>,
+    }
+
+    impl Model {
+        fn write(&mut self, s: &str) {
+            for c in s.chars() {
+                match c {
+                    '\n' => self.lines.push(String::new()),
+                    '\r' => {}
+                    _ => {
+                        let last = self.lines.last_mut().unwrap();
+                        if last.len() + c.len_utf8() > LINE {
+                            self.lines.push(c.to_string());
+                        } else {
+                            last.push(c);
+                        }
+                    }
+                }
+            }
+            let keep = self.lines.len().saturating_sub(LINES);
+            self.lines.drain(..keep);
+        }
+
+        fn shown(&self) -> Vec<String> {
+            let mut shown = self.lines.clone();
+            if shown.last().is_some_and(String::is_empty) {
+                shown.pop();
+            }
+            shown
+        }
+    }
+
+    #[test]
+    fn random_writes_match_the_plain_rules() {
+        let pieces = [
+            "a",
+            "boot: ",
+            "é",
+            "\n",
+            "\r\n",
+            "€",
+            "Found Windows",
+            "\n\n",
+            "x",
+        ];
+        let mut log = Log::new();
+        let mut model = Model {
+            lines: vec![String::new()],
+        };
+        let mut seed = 0x2545_f491_u32;
+        for round in 0..4000 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let mut text = String::new();
+            for _ in 0..(seed >> 28) {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                text.push_str(pieces[(seed >> 16) as usize % pieces.len()]);
+            }
+            if seed.is_multiple_of(97) {
+                text.push_str(&"long ".repeat(60));
+            }
+            log.write_str(&text).unwrap();
+            model.write(&text);
+            assert_eq!(lines(&log), model.shown(), "after round {round}");
+        }
+    }
 }

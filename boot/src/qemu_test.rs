@@ -163,7 +163,11 @@ pub fn chain_options() -> &'static [u16] {
 
 /// The example system sextant puts on test images is found, behind
 /// Meridian.
-pub fn systems_found(cards: &[boot::screen::Card<'_>], serial: &mut impl Write) {
+pub fn systems_found(
+    cards: &[boot::screen::Card<'_>],
+    firmware_settings: bool,
+    serial: &mut impl Write,
+) {
     use boot::screen::Kind;
     use uefi::qemu_test::Report;
 
@@ -178,6 +182,73 @@ pub fn systems_found(cards: &[boot::screen::Card<'_>], serial: &mut impl Write) 
             && cards[1].kind == Kind::Linux
             && cards[1].name == "example",
         "the example system on the test image should be found as a second card",
+    );
+    report.check(
+        "boot.firmware_settings.offered",
+        firmware_settings,
+        "OVMF can open its settings at the next start, so F should be offered",
+    );
+    stop_on_failure(&mut report);
+}
+
+/// What a 64-bit variable holds: its attributes and value, if it is there.
+fn read_u64(system: &System, name: &[u16]) -> Option<(uefi::variable::Attributes, Option<u64>)> {
+    let mut buf = [0u8; 8];
+    system
+        .variable(name, &uefi::guid::GLOBAL_VARIABLE, &mut buf)
+        .ok()
+        .map(|(attributes, data)| (attributes, uefi::variable::u64_value(data)))
+}
+
+/// Asks for the firmware settings the way F does, without the restart,
+/// checks what reached `OsIndications` and puts it back as it was.
+pub fn firmware_settings_request(system: &System, serial: &mut impl Write) {
+    use uefi::guid::GLOBAL_VARIABLE;
+    use uefi::qemu_test::Report;
+    use uefi::variable::{Attributes, OS_INDICATIONS};
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let lasting = Attributes::NON_VOLATILE
+        .with(Attributes::BOOTSERVICE_ACCESS)
+        .with(Attributes::RUNTIME_ACCESS);
+    let original = read_u64(system, &OS_INDICATIONS);
+    // Another bit first, which the request has to keep: the one that says
+    // the firmware may check certificates' time stamps.
+    let other = system.set_variable(
+        &OS_INDICATIONS,
+        &GLOBAL_VARIABLE,
+        lasting,
+        &2u64.to_le_bytes(),
+    );
+    let requested = crate::request_firmware_settings(system);
+    report.check(
+        "boot.firmware_settings.request",
+        other.is_ok()
+            && requested.is_ok()
+            && read_u64(system, &OS_INDICATIONS) == Some((lasting, Some(3))),
+        "F should add the settings bit to OsIndications, kept across a restart",
+    );
+    let undone = match original {
+        Some((attributes, Some(bits))) => system.set_variable(
+            &OS_INDICATIONS,
+            &GLOBAL_VARIABLE,
+            attributes,
+            &bits.to_le_bytes(),
+        ),
+        _ => system.set_variable(
+            &OS_INDICATIONS,
+            &GLOBAL_VARIABLE,
+            Attributes::default(),
+            &[],
+        ),
+    };
+    report.check(
+        "boot.firmware_settings.undone",
+        undone.is_ok() && read_u64(system, &OS_INDICATIONS) == original,
+        "the test should leave OsIndications as it found it",
     );
     stop_on_failure(&mut report);
 }
@@ -260,13 +331,92 @@ pub fn boot_screen(
             answer.is_ok_and(|k| k.unicode_char == 0x0d),
             "sextant should answer SCREEN with a carriage return, read as Enter",
         );
-        report.press("right");
+        // The log comes first; log_screen goes on from there.
+        report.press("v");
+    } else {
+        report.press("ret");
     }
-    report.press("ret");
     if report.failed > 0 {
         let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
         x86::raw::qemu_exit(false);
     }
+}
+
+/// Checks the log that V showed, keeps a picture of it, and goes back to
+/// the menu to start the example system.
+pub fn log_screen(system: &System, frame: &[u32], screen: &[u32], serial: &mut impl Write) {
+    use boot::screen::{LOG_LINE, LOG_MARGIN, LOG_TOP};
+    use canvas::palette::{NIGHT, TANGERINE};
+    use uefi::qemu_test::Report;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let (night, tangerine) = (
+        NIGHT.encode(canvas::Format::Bgr),
+        TANGERINE.encode(canvas::Format::Bgr),
+    );
+    let width = system.framebuffer().map_or(0, |fb| fb.width as usize);
+    let orange = frame.iter().filter(|&&p| p == tangerine).count();
+    report.check(
+        "boot.log.drawn",
+        frame.first() == Some(&night) && (64 * 6..64 * 6 + 200).contains(&orange),
+        "the log should be dark, with only the orange line under its title",
+    );
+    // The banner, the screen, Secure Boot, the firmware settings and the
+    // example system make at least six lines.
+    let line_ink = |line: usize| {
+        let baseline = LOG_TOP + line * LOG_LINE;
+        (baseline - 12..baseline + 3)
+            .flat_map(|y| (LOG_MARGIN..LOG_MARGIN + 300).map(move |x| y * width + x))
+            .filter(|&i| frame.get(i).is_some_and(|&p| p != night))
+            .count()
+    };
+    report.check(
+        "boot.log.lines",
+        width > 0 && (0..6).all(|line| line_ink(line) > 50),
+        "the log should show what the loader said, one line per row",
+    );
+    report.check(
+        "boot.log.presented",
+        width > 0 && screen.get(..width) == frame.get(..width),
+        "the log should be on the screen",
+    );
+    let _ = writeln!(report.out, "SCREEN boot-log");
+    let answer = system.wait_for_key();
+    report.check(
+        "boot.log.kept",
+        answer.is_ok_and(|k| k.unicode_char == 0x0d),
+        "sextant should answer SCREEN with a carriage return, read as Enter",
+    );
+    // Any key goes back to the menu; menu_after_log goes on from there.
+    report.press("spc");
+    if report.failed > 0 {
+        let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
+        x86::raw::qemu_exit(false);
+    }
+}
+
+/// Checks that a key closed the log and brought the menu back, then
+/// starts the example system.
+pub fn menu_after_log(frame: &[u32], serial: &mut impl Write) {
+    use canvas::palette::TANGERINE;
+    use uefi::qemu_test::Report;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let tangerine = TANGERINE.encode(canvas::Format::Bgr);
+    report.check(
+        "boot.log.closed",
+        frame.iter().filter(|&&p| p == tangerine).count() > 5000,
+        "a key on the log should bring the cards back",
+    );
+    report.press("right");
+    report.press("ret");
+    stop_on_failure(&mut report);
 }
 
 /// What the loader's copy returns when it was started as a test.

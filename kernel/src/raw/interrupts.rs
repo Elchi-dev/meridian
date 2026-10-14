@@ -363,6 +363,19 @@ pub mod expected {
         caught(14)
     }
 
+    /// Reads `address`, where only normal memory or nothing may be, and
+    /// says whether that faulted, as it does where nothing is mapped.
+    pub fn read_at(address: u64) -> Option<Caught> {
+        expect(14);
+        // SAFETY: reading normal memory changes nothing; where nothing is
+        // mapped the read faults and the handler resumes at label 2.
+        unsafe {
+            asm!("lea {r}, [rip + 2f]", "mov [{resume}], {r}", "mov {r}, qword ptr [{a}]", "2:",
+                r = out(reg) _, a = in(reg) address, resume = in(reg) RESUME.as_ptr());
+        }
+        caught(14)
+    }
+
     /// Divides by zero.
     pub fn divide_by_zero() -> Option<Caught> {
         expect(0);

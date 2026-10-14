@@ -128,6 +128,7 @@ pub fn run(
 
     machine_checks(&mut report, machine, tsc_hz);
     memory_checks(&mut report, regions, free);
+    mapping_checks(&mut report);
     screen_checks(&mut report, info, screen);
     handover_screen_checks(&mut report, info, regions, display);
     if screen.is_some() {
@@ -364,6 +365,18 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
     );
     // Each one waits 10 ms after its INIT and twice 0.2 ms after its
     // startups, and no longer when it starts at once.
+    let guarded = |top: u64| {
+        let guard = top - kernel::CORE_STACK_PAGES * 4096 - 8;
+        expected::read_at(top - 8).is_none()
+            && expected::read_at(guard).is_some_and(|c| c.error == 0 && c.address == guard)
+    };
+    report.check(
+        "kernel.smp.guarded",
+        (1..=others).all(|n| {
+            guarded(kernel::core_stack_top(n, false)) && guarded(kernel::core_stack_top(n, true))
+        }) && expected::read_at(kernel::core_stack_top(others + 1, false) - 8).is_some(),
+        "each other core's stacks should be mapped, with nothing below them, and no more stacks than cores",
+    );
     report.check(
         "kernel.smp.quick",
         tsc_hz.is_some_and(|hz| {
@@ -543,6 +556,71 @@ fn memory_checks<W: Write>(
             && huge.try_reserve(kernel::HEAP_BYTES + 1).is_err()
             && heap_free() == empty,
         "the heap should get everything back, and refuse more than it holds",
+    );
+}
+
+/// Maps a fresh frame where nothing was, uses it through both addresses,
+/// and takes it away again.
+fn mapping_checks<W: Write>(report: &mut Report<'_, W>) {
+    use crate::raw::memory::{
+        FRAMES, fill_frame, map_page, map_stack, read_word, unmap_page, write_word,
+    };
+    use paging::{Error, Flags};
+
+    // The 512 GiB from here are free: the direct map lies below them and the
+    // stacks above.
+    const WINDOW: u64 = 0xffff_fd80_0000_0000;
+    let flags = Flags::WRITABLE | Flags::NO_EXECUTE;
+    let missing = |c: Option<Caught>| {
+        c.is_some_and(|c| c.vector == 14 && c.error == 0 && c.address == WINDOW)
+    };
+
+    let before = expected::read_at(WINDOW);
+    let mut frames = FRAMES.lock();
+    let frame = frames.as_mut().and_then(frames::Frames::alloc);
+    drop(frames);
+    let Some(frame) = frame else {
+        report.check(
+            "kernel.paging.mapped",
+            false,
+            "a frame should be free for the window",
+        );
+        return;
+    };
+    let mapped = map_page(WINDOW, frame, flags);
+    fill_frame(frame, 0x0bad_cafe);
+    let seen = read_word(WINDOW) == 0x0bad_cafe && read_word(WINDOW + 4088) == 0x0bad_cafe;
+    write_word(WINDOW + 8, 0xfeed_f00d);
+    report.check(
+        "kernel.paging.mapped",
+        missing(before)
+            && mapped.is_ok()
+            && seen
+            && expected::read_at(WINDOW).is_none()
+            && read_word(HHDM_BASE + frame + 8) == 0xfeed_f00d,
+        "a frame mapped where nothing was should show through both its addresses",
+    );
+    let free = || FRAMES.lock().as_ref().map(frames::Frames::free_frames);
+    let free_before = free();
+    report.check(
+        "kernel.paging.twice",
+        map_page(WINDOW, frame, flags) == Err(Error::AlreadyMapped(WINDOW))
+            && map_stack(WINDOW + 2 * 4096, 2) == Err(Error::AlreadyMapped(WINDOW))
+            && free() == free_before
+            && expected::read_at(WINDOW + 4096).is_some(),
+        "mapping a page that is mapped already should be refused, and a stack that cannot be whole leave nothing behind",
+    );
+    let unmapped = unmap_page(WINDOW);
+    let after = expected::read_at(WINDOW);
+    let again = unmap_page(WINDOW);
+    let freed = FRAMES
+        .lock()
+        .as_mut()
+        .is_some_and(|f| f.free(frame).is_ok());
+    report.check(
+        "kernel.paging.unmapped",
+        unmapped == Ok(frame) && missing(after) && again == Err(Error::NotMapped(WINDOW)) && freed,
+        "an unmapped page should fault at once, give its frame back, and not unmap twice",
     );
 }
 

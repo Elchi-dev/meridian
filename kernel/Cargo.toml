@@ -25,6 +25,7 @@ canvas = { path = "../lib/canvas" }
 font = { path = "../lib/font" }
 frames = { path = "../lib/frames" }
 heap = { path = "../lib/heap" }
+paging = { path = "../lib/paging" }
 qr = { path = "../lib/qr" }
 x86 = { path = "../lib/x86" }
 

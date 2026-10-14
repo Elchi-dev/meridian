@@ -10,6 +10,7 @@ use core::arch::{global_asm, naked_asm};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use bootinfo::{HHDM_BASE, MemoryRegion};
+use kernel::CORE_STACK_PAGES;
 
 // The trampoline. It runs at whatever page it was copied to, so it finds
 // itself from CS, which the startup interrupt sets to the page, and keeps
@@ -142,9 +143,6 @@ pub fn took() -> u64 {
     TOOK.load(Ordering::Acquire)
 }
 
-/// The stack each other processor gets: 16 KiB.
-const STACK_FRAMES: u64 = 4;
-
 /// Starts every usable processor the MADT lists but this one, one after
 /// the other, and returns how many came into the kernel. Starts none
 /// without the MADT, an x2APIC, a known counter rate `tsc_hz`, room for
@@ -176,22 +174,22 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
     CR3.store(x86::raw::read_cr3(), Ordering::Release);
     #[cfg(feature = "qemu-test")]
     let begin = x86::raw::tsc();
-    for (number, &id) in others.iter().enumerate() {
-        let stacks = super::memory::FRAMES
-            .lock()
-            .as_mut()
-            .and_then(|f| Some((f.alloc_run(STACK_FRAMES, 1)?, f.alloc_run(STACK_FRAMES, 1)?)));
-        let Some((stack, fault_stack)) = stacks else {
+    for (index, &id) in others.iter().enumerate() {
+        let number = index + 1;
+        let stack = kernel::core_stack_top(number, false);
+        let fault_stack = kernel::core_stack_top(number, true);
+        if super::interrupts::prepare_core(number, fault_stack).is_none() {
             break;
-        };
-        let top = |base: u64| HHDM_BASE + base + STACK_FRAMES * frames::FRAME;
-        if super::interrupts::prepare_core(number + 1, top(fault_stack)).is_none() {
+        }
+        let mapped = super::memory::map_stack(stack, CORE_STACK_PAGES)
+            .and_then(|()| super::memory::map_stack(fault_stack, CORE_STACK_PAGES));
+        if mapped.is_err() {
             break;
         }
         #[cfg(feature = "qemu-test")]
-        STACK_BASE.store(HHDM_BASE + stack, Ordering::Release);
-        STACK.store(top(stack), Ordering::Release);
-        NUMBER.store(number as u64 + 1, Ordering::Release);
+        STACK_BASE.store(stack - CORE_STACK_PAGES * frames::FRAME, Ordering::Release);
+        STACK.store(stack, Ordering::Release);
+        NUMBER.store(number as u64, Ordering::Release);
         let before = RUNNING.load(Ordering::Acquire);
         // INIT, then two startups, as the MultiProcessor Specification
         // asks; a processor that started at the first ignores the second.
@@ -286,7 +284,7 @@ fn settled(number: usize) {
     let here = 0u8;
     let base = STACK_BASE.load(Ordering::Acquire);
     let on_stack =
-        (base..base + STACK_FRAMES * frames::FRAME).contains(&((&raw const here) as u64));
+        (base..base + CORE_STACK_PAGES * frames::FRAME).contains(&((&raw const here) as u64));
     if on_stack && super::interrupts::loaded_here(number) {
         SETTLED.fetch_add(1, Ordering::AcqRel);
     }

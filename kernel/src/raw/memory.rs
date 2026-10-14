@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use bootinfo::{HHDM_BASE, MemoryRegion};
 use frames::{FRAME, Frames};
 use heap::{Heap, MAX_ALIGN};
+use paging::{AddressSpace, Flags, PageSize};
 
 /// A value one holder at a time may use, waited for by spinning.
 pub struct Spin<T> {
@@ -113,6 +114,114 @@ pub fn take(regions: &[MemoryRegion]) -> Option<usize> {
     *HEAP.lock() = Some((Heap::new(heap_bits, kernel::HEAP_BYTES), heap_base));
     *FRAMES.lock() = Some(frames);
     Some(free)
+}
+
+/// The kernel's page tables, reached through the direct map, with new
+/// tables from the frame allocator.
+struct KernelTables<'f>(&'f mut Frames<'static>);
+
+impl paging::Frames for KernelTables<'_> {
+    fn allocate(&mut self) -> Option<u64> {
+        let frame = self.0.alloc()?;
+        // SAFETY: a frame just taken from the allocator, so nothing else
+        // uses it, in the direct map.
+        unsafe { core::ptr::write_bytes((HHDM_BASE + frame) as *mut u8, 0, 4096) };
+        Some(frame)
+    }
+
+    fn table(&mut self, physical: u64) -> &mut [u64; 512] {
+        // SAFETY: physical is the kernel's root table or one its entries
+        // lead to, all in memory the direct map covers; the FRAMES lock,
+        // which this holds, is the only way to change them.
+        unsafe { &mut *((HHDM_BASE + physical) as *mut [u64; 512]) }
+    }
+}
+
+/// Maps the frame at `phys` at `virt` in the kernel's address space as a
+/// 4 KiB page with `flags`.
+///
+/// # Errors
+///
+/// Those of [`AddressSpace::map`], and running out of frames before the
+/// allocator is there.
+pub fn map_page(virt: u64, phys: u64, flags: Flags) -> Result<(), paging::Error> {
+    let mut frames = FRAMES.lock();
+    let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
+    let mut space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+    space.map(
+        &mut KernelTables(frames),
+        virt,
+        phys,
+        PageSize::Size4K,
+        flags,
+    )
+}
+
+/// Maps `pages` fresh frames as a stack that ends at `top`. What lies
+/// below stays as it is, so a stack with nothing mapped below faults when
+/// it runs over.
+///
+/// # Errors
+///
+/// Those of [`map_page`], and running out of frames. Then nothing of the
+/// stack stays mapped and its frames go back.
+pub fn map_stack(top: u64, pages: u64) -> Result<(), paging::Error> {
+    let flags = Flags::WRITABLE | Flags::NO_EXECUTE;
+    for page in 1..=pages {
+        let frame = FRAMES.lock().as_mut().and_then(Frames::alloc);
+        let mapped = frame.map_or(Err(paging::Error::OutOfFrames), |f| {
+            map_page(top - page * FRAME, f, flags)
+        });
+        if let Err(e) = mapped {
+            let give_back = |f: u64| {
+                if let Some(frames) = FRAMES.lock().as_mut() {
+                    let _ = frames.free(f);
+                }
+            };
+            if let Some(f) = frame {
+                give_back(f);
+            }
+            for p in 1..page {
+                if let Ok(f) = unmap_page(top - p * FRAME) {
+                    give_back(f);
+                }
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Takes the 4 KiB page at `virt` out of the kernel's address space,
+/// drops what this processor remembers of it, and returns its frame.
+///
+/// # Errors
+///
+/// Those of [`AddressSpace::unmap`], and missing frames as for
+/// [`map_page`].
+pub fn unmap_page(virt: u64) -> Result<u64, paging::Error> {
+    let mut frames = FRAMES.lock();
+    let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
+    let mut space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+    let frame = space.unmap(&mut KernelTables(frames), virt)?;
+    x86::raw::invalidate_page(virt);
+    Ok(frame)
+}
+
+/// The 8 bytes at `virt`. Only the test image reads memory this way, and
+/// only pages it mapped itself or frames in the direct map.
+#[cfg(feature = "qemu-test")]
+pub fn read_word(virt: u64) -> u64 {
+    // SAFETY: the test reads only what it mapped or a frame it holds, and
+    // 8 aligned bytes lie inside the page.
+    unsafe { core::ptr::read_volatile(virt as *const u64) }
+}
+
+/// Writes the 8 bytes at `virt`, under the same rule as [`read_word`].
+#[cfg(feature = "qemu-test")]
+pub fn write_word(virt: u64, value: u64) {
+    // SAFETY: as for read_word; the page is the test's own frame.
+    unsafe { core::ptr::write_volatile(virt as *mut u64, value) };
 }
 
 /// How many bytes of the heap are free. Only the test image asks.

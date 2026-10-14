@@ -271,6 +271,22 @@ pub fn describe(
     }
 }
 
+/// Where the stacks of the other processors lie. Each stack gets 32 KiB
+/// of address space, of which only the top 16 KiB are mapped, so a stack
+/// that runs over faults instead of writing into the next one.
+pub const CORE_STACKS: u64 = 0xffff_fe00_0000_0000;
+
+/// The pages of each of those stacks.
+pub const CORE_STACK_PAGES: u64 = 4;
+
+/// The top of the stack of processor `number`, or of the stack it takes
+/// faults on.
+#[must_use]
+pub fn core_stack_top(number: usize, fault: bool) -> u64 {
+    let space = 2 * CORE_STACK_PAGES * MemoryRegion::PAGE_SIZE;
+    CORE_STACKS + (2 * number as u64 + u64::from(fault) + 1) * space
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +639,32 @@ mod tests {
             pm_timer: None,
         };
         assert!(describe(&mut Broken, &known, None).is_err());
+    }
+
+    #[test]
+    fn each_core_stack_has_a_guard_below_and_meets_no_other() {
+        assert_eq!(core_stack_top(1, false), 0xffff_fe00_0001_8000);
+        assert_eq!(core_stack_top(1, true), 0xffff_fe00_0002_0000);
+        assert_eq!(core_stack_top(0, false), CORE_STACKS + 0x8000);
+        let tops: Vec<u64> = (0..64)
+            .flat_map(|n| [core_stack_top(n, false), core_stack_top(n, true)])
+            .collect();
+        for pair in tops.windows(2) {
+            assert_eq!(
+                pair[1] - pair[0],
+                0x8000,
+                "16 KiB of stack, 16 KiB of guard"
+            );
+        }
+        let last = tops[tops.len() - 1];
+        assert_eq!(last, 0xffff_fe00_0040_0000);
+        assert!(last <= bootinfo::STACK_TOP - bootinfo::STACK_PAGES * MemoryRegion::PAGE_SIZE);
+        assert_eq!(
+            CORE_STACKS >> 39 & 0x1ff,
+            508,
+            "a slot of the root table nothing else uses"
+        );
+        assert_eq!((last - 1) >> 39 & 0x1ff, 508);
     }
 
     #[test]

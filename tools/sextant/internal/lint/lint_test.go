@@ -341,3 +341,49 @@ func TestRustRulesStayInRust(t *testing.T) {
 		"t/a.go":        "package a\n\nfunc f() { todo() }\n",
 	}))
 }
+
+func TestEveryBinaryExtensionIsSkipped(t *testing.T) {
+	files := map[string]string{}
+	for _, ext := range []string{".png", ".jpg", ".efi", ".ttf", ".otf", ".fd", ".img", ".iso", ".bin", ".der", ".PNG", ".Img"} {
+		files["assets/x"+ext] = emDash
+	}
+	expect(t, check(t, files))
+	expect(t, check(t, map[string]string{"assets/x.pngx": emDash}), "assets/x.pngx:1:1: dash: em dash"+dashMsg)
+}
+
+func TestWordEdges(t *testing.T) {
+	for s, want := range map[string]int{
+		"@TODO": 1, "[TODO]": 1, "`TODO": 1, "{TODO}": 1, "TODO~": 0, "/TODO": 1, "TODO:": 0,
+		"0TODO": -1, "9TODO": -1, "TODO0": -1, "TODO9": -1, "ATODO": -1, "ZTODO": -1, "aTODO": -1, "zTODO": -1, "_TODO": -1,
+	} {
+		at, ok := wordIndex(s, "TODO")
+		if !ok {
+			at = -1
+		}
+		if at != want {
+			t.Errorf("wordIndex(%q) = %d, want %d", s, at, want)
+		}
+	}
+}
+
+func TestRecordsWithoutStatusAllowNothing(t *testing.T) {
+	got := check(t, map[string]string{
+		"Cargo.lock":            lockWithRegistry,
+		"docs/adr/0007-spin.md": "# 0007. Use spin\n\n- Allows: spin, x86_64\n",
+	})
+	if len(got) != 2 {
+		t.Fatalf("a record with no status line is not accepted: %v", got)
+	}
+}
+
+func TestBareRequireLine(t *testing.T) {
+	expect(t, check(t, map[string]string{"go.mod": "module x\n\nrequire\n"}))
+}
+
+func TestLinesAfterARequireBlockAreNotModules(t *testing.T) {
+	got := check(t, map[string]string{
+		"go.mod":             "module x\n\nrequire (\n\tgithub.com/a/b v1.0.0\n)\n\ntoolchain go1.27.2\n",
+		"docs/adr/0003-b.md": "- Status: accepted\n- Allows: github.com/a/b\n",
+	})
+	expect(t, got)
+}

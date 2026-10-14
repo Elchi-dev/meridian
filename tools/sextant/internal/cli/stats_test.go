@@ -203,3 +203,29 @@ func TestRatiosAreCutNotRounded(t *testing.T) {
 		}
 	}
 }
+
+func TestStatsReadsTheMinimumFromTheSettings(t *testing.T) {
+	repo := copyRepo(smallRepo)
+	root := checkout(t, repo)
+	if err := os.WriteFile(filepath.Join(root, "sextant.local.meri"), []byte("stats { min-ratio = 3.0 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runIn(root, "stats", "--check")
+	if r.code != ExitFailure || !strings.Contains(r.stderr, "tools/x has 2.50 test lines per line of code and needs 3.00") {
+		t.Fatalf("exit %d, stderr %q", r.code, r.stderr)
+	}
+	if r := runIn(root, "stats", "--check", "--min", "1"); r.code != ExitOK {
+		t.Fatalf("--min must override the settings; exit %d, stderr %q", r.code, r.stderr)
+	}
+}
+
+func TestStatsReportsBrokenSettings(t *testing.T) {
+	root := checkout(t, copyRepo(smallRepo))
+	if err := os.WriteFile(filepath.Join(root, "sextant.meri"), []byte("stats {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runIn(root, "stats")
+	if r.code != ExitFailure || !strings.Contains(r.stderr, "sextant.meri:1:") {
+		t.Fatalf("exit %d, stderr %q", r.code, r.stderr)
+	}
+}

@@ -9,20 +9,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/project"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/stats"
 )
-
-// DefaultMinRatio is the project rule: at least 1.5 lines of tests for every
-// line of code, in every component.
-const DefaultMinRatio = 1.5
 
 func runStats(env Env, args []string) error {
 	flags := flag.NewFlagSet("stats", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	check := flags.Bool("check", false, "fail when a component is below the minimum ratio")
 	files := flags.Bool("files", false, "list every file")
-	minRatio := flags.Float64("min", DefaultMinRatio, "minimum test lines per line of code")
+	minRatio := flags.Float64("min", 0, "minimum test lines per line of code, instead of stats.min-ratio")
 	if err := flags.Parse(args); err != nil {
 		return usageErrorf("%v", err)
 	}
@@ -32,6 +29,13 @@ func runStats(env Env, args []string) error {
 	root, err := project.FindRoot(env.Dir)
 	if err != nil {
 		return err
+	}
+	settings, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+	if !flagSet(flags, "min") {
+		*minRatio = settings.MinRatio
 	}
 	report, err := stats.Collect(os.DirFS(root))
 	if err != nil {
@@ -117,4 +121,14 @@ func plural(n int, one, many string) string {
 		return one
 	}
 	return many
+}
+
+func flagSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }

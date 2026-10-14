@@ -474,3 +474,20 @@ func TestCopyTreeFromARootNamedLikeBuildOutput(t *testing.T) {
 		t.Fatalf("a checkout in a folder called target must still be copied: %q %v", b, err)
 	}
 }
+
+func TestCopyTreeIntoAFolderInsideTheSource(t *testing.T) {
+	root := writeTree(t, map[string]string{"a.go": "a", "build/keep.txt": "k"})
+	dest := filepath.Join(root, "build", "mutate", "tree-0")
+	if err := copyTree(root, dest); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "a.go")); err != nil || string(b) != "a" {
+		t.Fatalf("%q %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "build", "mutate", "tree-0")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the copy must not contain itself: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "build", "keep.txt")); err != nil {
+		t.Fatalf("other files of that folder are copied: %v", err)
+	}
+}

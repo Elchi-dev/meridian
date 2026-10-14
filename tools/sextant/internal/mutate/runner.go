@@ -59,10 +59,13 @@ type Runner struct {
 	// Timeout for one test run. Zero means three times the run without
 	// any mutant, plus 30 seconds.
 	Timeout time.Duration
-	// Scratch is where the worker copies go, the system's temporary
-	// folder when empty. Copies and Cargo builds take space, so a fast
-	// disk with room is the right place.
+	// Scratch is where the worker copies, their Cargo builds and every
+	// test run's temporary folder go; the system's temporary folder when
+	// empty. It belongs on a disk, not in a RAM-backed /tmp: a mutant that
+	// loops while writing an image fills whatever is there.
 	Scratch string
+	// MaxFileSize caps every file a test run writes, 1 GiB when zero.
+	MaxFileSize int64
 	// Done, when set, is called after every mutant from the worker that
 	// ran it, so it must be safe for concurrent use.
 	Done func(Result)
@@ -102,13 +105,22 @@ func (r *Runner) Run(ctx context.Context, mutants []Mutant, targets map[string]T
 		return nil, err
 	}
 	defer os.RemoveAll(scratch)
+	maxFile := r.MaxFileSize
+	if maxFile <= 0 {
+		maxFile = 1 << 30
+	}
 	workers := make([]*worker, jobs)
 	for i := range workers {
 		w := &worker{
-			dir:    filepath.Join(scratch, fmt.Sprintf("tree-%d", i)),
-			target: filepath.Join(scratch, fmt.Sprintf("target-%d", i)),
+			dir:     filepath.Join(scratch, fmt.Sprintf("tree-%d", i)),
+			target:  filepath.Join(scratch, fmt.Sprintf("target-%d", i)),
+			tmp:     filepath.Join(scratch, fmt.Sprintf("tmp-%d", i)),
+			maxFile: maxFile,
 		}
 		if err := copyTree(r.Root, w.dir); err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(w.tmp, 0o755); err != nil {
 			return nil, err
 		}
 		workers[i] = w
@@ -186,8 +198,10 @@ func firstOf(first, err error) error {
 }
 
 type worker struct {
-	dir    string
-	target string
+	dir     string
+	target  string
+	tmp     string
+	maxFile int64
 }
 
 type testRun struct {
@@ -265,20 +279,43 @@ func (w *worker) test(ctx context.Context, file string, t Target, timeout time.D
 		args = append([]string{"-n", "15", name}, args...)
 		name = nice
 	}
+	name, args = limitFiles(name, args, w.maxFile)
+
+	// Every run gets a temporary folder of its own, removed right after.
+	// A test killed by the timeout never cleans up after itself, so this
+	// is the only cleanup that always happens.
+	tmp, err := os.MkdirTemp(w.tmp, "run-")
+	if err != nil {
+		return testRun{err: err}
+	}
+	defer os.RemoveAll(tmp)
+
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CARGO_TARGET_DIR="+w.target)
+	cmd.Env = append(os.Environ(), "CARGO_TARGET_DIR="+w.target, "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
 	cmd.WaitDelay = 5 * time.Second
 	killTree(cmd)
 	out, err := cmd.CombinedOutput()
+	reapTree(cmd)
 	return testRun{err: err, output: out, timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
 }
 
-// copyTree copies the sources of a repository, leaving out skipCopy.
+// copyTree copies the sources of a repository, leaving out skipCopy and
+// the destination itself when it lies inside the repository.
 func copyTree(from, to string) error {
+	from, err := filepath.Abs(from)
+	if err != nil {
+		return err
+	}
+	if to, err = filepath.Abs(to); err != nil {
+		return err
+	}
 	return filepath.WalkDir(from, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.IsDir() && p == to {
+			return fs.SkipDir
 		}
 		rel, err := filepath.Rel(from, p)
 		if err != nil {

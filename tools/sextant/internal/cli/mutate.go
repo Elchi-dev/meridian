@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/meri"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/mutate"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/project"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/stats"
@@ -75,11 +78,15 @@ func runMutate(env Env, args []string) error {
 		return staleError(env, stale)
 	}
 
+	scratch, err := mutateScratch(root)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	var mu sync.Mutex
 	done := 0
-	runner := &mutate.Runner{Root: root, Jobs: *jobs, Done: func(r mutate.Result) {
+	runner := &mutate.Runner{Root: root, Jobs: *jobs, Scratch: scratch, Done: func(r mutate.Result) {
 		mu.Lock()
 		defer mu.Unlock()
 		done++
@@ -101,6 +108,65 @@ func runMutate(env Env, args []string) error {
 			survivors, plural(survivors, "mutant", "mutants"), mutate.AllowFile)
 	}
 	return nil
+}
+
+// mutateScratch is where mutation runs keep their copies, builds and
+// temporary folders: mutate.scratch from the settings, else build.dir with
+// mutate added, else out/mutate in the repository. Never the system's
+// temporary folder, which on many machines is RAM: a mutant that loops while
+// writing an image would fill it.
+func mutateScratch(root string) (string, error) {
+	settings, err := loadSettings(root)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, "out", "mutate")
+	if build, err := setting(settings, "build", "dir"); err != nil {
+		return "", err
+	} else if build != "" {
+		dir = filepath.Join(build, "mutate")
+	}
+	if own, err := setting(settings, "mutate", "scratch"); err != nil {
+		return "", err
+	} else if own != "" {
+		dir = own
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(root, dir)
+	}
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
+// loadSettings reads sextant.meri and layers sextant.local.meri over it.
+func loadSettings(root string) (*meri.Block, error) {
+	read := func(name string) (*meri.Block, error) {
+		src, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			return nil, err
+		}
+		return meri.Parse(name, src)
+	}
+	settings, err := read(project.Marker)
+	if err != nil {
+		return nil, err
+	}
+	local, err := read("sextant.local.meri")
+	if errors.Is(err, fs.ErrNotExist) {
+		return settings, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return meri.Merge(settings, local), nil
+}
+
+// setting returns key from the first block named block, or "".
+func setting(settings *meri.Block, block, key string) (string, error) {
+	blocks := settings.Blocks(block)
+	if len(blocks) == 0 {
+		return "", nil
+	}
+	return blocks[0].String(key, "")
 }
 
 // parseInterleaved accepts flags before, between and after the paths.

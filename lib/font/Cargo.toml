@@ -1,0 +1,12 @@
+[package]
+name = "font"
+description = "TrueType fonts for Meridian: parsing, layout and anti-aliased rasterizing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

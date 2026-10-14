@@ -15,5 +15,9 @@ name = "bootinfo"
 version = "0.0.0"
 
 [[package]]
+name = "font"
+version = "0.0.0"
+
+[[package]]
 name = "uefi"
 version = "0.0.0"

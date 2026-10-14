@@ -3,9 +3,10 @@
 
 use core::arch::asm;
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::tables::{self, Gate, Pointer};
-use crate::{Features, cr0, efer, serial};
+use crate::{Features, apic, cr0, efer, serial};
 
 /// COM1, set up for 115200 baud when opened. Only COM1 can be opened, so
 /// no caller can point the port writes anywhere else.
@@ -440,6 +441,150 @@ pub unsafe fn read_port_u32(port: u16) -> u32 {
         asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags));
     }
     value
+}
+
+/// Whether [`enable_x2apic`] turned the x2APIC on, so its registers exist.
+static X2APIC_ON: AtomicBool = AtomicBool::new(false);
+
+/// Turns this processor's local APIC on in x2APIC mode, where its
+/// registers are model specific registers. Returns false, changing
+/// nothing, on a processor without an x2APIC.
+pub fn enable_x2apic() -> bool {
+    if apic::supported(cpuid(1)[2]) {
+        // SAFETY: IA32_APIC_BASE exists wherever an x2APIC does. The APIC
+        // is turned on first and then switched to x2APIC mode, the way the
+        // SDM allows; its base address stays, so no memory changes
+        // meaning, and nothing is routed to it before its vectors are set.
+        unsafe {
+            for value in apic::steps_to_x2apic(read_msr(apic::BASE_MSR)) {
+                write_msr(apic::BASE_MSR, value);
+            }
+        }
+        X2APIC_ON.store(true, Ordering::Release);
+    }
+    x2apic_enabled()
+}
+
+/// Whether the local APIC is on in x2APIC mode.
+#[must_use]
+pub fn x2apic_enabled() -> bool {
+    let both = apic::ENABLE | apic::X2APIC;
+    // SAFETY: the register exists wherever an x2APIC does, and reading it
+    // changes nothing.
+    apic::supported(cpuid(1)[2]) && unsafe { read_msr(apic::BASE_MSR) } & both == both
+}
+
+/// Writes an x2APIC register once the x2APIC is on, and does nothing
+/// before.
+fn write_apic(register: u32, value: u64) {
+    if X2APIC_ON.load(Ordering::Acquire) {
+        // SAFETY: the x2APIC is on, so its registers exist; callers here
+        // only set up this processor's own timer and interrupts.
+        unsafe { write_msr(register, value) };
+    }
+}
+
+/// Lets the APIC deliver interrupts, sending those it gives up on to
+/// `vector`.
+pub fn set_spurious_vector(vector: u8) {
+    write_apic(apic::SPURIOUS, apic::spurious(vector));
+}
+
+/// Starts the APIC timer counting down from the largest count at the
+/// APIC's own rate, without an interrupt, to measure that rate.
+pub fn start_apic_count() {
+    write_apic(apic::TIMER_DIVIDE, apic::DIVIDE_BY_1);
+    write_apic(apic::LVT_TIMER, apic::MASKED);
+    write_apic(apic::TIMER_INITIAL, u64::from(u32::MAX));
+}
+
+/// Starts the APIC timer raising `vector` every `period` counts.
+pub fn start_apic_ticks(vector: u8, period: u32) {
+    write_apic(apic::TIMER_DIVIDE, apic::DIVIDE_BY_1);
+    write_apic(apic::LVT_TIMER, apic::periodic(vector));
+    write_apic(apic::TIMER_INITIAL, u64::from(period));
+}
+
+/// Stops the APIC timer.
+pub fn stop_apic_timer() {
+    write_apic(apic::LVT_TIMER, apic::MASKED);
+    write_apic(apic::TIMER_INITIAL, 0);
+}
+
+/// The x2APIC register `register`, or 0 before the x2APIC is on. Only the
+/// QEMU checks read the timer's entry and the spurious register back.
+#[cfg(feature = "qemu-test")]
+#[must_use]
+pub fn read_apic(register: u32) -> u64 {
+    if !X2APIC_ON.load(Ordering::Acquire) {
+        return 0;
+    }
+    // SAFETY: the x2APIC is on, so its registers exist, and the checks
+    // only read ones whose reading changes nothing.
+    unsafe { read_msr(register) }
+}
+
+/// Waits until the time stamp counter has moved on by `cycles`.
+pub fn spin(cycles: u64) {
+    let begin = tsc();
+    while tsc() - begin < cycles {
+        core::hint::spin_loop();
+    }
+}
+
+/// Where the APIC timer's count stands, or 0 before the x2APIC is on.
+#[must_use]
+pub fn apic_timer_count() -> u32 {
+    if !X2APIC_ON.load(Ordering::Acquire) {
+        return 0;
+    }
+    // SAFETY: the x2APIC is on, so the register exists; reading it
+    // changes nothing.
+    let count = unsafe { read_msr(apic::TIMER_CURRENT) };
+    u32::try_from(count & 0xffff_ffff).unwrap_or(0)
+}
+
+/// Tells the APIC the interrupt it delivered last is handled.
+pub fn end_of_interrupt() {
+    write_apic(apic::END_OF_INTERRUPT, 0);
+}
+
+/// Masks every line of the two legacy 8259 interrupt controllers, so only
+/// the APIC delivers interrupts.
+pub fn mask_legacy_pics() {
+    // SAFETY: writing the interrupt mask registers of the 8259s only stops
+    // them from raising interrupts; no memory is involved.
+    unsafe {
+        asm!("out dx, al", in("dx") 0xa1_u16, in("al") 0xff_u8, options(nomem, nostack, preserves_flags));
+        asm!("out dx, al", in("dx") 0x21_u16, in("al") 0xff_u8, options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Lets this processor take maskable interrupts.
+///
+/// # Safety
+///
+/// Every vector the APIC can deliver must lead to a handler in the loaded
+/// interrupt descriptor table.
+pub unsafe fn enable_interrupts() {
+    // SAFETY: the caller promises every vector has its handler.
+    unsafe { asm!("sti", options(nomem, nostack)) };
+}
+
+/// Stops this processor taking maskable interrupts.
+pub fn disable_interrupts() {
+    // SAFETY: clearing the interrupt flag touches no memory.
+    unsafe { asm!("cli", options(nomem, nostack)) };
+}
+
+/// Sleeps until the next interrupt. With interrupts off it returns at
+/// once, since nothing could wake it.
+pub fn wait_for_interrupt() {
+    if interrupts_enabled() {
+        // SAFETY: halting until an interrupt, with interrupts on, touches
+        // no memory.
+        unsafe { asm!("hlt", options(nomem, nostack)) };
+    }
 }
 
 /// The address the last page fault was about.

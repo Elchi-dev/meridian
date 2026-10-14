@@ -186,6 +186,22 @@ pub fn hand_out(out: &mut impl Write, frames: Option<usize>) -> fmt::Result {
     }
 }
 
+/// How the kernel waits for time to pass: woken by a timer `period`
+/// counts long, a hundred times a second, or spinning without one.
+///
+/// # Errors
+///
+/// Those of `out`.
+pub fn waiting(out: &mut impl Write, period: Option<u32>) -> fmt::Result {
+    match period {
+        Some(p) => writeln!(
+            out,
+            "Timer: 100 interrupts a second, {p} APIC counts apart; the processor sleeps in between"
+        ),
+        None => writeln!(out, "Timer: none, so the uptime is kept by spinning"),
+    }
+}
+
 /// What the kernel learned about the processor, for the serial log.
 ///
 /// # Errors
@@ -446,6 +462,19 @@ mod tests {
             out,
             "kernel: there is no room for the frame allocator or the heap\n"
         );
+    }
+
+    #[test]
+    fn how_the_kernel_waits() {
+        let mut out = String::new();
+        waiting(&mut out, Some(1_000_000)).unwrap();
+        assert_eq!(
+            out,
+            "Timer: 100 interrupts a second, 1000000 APIC counts apart; the processor sleeps in between\n"
+        );
+        out.clear();
+        waiting(&mut out, None).unwrap();
+        assert_eq!(out, "Timer: none, so the uptime is kept by spinning\n");
     }
 
     #[test]

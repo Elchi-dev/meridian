@@ -101,6 +101,8 @@ fn finish(
     serial: &mut Com1,
 ) -> ! {
     let _ = writeln!(serial, "There is nothing more to do yet.");
+    let timer = raw::timer::start(tsc_hz);
+    let _ = kernel::waiting(serial, timer);
     let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
         x86::raw::halt()
     };
@@ -113,6 +115,10 @@ fn finish(
             });
             shown = now;
         }
-        core::hint::spin_loop();
+        if timer.is_some() {
+            x86::raw::wait_for_interrupt();
+        } else {
+            core::hint::spin_loop();
+        }
     }
 }

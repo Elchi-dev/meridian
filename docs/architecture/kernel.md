@@ -28,9 +28,14 @@ is what exists today; everything after it is still to come.
   direct map, so a broken pointer cannot fault. It measures the time stamp
   counter against the timer for 10 ms, and gives up after two million
   reads of a timer that does not move. The uptime is the counter divided by
-  its rate: the time since the machine was switched on. There are no
-  interrupts yet, so the kernel spins and draws the uptime again when the
-  second changes.
+  its rate: the time since the machine was switched on. The local APIC runs in x2APIC mode, through model specific registers
+  rather than memory: its timer is measured against the time stamp counter
+  for a hundredth of a second and then interrupts a hundred times a
+  second, the legacy 8259s are masked, and the processor sleeps with `hlt`
+  between ticks, drawing the uptime again when the second changes. Without
+  an x2APIC or a known counter rate it spins as before. The test image
+  checks the APIC was off before, sees about ten ticks in a tenth of a
+  second, a halted processor wake at the next one, and the timer stop.
 - **The status screen.** In the boot screens' dark look, drawn with
   `lib/canvas` and Inter: the kernel's version, the processor's name from
   CPUID, the number of cores, how long the machine has been up, the free

@@ -112,7 +112,7 @@ pub fn run(check: &mut impl FnMut(&str, bool, &str)) {
 /// Checks of the kernel's descriptor tables once it has loaded them. They
 /// run from the kernel's test image, since the firmware needs its own
 /// tables while it runs.
-pub fn tables(check: &mut impl FnMut(&str, bool, &str)) {
+pub fn tables(interrupts: &[u8], check: &mut impl FnMut(&str, bool, &str)) {
     use crate::tables::{KERNEL_CODE, KERNEL_DATA, TASK_STATE};
 
     let gdt = raw::gdt_register();
@@ -187,14 +187,83 @@ pub fn tables(check: &mut impl FnMut(&str, bool, &str)) {
     );
     check(
         "x86.idt.nothing_else",
-        gates[32..].iter().all(|g| !g.is_present()),
-        "there are no interrupt handlers yet, so no gate past 31 should be present",
+        gates.len() == 256
+            && gates[32..]
+                .iter()
+                .zip(32u8..=255)
+                .all(|(g, v)| g.is_present() == interrupts.contains(&v)),
+        "past the exceptions, only the interrupts the kernel handles should have gates",
     );
     let stacks = raw::task_state().map(|t| t.interrupt_stacks);
     check(
         "x86.task_state.stack",
         stacks.is_some_and(|s| s[0] != 0 && s[0] % 16 == 0 && kernel(s[0]) && s[1..] == [0; 6]),
         "the task state should hold one fault stack, aligned and in the kernel",
+    );
+}
+
+/// The x2APIC and its timer, from the kernel's test image with interrupts
+/// off and before the kernel starts the timer itself: spinning, the APIC
+/// off at first and then in x2APIC mode, its timer counting down without
+/// an interrupt, set up for one, and stopped, and the spurious vector.
+pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
+    use crate::apic::{LVT_TIMER, MASKED, SPURIOUS, TIMER_INITIAL, periodic, spurious};
+    use raw::{apic_timer_count, read_apic};
+
+    let begin = raw::tsc();
+    raw::spin(1_000_000);
+    check(
+        "x86.apic.spin",
+        raw::tsc() - begin >= 1_000_000,
+        "spinning should last at least as many counter cycles as asked",
+    );
+    check(
+        "x86.apic.off_before",
+        !raw::x2apic_enabled()
+            && apic_timer_count() == 0
+            && read_apic(SPURIOUS) == 0
+            && !raw::interrupts_enabled(),
+        "OVMF leaves the APIC in xAPIC mode, and nothing reaches its x2APIC registers before",
+    );
+    check(
+        "x86.apic.x2apic",
+        raw::enable_x2apic() && raw::x2apic_enabled() && raw::enable_x2apic(),
+        "the x2APIC should come on, and turning it on again should keep it on",
+    );
+    raw::start_apic_count();
+    let first = apic_timer_count();
+    raw::spin(100_000);
+    let later = apic_timer_count();
+    check(
+        "x86.apic.count",
+        first < u32::MAX && later < first && read_apic(LVT_TIMER) & 0x3_00ff == MASKED,
+        "the timer should count down from the top, held back from interrupting",
+    );
+    // The longest period, so it cannot end and leave an interrupt for a
+    // vector nobody handles waiting until interrupts are let in.
+    raw::start_apic_ticks(0x40, u32::MAX);
+    check(
+        "x86.apic.ticks",
+        read_apic(LVT_TIMER) & 0x3_00ff == periodic(0x40)
+            && read_apic(TIMER_INITIAL) == u64::from(u32::MAX),
+        "the timer should be periodic on its vector, with the period asked for",
+    );
+    raw::stop_apic_timer();
+    raw::spin(100_000);
+    check(
+        "x86.apic.stopped",
+        apic_timer_count() == 0
+            && read_apic(TIMER_INITIAL) == 0
+            && read_apic(LVT_TIMER) & MASKED != 0,
+        "a stopped timer should count nothing and interrupt nothing",
+    );
+    raw::set_spurious_vector(0xef);
+    let set = read_apic(SPURIOUS) & 0x1ff;
+    raw::end_of_interrupt();
+    check(
+        "x86.apic.spurious",
+        set == spurious(0xef),
+        "the spurious vector should be set, with the APIC turned on",
     );
 }
 

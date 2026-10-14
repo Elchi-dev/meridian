@@ -6,7 +6,7 @@
 
 use core::arch::naked_asm;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use x86::tables::{self, Gate, TaskState};
 
@@ -65,6 +65,19 @@ static TABLES: Shared = Shared(UnsafeCell::new(Tables {
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// The vector of the APIC timer, the first after the exceptions, and the
+/// one the APIC gives for interrupts it gave up on.
+pub const TIMER: u8 = 0x20;
+pub const SPURIOUS: u8 = 0xff;
+
+static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times the timer has interrupted. Only the test image counts.
+#[cfg(feature = "qemu-test")]
+pub fn ticks() -> u64 {
+    TICKS.load(Ordering::Acquire)
+}
+
 /// Loads the kernel's global descriptor table, task state segment and
 /// interrupt descriptor table. Only the first call does anything.
 pub fn install() {
@@ -81,6 +94,10 @@ pub fn install() {
         let stack = u8::from(matches!(vector, 2 | 8 | 18));
         t.idt[vector] = Gate::interrupt(*stub as usize as u64, stack);
     }
+    let timer: unsafe extern "C" fn() = timer_stub;
+    let spurious: unsafe extern "C" fn() = spurious_stub;
+    t.idt[usize::from(TIMER)] = Gate::interrupt(timer as usize as u64, 0);
+    t.idt[usize::from(SPURIOUS)] = Gate::interrupt(spurious as usize as u64, 0);
     // SAFETY: the tables live in a static, so they stay where they are,
     // the GDT holds the selectors load_gdt uses and the task state at
     // TASK_STATE, and every present gate leads to a stub below.
@@ -91,8 +108,17 @@ pub fn install() {
     }
 }
 
-/// Where the stubs bring every exception.
+/// Where the stubs bring every exception and interrupt. A timer tick is
+/// counted and acknowledged; a spurious interrupt needs nothing.
 extern "sysv64" fn exception(frame: &mut Frame) {
+    if frame.vector == u64::from(TIMER) {
+        TICKS.fetch_add(1, Ordering::AcqRel);
+        x86::raw::end_of_interrupt();
+        return;
+    }
+    if frame.vector == u64::from(SPURIOUS) {
+        return;
+    }
     #[cfg(feature = "qemu-test")]
     if expected::resume(frame) {
         return;
@@ -162,6 +188,16 @@ macro_rules! stubs {
     (@body $vector:literal none) => {
         naked_asm!("push 0", "push {v}", "jmp {common}", v = const $vector, common = sym common)
     };
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn timer_stub() {
+    naked_asm!("push 0", "push {v}", "jmp {common}", v = const TIMER, common = sym common)
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn spurious_stub() {
+    naked_asm!("push 0", "push {v}", "jmp {common}", v = const SPURIOUS, common = sym common)
 }
 
 static STUBS: [unsafe extern "C" fn(); 32] = stubs![

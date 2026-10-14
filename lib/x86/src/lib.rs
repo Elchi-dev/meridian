@@ -38,6 +38,67 @@ pub mod tsc_aux {
     }
 }
 
+/// The local APIC in x2APIC mode, whose registers are model specific
+/// registers from 0x800 on (Intel SDM, volume 3, chapter 11).
+pub mod apic {
+    /// `IA32_APIC_BASE`, with the bits that turn the APIC and its x2APIC
+    /// mode on.
+    pub const BASE_MSR: u32 = 0x1b;
+    pub const ENABLE: u64 = 1 << 11;
+    pub const X2APIC: u64 = 1 << 10;
+
+    pub const END_OF_INTERRUPT: u32 = 0x80b;
+    pub const SPURIOUS: u32 = 0x80f;
+    pub const LVT_TIMER: u32 = 0x832;
+    pub const TIMER_INITIAL: u32 = 0x838;
+    pub const TIMER_CURRENT: u32 = 0x839;
+    pub const TIMER_DIVIDE: u32 = 0x83e;
+    /// The timer counts at the APIC's own rate, undivided.
+    pub const DIVIDE_BY_1: u64 = 0b1011;
+    /// The timer's local vector table entry bits that hold its interrupt
+    /// back and that start it again each time it reaches 0.
+    pub const MASKED: u64 = 1 << 16;
+    pub const PERIODIC: u64 = 1 << 17;
+
+    /// Whether the processor has an x2APIC, given ECX of CPUID leaf 1.
+    #[must_use]
+    pub fn supported(leaf_1_ecx: u32) -> bool {
+        leaf_1_ecx & 1 << 21 != 0
+    }
+
+    /// The timer's local vector table entry for interrupt `vector` each
+    /// time a period ends.
+    #[must_use]
+    pub fn periodic(vector: u8) -> u64 {
+        u64::from(vector) | PERIODIC
+    }
+
+    /// The values to write to `IA32_APIC_BASE`, which holds `base` now, one
+    /// after the other: the APIC on, then its x2APIC mode, the only order
+    /// the SDM allows from an APIC that is off.
+    #[must_use]
+    pub fn steps_to_x2apic(base: u64) -> [u64; 2] {
+        [base | ENABLE, base | ENABLE | X2APIC]
+    }
+
+    /// The spurious interrupt register's value: the APIC on, and `vector`
+    /// for the interrupts it gives up on.
+    #[must_use]
+    pub fn spurious(vector: u8) -> u64 {
+        u64::from(vector) | 1 << 8
+    }
+
+    /// The timer's count per period for `hz` interrupts a second, when it
+    /// counted `counted` in `ticks` of a clock that does `clock_hz` a
+    /// second, or `None` when the numbers make no period.
+    #[must_use]
+    pub fn period(counted: u64, ticks: u64, clock_hz: u64, hz: u64) -> Option<u32> {
+        let rate = u128::from(counted) * u128::from(clock_hz) / u128::from(ticks.max(1));
+        let period = rate / u128::from(hz.max(1));
+        u32::try_from(period).ok().filter(|&p| p > 0)
+    }
+}
+
 /// The 64-bit value an instruction hands back in two halves, as rdmsr and
 /// rdtsc do in EDX and EAX.
 #[must_use]
@@ -127,6 +188,84 @@ pub fn brand() -> CpuText<48> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_x2apic_bit_is_bit_21_of_leaf_1() {
+        assert!(apic::supported(1 << 21));
+        assert!(!apic::supported(!(1 << 21)));
+        assert!(!apic::supported(0));
+    }
+
+    #[test]
+    fn the_apic_registers_are_where_the_sdm_puts_them() {
+        assert_eq!(
+            [
+                apic::END_OF_INTERRUPT,
+                apic::SPURIOUS,
+                apic::LVT_TIMER,
+                apic::TIMER_INITIAL,
+                apic::TIMER_CURRENT,
+                apic::TIMER_DIVIDE
+            ],
+            [0x80b, 0x80f, 0x832, 0x838, 0x839, 0x83e]
+        );
+        assert_eq!(
+            (apic::BASE_MSR, apic::ENABLE, apic::X2APIC),
+            (0x1b, 0x800, 0x400)
+        );
+        assert_eq!(apic::DIVIDE_BY_1, 0xb);
+    }
+
+    #[test]
+    fn timer_entries_carry_the_vector_mask_and_mode() {
+        assert_eq!((apic::MASKED, apic::PERIODIC), (0x1_0000, 0x2_0000));
+        assert_eq!(apic::periodic(0x20), 0x2_0020);
+        assert_eq!(apic::periodic(0xff), 0x2_00ff);
+        assert_eq!(apic::spurious(0xff), 0x1ff, "bit 8 turns the APIC on");
+        assert_eq!(apic::spurious(0x27), 0x127);
+    }
+
+    #[test]
+    fn the_apic_is_turned_on_before_its_x2apic_mode() {
+        assert_eq!(
+            apic::steps_to_x2apic(0xfee0_0000),
+            [0xfee0_0800, 0xfee0_0c00]
+        );
+        assert_eq!(
+            apic::steps_to_x2apic(0xfee0_0900),
+            [0xfee0_0900, 0xfee0_0d00],
+            "on already, and the BSP bit kept"
+        );
+        assert_eq!(
+            apic::steps_to_x2apic(0xfee0_0c00),
+            [0xfee0_0c00, 0xfee0_0c00]
+        );
+    }
+
+    #[test]
+    fn the_period_follows_the_measured_rate() {
+        // 1 GHz counted over 10 ms of a 3 GHz clock, for 100 a second.
+        assert_eq!(
+            apic::period(10_000_000, 30_000_000, 3_000_000_000, 100),
+            Some(10_000_000)
+        );
+        assert_eq!(
+            apic::period(10_000_000, 30_000_000, 3_000_000_000, 1000),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            apic::period(999, 1000, 1000, 1000),
+            None,
+            "less than one count"
+        );
+        assert_eq!(apic::period(1, 1, 1 << 40, 100), None, "more than 32 bits");
+        assert_eq!(
+            apic::period(1000, 0, 1000, 0),
+            Some(1_000_000),
+            "nothing taken as one"
+        );
+        assert_eq!(apic::period(u64::MAX, 1, u64::MAX, 1 << 60), None);
+    }
 
     /// The value of the first `name : value` line in /proc/cpuinfo, when
     /// the build machine runs Linux.

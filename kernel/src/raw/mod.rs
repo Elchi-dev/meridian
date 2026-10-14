@@ -4,6 +4,7 @@
 
 pub mod interrupts;
 pub mod memory;
+pub mod timer;
 
 #[cfg(not(test))]
 use core::cell::UnsafeCell;

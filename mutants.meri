@@ -72,3 +72,17 @@ allow {
     mutation = "+= to -="
     reason = "coverage is the size of the running sum whichever its sign, since outlines may wind either way, so summing the cells negated gives the same bytes"
 }
+
+allow {
+    file = "lib/x86/src/raw.rs"
+    line = "while tsc() - begin < cycles {"
+    mutation = "< to <="
+    reason = "the loop ends one counter cycle later at most, which nothing that waits a hundredth or a tenth of a second can tell"
+}
+
+allow {
+    file = "lib/x86/src/raw.rs"
+    line = "pub fn mask_legacy_pics() {"
+    mutation = "body to {}"
+    reason = "OVMF masks both 8259s before it starts a loader, so on the test machines masking them again changes nothing; on firmware that leaves lines open it keeps their interrupts off the vectors the exceptions use"
+}

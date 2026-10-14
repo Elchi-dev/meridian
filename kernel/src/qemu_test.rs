@@ -143,6 +143,7 @@ pub fn run(
         );
     }
 
+    timer_checks(&mut report, tsc_hz);
     exception_checks(&mut report);
 
     // The last check is the panic screen: the panic handler takes over,
@@ -256,7 +257,10 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
 /// The kernel's own tables are loaded, and each exception a check asks for
 /// reaches the handler with the right vector, error code and address.
 fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
-    x86::qemu_test::tables(&mut |name, ok, why| report.check(name, ok, why));
+    use crate::raw::interrupts::{SPURIOUS, TIMER};
+    x86::qemu_test::tables(&[TIMER, SPURIOUS], &mut |name, ok, why| {
+        report.check(name, ok, why);
+    });
     let caught = |c: Option<Caught>, vector: u64| c.is_some_and(|c| c.vector == vector);
     report.check(
         "kernel.exception.breakpoint",
@@ -374,6 +378,55 @@ fn handover_screen_checks<W: Write>(
         "kernel.screen.back_buffer_once",
         raw::back_buffer(info, regions).is_none(),
         "the room for a frame should be handed out only once",
+    );
+}
+
+/// Starts the APIC timer, sees it tick and wake the processor from hlt,
+/// and stops it again, so the crashes after this run as before.
+fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
+    use crate::raw::interrupts::ticks;
+    use crate::raw::timer;
+
+    use x86::apic;
+    use x86::raw::read_apic;
+
+    x86::qemu_test::apic(&mut |name, ok, why| report.check(name, ok, why));
+    let tenth = tsc_hz.unwrap_or(0) / 10;
+    let period = timer::start(tsc_hz);
+    report.check(
+        "kernel.timer.x2apic",
+        period.is_some()
+            && x86::raw::x2apic_enabled()
+            && x86::raw::interrupts_enabled()
+            && read_apic(apic::SPURIOUS) & 0x1ff == apic::spurious(crate::raw::interrupts::SPURIOUS)
+            && read_apic(apic::LVT_TIMER) & 0x3_00ff == apic::periodic(crate::raw::interrupts::TIMER),
+        "the x2APIC should be on with its spurious vector, its timer periodic on its vector, and interrupts let in",
+    );
+    let first = ticks();
+    x86::raw::spin(tenth);
+    let counted = ticks() - first;
+    report.check(
+        "kernel.timer.ticks",
+        (5..=20).contains(&counted),
+        "the timer should interrupt about ten times in a tenth of a second",
+    );
+    let before = ticks();
+    x86::raw::wait_for_interrupt();
+    report.check(
+        "kernel.timer.wakes",
+        ticks() > before,
+        "a halted processor should wake at the next tick",
+    );
+    timer::stop();
+    let stopped = ticks();
+    x86::raw::spin(tenth);
+    report.check(
+        "kernel.timer.stopped",
+        ticks() == stopped
+            && !x86::raw::interrupts_enabled()
+            && x86::raw::apic_timer_count() == 0
+            && read_apic(apic::LVT_TIMER) & apic::MASKED != 0,
+        "once stopped, the timer should count no more and interrupt no more",
     );
 }
 

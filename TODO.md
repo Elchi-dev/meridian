@@ -83,7 +83,8 @@ Loader and UEFI:
 
 - [x] Physical frame allocator and kernel heap (`lib/frames`, `lib/heap`)
 - [ ] Virtual memory: the kernel maps and unmaps pages of its own
-- [ ] Local APIC and x2APIC, HPET and TSC
+- [x] The local APIC in x2APIC mode, its timer measured against the TSC, interrupts a hundred times a second and `hlt` in between
+- [ ] The local APIC in xAPIC mode, for processors without x2APIC, and HPET
 - [ ] All cores started
 - [ ] ACPI tables parsed
 

@@ -58,6 +58,24 @@ func TestAMachineThatRebootsKeepsRunningAfterAReset(t *testing.T) {
 	}
 }
 
+func TestSecureBootFirmwareGetsSMMAndAProtectedFlash(t *testing.T) {
+	m := fullMachine()
+	m.SecureBoot = true
+	got := strings.Join(m.Args(), " ")
+	want := "-machine q35,smm=on -cpu max"
+	if !strings.HasPrefix(got, want) {
+		t.Fatalf("got %s", got)
+	}
+	secure := "-global driver=cfi.pflash01,property=secure,value=on -drive if=pflash,format=raw,readonly=on"
+	if !strings.Contains(got, secure) {
+		t.Fatalf("the flash should be protected before the firmware is added: %s", got)
+	}
+	plain := strings.Join(fullMachine().Args(), " ")
+	if strings.Contains(plain, "smm") || strings.Contains(plain, "secure") {
+		t.Fatalf("an ordinary machine needs neither: %s", plain)
+	}
+}
+
 func TestCommasInPathsAreDoubled(t *testing.T) {
 	m := fullMachine()
 	m.Disk = "/tmp/a,b/disk.img"

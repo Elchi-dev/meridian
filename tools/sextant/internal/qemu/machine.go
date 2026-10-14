@@ -40,6 +40,11 @@ type Machine struct {
 	// Reboot lets a reset start the machine again. Without it QEMU ends
 	// when the machine resets, so a crash that resets cannot loop.
 	Reboot bool
+	// SecureBoot runs the firmware the way OVMF's Secure Boot builds need:
+	// with system management mode, and with the flash holding the
+	// variables writable only from it, so nothing outside the firmware can
+	// change the keys.
+	SecureBoot bool
 }
 
 // Exit codes of isa-debug-exit: QEMU exits with (value << 1) | 1, and test
@@ -76,8 +81,12 @@ func (m Machine) Validate() error {
 
 // Args is the QEMU command line, without the binary.
 func (m Machine) Args() []string {
+	board := "q35"
+	if m.SecureBoot {
+		board = "q35,smm=on"
+	}
 	args := []string{
-		"-machine", "q35",
+		"-machine", board,
 		"-cpu", "max",
 		"-m", strconv.FormatInt(m.Memory>>20, 10) + "M",
 		"-smp", strconv.Itoa(m.CPUs),
@@ -92,6 +101,11 @@ func (m Machine) Args() []string {
 	args = append(args,
 		"-vga", "std",
 		"-serial", "stdio",
+	)
+	if m.SecureBoot {
+		args = append(args, "-global", "driver=cfi.pflash01,property=secure,value=on")
+	}
+	args = append(args,
 		"-drive", "if=pflash,format=raw,readonly=on,file="+escape(m.Firmware.Code),
 		"-drive", "if=pflash,format=raw,file="+escape(m.Firmware.Vars),
 	)

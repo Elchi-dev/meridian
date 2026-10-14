@@ -127,7 +127,12 @@ func TestIdentityOutsideGit(t *testing.T) {
 func TestIdentityFollowsTheCommit(t *testing.T) {
 	needTool(t, "git")
 	s := testSession(t.TempDir())
-	s.root = realRoot(t)
+	// A repository of its own: mutation testing runs this in copies that
+	// leave the real history out.
+	s.root = checkout(t, map[string]string{"f": "x"})
+	git(t, s.root, "init", "-q")
+	git(t, s.root, "add", ".")
+	git(t, s.root, "commit", "-q", "-m", "start")
 	t.Setenv("SOURCE_DATE_EPOCH", "1760418000")
 	seed, when := s.identity(context.Background())
 	head, err := exec.Command("git", "-C", s.root, "rev-parse", "HEAD").Output()

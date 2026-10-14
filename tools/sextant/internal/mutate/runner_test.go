@@ -130,6 +130,48 @@ func TestRunnerOnAGoModule(t *testing.T) {
 	}
 }
 
+func TestRunnerStopsGoTestsAtTheFirstFailure(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "second test ran")
+	src := "package m\n\nfunc Less(a, b int) bool {\n\treturn a < b\n}\n"
+	tests := `package m
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFirst(t *testing.T) {
+	if !Less(1, 2) {
+		t.Fatal("1 < 2")
+	}
+}
+
+func TestSecond(t *testing.T) {
+	if !Less(1, 2) {
+		os.WriteFile(` + "`" + marker + "`" + `, nil, 0o644)
+	}
+}
+`
+	root := writeTree(t, map[string]string{"go.mod": goModule, "a.go": src, "a_test.go": tests})
+	ms, err := GoMutants("a.go", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var picked []Mutant
+	for _, m := range ms {
+		if m.Desc == "body to { return false }" {
+			picked = append(picked, m)
+		}
+	}
+	results, err := (&Runner{Root: root, Jobs: 1}).Run(context.Background(), picked, map[string]Target{"a.go": {Component: ".", Kind: "go"}})
+	if err != nil || len(results) != 1 || results[0].Outcome != Killed {
+		t.Fatalf("got %v %v", results, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the tests went on after the first failure: %v", err)
+	}
+}
+
 func TestRunnerRefusesTestsThatAlreadyFail(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":    goModule,

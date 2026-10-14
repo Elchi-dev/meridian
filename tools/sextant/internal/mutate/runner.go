@@ -268,7 +268,9 @@ func (w *worker) test(ctx context.Context, file string, t Target, timeout time.D
 		if err != nil {
 			return testRun{err: err}
 		}
-		name, args = "go", []string{"test", "./" + filepath.ToSlash(rel)}
+		// One failure is enough to kill a mutant; the tests after it only
+		// cost time.
+		name, args = "go", []string{"test", "-failfast", "./" + filepath.ToSlash(rel)}
 	case "rust":
 		name, args = "cargo", []string{"test", "-q", "--manifest-path", filepath.Join(dir, "Cargo.toml")}
 		dir = w.dir

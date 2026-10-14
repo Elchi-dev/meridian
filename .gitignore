@@ -1,0 +1,7 @@
+/target/
+/out/
+*.img
+*.iso
+sextant.local.meri
+/tools/sextant/sextant
+/tools/sextant/sextant.exe

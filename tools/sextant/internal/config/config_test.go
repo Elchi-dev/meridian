@@ -68,6 +68,9 @@ stats {
 build {
     dir = "/tmp/meridian-build"
 }
+mutate {
+    scratch = "/var/cache/mutate"
+}
 qemu {
     memory = 2GiB
     cpus = 12
@@ -78,8 +81,8 @@ qemu {
     stall = 45s
 }
 `)
-	if c.MinRatio != 2.5 || c.BuildDir != "/tmp/meridian-build" {
-		t.Errorf("stats or build: %+v", c)
+	if c.MinRatio != 2.5 || c.BuildDir != "/tmp/meridian-build" || c.MutateScratch != "/var/cache/mutate" {
+		t.Errorf("stats, build or mutate: %+v", c)
 	}
 	want := QEMU{Memory: 2 << 30, CPUs: 12, Accel: "tcg", Code: "/fw/code.fd", Vars: "/fw/vars.fd", Timeout: 90 * time.Second, Stall: 45 * time.Second}
 	if c.QEMU != want {
@@ -87,14 +90,17 @@ qemu {
 	}
 }
 
-func TestRelativeBuildDirIsUnderTheRoot(t *testing.T) {
-	root := repo(t, "build { dir = \"out/cargo\" }\n")
+func TestRelativeFoldersStartAtTheRoot(t *testing.T) {
+	root := repo(t, "build { dir = \"out/cargo\" }\nmutate { scratch = \"../mutants\" }\n")
 	c, err := Load(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.BuildDir != filepath.Join(root, "out", "cargo") {
 		t.Fatalf("build dir = %q", c.BuildDir)
+	}
+	if c.MutateScratch != filepath.Join(filepath.Dir(root), "mutants") {
+		t.Fatalf("mutate scratch = %q", c.MutateScratch)
 	}
 }
 
@@ -139,8 +145,8 @@ func TestSyntaxErrorsNameTheFile(t *testing.T) {
 }
 
 func TestWrongTypesAreReported(t *testing.T) {
-	msg := loadErr(t, "qemu {\n    memory = \"lots\"\n    cpus = many\n}\n")
-	for _, want := range []string{"memory", "cpus"} {
+	msg := loadErr(t, "qemu {\n    memory = \"lots\"\n    cpus = many\n}\nmutate { scratch = true }\n")
+	for _, want := range []string{"memory", "cpus", "scratch"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("%q should mention %q", msg, want)
 		}

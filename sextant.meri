@@ -14,6 +14,15 @@ build {
     dir = "target"
 }
 
+mutate {
+    # Where sextant mutate keeps its copies of the repository, their builds
+    # and the temporary folders of their tests. It must lie outside the
+    # repository. Unset, mutate uses the build folder when that lies outside
+    # the repository, else the user's cache folder, but never the system's
+    # temporary folder, which is RAM on many machines.
+    # scratch = "/path/outside/the/repository"
+}
+
 qemu {
     memory = 512MiB
     cpus = 4

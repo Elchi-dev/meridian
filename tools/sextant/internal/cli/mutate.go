@@ -2,11 +2,9 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,7 +13,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/Elchi-dev/meridian/tools/sextant/internal/meri"
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/mutate"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/project"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/stats"
@@ -79,7 +77,11 @@ func runMutate(env Env, args []string) error {
 		return staleError(env, stale)
 	}
 
-	scratch, err := mutateScratch(root)
+	settings, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+	scratch, err := mutateScratch(settings)
 	if err != nil {
 		return err
 	}
@@ -114,72 +116,36 @@ func runMutate(env Env, args []string) error {
 }
 
 // mutateScratch is where mutation runs keep their copies, builds and
-// temporary folders: mutate.scratch from the settings, else build.dir with
-// mutate added, else sextant/mutate in the user's cache folder. It must lie
-// outside the repository, because the tests' temporary folders go there and
-// some tests rely on those not being inside a checkout. The system's
-// temporary folder is never used: on many machines it is RAM, and a mutant
-// that loops while writing an image would fill it.
-func mutateScratch(root string) (string, error) {
-	settings, err := loadSettings(root)
-	if err != nil {
-		return "", err
+// temporary folders: mutate.scratch from the settings, else the build
+// folder with mutate added, else sextant/mutate in the user's cache folder.
+// It must lie outside the repository, because the tests' temporary folders
+// go there and some tests rely on those not being inside a checkout. For
+// the same reason a build folder inside the repository, such as the default
+// target, is passed over. The system's temporary folder is never used: on
+// many machines it is RAM, and a mutant that loops while writing an image
+// would fill it.
+func mutateScratch(settings config.Config) (string, error) {
+	dir := settings.MutateScratch
+	if dir == "" && !within(settings.Root, settings.BuildDir) {
+		dir = filepath.Join(settings.BuildDir, "mutate")
 	}
-	dir := ""
-	if own, err := setting(settings, "mutate", "scratch"); err != nil {
-		return "", err
-	} else if own != "" {
-		dir = own
-	} else if build, err := setting(settings, "build", "dir"); err != nil {
-		return "", err
-	} else if build != "" {
-		dir = filepath.Join(build, "mutate")
-	} else {
+	if dir == "" {
 		cache, err := os.UserCacheDir()
 		if err != nil {
 			return "", fmt.Errorf("there is no cache folder for mutation runs (%v); set mutate.scratch in sextant.local.meri", err)
 		}
 		dir = filepath.Join(cache, "sextant", "mutate")
 	}
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(root, dir)
-	}
-	if rel, err := filepath.Rel(root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if within(settings.Root, dir) {
 		return "", fmt.Errorf("the mutation scratch folder %s is inside the repository; point mutate.scratch in sextant.local.meri at a folder outside it", dir)
 	}
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
-// loadSettings reads sextant.meri and layers sextant.local.meri over it.
-func loadSettings(root string) (*meri.Block, error) {
-	read := func(name string) (*meri.Block, error) {
-		src, err := os.ReadFile(filepath.Join(root, name))
-		if err != nil {
-			return nil, err
-		}
-		return meri.Parse(name, src)
-	}
-	settings, err := read(project.Marker)
-	if err != nil {
-		return nil, err
-	}
-	local, err := read("sextant.local.meri")
-	if errors.Is(err, fs.ErrNotExist) {
-		return settings, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return meri.Merge(settings, local), nil
-}
-
-// setting returns key from the first block named block, or "".
-func setting(settings *meri.Block, block, key string) (string, error) {
-	blocks := settings.Blocks(block)
-	if len(blocks) == 0 {
-		return "", nil
-	}
-	return blocks[0].String(key, "")
+// within reports whether p is root or lies below it.
+func within(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // parseInterleaved accepts flags before, between and after the paths.

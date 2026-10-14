@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
 )
 
 const lessGo = "package m\n\nfunc Less(a, b int) bool {\n\treturn a < b\n}\n"
@@ -235,16 +237,29 @@ func isolateCache(t *testing.T) string {
 	return cache
 }
 
+func scratchOf(t *testing.T, root string) (string, error) {
+	t.Helper()
+	settings, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutateScratch(settings)
+}
+
+// The default build folder, target, lies inside the repository, so without
+// settings of its own a run goes to the cache folder.
 func TestMutateScratchDefaultsToTheCacheFolder(t *testing.T) {
 	cache := isolateCache(t)
-	repo := mutateRepo()
-	delete(repo, "sextant.local.meri")
-	dir, err := mutateScratch(checkout(t, repo))
-	if err != nil || dir != filepath.Join(cache, "sextant", "mutate") {
-		t.Fatalf("%q %v", dir, err)
-	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		t.Fatalf("the folder is created: %v", err)
+	for _, local := range []string{"", "build {\n    dir = \"out\"\n}\n"} {
+		repo := mutateRepo()
+		repo["sextant.local.meri"] = local
+		dir, err := scratchOf(t, checkout(t, repo))
+		if err != nil || dir != filepath.Join(cache, "sextant", "mutate") {
+			t.Fatalf("%q: %q %v", local, dir, err)
+		}
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Fatalf("the folder is created: %v", err)
+		}
 	}
 }
 
@@ -256,11 +271,12 @@ func TestMutateScratchFollowsTheSettings(t *testing.T) {
 	}{
 		{"build {\n    dir = \"" + filepath.ToSlash(elsewhere) + "\"\n}\n", filepath.Join(elsewhere, "mutate")},
 		{"mutate {\n    scratch = \"" + filepath.ToSlash(elsewhere) + "/m\"\n}\nbuild {\n    dir = \"/x\"\n}\n", filepath.Join(elsewhere, "m")},
+		{"mutate {\n    scratch = \"" + filepath.ToSlash(elsewhere) + "/n\"\n}\n", filepath.Join(elsewhere, "n")},
 	}
 	for _, tt := range tests {
 		repo := mutateRepo()
 		repo["sextant.local.meri"] = tt.local
-		dir, err := mutateScratch(checkout(t, repo))
+		dir, err := scratchOf(t, checkout(t, repo))
 		if err != nil || dir != tt.want {
 			t.Errorf("%q: %q %v, want %q", tt.local, dir, err, tt.want)
 		}
@@ -271,12 +287,11 @@ func TestMutateScratchMustBeOutsideTheRepository(t *testing.T) {
 	isolateCache(t)
 	for _, local := range []string{
 		"mutate {\n    scratch = \"in/repo\"\n}\n",
-		"build {\n    dir = \"out\"\n}\n",
 		"mutate {\n    scratch = \".\"\n}\n",
 	} {
 		repo := mutateRepo()
 		repo["sextant.local.meri"] = local
-		_, err := mutateScratch(checkout(t, repo))
+		_, err := scratchOf(t, checkout(t, repo))
 		if err == nil || !strings.Contains(err.Error(), "is inside the repository; point mutate.scratch") {
 			t.Errorf("%q: %v", local, err)
 		}
@@ -284,37 +299,29 @@ func TestMutateScratchMustBeOutsideTheRepository(t *testing.T) {
 	repo := mutateRepo()
 	repo["sextant.local.meri"] = "mutate {\n    scratch = \"../beside\"\n}\n"
 	root := checkout(t, repo)
-	if dir, err := mutateScratch(root); err != nil || dir != filepath.Join(filepath.Dir(root), "beside") {
+	if dir, err := scratchOf(t, root); err != nil || dir != filepath.Join(filepath.Dir(root), "beside") {
 		t.Errorf("a folder beside the repository is fine: %q %v", dir, err)
 	}
 }
 
-func TestMutateScratchRefusesBrokenSettings(t *testing.T) {
-	for _, local := range []string{"build {\n", "build {\n    dir = 4\n}\n", "mutate {\n    scratch = true\n}\n"} {
-		repo := mutateRepo()
-		repo["sextant.local.meri"] = local
-		if _, err := mutateScratch(checkout(t, repo)); err == nil {
-			t.Errorf("%q must be an error", local)
-		}
+func TestMutateScratchNeedsACacheFolderOrASetting(t *testing.T) {
+	for _, v := range []string{"XDG_CACHE_HOME", "HOME", "LocalAppData", "home"} {
+		t.Setenv(v, "")
 	}
-	root := checkout(t, mutateRepo())
-	if err := os.Remove(filepath.Join(root, "sextant.local.meri")); err != nil {
-		t.Fatal(err)
+	repo := mutateRepo()
+	repo["sextant.local.meri"] = ""
+	_, err := scratchOf(t, checkout(t, repo))
+	if err == nil || !strings.Contains(err.Error(), "there is no cache folder for mutation runs") {
+		t.Fatalf("got %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(root, "sextant.local.meri"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mutateScratch(root); err == nil {
-		t.Fatal("an unreadable local settings file must be an error")
-	}
-	if err := os.Remove(filepath.Join(root, "sextant.local.meri")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "sextant.meri"), []byte("stats {\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mutateScratch(root); err == nil {
-		t.Fatal("broken settings must be an error")
+}
+
+func TestMutateRefusesBrokenSettings(t *testing.T) {
+	repo := mutateRepo()
+	repo["sextant.local.meri"] = "mutate {\n    scratch = true\n}\n"
+	r := runIn(checkout(t, repo), "mutate", "m/less.go")
+	if r.code != ExitFailure || !strings.Contains(r.stderr, "scratch") {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
 	}
 }
 

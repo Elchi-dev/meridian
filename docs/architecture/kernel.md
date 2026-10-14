@@ -36,7 +36,9 @@ is what exists today; everything after it is still to come.
   CPUID, the number of cores, how long the machine has been up, the free
   memory out of all memory, and the memory map as a bar.
   Reserved ranges above the end of memory are devices, such as QEMU's
-  12 GiB PCI window, and are left out.
+  12 GiB PCI window, and are left out. Each frame, and each new uptime, is
+  drawn off the screen in the room the loader set aside and then copied
+  over, so the person never sees a frame half drawn.
 - **Descriptor tables and exceptions.** At entry the kernel loads its own
   GDT (null, code, data, task state), a task state segment and an IDT
   with a gate for each of the 32 exceptions. Each gate leads to a small

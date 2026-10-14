@@ -69,7 +69,7 @@ Loader and UEFI:
 - [x] Memory regions for the handover (`lib/bootinfo`)
 - [x] Kernel ELF loading (`lib/elf`), higher-half page tables (`lib/paging`), the handover structure, the jump
 - [x] Framebuffer in the handover
-- [ ] The boot screen kept on the framebuffer until the kernel draws, without flicker
+- [x] The boot screen kept on the framebuffer until the kernel draws, without flicker
 - [x] Kernel: entry point, serial log, QEMU checks of the handover
 - [x] Kernel: framebuffer text (`lib/canvas` with `lib/font`)
 - [x] Kernel: GDT, TSS with a fault stack, IDT, every exception caught and shown on the panic screen

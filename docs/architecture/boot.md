@@ -33,8 +33,9 @@
     after the switch are still there; nothing else of the lower half, not
     even address 0
 - **The handover.** Everything the kernel keeps (its image, the stack, the
-  page tables, the boot information) is allocated with the memory type
-  `0x80000000`, so it shows up as kernel memory in the map. The loader reads
+  page tables, the boot information, and room for one frame of the
+  screen) is allocated with the memory type `0x80000000`, so it shows up
+  as kernel memory in the map. The loader reads
   the final memory map into the boot information, leaves boot services
   (trying a second time if the map changed in between), turns on no-execute
   pages and write protection, switches page tables and stack and calls the
@@ -141,8 +142,14 @@ with `verbose` and `default = example` and sees the example start.
 ### Starting the kernel
 
 Loading, the page tables and the handover exist (see above), with
-Meridian's own protocol rather than Multiboot or Limine. Still to come:
+Meridian's own protocol rather than Multiboot or Limine.
 
-- **The framebuffer** (address, size, stride, pixel format) and the boot
-  choices join the boot information.
-- **No flicker.** The framebuffer is handed over as it is, with the boot screen still on it, so the kernel continues from the same picture.
+- **The framebuffer** (address, size, stride, pixel format) is in the boot
+  information. Exists. The boot choices are still to come.
+- **No flicker.** The framebuffer is handed over as it is, with the boot
+  screen still on it, and the boot information names room in kernel memory
+  for one frame. The kernel draws its first screen there and copies it
+  over whole, so the boot screen stays until the finished status screen
+  replaces it. Exists; the kernel's test build checks that the boot screen
+  is still there when it starts drawing and that the screen shows exactly
+  the frame drawn off it.

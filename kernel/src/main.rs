@@ -13,7 +13,8 @@ mod raw;
 use core::fmt::Write;
 
 use bootinfo::{BootInfo, MemoryRegion};
-use canvas::{Canvas, Scratch};
+use canvas::Scratch;
+use kernel::display::Display;
 use kernel::machine::{self, Machine};
 use kernel::screen::Facts;
 use x86::raw::Com1;
@@ -31,8 +32,11 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
         .pm_timer
         .and_then(|(port, bits)| machine::calibrate(|| raw::pm_timer(port), bits, x86::raw::tsc));
     let _ = kernel::describe(serial, &machine, tsc_hz);
-    let mut screen = raw::screen(&info.framebuffer);
-    if let Some(canvas) = screen.as_mut() {
+    let screen = raw::screen(&info.framebuffer);
+    #[cfg(feature = "qemu-test")]
+    qemu_test::before_drawing(screen.as_ref());
+    let mut display = screen.map(|s| Display::new(s, raw::back_buffer(info, regions)));
+    if let Some(display) = display.as_mut() {
         let brand = x86::brand();
         let facts = Facts {
             processor: brand.as_str(),
@@ -40,14 +44,15 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
             up: up(tsc_hz),
             regions,
         };
-        if let Err(e) = kernel::screen::draw(canvas, &facts, &mut Scratch::new()) {
+        let drawn = display.frame(|c| kernel::screen::draw(c, &facts, &mut Scratch::new()));
+        if let Err(e) = drawn {
             let _ = writeln!(
                 serial,
                 "kernel: the status screen could not be drawn: {e:?}"
             );
         }
     }
-    finish(info, regions, &machine, tsc_hz, screen.as_mut(), serial)
+    finish(info, regions, &machine, tsc_hz, display.as_mut(), serial)
 }
 
 #[cfg(feature = "qemu-test")]
@@ -56,10 +61,10 @@ fn finish(
     regions: &[MemoryRegion],
     machine: &Machine,
     tsc_hz: Option<u64>,
-    screen: Option<&mut Canvas<'_>>,
+    display: Option<&mut Display<'_>>,
     serial: &mut Com1,
 ) -> ! {
-    qemu_test::run(info, regions, machine, tsc_hz, screen.map(|c| &*c), serial)
+    qemu_test::run(info, regions, machine, tsc_hz, display.map(|d| &*d), serial)
 }
 
 /// Keeps the uptime on the screen current. There are no interrupts yet to
@@ -70,17 +75,20 @@ fn finish(
     _: &[MemoryRegion],
     _: &Machine,
     tsc_hz: Option<u64>,
-    screen: Option<&mut Canvas<'_>>,
+    display: Option<&mut Display<'_>>,
     serial: &mut Com1,
 ) -> ! {
     let _ = writeln!(serial, "There is nothing more to do yet.");
-    let (Some(canvas), Some(mut shown)) = (screen, up(tsc_hz)) else {
+    let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
         x86::raw::halt()
     };
     let mut scratch = Scratch::new();
+    let (x, y, width, height) = kernel::screen::uptime_area(display.screen().width());
     loop {
         if let Some(now) = kernel::clock::to_redraw(shown, up(tsc_hz).unwrap_or(shown)) {
-            let _ = kernel::screen::uptime(canvas, Some(now), &mut scratch);
+            let _ = display.update(x, y, width, height, |c| {
+                kernel::screen::uptime(c, Some(now), &mut scratch)
+            });
             shown = now;
         }
         core::hint::spin_loop();

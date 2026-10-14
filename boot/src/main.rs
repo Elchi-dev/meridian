@@ -637,6 +637,19 @@ fn pages_for(bytes: u64) -> usize {
     usize::try_from(bytes.div_ceil(PAGE_SIZE)).unwrap_or(usize::MAX)
 }
 
+/// Room in kernel memory for one frame of `screen`, or 0 without either.
+/// The kernel draws its first frame there and copies it whole, so the boot
+/// screen stays until that frame replaces it; without the room it draws
+/// on the screen itself.
+fn back_buffer(system: &System, screen: Option<uefi::raw::graphics::Framebuffer>) -> u64 {
+    screen
+        .and_then(|fb| {
+            let bytes = u64::from(fb.width) * u64::from(fb.height) * 4;
+            system.allocate_pages(KERNEL_TYPE, pages_for(bytes)).ok()
+        })
+        .map_or(0, |pages| pages.start())
+}
+
 /// Loads the kernel, gives it a stack and builds its page tables.
 fn prepare(system: &System) -> Result<Ready, Problem> {
     let root = system
@@ -688,6 +701,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         .map_err(firmware("finding memory for the memory map"))?
         .keep();
     let screen = system.framebuffer().ok();
+    let back_buffer = back_buffer(system, screen);
     let memory_top = memory::memory_top(
         system
             .memory_map(map)
@@ -728,6 +742,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         rsdp: system.configuration_table(&ACPI_20_TABLE).unwrap_or(0),
         uefi_system_table: system.table_address(),
         framebuffer: handover::framebuffer(screen),
+        back_buffer,
         ..BootInfo::new()
     };
     Ok(Ready {

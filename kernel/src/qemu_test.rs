@@ -4,11 +4,12 @@
 //! sextant reads.
 
 use core::fmt::Write;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK_TOP};
 use canvas::Canvas;
 use canvas::palette::{GRASS, INK, NIGHT, SUN, TANGERINE};
+use kernel::display::Display;
 use kernel::machine::Machine;
 use kernel::panic::Details;
 use kernel::{bytes_of, covered, is_tidy};
@@ -38,7 +39,7 @@ pub fn run(
     regions: &[MemoryRegion],
     machine: &Machine,
     tsc_hz: Option<u64>,
-    screen: Option<&Canvas<'_>>,
+    display: Option<&Display<'_>>,
     serial: &mut Com1,
 ) -> ! {
     let mut report = Report {
@@ -46,6 +47,7 @@ pub fn run(
         failed: 0,
     };
     report.check("kernel.entered", true, "");
+    let screen = display.map(Display::screen);
 
     let info_at = core::ptr::from_ref(info) as u64;
     report.check(
@@ -125,6 +127,7 @@ pub fn run(
 
     machine_checks(&mut report, machine, tsc_hz);
     screen_checks(&mut report, info, screen);
+    handover_screen_checks(&mut report, info, regions, display);
     if screen.is_some() {
         // sextant keeps the picture and answers with a carriage return.
         // The same port, not a new one: opening it again would clear an
@@ -319,6 +322,56 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
         "kernel.uptime",
         crate::up(tsc_hz).is_some_and(|s| s < 600),
         "the test machine was switched on less than ten minutes ago",
+    );
+}
+
+/// Notes whether the screen still shows the boot screen when the kernel
+/// is about to draw: the boot screens' background in the corner and
+/// something else across the middle, where the cards are.
+pub fn before_drawing(screen: Option<&Canvas<'_>>) {
+    let kept = screen.is_some_and(|c| {
+        let middle = c.height() / 2;
+        c.pixel(0, 0) == Some(NIGHT)
+            && (0..c.width()).any(|x| c.pixel(x, middle).is_some_and(|p| p != NIGHT))
+    });
+    BOOT_SCREEN_KEPT.store(kept, Ordering::Release);
+}
+
+static BOOT_SCREEN_KEPT: AtomicBool = AtomicBool::new(false);
+
+fn handover_screen_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+    display: Option<&Display<'_>>,
+) {
+    report.check(
+        "kernel.screen.boot_screen_stays",
+        BOOT_SCREEN_KEPT.load(Ordering::Acquire),
+        "the boot screen should still be on the screen when the kernel starts drawing",
+    );
+    report.check(
+        "kernel.screen.back_buffer",
+        info.back_buffer != 0 && display.is_some_and(|d| d.back().is_some()),
+        "the loader should set aside room in kernel memory for a frame",
+    );
+    report.check(
+        "kernel.screen.shown_whole",
+        display.is_some_and(|d| {
+            let (screen, Some(back)) = (d.screen(), d.back()) else {
+                return false;
+            };
+            (0..screen.height())
+                .step_by(7)
+                .flat_map(|y| (0..screen.width()).step_by(5).map(move |x| (x, y)))
+                .all(|(x, y)| screen.pixel(x, y) == back.pixel(x, y))
+        }),
+        "the first frame should be drawn off the screen and then shown as it was drawn",
+    );
+    report.check(
+        "kernel.screen.back_buffer_once",
+        raw::back_buffer(info, regions).is_none(),
+        "the room for a frame should be handed out only once",
     );
 }
 

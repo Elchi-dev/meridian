@@ -208,16 +208,26 @@ pub fn uptime(
             let _ = text.write_str(UNKNOWN);
         }
     }
-    let x = MARGIN + LABEL_WIDTH;
-    let baseline = FIRST_ROW + UPTIME_ROW * ROW_HEIGHT;
-    let width = canvas
-        .width()
-        .saturating_sub(usize::try_from(x).unwrap_or(0))
-        .min(UPTIME_WIDTH);
-    canvas.fill_rect(x, baseline - 22, width, 30, NIGHT);
-    canvas.text(&style, x, baseline, text.as_str(), scratch)?;
+    let (x, top, width, height) = uptime_area(canvas.width());
+    canvas.fill_rect(x, top, width, height, NIGHT);
+    canvas.text(&style, x, top + UPTIME_ASCENT, text.as_str(), scratch)?;
     Ok(())
 }
+
+/// The rectangle the uptime is drawn in on a screen `width` pixels wide,
+/// as left, top, width and height; drawing it again changes nothing else.
+#[must_use]
+pub fn uptime_area(width: usize) -> (i32, i32, usize, usize) {
+    let x = MARGIN + LABEL_WIDTH;
+    let baseline = FIRST_ROW + UPTIME_ROW * ROW_HEIGHT;
+    let room = width
+        .saturating_sub(usize::try_from(x).unwrap_or(0))
+        .min(UPTIME_WIDTH);
+    (x, baseline - UPTIME_ASCENT, room, 30)
+}
+
+/// How far above its baseline the uptime's area starts.
+const UPTIME_ASCENT: i32 = 22;
 
 /// How much room the uptime is cleared in: more than its longest text.
 const UPTIME_WIDTH: usize = 320;
@@ -604,6 +614,28 @@ mod tests {
             uptime(c, None, &mut Scratch::new()).unwrap();
         });
         assert_eq!(differing(&unknown, &forgotten), 0);
+    }
+
+    #[test]
+    fn the_uptime_stays_in_its_area() {
+        assert_eq!(uptime_area(1280), (196, 260, 320, 30));
+        assert_eq!(uptime_area(300), (196, 260, 104, 30));
+        assert_eq!(uptime_area(100).2, 0);
+        let regions = sample();
+        let base = picture(&facts(&regions), |_| {});
+        let later = picture(&facts(&regions), |c| {
+            uptime(c, Some(3 * 86_400 + 7_200), &mut Scratch::new()).unwrap();
+        });
+        let (x, y, w, h) = uptime_area(800);
+        let (x, y) = (usize::try_from(x).unwrap(), usize::try_from(y).unwrap());
+        let mut inside = 0;
+        for (i, (a, b)) in base.iter().zip(&later).enumerate() {
+            let (px, py) = (i % 800, i / 800);
+            let within = (x..x + w).contains(&px) && (y..y + h).contains(&py);
+            assert!(within || a == b, "({px}, {py}) changed outside the area");
+            inside += usize::from(a != b);
+        }
+        assert!(inside > 50, "the new uptime is drawn: {inside}");
     }
 
     #[test]

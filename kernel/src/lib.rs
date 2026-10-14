@@ -6,6 +6,7 @@
 pub use canvas::Text;
 
 pub mod clock;
+pub mod display;
 pub mod exceptions;
 pub mod machine;
 pub mod panic;
@@ -13,7 +14,7 @@ pub mod screen;
 
 use core::fmt::{self, Write};
 
-use bootinfo::{MemoryRegion, RegionKind};
+use bootinfo::{BootInfo, MemoryRegion, RegionKind};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -40,6 +41,20 @@ pub fn covered(regions: &[MemoryRegion], kind: RegionKind, start: u64, len: u64)
     regions
         .iter()
         .any(|r| r.kind == kind && r.start <= start && start.saturating_add(len) <= r.end())
+}
+
+/// How many pixels the room the loader set aside for drawing off the
+/// screen holds: one frame of the framebuffer's size, when the loader gave
+/// it and it lies in the kernel's own memory.
+#[must_use]
+pub fn back_buffer_pixels(info: &BootInfo, regions: &[MemoryRegion]) -> Option<usize> {
+    let fb = &info.framebuffer;
+    let pixels = u64::from(fb.width) * u64::from(fb.height);
+    let bytes = pixels.checked_mul(4)?;
+    let usable = info.back_buffer != 0
+        && pixels > 0
+        && covered(regions, RegionKind::KERNEL, info.back_buffer, bytes);
+    usable.then(|| usize::try_from(pixels).ok()).flatten()
 }
 
 /// Whether the kernel may read `len` bytes from physical `start` through
@@ -244,6 +259,38 @@ mod tests {
         assert!(
             !covered(&r, RegionKind::USABLE, u64::MAX - 4, 16),
             "no wrap around"
+        );
+    }
+
+    #[test]
+    fn the_back_buffer_is_one_frame_in_kernel_memory() {
+        let r = sample();
+        let with = |at: u64, width: u32, height: u32| {
+            let mut info = BootInfo::new();
+            info.back_buffer = at;
+            info.framebuffer.width = width;
+            info.framebuffer.height = height;
+            back_buffer_pixels(&info, &r)
+        };
+        assert_eq!(
+            with(0x10_0000, 512, 512),
+            Some(512 * 512),
+            "exactly the region"
+        );
+        assert_eq!(with(0x10_1000, 512, 512), None, "a page past its end");
+        assert_eq!(with(0x10_1000, 512, 504), Some(512 * 504));
+        assert_eq!(with(0, 512, 512), None, "no room given");
+        assert_eq!(
+            with(0x20_0000, 64, 64),
+            None,
+            "free memory is not the kernel's"
+        );
+        assert_eq!(with(0x10_0000, 0, 512), None, "no screen");
+        assert_eq!(with(0x10_0000, 512, 0), None);
+        assert_eq!(
+            with(0x10_0000, u32::MAX, u32::MAX),
+            None,
+            "too big to count"
         );
     }
 

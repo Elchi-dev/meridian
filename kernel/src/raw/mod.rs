@@ -156,6 +156,29 @@ pub fn screen(fb: &Framebuffer) -> Option<Canvas<'static>> {
     )
 }
 
+/// The room the loader set aside for drawing off the screen, as a canvas
+/// in the framebuffer's pixel order, or `None` when there is none.
+pub fn back_buffer(info: &BootInfo, regions: &[MemoryRegion]) -> Option<Canvas<'static>> {
+    let (format, _) = layout(&info.framebuffer)?;
+    let len = kernel::back_buffer_pixels(info, regions)?;
+    if BACK_TAKEN.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    // SAFETY: the loader allocated these pages for this alone and they are
+    // the kernel's in the memory map, which back_buffer_pixels checked for
+    // all len pixels; the direct map covers all memory, and BACK_TAKEN
+    // makes this the only slice over them.
+    let pixels =
+        unsafe { core::slice::from_raw_parts_mut((HHDM_BASE + info.back_buffer) as *mut u32, len) };
+    let (width, height) = (
+        info.framebuffer.width as usize,
+        info.framebuffer.height as usize,
+    );
+    Canvas::new(pixels, width, height, width, format)
+}
+
+static BACK_TAKEN: AtomicBool = AtomicBool::new(false);
+
 /// The framebuffer for the panic screen, even when it was handed out.
 #[cfg(not(test))]
 fn panic_screen() -> Option<Canvas<'static>> {

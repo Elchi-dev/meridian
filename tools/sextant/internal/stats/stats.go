@@ -74,8 +74,63 @@ var skipDirs = map[string]bool{"target": true, "out": true, "testdata": true, "n
 // linker script file that belongs to a component. Files outside any
 // component, such as conformance data, are not counted.
 func Collect(fsys fs.FS) (*Report, error) {
+	sc, err := scan(fsys)
+	if err != nil {
+		return nil, err
+	}
+	for _, src := range sc.sources {
+		f := src.parsed.count(src.Path, src.AllTest)
+		c := sc.comps[src.Component]
+		c.Files = append(c.Files, f)
+		c.Code += f.Code
+		c.Test += f.Test
+		c.Unsafe += f.Unsafe
+	}
+	report := &Report{}
+	for _, c := range sc.comps {
+		sort.Slice(c.Files, func(i, j int) bool { return c.Files[i].Path < c.Files[j].Path })
+		report.Components = append(report.Components, c)
+	}
+	sort.Slice(report.Components, func(i, j int) bool { return report.Components[i].Path < report.Components[j].Path })
+	return report, nil
+}
+
+// Source is one counted file with what tools beyond counting need: its
+// component, and which of its lines are test code.
+type Source struct {
+	Path      string
+	Lang      srclex.Lang
+	Component string
+	Kind      string
+	AllTest   bool
+	TestLines []bool
+
+	parsed *parsedFile
+}
+
+// IsTest reports whether line, counted from 1, is test code.
+func (s *Source) IsTest(line int) bool {
+	return s.AllTest || (line >= 1 && line <= len(s.TestLines) && s.TestLines[line-1])
+}
+
+// Sources returns every file Collect counts, in path order, with the same
+// rules for what is test code.
+func Sources(fsys fs.FS) ([]Source, error) {
+	sc, err := scan(fsys)
+	if err != nil {
+		return nil, err
+	}
+	return sc.sources, nil
+}
+
+type scanned struct {
+	comps   map[string]*Component
+	sources []Source
+}
+
+func scan(fsys fs.FS) (*scanned, error) {
 	comps := map[string]*Component{}
-	var sources []string
+	var paths []string
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -100,7 +155,7 @@ func Collect(fsys fs.FS) (*Report, error) {
 			}
 		}
 		if _, ok := srclex.LangOf(name); ok {
-			sources = append(sources, p)
+			paths = append(paths, p)
 		}
 		return nil
 	})
@@ -111,7 +166,7 @@ func Collect(fsys fs.FS) (*Report, error) {
 	parsed := map[string]*parsedFile{}
 	testFiles := map[string]bool{}
 	var testDirs []string
-	for _, p := range sources {
+	for _, p := range paths {
 		if owner(comps, p) == nil {
 			continue
 		}
@@ -127,27 +182,24 @@ func Collect(fsys fs.FS) (*Report, error) {
 		}
 	}
 
-	for _, p := range sources {
+	sc := &scanned{comps: comps}
+	for _, p := range paths {
 		pf := parsed[p]
 		if pf == nil {
 			continue
 		}
 		c := owner(comps, p)
-		whole := pf.wholeFileIsTest || testFiles[p] || hasAnyPrefix(p, testDirs) || isTestPath(c.Path, p)
-		f := pf.count(p, whole)
-		c.Files = append(c.Files, f)
-		c.Code += f.Code
-		c.Test += f.Test
-		c.Unsafe += f.Unsafe
+		sc.sources = append(sc.sources, Source{
+			Path:      p,
+			Lang:      pf.lang,
+			Component: c.Path,
+			Kind:      c.Kind,
+			AllTest:   pf.wholeFileIsTest || testFiles[p] || hasAnyPrefix(p, testDirs) || isTestPath(c.Path, p),
+			TestLines: pf.testLines,
+			parsed:    pf,
+		})
 	}
-
-	report := &Report{}
-	for _, c := range comps {
-		sort.Slice(c.Files, func(i, j int) bool { return c.Files[i].Path < c.Files[j].Path })
-		report.Components = append(report.Components, c)
-	}
-	sort.Slice(report.Components, func(i, j int) bool { return report.Components[i].Path < report.Components[j].Path })
-	return report, nil
+	return sc, nil
 }
 
 func hasPackageTable(manifest []byte) bool {

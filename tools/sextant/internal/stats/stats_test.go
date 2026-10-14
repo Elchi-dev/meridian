@@ -619,3 +619,65 @@ func TestNestedComponentsOwnTheirFiles(t *testing.T) {
 		t.Errorf("the root component sorts first, got %q", r.Components[0].Path)
 	}
 }
+
+func TestSourcesCarryComponentAndTestLines(t *testing.T) {
+	srcs, err := Sources(tree(map[string]string{
+		"k/Cargo.toml":   rustPackage,
+		"k/src/lib.rs":   "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn b() {}\n",
+		"k/src/other.rs": "fn real() {}\n",
+		"m/go.mod":       "module m\n",
+		"m/a.go":         "package m\n",
+		"m/a_test.go":    "package m\n",
+		"loose/x.go":     "package loose\n",
+		"m/notes.md":     "not source\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range srcs {
+		got = append(got, s.Path+"@"+s.Component+":"+s.Kind)
+	}
+	want := "k/src/lib.rs@k:rust k/src/other.rs@k:rust m/a.go@m:go m/a_test.go@m:go"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("sources = %v\nwant      %s", got, want)
+	}
+	lib := srcs[0]
+	if lib.AllTest || lib.Lang != srclex.Rust {
+		t.Fatalf("lib.rs: %+v", lib)
+	}
+	for line, want := range map[int]bool{0: false, 1: false, 2: true, 3: true, 5: true, 6: false, 7: false, 99: false} {
+		if lib.IsTest(line) != want {
+			t.Errorf("lib.rs line %d: IsTest = %v, want %v", line, !want, want)
+		}
+	}
+	if srcs[1].AllTest {
+		t.Errorf("other.rs is real code")
+	}
+	if srcs[2].AllTest || !srcs[3].AllTest || !srcs[3].IsTest(1) {
+		t.Errorf("go files: %+v %+v", srcs[2], srcs[3])
+	}
+}
+
+func TestSourcesAgreeWithCollect(t *testing.T) {
+	files := map[string]string{
+		"k/Cargo.toml":    rustPackage,
+		"k/src/lib.rs":    "fn a() {}\n#[cfg(test)]\nmod tests;\n",
+		"k/src/tests.rs":  "fn t() {}\n",
+		"k/tests/boot.rs": "fn it() {}\n",
+	}
+	srcs, err := Sources(tree(files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range srcs {
+		if s.Path == "k/src/tests.rs" || s.Path == "k/tests/boot.rs" {
+			if !s.AllTest {
+				t.Errorf("%s should be all test", s.Path)
+			}
+		}
+	}
+	if _, err := Sources(tree(map[string]string{"k/Cargo.toml": rustPackage, "k/src/lib.rs": "/* open"})); err == nil {
+		t.Fatal("a file that does not lex must be an error")
+	}
+}

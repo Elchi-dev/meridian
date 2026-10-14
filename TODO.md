@@ -62,7 +62,7 @@ Loader and UEFI:
 - [ ] The boot screen kept on the framebuffer until the kernel draws, without flicker
 - [x] Kernel: entry point, serial log, QEMU checks of the handover
 - [x] Kernel: framebuffer text (`lib/canvas` with `lib/font`)
-- [ ] Kernel: GDT, IDT, every exception caught and shown on the panic screen
+- [x] Kernel: GDT, TSS with a fault stack, IDT, every exception caught and shown on the panic screen
 - [x] Status screen: processor, free memory, the memory map as a bar
 - [ ] Status screen: CPU cores from the ACPI MADT, uptime, updated live
 - [x] Panic screen in plain English with a QR code of the crash summary (`lib/qr`), checked by a QEMU test and read back with `zbarimg`

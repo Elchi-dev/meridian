@@ -9,6 +9,7 @@ pub mod qemu_test;
 #[allow(unsafe_code)]
 pub mod raw;
 pub mod serial;
+pub mod tables;
 
 /// Bits of CR0, from the Intel SDM, volume 3, section 2.5.
 pub mod cr0 {
@@ -188,6 +189,18 @@ mod tests {
         }
         assert_eq!(f.to_string(), family);
         assert_eq!(m.to_string(), model);
+    }
+
+    #[test]
+    fn a_blank_brand_is_empty() {
+        let spaces = [u32::from_le_bytes(*b"    "); 12];
+        assert_eq!(CpuText::<48>::from_registers(&spaces).as_str(), "");
+        let nothing = [0u32; 12];
+        assert_eq!(
+            CpuText::<48>::from_registers(&nothing).as_str(),
+            "",
+            "a processor without one"
+        );
     }
 
     #[test]

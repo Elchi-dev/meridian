@@ -99,3 +99,151 @@ pub fn run(check: &mut impl FnMut(&str, bool, &str)) {
         "turning on write protection should leave the other CR0 bits alone",
     );
 }
+
+/// Checks of the kernel's descriptor tables once it has loaded them. They
+/// run from the kernel's test image, since the firmware needs its own
+/// tables while it runs.
+pub fn tables(check: &mut impl FnMut(&str, bool, &str)) {
+    use crate::tables::{KERNEL_CODE, KERNEL_DATA, TASK_STATE};
+
+    let gdt = raw::gdt_register();
+    check(
+        "x86.gdt",
+        { gdt.limit } == 39 && { gdt.base } >= 0xffff_8000_0000_0000,
+        "the kernel's five entry GDT should be loaded from the higher half",
+    );
+    let entries = raw::gdt_entries();
+    let tss = entries.get(3..5).map_or(0, |e| {
+        (e[0] >> 16 & 0xff_ffff) | (e[0] >> 56 & 0xff) << 24 | e[1] << 32
+    });
+    check(
+        "x86.gdt.entries",
+        entries.len() == 5
+            && entries[0] == 0
+            && entries[1] & !(1 << 40) == crate::tables::gdt(tss)[1]
+            && entries[2] & !(1 << 40) == crate::tables::gdt(tss)[2]
+            && entries[3] & !(1 << 41) == crate::tables::gdt(tss)[3]
+            && entries[4] == crate::tables::gdt(tss)[4],
+        "the loaded GDT should hold the null, code, data and task state entries",
+    );
+    check(
+        "x86.segments",
+        raw::segments() == (KERNEL_CODE, KERNEL_DATA),
+        "code and stack should use the kernel's own selectors",
+    );
+    check(
+        "x86.task_register",
+        raw::task_register() == TASK_STATE,
+        "the task register should hold the task state segment's selector",
+    );
+    // The processor marks code and data descriptors accessed, bit 40, when
+    // it loads them, and the task state descriptor busy, bit 41, so the
+    // comparison above leaves those bits out.
+    check(
+        "x86.task_state.busy",
+        entries.get(3).is_some_and(|e| e >> 40 & 0xf == 0xb),
+        "loading the task register should mark its descriptor busy",
+    );
+    let idt = raw::idt_register();
+    check(
+        "x86.idt",
+        { idt.limit } == 4095 && { idt.base } >= 0xffff_8000_0000_0000,
+        "the kernel's 256 gate IDT should be loaded",
+    );
+    let gates = raw::idt_entries();
+    let kernel = |handler: u64| handler >= 0xffff_ffff_8000_0000;
+    check(
+        "x86.idt.exceptions",
+        gates.len() == 256
+            && gates[..32]
+                .iter()
+                .all(|g| g.is_present() && kernel(g.handler())),
+        "every exception should have a gate into the kernel",
+    );
+    check(
+        "x86.idt.fault_stacks",
+        gates
+            .iter()
+            .enumerate()
+            .all(|(v, g)| g.stack() == u8::from(matches!(v, 2 | 8 | 18))),
+        "NMIs, double faults and machine checks should switch to the fault stack, nothing else",
+    );
+    let mut handlers: [u64; 32] =
+        core::array::from_fn(|v| gates.get(v).map_or(0, crate::tables::Gate::handler));
+    handlers.sort_unstable();
+    check(
+        "x86.idt.distinct",
+        handlers.windows(2).all(|w| w[0] != w[1]),
+        "every exception should have a stub of its own, so the vector is known",
+    );
+    check(
+        "x86.idt.nothing_else",
+        gates[32..].iter().all(|g| !g.is_present()),
+        "there are no interrupt handlers yet, so no gate past 31 should be present",
+    );
+    let stacks = raw::task_state().map(|t| t.interrupt_stacks);
+    check(
+        "x86.task_state.stack",
+        stacks.is_some_and(|s| s[0] != 0 && s[0] % 16 == 0 && kernel(s[0]) && s[1..] == [0; 6]),
+        "the task state should hold one fault stack, aligned and in the kernel",
+    );
+}
+
+/// Under the firmware: the segments OVMF runs with, its tables, and an IDT
+/// loaded and put back with interrupts off.
+pub fn firmware_tables(check: &mut impl FnMut(&str, bool, &str)) {
+    let (cs, ss) = raw::segments();
+    check(
+        "x86.firmware.segments",
+        cs != 0 && ss != 0 && cs % 8 == 0 && ss % 8 == 0 && cs != ss,
+        "OVMF runs on its own code and stack selectors",
+    );
+    let gdt = raw::gdt_register();
+    check(
+        "x86.firmware.gdt",
+        { gdt.base } != 0
+            && ({ gdt.limit } + 1) % 8 == 0
+            && raw::gdt_entries().len() > usize::from(cs / 8),
+        "the firmware's GDT should be there and hold its code selector",
+    );
+    let entries = raw::gdt_entries();
+    let code = entries.get(usize::from(cs / 8)).copied().unwrap_or(0);
+    check(
+        "x86.firmware.code_descriptor",
+        code >> 47 & 1 == 1 && code >> 43 & 1 == 1 && code >> 53 & 1 == 1,
+        "the descriptor CS names should be present 64-bit code",
+    );
+    let data = entries.get(usize::from(ss / 8)).copied().unwrap_or(0);
+    check(
+        "x86.firmware.data_descriptor",
+        data >> 47 & 1 == 1 && data >> 43 & 1 == 0 && data >> 41 & 1 == 1,
+        "the descriptor SS names should be present, writable data",
+    );
+    let gates = raw::idt_entries();
+    check(
+        "x86.firmware.idt",
+        gates.len() == 256 && gates[..20].iter().filter(|g| g.is_present()).count() >= 18,
+        "OVMF's IDT should have its 256 gates, with the exceptions handled",
+    );
+    let (tr, state) = (raw::task_register(), raw::task_state());
+    check(
+        "x86.firmware.task_state",
+        (tr == 0) == state.is_none(),
+        "a task state should be found exactly when the task register names one",
+    );
+    let first: [crate::tables::Gate; 32] = core::array::from_fn(|i| gates[i]);
+    let before = raw::idt_register();
+    let during = raw::swap_idt_and_back();
+    check(
+        "x86.load_idt",
+        { during.base } != { before.base }
+            && { during.limit } == 4095
+            && raw::idt_register() == before,
+        "loading an IDT should show in sidt, and the firmware's should come back",
+    );
+    check(
+        "x86.load_idt.untouched",
+        raw::idt_entries()[..32] == first,
+        "the firmware's gates should be just as they were",
+    );
+}

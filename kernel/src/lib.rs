@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod exceptions;
 pub mod panic;
 pub mod screen;
 

@@ -4,6 +4,7 @@
 use core::arch::asm;
 use core::fmt;
 
+use crate::tables::{self, Gate, Pointer};
 use crate::{Features, cr0, efer, serial};
 
 /// COM1, set up for 115200 baud when opened. Only COM1 can be opened, so
@@ -204,4 +205,180 @@ pub fn without_interrupts<R>(f: impl FnOnce() -> R) -> R {
         unsafe { asm!("sti", options(nomem, nostack)) };
     }
     result
+}
+
+/// Loads `table` as the global descriptor table and reloads every segment
+/// register from it: code from [`tables::KERNEL_CODE`], the data segments
+/// from [`tables::KERNEL_DATA`], FS and GS with the null selector.
+///
+/// # Safety
+///
+/// `table` must stay where it is for good and hold the kernel's code and
+/// data descriptors at those selectors, like [`tables::gdt`] makes.
+pub unsafe fn load_gdt(table: &'static [u64]) {
+    let pointer = Pointer::to(table);
+    // SAFETY: the caller promises the table is permanent and has the
+    // selectors used here. The far return pops the new CS and the address
+    // of the next instruction.
+    unsafe {
+        asm!(
+            "lgdt [{pointer}]",
+            "push {code}",
+            "lea {tmp}, [rip + 2f]",
+            "push {tmp}",
+            "retfq",
+            "2:",
+            "mov ds, {data:x}",
+            "mov es, {data:x}",
+            "mov ss, {data:x}",
+            "mov fs, {null:x}",
+            "mov gs, {null:x}",
+            pointer = in(reg) &raw const pointer,
+            code = const tables::KERNEL_CODE as u64,
+            tmp = lateout(reg) _,
+            data = in(reg) u32::from(tables::KERNEL_DATA),
+            null = in(reg) 0u32,
+            options(preserves_flags),
+        );
+    }
+}
+
+/// Loads the task register with the task state segment's selector.
+///
+/// # Safety
+///
+/// The current global descriptor table must hold an available task state
+/// segment at `selector` whose memory stays where it is.
+pub unsafe fn load_task_register(selector: u16) {
+    // SAFETY: the caller promises the descriptor is there and valid.
+    unsafe { asm!("ltr {:x}", in(reg) selector, options(nostack, preserves_flags)) };
+}
+
+/// Loads `table` as the interrupt descriptor table.
+///
+/// # Safety
+///
+/// `table` must stay where it is for good, and every present gate must
+/// lead to a handler that can take that interrupt.
+pub unsafe fn load_idt(table: &'static [Gate; 256]) {
+    let pointer = Pointer::to(table);
+    // SAFETY: the caller promises the table and its handlers are sound.
+    unsafe {
+        asm!("lidt [{}]", in(reg) &raw const pointer, options(readonly, nostack, preserves_flags));
+    }
+}
+
+/// Where the global descriptor table is and how long it is.
+#[must_use]
+pub fn gdt_register() -> Pointer {
+    let mut pointer = Pointer::default();
+    // SAFETY: sgdt writes ten bytes into the pointer and nothing else.
+    unsafe { asm!("sgdt [{}]", in(reg) &raw mut pointer, options(nostack, preserves_flags)) };
+    pointer
+}
+
+/// Where the interrupt descriptor table is and how long it is.
+#[must_use]
+pub fn idt_register() -> Pointer {
+    let mut pointer = Pointer::default();
+    // SAFETY: sidt writes ten bytes into the pointer and nothing else.
+    unsafe { asm!("sidt [{}]", in(reg) &raw mut pointer, options(nostack, preserves_flags)) };
+    pointer
+}
+
+/// The code and stack segment selectors in use.
+#[must_use]
+pub fn segments() -> (u16, u16) {
+    let (cs, ss): (u16, u16);
+    // SAFETY: reading segment registers changes nothing.
+    unsafe {
+        asm!("mov {:x}, cs", "mov {:x}, ss", out(reg) cs, out(reg) ss, options(nomem, nostack, preserves_flags));
+    }
+    (cs, ss)
+}
+
+/// Loads a copy of the firmware's interrupt descriptor table and then the
+/// firmware's own again, with interrupts off all along, and returns what
+/// `sidt` showed in between. Only the QEMU checks do this.
+#[cfg(feature = "qemu-test")]
+#[must_use]
+pub fn swap_idt_and_back() -> Pointer {
+    struct Copy(core::cell::UnsafeCell<[Gate; 256]>);
+    // SAFETY: only this function touches the copy, with interrupts off.
+    unsafe impl Sync for Copy {}
+    static COPY: Copy = Copy(core::cell::UnsafeCell::new([Gate::MISSING; 256]));
+
+    without_interrupts(|| {
+        let firmware = idt_register();
+        let count = ((usize::from(firmware.limit) + 1) / 16).min(256);
+        // SAFETY: the firmware's table is mapped where IDTR says and holds
+        // count gates; the copy is only used here.
+        let copy = unsafe {
+            let table = &mut *COPY.0.get();
+            core::ptr::copy_nonoverlapping(firmware.base as *const Gate, table.as_mut_ptr(), count);
+            &*table
+        };
+        // SAFETY: the copy holds the firmware's own gates, and interrupts
+        // stay off until the firmware's table is back.
+        unsafe { load_idt(copy) };
+        let during = idt_register();
+        // SAFETY: puts back exactly the table the firmware had loaded.
+        unsafe {
+            asm!("lidt [{}]", in(reg) &raw const firmware, options(readonly, nostack, preserves_flags));
+        }
+        during
+    })
+}
+
+/// The selector in the task register.
+#[must_use]
+pub fn task_register() -> u16 {
+    let selector: u16;
+    // SAFETY: str only reads the task register.
+    unsafe { asm!("str {:x}", out(reg) selector, options(nomem, nostack, preserves_flags)) };
+    selector
+}
+
+/// The entries of the global descriptor table in use, as the processor
+/// sees them.
+#[must_use]
+pub fn gdt_entries() -> &'static [u64] {
+    let pointer = gdt_register();
+    let count = (usize::from(pointer.limit) + 1) / 8;
+    // SAFETY: the processor reads the table at this place for as long as
+    // it is loaded, so it is mapped, and every table this crate loads is
+    // 'static. Reading it changes nothing.
+    unsafe { core::slice::from_raw_parts(pointer.base as *const u64, count) }
+}
+
+/// The gates of the interrupt descriptor table in use.
+#[must_use]
+pub fn idt_entries() -> &'static [Gate] {
+    let pointer = idt_register();
+    let count = (usize::from(pointer.limit) + 1) / size_of::<Gate>();
+    // SAFETY: the processor reads the table at this place for as long as
+    // it is loaded, and every table this crate loads is 'static.
+    unsafe { core::slice::from_raw_parts(pointer.base as *const Gate, count) }
+}
+
+/// The task state segment the task register names, found through its
+/// descriptor in the global descriptor table.
+#[must_use]
+pub fn task_state() -> Option<&'static tables::TaskState> {
+    let entries = gdt_entries();
+    let at = usize::from(task_register() / 8);
+    let (low, high) = (*entries.get(at)?, *entries.get(at + 1)?);
+    let base = (low >> 16 & 0xff_ffff) | (low >> 56 & 0xff) << 24 | high << 32;
+    // SAFETY: the processor uses the task state at this address for as
+    // long as the task register names it, so it is mapped and stays.
+    unsafe { (base as *const tables::TaskState).as_ref() }
+}
+
+/// The address the last page fault was about.
+#[must_use]
+pub fn cr2() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR2 changes nothing.
+    unsafe { asm!("mov {}, cr2", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    value
 }

@@ -181,6 +181,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_summary_takes_whatever_it_is_given() {
+        let d = Details {
+            message: "",
+            location: "",
+        };
+        let mut out = String::new();
+        summary(&d, &mut out).unwrap();
+        assert!(out.ends_with("message: \nat: \n"), "{out:?}");
+        let mut short = crate::Text::<20>::new();
+        assert!(
+            summary(&details(), &mut short).is_err(),
+            "a full buffer reports it"
+        );
+        assert_eq!(short.as_str(), "Meridian 0.0.0 stopp");
+    }
+
     fn lines(text: &str, width: u32) -> Vec<String> {
         let font = Font::parse(INTER).unwrap();
         let mut out = Vec::new();

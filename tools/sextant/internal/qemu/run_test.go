@@ -131,12 +131,13 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 			t.Errorf("check %s did not run; passed: %v", want, report.Passed)
 		}
 	}
-	want := []string{filepath.Join(screens, "status.png"), filepath.Join(screens, "panic.png")}
+	want := []string{filepath.Join(screens, "status.png"), filepath.Join(screens, "panic.png"), filepath.Join(screens, "double-fault.png")}
 	if !slices.Equal(res.Screens, want) {
 		t.Fatalf("screens saved: %v, want %v", res.Screens, want)
 	}
 	checkStatusScreen(t, want[0])
-	checkPanicScreen(t, want[1])
+	checkCrashScreen(t, want[1], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
+	checkCrashScreen(t, want[2], "\nmessage: double fault: a second exception came while the first was being handled")
 	if !strings.Contains(res.Serial, consoleProbe) {
 		t.Errorf("the console probe did not reach the screen whole:\n%s", res.Serial)
 	}
@@ -505,9 +506,10 @@ func checkStatusScreen(t *testing.T, path string) {
 	}
 }
 
-// checkPanicScreen looks at the panic screen the test image ends with: sun
-// yellow all round, and a QR code a reader turns back into the summary.
-func checkPanicScreen(t *testing.T, path string) {
+// checkCrashScreen looks at one of the crash screens the test image ends
+// with: sun yellow all round, and a QR code a reader turns back into a
+// summary that holds want.
+func checkCrashScreen(t *testing.T, path, want string) {
 	t.Helper()
 	w, h, rgb := openScreen(t, path)
 	sun := [3]uint32{0xff, 0xc6, 0x2b}
@@ -528,7 +530,7 @@ func checkPanicScreen(t *testing.T, path string) {
 		t.Fatalf("zbarimg found no code: %v", err)
 	}
 	text := string(out)
-	if !strings.HasPrefix(text, "Meridian ") || !strings.Contains(text, "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:") {
-		t.Fatalf("the code says %q", text)
+	if !strings.HasPrefix(text, "Meridian ") || !strings.Contains(text, want) {
+		t.Fatalf("the code on %s says %q", filepath.Base(path), text)
 	}
 }

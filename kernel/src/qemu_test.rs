@@ -4,7 +4,7 @@
 //! sextant reads.
 
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK_TOP};
 use canvas::Canvas;
@@ -13,6 +13,7 @@ use kernel::panic::Details;
 use kernel::{bytes_of, covered, is_tidy};
 use x86::raw::Com1;
 
+use crate::raw::interrupts::expected::{self, Caught};
 use crate::raw::{self, mapped, physical};
 
 struct Report<'a, W: Write> {
@@ -133,73 +134,148 @@ pub fn run(
         );
     }
 
+    exception_checks(&mut report);
+
     // The last check is the panic screen: the panic handler takes over,
     // checks what it drew and ends the run.
     FAILED.store(report.failed, Ordering::Release);
-    PANIC_EXPECTED.store(true, Ordering::Release);
+    STAGE.store(1, Ordering::Release);
     panic!("{PANIC_MESSAGE}");
 }
 
 const PANIC_MESSAGE: &str = "a test of the panic screen";
 static FAILED: AtomicU32 = AtomicU32::new(0);
-static PANIC_EXPECTED: AtomicBool = AtomicBool::new(false);
+/// Which crash comes next: 1 for the panic, 2 for the stack overflow.
+static STAGE: AtomicU32 = AtomicU32::new(0);
 
-/// Called by the panic handler once the panic screen is drawn.
+/// Called by the panic handler once the panic screen is drawn. The run
+/// ends in two crashes: the panic above, then a stack overflow, which the
+/// processor turns into a double fault on the fault stack.
 pub fn after_panic(screen: Option<&Canvas<'_>>, details: &Details<'_>, serial: &mut Com1) -> ! {
     let mut report = Report {
         out: serial,
         failed: FAILED.load(Ordering::Acquire),
     };
-    if PANIC_EXPECTED.load(Ordering::Acquire) {
-        report.check(
-            "kernel.panic.message",
-            details.message == PANIC_MESSAGE
-                && details.location.starts_with("kernel/src/qemu_test.rs:"),
-            "the panic screen should get the message and where it came from",
-        );
-        report.check(
-            "kernel.panic.screen",
-            screen.is_some_and(|c| {
-                c.pixel(0, 0) == Some(SUN) && c.pixel(c.width() - 1, c.height() - 1) == Some(SUN)
-            }),
-            "the panic screen should be sun yellow",
-        );
-        report.check(
-            "kernel.panic.code",
-            screen.is_some_and(|c| {
-                let right = (c.width() * 2 / 3..c.width())
-                    .flat_map(|x| (0..c.height() / 2).map(move |y| (x, y)));
-                let (mut ink, mut light) = (0, 0);
-                for (x, y) in right {
-                    match c.pixel(x, y) {
-                        Some(INK) => ink += 1,
-                        Some(p) if p.r == 0xff && p.g == 0xff && p.b == 0xff => light += 1,
-                        _ => {}
-                    }
-                }
-                ink > 2000 && light > 2000
-            }),
-            "the QR code should be drawn on the right",
-        );
-        if screen.is_some() {
-            let _ = writeln!(report.out, "SCREEN panic");
-            let answer = report.out.receive(1 << 24);
+    match STAGE.load(Ordering::Acquire) {
+        1 => {
             report.check(
-                "kernel.panic.kept",
-                answer == Some(b'\n'),
-                "sextant should answer SCREEN with a newline on the serial port",
+                "kernel.panic.message",
+                details.message == PANIC_MESSAGE
+                    && details.location.starts_with("kernel/src/qemu_test.rs:"),
+                "the panic screen should get the message and where it came from",
+            );
+            crash_screen_checks(&mut report, screen, "panic");
+            FAILED.store(report.failed, Ordering::Release);
+            STAGE.store(2, Ordering::Release);
+            raw::allow_another_crash();
+            let _ = writeln!(report.out, "kernel: running out of stack on purpose");
+            core::hint::black_box(overflow(0));
+            report.check(
+                "kernel.overflow",
+                false,
+                "running out of stack should have crashed",
             );
         }
-    } else {
-        report.check(
+        2 => {
+            report.check(
+                "kernel.double_fault",
+                details.message.starts_with("double fault: ") && details.location.starts_with("the instruction at 0xffffffff8"),
+                "running out of stack should end on the panic screen as a double fault in the kernel",
+            );
+            crash_screen_checks(&mut report, screen, "double-fault");
+        }
+        _ => report.check(
             "kernel.panic",
             false,
-            "the kernel panicked before its checks were done",
-        );
+            "the kernel crashed before its checks were done",
+        ),
     }
     let failed = report.failed;
     let _ = writeln!(report.out, "TESTS DONE {failed} failed");
     x86::raw::qemu_exit(failed == 0)
+}
+
+/// Calls itself until the stack runs into the guard page below it.
+#[inline(never)]
+fn overflow(depth: usize) -> usize {
+    let pad = core::hint::black_box([depth; 32]);
+    if core::hint::black_box(true) {
+        overflow(depth + 1) + pad[depth % 32]
+    } else {
+        0
+    }
+}
+
+/// The crash screen is sun yellow with a QR code on the right, and sextant
+/// keeps a picture of it under `name`.
+fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>>, name: &str) {
+    report.check(
+        "kernel.panic.screen",
+        screen.is_some_and(|c| {
+            c.pixel(0, 0) == Some(SUN) && c.pixel(c.width() - 1, c.height() - 1) == Some(SUN)
+        }),
+        "the panic screen should be sun yellow",
+    );
+    report.check(
+        "kernel.panic.code",
+        screen.is_some_and(|c| {
+            let right = (c.width() * 2 / 3..c.width())
+                .flat_map(|x| (0..c.height() / 2).map(move |y| (x, y)));
+            let (mut ink, mut light) = (0, 0);
+            for (x, y) in right {
+                match c.pixel(x, y) {
+                    Some(INK) => ink += 1,
+                    Some(p) if p.r == 0xff && p.g == 0xff && p.b == 0xff => light += 1,
+                    _ => {}
+                }
+            }
+            ink > 2000 && light > 2000
+        }),
+        "the QR code should be drawn on the right",
+    );
+    if screen.is_some() {
+        let _ = writeln!(report.out, "SCREEN {name}");
+        let answer = report.out.receive(1 << 24);
+        report.check(
+            "kernel.panic.kept",
+            answer == Some(b'\n'),
+            "sextant should answer SCREEN with a newline on the serial port",
+        );
+    }
+}
+
+/// The kernel's own tables are loaded, and each exception a check asks for
+/// reaches the handler with the right vector, error code and address.
+fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
+    x86::qemu_test::tables(&mut |name, ok, why| report.check(name, ok, why));
+    let caught = |c: Option<Caught>, vector: u64| c.is_some_and(|c| c.vector == vector);
+    report.check(
+        "kernel.exception.breakpoint",
+        caught(expected::breakpoint(), 3),
+        "int3 should reach the handler as vector 3 and come back",
+    );
+    report.check(
+        "kernel.exception.invalid_opcode",
+        caught(expected::invalid_opcode(), 6),
+        "ud2 should reach the handler as vector 6",
+    );
+    report.check(
+        "kernel.exception.divide",
+        caught(expected::divide_by_zero(), 0),
+        "dividing by zero should reach the handler as vector 0",
+    );
+    let null = expected::null_read();
+    report.check(
+        "kernel.exception.page_fault",
+        null.is_some_and(|c| c.vector == 14 && c.error == 0 && c.address == 0),
+        "reading address 0 should be a page fault on a missing page, with CR2 at 0",
+    );
+    let selector = expected::bad_selector();
+    report.check(
+        "kernel.exception.general_protection",
+        selector.is_some_and(|c| c.vector == 13 && c.error == 0x28),
+        "loading selector 0x28 should be a general protection fault naming it",
+    );
 }
 
 fn screen_checks<W: Write>(

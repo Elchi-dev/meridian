@@ -45,6 +45,9 @@ pub fn checks(system: &System, serial: &mut impl Write) {
     x86::qemu_test::run(&mut |name, ok, why| {
         uefi::qemu_test::Report::check(&mut report, name, ok, why);
     });
+    x86::qemu_test::firmware_tables(&mut |name, ok, why| {
+        uefi::qemu_test::Report::check(&mut report, name, ok, why);
+    });
 
     let (major, _, _) = boot::uefi_version(system.header().revision);
     uefi::qemu_test::Report::check(

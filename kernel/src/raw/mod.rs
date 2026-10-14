@@ -1,6 +1,8 @@
 //! The way into the kernel and the ways out of it: the entry point the
-//! loader jumps to, the screen, and what happens when the kernel has to
-//! stop.
+//! loader jumps to, the descriptor tables and exceptions, the screen, and
+//! what happens when the kernel has to stop.
+
+pub mod interrupts;
 
 #[cfg(not(test))]
 use core::cell::UnsafeCell;
@@ -42,6 +44,7 @@ extern "sysv64" fn kernel_start(info: *const BootInfo) -> ! {
         Err(_) => &[],
     };
     save_screen(&info.framebuffer);
+    interrupts::install();
     crate::run(info, regions, &mut serial)
 }
 
@@ -176,24 +179,44 @@ static PANIC_SPACE: PanicSpace = PanicSpace(UnsafeCell::new((Code::new(), Scratc
 #[cfg(not(test))]
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
-    let mut serial = Com1::open();
-    let _ = writeln!(serial, "kernel: panic: {info}");
-    if PANICKING.swap(true, Ordering::AcqRel) {
-        stop()
-    }
     let mut message = Text::<256>::new();
     let _ = write!(message, "{}", info.message());
     let mut location = Text::<128>::new();
     if let Some(at) = info.location() {
         let _ = write!(location, "{}:{}:{}", at.file(), at.line(), at.column());
     }
-    let details = Details {
-        message: message.as_str(),
-        location: location.as_str(),
-    };
+    crash(message.as_str(), location.as_str())
+}
+
+/// Shows a processor exception on the panic screen, with the instruction
+/// it came from.
+#[cfg(not(test))]
+fn crash_from_exception(vector: u64, error: u64, address: u64, rip: u64) -> ! {
+    let mut message = Text::<256>::new();
+    let _ = kernel::exceptions::describe(vector, error, address, &mut message);
+    let mut location = Text::<128>::new();
+    let _ = write!(location, "the instruction at {rip:#x}");
+    crash(message.as_str(), location.as_str())
+}
+
+#[cfg(test)]
+fn crash_from_exception(_: u64, _: u64, _: u64, _: u64) -> ! {
+    unreachable!("exceptions only come on the real machine")
+}
+
+/// Writes the crash to the serial port, draws the panic screen once and
+/// stops.
+#[cfg(not(test))]
+fn crash(message: &str, location: &str) -> ! {
+    let mut serial = Com1::open();
+    let _ = writeln!(serial, "kernel: stopped: {message} ({location})");
+    if PANICKING.swap(true, Ordering::AcqRel) {
+        stop()
+    }
+    let details = Details { message, location };
     let mut screen = panic_screen();
     if let Some(canvas) = screen.as_mut() {
-        // SAFETY: PANICKING lets only the first panic get here, so this is
+        // SAFETY: PANICKING lets only the first crash get here, so this is
         // the only reference to the space there ever is.
         let (code, scratch) = unsafe { &mut *PANIC_SPACE.0.get() };
         if let Err(e) = kernel::panic::draw(canvas, &details, code, scratch) {
@@ -201,6 +224,14 @@ fn on_panic(info: &core::panic::PanicInfo) -> ! {
         }
     }
     after_panic(screen.as_ref(), &details, &mut serial)
+}
+
+/// Lets the test image crash a second time, to check a crash that comes
+/// from the processor after one that came from a panic. The first crash's
+/// working space is never used again, as its code never resumes.
+#[cfg(all(not(test), feature = "qemu-test"))]
+pub fn allow_another_crash() {
+    PANICKING.store(false, Ordering::Release);
 }
 
 #[cfg(all(not(test), feature = "qemu-test"))]

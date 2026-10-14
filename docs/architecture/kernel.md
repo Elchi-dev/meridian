@@ -24,6 +24,15 @@ is what exists today; everything after it is still to come.
   CPUID, the free memory out of all memory, and the memory map as a bar.
   Reserved ranges above the end of memory are devices, such as QEMU's
   12 GiB PCI window, and are left out.
+- **Descriptor tables and exceptions.** At entry the kernel loads its own
+  GDT (null, code, data, task state), a task state segment and an IDT
+  with a gate for each of the 32 exceptions. Each gate leads to a small
+  stub that pushes the vector, and a 0 where the processor gives no error
+  code, so `exception` always finds the same frame. Double faults, NMIs and
+  machine checks switch to a 16 KiB fault stack, so running out of stack
+  still ends on the panic screen instead of resetting the machine. An
+  exception is shown in words, such as "page fault: the kernel read 0x0,
+  which is not mapped", with the address of the instruction.
 - **The panic screen.** A panic draws a sun yellow screen that says in
   plain words what happened and what to do, with the panic message and
   where it came from, and a QR code of a short summary (version, event,
@@ -35,10 +44,13 @@ is what exists today; everything after it is still to come.
   loader promised: the direct map, its own image mapped at the right
   physical memory, the stack, the processor state, the ACPI root pointer,
   and that boot services are over. It checks its status screen by reading
-  the framebuffer back, then panics on purpose, checks the panic screen
-  the same way and ends the QEMU run with `TESTS DONE`. sextant keeps both
-  screens as PNG files, and a Go test reads the QR code off the panic
-  screen with `zbarimg`.
+  the framebuffer back, and checks the loaded tables and five exceptions
+  it causes on purpose (breakpoint, invalid opcode, division by zero, a
+  read of address 0, a bad selector), each resumed after the fault. Then
+  it panics on purpose and checks the panic screen, and then runs out of
+  stack on purpose and checks that the double fault reaches the panic
+  screen too. sextant keeps the three screens as PNG files, and a Go test
+  reads both QR codes with `zbarimg`.
 
 ## Shape
 

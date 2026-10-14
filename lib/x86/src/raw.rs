@@ -399,31 +399,25 @@ pub fn tsc() -> u64 {
     crate::join(high, low)
 }
 
-/// Whether this processor has a place for a number of its own.
-fn cpu_number_supported() -> bool {
-    crate::has_leaf(cpuid(0x8000_0000)[0], 0x8000_0001)
-        && crate::tsc_aux::supported(cpuid(0x8000_0001)[3])
-}
-
 /// Gives this processor a number, which RDTSCP and RDPID hand back, so code
 /// can tell which processor it runs on. Returns whether the processor has
 /// a place for it.
 #[must_use]
 pub fn set_cpu_number(number: u32) -> bool {
-    if !cpu_number_supported() {
-        return false;
+    let supported = crate::tsc_aux::supported(cpuid(0x8000_0000)[0], cpuid(0x8000_0001)[3]);
+    if supported {
+        // SAFETY: the register exists where RDTSCP does, and it only holds
+        // a number for software to read.
+        unsafe { write_msr(crate::tsc_aux::MSR, u64::from(number)) };
     }
-    // SAFETY: the register exists where RDTSCP does, and it only holds a
-    // number for software to read.
-    unsafe { write_msr(crate::tsc_aux::MSR, u64::from(number)) };
-    true
+    supported
 }
 
 /// The number [`set_cpu_number`] gave this processor, if it has a place
 /// for one.
 #[must_use]
 pub fn cpu_number() -> Option<u32> {
-    if !cpu_number_supported() {
+    if !crate::tsc_aux::supported(cpuid(0x8000_0000)[0], cpuid(0x8000_0001)[3]) {
         return None;
     }
     // SAFETY: the register exists where RDTSCP does, and reading it

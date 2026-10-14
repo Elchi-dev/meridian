@@ -30,11 +30,11 @@ pub mod efer {
 pub mod tsc_aux {
     pub const MSR: u32 = 0xc000_0103;
 
-    /// Whether the processor has the register, by EDX of CPUID leaf
-    /// `0x8000_0001`: it comes with RDTSCP.
+    /// Whether the processor has the register, given the highest extended
+    /// CPUID leaf and EDX of leaf `0x8000_0001`: it comes with RDTSCP.
     #[must_use]
-    pub fn supported(extended_edx: u32) -> bool {
-        extended_edx & 1 << 27 != 0
+    pub fn supported(highest_extended: u32, extended_edx: u32) -> bool {
+        crate::has_leaf(highest_extended, 0x8000_0001) && extended_edx & 1 << 27 != 0
     }
 }
 
@@ -160,14 +160,20 @@ mod tests {
 
     #[test]
     fn the_processor_number_comes_with_rdtscp() {
-        assert!(tsc_aux::supported(1 << 27));
-        assert!(!tsc_aux::supported(!(1 << 27)));
-        assert!(!tsc_aux::supported(0));
+        let leaf = 0x8000_0001;
+        assert!(tsc_aux::supported(leaf, 1 << 27));
+        assert!(!tsc_aux::supported(leaf, !(1 << 27)));
+        assert!(!tsc_aux::supported(leaf, 0));
+        assert!(
+            !tsc_aux::supported(leaf - 1, 1 << 27),
+            "without the leaf its bits mean nothing"
+        );
         assert_eq!(tsc_aux::MSR, 0xc000_0103);
         if let Some(flags) = cpuinfo("flags") {
+            let [highest, ..] = raw::cpuid(0x8000_0000);
             let edx = raw::cpuid(0x8000_0001)[3];
             assert_eq!(
-                tsc_aux::supported(edx),
+                tsc_aux::supported(highest, edx),
                 flags.split_whitespace().any(|f| f == "rdtscp"),
                 "Linux calls the same bit rdtscp"
             );

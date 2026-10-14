@@ -10,7 +10,7 @@ use core::fmt::Write;
 
 use crate::Status;
 use crate::memory::{DESCRIPTOR_SIZE, MemoryMap, MemoryType, PAGE_BYTES, PAGE_SIZE};
-use crate::raw::System;
+use crate::raw::{File, System};
 use crate::text::scan;
 
 /// A type from the range UEFI leaves to the operating system, so the test
@@ -64,6 +64,7 @@ pub fn run(system: &System, report: &mut impl Report) {
     );
 
     memory(system, report);
+    files(system, report);
 
     report.press("ret");
     let enter = system.wait_for_key();
@@ -219,4 +220,151 @@ fn reuse(system: &System, report: &mut impl Report) {
             "a page allocated again should come back cleared",
         );
     }
+}
+
+/// Where sextant puts the loader on every image it builds.
+const LOADER_PATH: &str = "/EFI/BOOT/BOOTX64.EFI";
+
+fn files(system: &System, report: &mut impl Report) {
+    let Ok(root) = system.boot_volume() else {
+        report.check(
+            "uefi.file.volume",
+            false,
+            "the volume the loader came from should open",
+        );
+        return;
+    };
+    report.check("uefi.file.volume", true, "");
+    report.check(
+        "uefi.file.root",
+        root.info().is_ok_and(|i| i.directory),
+        "the root of the volume should say it is a directory",
+    );
+    report.check(
+        "uefi.file.missing",
+        root.open("/no/such/file").err() == Some(Status::NOT_FOUND),
+        "opening a file that is not there should say NOT_FOUND",
+    );
+    let long = [b'a'; 300];
+    report.check(
+        "uefi.file.long_path",
+        root.open(core::str::from_utf8(&long).unwrap_or("")).err()
+            == Some(Status::INVALID_PARAMETER),
+        "a path longer than the limit should be refused before the firmware sees it",
+    );
+
+    let Ok(mut loader) = root.open(LOADER_PATH) else {
+        report.check("uefi.file.open", false, "the loader's own file should open");
+        return;
+    };
+    report.check("uefi.file.open", true, "");
+    let size = match loader.info() {
+        Ok(info) if !info.directory && info.size > 4096 => info.size,
+        _ => {
+            report.check(
+                "uefi.file.info",
+                false,
+                "the loader's file should be a file of some size",
+            );
+            return;
+        }
+    };
+    report.check("uefi.file.info", true, "");
+    directories(&root, size, report);
+
+    let pages = usize::try_from(size.div_ceil(PAGE_SIZE)).unwrap_or(0) + 1;
+    let Ok(mut buf) = system.allocate_pages(MemoryType::LOADER_DATA, pages) else {
+        report.check("uefi.file.read", false, "no memory to read the loader into");
+        return;
+    };
+    let read = loader.read_all(buf.bytes());
+    report.check(
+        "uefi.file.read",
+        read.is_ok_and(|n| n as u64 == size),
+        "reading into a larger buffer should stop at the end of the file",
+    );
+    report.check(
+        "uefi.file.eof",
+        loader.read(buf.bytes()) == Ok(0),
+        "a read at the end of the file should return nothing",
+    );
+    let bytes = buf.bytes();
+    let pe_at = usize::try_from(u32::from_le_bytes([
+        bytes[0x3c],
+        bytes[0x3d],
+        bytes[0x3e],
+        bytes[0x3f],
+    ]))
+    .unwrap_or(0);
+    report.check(
+        "uefi.file.contents",
+        bytes.starts_with(b"MZ") && bytes.get(pe_at..pe_at + 4) == Some(b"PE\0\0"),
+        "the loader's file should read back as a PE image",
+    );
+    report.check(
+        "uefi.file.chunks",
+        root.open("efi/boot/bootx64.efi")
+            .is_ok_and(|again| same_in_chunks(again, &bytes[..pages * PAGE_BYTES - PAGE_BYTES])),
+        "the file should read the same in small pieces through a relative, lower case path",
+    );
+    let _ = buf.free();
+}
+
+/// Whether reading `file` 1000 bytes at a time gives `want`, partly
+/// beyond the file's end; `want` covers whole pages, so its tail is zero.
+fn same_in_chunks(mut file: File<'_>, want: &[u8]) -> bool {
+    let mut chunk = [0u8; 1000];
+    let mut at = 0;
+    loop {
+        match file.read(&mut chunk) {
+            Ok(0) => return want[at..].iter().all(|&b| b == 0),
+            Ok(n) if at + n <= want.len() && chunk[..n] == want[at..at + n] => at += n,
+            _ => return false,
+        }
+    }
+}
+
+/// Opens the loader again one directory at a time, and twice at once.
+fn directories(root: &File<'_>, size: u64, report: &mut impl Report) {
+    let efi = root.open("EFI");
+    report.check(
+        "uefi.file.directory",
+        efi.as_ref()
+            .is_ok_and(|d| d.info().is_ok_and(|i| i.directory)),
+        "the EFI folder should open and say it is a directory",
+    );
+    let loader = efi
+        .and_then(|efi| efi.open("BOOT"))
+        .and_then(|boot| boot.open("BOOTX64.EFI"));
+    report.check(
+        "uefi.file.relative",
+        loader
+            .as_ref()
+            .is_ok_and(|f| f.info().is_ok_and(|i| i.size == size)),
+        "opening relative to a directory should reach the same file",
+    );
+    let Ok(mut first) = loader else {
+        return;
+    };
+    report.check(
+        "uefi.file.empty_read",
+        first.read(&mut []) == Ok(0),
+        "a read into no room should return nothing and succeed",
+    );
+
+    let Ok(mut second) = root.open(LOADER_PATH) else {
+        report.check(
+            "uefi.file.positions",
+            false,
+            "the loader should open a second time",
+        );
+        return;
+    };
+    let (mut a, mut b, mut c) = ([0u8; 16], [0u8; 16], [0u8; 16]);
+    let reads = (first.read(&mut a), second.read(&mut b), first.read(&mut c));
+    report.check(
+        "uefi.file.positions",
+        reads == (Ok(16), Ok(16), Ok(16)) && a == b && a != c && a.starts_with(b"MZ"),
+        "each open file should keep its own position",
+    );
 }

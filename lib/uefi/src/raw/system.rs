@@ -61,7 +61,7 @@ impl System {
         unsafe { self.table.as_ref() }
     }
 
-    fn boot_services(&self) -> &BootServices {
+    pub(super) fn boot_services(&self) -> &BootServices {
         // SAFETY: checked non-null and valid in from_entry.
         unsafe { &*self.table().boot_services }
     }

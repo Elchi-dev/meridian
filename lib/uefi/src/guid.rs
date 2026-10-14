@@ -132,6 +132,9 @@ pub const ACPI_20_TABLE: Guid = Guid::parse("8868e871-e4f1-11d3-bc22-0080c73c888
 pub const SMBIOS3_TABLE: Guid = Guid::parse("f2fd1544-9794-4a2c-992e-e5bbcf20e394");
 pub const IMAGE_SECURITY_DATABASE: Guid = Guid::parse("d719b2cb-3d3a-4596-a3bc-dad00e67656f");
 pub const SHIM_LOCK_PROTOCOL: Guid = Guid::parse("605dab50-e046-4300-abb6-3dd810dd8b23");
+/// The vendor of Meridian's own firmware variables, made at random for
+/// Meridian.
+pub const MERIDIAN_VARIABLE: Guid = Guid::parse("bacddb3d-6355-4764-b93f-9889689a4ce4");
 
 #[cfg(test)]
 mod tests {
@@ -252,6 +255,7 @@ mod tests {
             ),
             (SHIM_LOCK_PROTOCOL, "605dab50-e046-4300-abb6-3dd810dd8b23"),
             (GLOBAL_VARIABLE, "8be4df61-93ca-11d2-aa0d-00e098032b8c"),
+            (MERIDIAN_VARIABLE, "bacddb3d-6355-4764-b93f-9889689a4ce4"),
         ];
         for (guid, text) in cases {
             assert_eq!(guid.to_string(), text);

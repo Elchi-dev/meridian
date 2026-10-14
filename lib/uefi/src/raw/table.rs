@@ -148,14 +148,42 @@ pub struct RuntimeServices {
     pub set_wakeup_time: NotCalled,
     pub set_virtual_address_map: NotCalled,
     pub convert_pointer: NotCalled,
-    pub get_variable: NotCalled,
+    pub get_variable: unsafe extern "efiapi" fn(
+        name: *const u16,
+        vendor: *const Guid,
+        attributes: *mut u32,
+        data_size: *mut usize,
+        data: *mut c_void,
+    ) -> Status,
     pub get_next_variable_name: NotCalled,
-    pub set_variable: NotCalled,
+    pub set_variable: unsafe extern "efiapi" fn(
+        name: *const u16,
+        vendor: *const Guid,
+        attributes: u32,
+        data_size: usize,
+        data: *const c_void,
+    ) -> Status,
     pub get_next_high_monotonic_count: NotCalled,
-    pub reset_system: NotCalled,
+    pub reset_system: unsafe extern "efiapi" fn(
+        kind: ResetType,
+        status: Status,
+        data_size: usize,
+        data: *const c_void,
+    ),
     pub update_capsule: NotCalled,
     pub query_capsule_capabilities: NotCalled,
     pub query_variable_info: NotCalled,
+}
+
+/// How [`RuntimeServices::reset_system`] restarts the machine.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResetType(pub u32);
+
+impl ResetType {
+    pub const COLD: ResetType = ResetType(0);
+    pub const WARM: ResetType = ResetType(1);
+    pub const SHUTDOWN: ResetType = ResetType(2);
 }
 
 /// Whether a table header carries the expected signature and claims at
@@ -264,6 +292,14 @@ mod tests {
         assert_eq!(size_of::<BootServices>(), 24 + 8 * 44);
         assert_eq!(offset_of!(BootServices, exit_boot_services), 0xe8);
         assert_eq!(offset_of!(BootServices, locate_protocol), 0x140);
+    }
+
+    #[test]
+    fn reset_types() {
+        assert_eq!(ResetType::COLD.0, 0);
+        assert_eq!(ResetType::WARM.0, 1);
+        assert_eq!(ResetType::SHUTDOWN.0, 2);
+        assert_eq!(size_of::<ResetType>(), 4);
     }
 
     #[test]

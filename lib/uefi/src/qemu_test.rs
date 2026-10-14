@@ -9,9 +9,13 @@
 use core::fmt::Write;
 
 use crate::Status;
+use crate::guid::{GLOBAL_VARIABLE, MERIDIAN_VARIABLE};
 use crate::memory::{DESCRIPTOR_SIZE, MemoryMap, MemoryType, PAGE_BYTES, PAGE_SIZE};
 use crate::raw::{File, System};
 use crate::text::scan;
+use crate::variable::{
+    Attributes, BOOT_TO_FIRMWARE_UI, OS_INDICATIONS_SUPPORTED, SECURE_BOOT, name, u64_value,
+};
 
 /// A type from the range UEFI leaves to the operating system, so the test
 /// finds its own allocations in the memory map and nothing else.
@@ -68,6 +72,7 @@ pub fn run(system: &System, report: &mut impl Report) {
     tables(system, report);
     graphics(system, report);
     images(system, report);
+    variables(system, report);
 
     report.check(
         "uefi.keyboard.nothing_waiting",
@@ -641,5 +646,62 @@ fn images(system: &System, report: &mut impl Report) {
         "uefi.image.load",
         first.is_ok() && again.is_ok(),
         "the loader's own file should load, unload unstarted, and load again",
+    );
+}
+
+fn variables(system: &System, report: &mut impl Report) {
+    let runtime = Attributes::BOOTSERVICE_ACCESS.with(Attributes::RUNTIME_ACCESS);
+    let mut buf = [0u8; 32];
+    let supported = system
+        .variable(&OS_INDICATIONS_SUPPORTED, &GLOBAL_VARIABLE, &mut buf)
+        .ok()
+        .filter(|(attributes, _)| attributes.contains(runtime))
+        .and_then(|(_, data)| u64_value(data));
+    report.check(
+        "uefi.variable.read",
+        supported.is_some(),
+        "OVMF has OsIndicationsSupported: 8 bytes, readable at runtime",
+    );
+    report.check(
+        "uefi.variable.firmware_ui",
+        supported.is_some_and(|bits| bits & BOOT_TO_FIRMWARE_UI != 0),
+        "OVMF can open its settings at the next start",
+    );
+    let mut small = [0u8; 4];
+    report.check(
+        "uefi.variable.too_small",
+        system
+            .variable(&OS_INDICATIONS_SUPPORTED, &GLOBAL_VARIABLE, &mut small)
+            .err()
+            == Some(Status::BUFFER_TOO_SMALL),
+        "8 bytes do not fit in 4",
+    );
+    let secure_boot = system.variable(&SECURE_BOOT, &GLOBAL_VARIABLE, &mut buf);
+    report.check(
+        "uefi.variable.secure_boot",
+        matches!(secure_boot, Ok((_, [0])) | Err(Status::NOT_FOUND)),
+        "the test firmware does not check signatures",
+    );
+
+    let probe: [u16; 14] = name("MeridianProbe");
+    report.check(
+        "uefi.variable.missing",
+        system.variable(&probe, &MERIDIAN_VARIABLE, &mut buf).err() == Some(Status::NOT_FOUND),
+        "a variable nobody set is not found",
+    );
+    let wrote = system.set_variable(&probe, &MERIDIAN_VARIABLE, runtime, b"probe 1");
+    let back = system.variable(&probe, &MERIDIAN_VARIABLE, &mut buf);
+    report.check(
+        "uefi.variable.write",
+        wrote.is_ok() && back == Ok((runtime, b"probe 1".as_slice())),
+        "a variable that was set reads back with its attributes and data",
+    );
+    let deleted = system.set_variable(&probe, &MERIDIAN_VARIABLE, Attributes::default(), &[]);
+    report.check(
+        "uefi.variable.delete",
+        deleted.is_ok()
+            && system.variable(&probe, &MERIDIAN_VARIABLE, &mut buf).err()
+                == Some(Status::NOT_FOUND),
+        "setting no data with no attributes deletes the variable",
     );
 }

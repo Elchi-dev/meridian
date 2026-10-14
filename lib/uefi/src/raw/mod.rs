@@ -5,6 +5,7 @@ pub mod console;
 pub mod file;
 pub mod graphics;
 pub mod image;
+pub mod runtime;
 pub mod system;
 pub mod table;
 

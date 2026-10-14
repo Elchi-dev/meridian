@@ -62,7 +62,7 @@ impl System {
         })
     }
 
-    fn table(&self) -> &SystemTable {
+    pub(super) fn table(&self) -> &SystemTable {
         // SAFETY: checked in from_entry; the firmware keeps the table alive
         // for as long as boot services run, which is as long as Meridian
         // holds a System.

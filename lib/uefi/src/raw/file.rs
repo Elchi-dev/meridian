@@ -150,7 +150,7 @@ impl Info {
 }
 
 impl System {
-    fn protocol<T>(&self, handle: Handle, guid: &Guid) -> Result<NonNull<T>, Status> {
+    pub(super) fn protocol<T>(&self, handle: Handle, guid: &Guid) -> Result<NonNull<T>, Status> {
         let mut interface = ptr::null_mut();
         // SAFETY: HandleProtocol writes one interface pointer.
         unsafe { (self.boot_services().handle_protocol)(handle, guid, &raw mut interface) }.ok()?;
@@ -421,6 +421,17 @@ mod tests {
         assert_eq!((entry.info.size, entry.info.directory), (42, false));
         assert!(entry.is_named("GRUBX64.EFI"));
         assert_eq!(Entry::read(&file[..INFO_NAME_AT - 1]).map(|e| e.info), None);
+    }
+
+    #[test]
+    fn only_ascii_letters_ignore_case() {
+        let bytes = info_bytes(0, 0, "\u{c4}rger");
+        let entry = Entry::read(&bytes).unwrap();
+        assert!(entry.is_named("\u{c4}RGER"), "ASCII letters ignore case");
+        assert!(
+            !entry.is_named("\u{e4}rger"),
+            "others do not, as FAT's own table is not known here"
+        );
     }
 
     #[test]

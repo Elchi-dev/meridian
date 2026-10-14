@@ -16,6 +16,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Where the kernel is on the EFI system partition.
 pub const KERNEL_PATH: &str = "/meridian/kernel";
 
+/// Where the firmware finds this loader when no boot entry names it.
+pub const LOADER_PATH: &str = "/EFI/BOOT/BOOTX64.EFI";
+
 /// Text for the person in front of the machine. It goes to the firmware
 /// console, and to the serial port only when there is no console: firmware
 /// such as OVMF already mirrors its console to the serial port, and writing

@@ -8,14 +8,21 @@ const END: [u8; 4] = [0x7f, 0xff, 4, 0];
 const MEDIA: u8 = 4;
 const FILE_PATH: u8 = 4;
 
+/// Whether a node header is the end of the whole path. An end of one
+/// instance, 7f 01, is not: more instances follow it.
+#[must_use]
+pub fn is_end(header: [u8; 4]) -> bool {
+    header[0] == END[0] && header[1] == END[1]
+}
+
 /// The nodes of `path` before its end node, or `None` when a node's
 /// length points past the bytes or is shorter than a node header.
 #[must_use]
 pub fn nodes(path: &[u8]) -> Option<&[u8]> {
     let mut at = 0;
     loop {
-        let header = path.get(at..at + 4)?;
-        if header[0] == END[0] && header[1] == END[1] {
+        let header: [u8; 4] = path.get(at..at + 4)?.try_into().ok()?;
+        if is_end(header) {
             return Some(&path[..at]);
         }
         let len = usize::from(u16::from_le_bytes([header[2], header[3]]));
@@ -87,6 +94,14 @@ mod tests {
     }
 
     #[test]
+    fn only_7f_ff_ends_a_path() {
+        assert!(is_end([0x7f, 0xff, 4, 0]));
+        assert!(!is_end([0x7f, 0x01, 4, 0]), "the end of an instance");
+        assert!(!is_end([0x04, 0xff, 4, 0]));
+        assert!(!is_end([0x00, 0x00, 0, 0]));
+    }
+
+    #[test]
     fn an_end_of_instance_is_not_the_end() {
         // Two instances: the first ends with 7f 01, the whole path with 7f ff.
         let mut p = vec![0x01, 0x01, 0x06, 0x00, 0xaa, 0xbb];
@@ -152,6 +167,31 @@ mod tests {
             Some(n - 4),
             "the result reads back"
         );
+    }
+
+    #[test]
+    fn every_instance_is_kept_and_the_file_goes_last() {
+        let mut p = vec![0x01, 0x01, 0x06, 0x00, 0xaa, 0xbb];
+        p.extend([0x7f, 0x01, 0x04, 0x00]);
+        p.extend([0x01, 0x01, 0x06, 0x00, 0xcc, 0xdd]);
+        p.extend(END);
+        let mut out = [0u8; 64];
+        let n = with_file(&p, "x", &mut out).unwrap();
+        assert_eq!(
+            &out[..16],
+            &p[..16],
+            "both instances and the end of the first"
+        );
+        assert_eq!(&out[16..20], [MEDIA, FILE_PATH, 8, 0]);
+        assert_eq!(&out[20..24], [b'x', 0, 0, 0]);
+        assert_eq!(&out[24..n], END);
+    }
+
+    #[test]
+    fn an_empty_name_is_a_lone_terminator() {
+        let mut out = [0u8; 16];
+        assert_eq!(with_file(&END, "", &mut out), Some(10));
+        assert_eq!(&out[..10], [MEDIA, FILE_PATH, 6, 0, 0, 0, 0x7f, 0xff, 4, 0]);
     }
 
     #[test]

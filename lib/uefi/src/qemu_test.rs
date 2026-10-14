@@ -67,6 +67,7 @@ pub fn run(system: &System, report: &mut impl Report) {
     files(system, report);
     tables(system, report);
     graphics(system, report);
+    images(system, report);
 
     report.check(
         "uefi.keyboard.nothing_waiting",
@@ -551,5 +552,94 @@ fn corners(pixels: &mut crate::raw::graphics::Pixels<'_>, report: &mut impl Repo
         "uefi.gop.corners",
         back && slice.len() == stride * (h - 1) + w,
         "each corner and the row below the top should hold its own pixel",
+    );
+}
+
+/// The boot partition's device path, and loading images from it without
+/// starting them: the loader's test image starts one, with options.
+fn images(system: &System, report: &mut impl Report) {
+    use crate::device_path::nodes;
+    use crate::raw::image::PATH_BYTES;
+
+    let mut path = [0u8; PATH_BYTES];
+    let base = system.boot_device_path(&mut path).map(<[u8]>::len);
+    let whole = base
+        .ok()
+        .and_then(|n| nodes(&path[..n]).map(|nodes| (n, nodes.len())));
+    report.check(
+        "uefi.image.device_path",
+        whole.is_some_and(|(n, before_end)| before_end + 4 == n && n > 4),
+        "the boot partition's device path should be nodes and an end node",
+    );
+    let last_type = whole.and_then(|(_, before_end)| {
+        let nodes = &path[..before_end];
+        let mut at = 0;
+        let mut last = None;
+        while at + 4 <= nodes.len() {
+            last = Some(nodes[at]);
+            at += usize::from(u16::from_le_bytes([nodes[at + 2], nodes[at + 3]])).max(4);
+        }
+        last
+    });
+    report.check(
+        "uefi.image.partition",
+        last_type == Some(4),
+        "the path should end at a media node: the partition or the CD's boot image",
+    );
+    let mut tiny = [0u8; 8];
+    report.check(
+        "uefi.image.device_path_room",
+        system.boot_device_path(&mut tiny).err() == Some(Status::BUFFER_TOO_SMALL),
+        "a buffer too small for the path should be refused, not cut",
+    );
+    report.check(
+        "uefi.image.missing",
+        system.load_image("/EFI/no/such.efi").err() == Some(Status::NOT_FOUND),
+        "loading a file that is not there should say NOT_FOUND",
+    );
+    report.check(
+        "uefi.image.not_efi",
+        system.load_image("/meridian/kernel").is_err(),
+        "the kernel is an ELF file, which the firmware should refuse to load",
+    );
+    report.check(
+        "uefi.image.folder",
+        system.load_image("/EFI/BOOT").is_err(),
+        "a folder is no image",
+    );
+    let options: [u16; 4] = [u16::from(b'a'), 0x20ac, u16::from(b'b'), 0];
+    let set = system.load_image(LOADER_PATH).and_then(|mut image| {
+        let before = image.options().0.len();
+        image.set_options(&options)?;
+        Ok((before, image.options().0 == options))
+    });
+    report.check(
+        "uefi.image.set_options",
+        set.is_ok_and(|(before, after)| before == 0 && after),
+        "options handed to a loaded image should be what it reads",
+    );
+    let fresh = system
+        .load_image(LOADER_PATH)
+        .map(|image| image.options().0.is_empty());
+    report.check(
+        "uefi.image.own_options",
+        fresh == Ok(true) && system.load_options() != options,
+        "options belong to the image they were set on, not to the next or to this one",
+    );
+    let handle = system.load_image(LOADER_PATH).map(|image| {
+        let handle = image.handle();
+        (handle, system.is_loaded(handle))
+    });
+    report.check(
+        "uefi.image.unloaded",
+        handle.is_ok_and(|(handle, while_held)| while_held && !system.is_loaded(handle)),
+        "an image dropped without starting should be unloaded",
+    );
+    let first = system.load_image(LOADER_PATH).map(drop);
+    let again = system.load_image(LOADER_PATH).map(drop);
+    report.check(
+        "uefi.image.load",
+        first.is_ok() && again.is_ok(),
+        "the loader's own file should load, unload unstarted, and load again",
     );
 }

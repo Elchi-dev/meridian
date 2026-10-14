@@ -69,6 +69,7 @@ pub fn checks(system: &System, serial: &mut impl Write) {
     );
 
     prepare(system, &mut report);
+    chain(system, &mut report);
 
     let failed = report.failed;
     if failed > 0 {
@@ -204,4 +205,41 @@ pub fn boot_screen(system: &System, frame: &[u32], screen: &[u32], serial: &mut 
         let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
         x86::raw::qemu_exit(false);
     }
+}
+
+/// What the loader's copy returns when it was started as a test.
+pub const CHAINED: uefi::Status = uefi::Status::ABORTED;
+
+/// The options the test starts the loader's copy with.
+static CHAIN_OPTIONS: [u16; 11] = {
+    let text = b"chain test\0";
+    let mut units = [0u16; 11];
+    let mut i = 0;
+    while i < text.len() {
+        units[i] = text[i] as u16;
+        i += 1;
+    }
+    units
+};
+
+/// Whether this image was started by the chain check below.
+pub fn is_chained(system: &System) -> bool {
+    system.load_options() == CHAIN_OPTIONS
+}
+
+/// Loads a copy of the loader from the same partition and starts it with
+/// options that make it come back at once: what the boot screen does to
+/// start another system, checked end to end.
+fn chain<W: Write>(system: &System, report: &mut Serial<'_, W>) {
+    use uefi::qemu_test::Report;
+
+    let started = system.load_image(boot::LOADER_PATH).and_then(|mut image| {
+        image.set_options(&CHAIN_OPTIONS)?;
+        Ok(image.start())
+    });
+    report.check(
+        "boot.chain.start",
+        started == Ok(CHAINED),
+        "the loader's copy should start, see its options and return ABORTED",
+    );
 }

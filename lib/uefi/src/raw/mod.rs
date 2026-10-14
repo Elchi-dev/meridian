@@ -4,6 +4,7 @@
 pub mod console;
 pub mod file;
 pub mod graphics;
+pub mod image;
 pub mod system;
 pub mod table;
 

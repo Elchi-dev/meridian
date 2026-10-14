@@ -32,6 +32,14 @@ extern "efiapi" fn efi_main(image: uefi::raw::Handle, table: *mut SystemTable) -
         );
         return Status::LOAD_ERROR;
     };
+    #[cfg(feature = "qemu-test")]
+    if crate::qemu_test::is_chained(&system) {
+        let _ = fmt::Write::write_str(
+            &mut serial,
+            "boot: started by the loader as a test, returning\n",
+        );
+        return crate::qemu_test::CHAINED;
+    }
     crate::run(system, &mut serial)
 }
 

@@ -115,6 +115,59 @@ pub struct Processors {
     pub local_apic: u64,
 }
 
+/// One processor the MADT lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Processor {
+    /// The id of its local APIC, which interrupts sent to it name.
+    pub apic_id: u32,
+    /// Whether it is enabled or can be brought online.
+    pub usable: bool,
+}
+
+/// Calls `each` with every processor in the MADT, from its xAPIC and its
+/// x2APIC entries alike, in the table's order.
+///
+/// # Errors
+///
+/// [`Error::Truncated`] when an entry's length points past the table or
+/// is 0, which would never end.
+pub fn each_processor(madt: &[u8], mut each: impl FnMut(Processor)) -> Result<(), Error> {
+    walk_madt(madt, |kind, entry| {
+        let (id, flags) = match kind {
+            0 => (entry.get(3).map(|&id| u32::from(id)), entry.get(4..8)),
+            9 => (u32_at(entry, 4), entry.get(8..12)),
+            _ => return Ok(()),
+        };
+        let (Some(apic_id), Some(flags)) = (id, flags) else {
+            return Err(Error::Truncated);
+        };
+        let flags = u32::from_le_bytes(flags.try_into().map_err(|_| Error::Truncated)?);
+        each(Processor {
+            apic_id,
+            usable: flags & 0b11 != 0,
+        });
+        Ok(())
+    })
+}
+
+/// Calls `entry` with the type and bytes of every entry of the MADT.
+fn walk_madt(
+    madt: &[u8],
+    mut entry: impl FnMut(u8, &[u8]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut at = 44;
+    while at < madt.len() {
+        let len = usize::from(*madt.get(at + 1).ok_or(Error::Truncated)?);
+        let bytes = madt
+            .get(at..at + len)
+            .filter(|_| len >= 2)
+            .ok_or(Error::Truncated)?;
+        entry(madt[at], bytes)?;
+        at += len;
+    }
+    Ok(())
+}
+
 /// Counts the processors in the MADT, both their xAPIC and x2APIC entries.
 ///
 /// # Errors
@@ -126,32 +179,16 @@ pub fn processors(madt: &[u8]) -> Result<Processors, Error> {
         local_apic: u64::from(u32_at(madt, 36).ok_or(Error::Truncated)?),
         ..Processors::default()
     };
-    let mut at = 44;
-    while at < madt.len() {
-        let kind = madt[at];
-        let len = usize::from(*madt.get(at + 1).ok_or(Error::Truncated)?);
-        let entry = madt
-            .get(at..at + len)
-            .filter(|_| len >= 2)
-            .ok_or(Error::Truncated)?;
-        let flags = match kind {
-            0 => entry.get(4..8),
-            9 => entry.get(8..12),
-            5 => {
-                found.local_apic = u64_at(entry, 4).ok_or(Error::Truncated)?;
-                None
-            }
-            _ => None,
-        };
-        if let Some(flags) = flags {
-            let flags = u32::from_le_bytes(flags.try_into().map_err(|_| Error::Truncated)?);
-            found.listed += 1;
-            if flags & 0b11 != 0 {
-                found.usable += 1;
-            }
+    walk_madt(madt, |kind, entry| {
+        if kind == 5 {
+            found.local_apic = u64_at(entry, 4).ok_or(Error::Truncated)?;
         }
-        at += len;
-    }
+        Ok(())
+    })?;
+    each_processor(madt, |p| {
+        found.listed += 1;
+        found.usable += u32::from(p.usable);
+    })?;
     Ok(found)
 }
 
@@ -421,6 +458,51 @@ mod tests {
         assert_eq!(found.listed, 7);
         assert_eq!(found.usable, 5, "enabled or online capable");
         assert_eq!(found.local_apic, 0xfee0_0000);
+    }
+
+    #[test]
+    fn each_processor_comes_with_its_apic_id() {
+        let t = madt(&[
+            lapic(0, 1),
+            lapic(7, 0),
+            vec![1, 12, 0, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0],
+            x2apic(0x1_0203, 2),
+        ]);
+        let mut seen = Vec::new();
+        each_processor(&t, |p| seen.push(p)).unwrap();
+        assert_eq!(
+            seen,
+            [
+                Processor {
+                    apic_id: 0,
+                    usable: true
+                },
+                Processor {
+                    apic_id: 7,
+                    usable: false
+                },
+                Processor {
+                    apic_id: 0x1_0203,
+                    usable: true
+                },
+            ]
+        );
+        let mut short = lapic(3, 1);
+        short.truncate(3);
+        short[1] = 3;
+        assert_eq!(
+            each_processor(&madt(&[short]), |_| {}),
+            Err(Error::Truncated),
+            "no flags"
+        );
+        let mut short = x2apic(9, 1);
+        short.truncate(6);
+        short[1] = 6;
+        assert_eq!(
+            each_processor(&madt(&[short]), |_| {}),
+            Err(Error::Truncated),
+            "no whole id"
+        );
     }
 
     #[test]

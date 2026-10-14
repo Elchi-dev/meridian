@@ -8,6 +8,52 @@ pub mod palette;
 
 use font::{Error, Font};
 
+/// Text of at most `N` bytes, written with `write!` and no heap. What does
+/// not fit is cut off at a character boundary, and the write that hit the
+/// end reports an error.
+pub struct Text<const N: usize> {
+    bytes: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> Text<N> {
+    #[must_use]
+    pub fn new() -> Text<N> {
+        Text {
+            bytes: [0; N],
+            len: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> Default for Text<N> {
+    fn default() -> Self {
+        Text::new()
+    }
+}
+
+impl<const N: usize> core::fmt::Write for Text<N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let room = N - self.len;
+        let mut take = s.len().min(room);
+        while !s.is_char_boundary(take) {
+            take -= 1;
+        }
+        self.bytes[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+        self.len += take;
+        if take < s.len() {
+            Err(core::fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// How the four bytes of a pixel are ordered in memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -328,6 +374,64 @@ mod tests {
                     .all(|&p| p == PAD)
             })
         }
+    }
+
+    #[test]
+    fn text_fills_up_and_cuts_off() {
+        use core::fmt::Write;
+        let mut t = Text::<8>::new();
+        assert!(write!(t, "abc").is_ok());
+        assert!(write!(t, "defgh").is_ok());
+        assert_eq!(t.as_str(), "abcdefgh");
+        assert!(write!(t, "i").is_err());
+        assert_eq!(t.as_str(), "abcdefgh");
+        let mut cut = Text::<5>::default();
+        assert!(
+            write!(cut, "xy\u{e9}\u{e9}").is_err(),
+            "the second e acute does not fit"
+        );
+        assert_eq!(cut.as_str(), "xy\u{e9}");
+        let mut empty = Text::<0>::new();
+        assert!(write!(empty, "a").is_err());
+        assert!(write!(empty, "").is_ok());
+        assert_eq!(empty.as_str(), "");
+    }
+
+    #[test]
+    fn text_takes_formatted_pieces_in_turn() {
+        use core::fmt::Write;
+        let mut t = Text::<32>::new();
+        let (free, all) = ("1 MiB", "2 MiB");
+        write!(t, "{free} free of {all}").unwrap();
+        assert_eq!(t.as_str(), "1 MiB free of 2 MiB");
+        write!(t, ", {:>4}", 7).unwrap();
+        assert_eq!(t.as_str(), "1 MiB free of 2 MiB,    7");
+        assert!(write!(t, " and then some more").is_err());
+        assert_eq!(t.as_str().len(), 32, "filled to the last byte");
+        assert!(
+            t.write_str("").is_ok(),
+            "writing nothing into a full buffer is fine"
+        );
+        assert!(t.as_str().starts_with("1 MiB free of 2 MiB,    7 and t"));
+    }
+
+    #[test]
+    fn text_never_splits_a_character() {
+        use core::fmt::Write;
+        for room in 0..8 {
+            let mut cut = Text::<8>::new();
+            let _ = write!(cut, "{}", "x".repeat(room));
+            let _ = write!(cut, "\u{20ac}\u{20ac}\u{20ac}");
+            let s = cut.as_str();
+            assert!(s.len() <= 8, "{room}: {s:?}");
+            assert_eq!(
+                s.trim_start_matches('x').len() % 3,
+                0,
+                "{room}: whole euro signs only, {s:?}"
+            );
+        }
+        assert_eq!(Text::<4>::default().as_str(), "");
+        assert_eq!(Text::<4>::new().as_str(), Text::<4>::default().as_str());
     }
 
     #[test]

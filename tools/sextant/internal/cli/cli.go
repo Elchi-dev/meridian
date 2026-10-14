@@ -47,6 +47,7 @@ func commands() []command {
 	return []command{
 		{name: "help", summary: "Show the commands, or details for one command", run: runHelp},
 		{name: "lint", summary: "Check the project rules that no compiler knows about", run: runLint},
+		{name: "mutate", summary: "Change the code on purpose and check the tests notice", run: runMutate},
 		{name: "stats", summary: "Count lines of code and tests per component", run: runStats},
 		{name: "version", summary: "Print the version of sextant", run: runVersion},
 	}

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -351,4 +352,74 @@ func TestFirmwareThatPrintsIsNotStalled(t *testing.T) {
 	if res.FirmwareStalled || res.ExitCode != ExitPass {
 		t.Fatalf("stalled %v, exit %d", res.FirmwareStalled, res.ExitCode)
 	}
+}
+
+// processWith returns the process whose command line contains needle, or 0.
+func processWith(needle string) int {
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err == nil && strings.Contains(string(cmdline), needle) && strings.HasPrefix(string(cmdline), "/") {
+			return pid
+		}
+	}
+	return 0
+}
+
+// TestHelperHoldsAMachine only runs as the child process of the test below:
+// it starts a machine whose CPU never runs and waits for it.
+func TestHelperHoldsAMachine(t *testing.T) {
+	disk := os.Getenv("SEXTANT_HELPER_DISK")
+	if disk == "" {
+		t.Skip("runs only as a helper process")
+	}
+	m := newRig(t).machine(disk)
+	m.GDB = true
+	_, _ = Run(context.Background(), m, Options{Timeout: time.Minute})
+}
+
+// sextant test boots machines from processes that a timeout may kill. The
+// machines must die with them, or they keep running and holding their disk
+// images, as eight of them once did on Samuel's machine.
+func TestQEMUDiesWithTheProcessThatStartedIt(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux can tie a child's life to its parent")
+	}
+	newRig(t)
+	disk := filepath.Join(t.TempDir(), "orphan-check.img")
+	if err := os.WriteFile(disk, make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	helper := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsAMachine$")
+	helper.Env = append(os.Environ(), "SEXTANT_HELPER_DISK="+disk)
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var machine int
+	for i := 0; i < 300 && machine == 0; i++ {
+		time.Sleep(100 * time.Millisecond)
+		machine = processWith(disk)
+	}
+	if machine == 0 {
+		_ = helper.Process.Kill()
+		t.Fatal("the helper never started QEMU")
+	}
+	if err := helper.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = helper.Wait()
+	for i := 0; i < 50; i++ {
+		if processWith(disk) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if p, err := os.FindProcess(machine); err == nil {
+		_ = p.Kill()
+	}
+	t.Fatalf("QEMU (pid %d) kept running after the process that started it was killed", machine)
 }

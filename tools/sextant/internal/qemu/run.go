@@ -102,6 +102,7 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, m.Binary, m.Args()...)
+	tieToParent(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()

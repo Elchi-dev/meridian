@@ -12,5 +12,7 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0004](0004-clean-room.md) | Learn Windows behaviour only from public documentation and black-box tests | accepted |
 | [0005](0005-meri-format.md) | Write settings and system files in .meri | accepted |
 | [0006](0006-rust-stable-pinned.md) | Build with stable Rust, pinned to one exact version | accepted |
+| [0007](0007-assembly-in-rust.md) | Write assembly inside Rust, in Intel syntax | accepted |
+| [0008](0008-unsafe-in-raw-modules.md) | Keep all unsafe code in raw modules | accepted |
 | [0009](0009-testing-rules.md) | Test every component with real code, and prove the tests can fail | accepted |
 | [0010](0010-sextant-writes-disk-images.md) | Write disk images with sextant itself | accepted |

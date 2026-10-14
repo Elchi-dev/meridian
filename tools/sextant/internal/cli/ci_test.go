@@ -173,6 +173,39 @@ func TestTheWorkflowRunsTheseSteps(t *testing.T) {
 	}
 }
 
+// The whole command, in a repository of its own: it runs from any folder
+// in it, gives Cargo the build folder the settings name, and groups the
+// log on GitHub.
+func TestCIRunsInTheRepositoryWithItsBuildFolder(t *testing.T) {
+	needTool(t, "cargo")
+	root := checkout(t, map[string]string{
+		"sextant.local.meri": "build {\n    dir = \"out/cargo\"\n}\n",
+		"Cargo.toml":         "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+		"src/lib.rs":         "",
+	})
+	steps := []ciStep{{name: "where Cargo builds", dir: ".", args: []string{"cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"}}}
+	ci := func() (string, error) {
+		var out, errOut bytes.Buffer
+		err := ciCommand(Env{Dir: filepath.Join(root, "src"), Stdout: &out, Stderr: &errOut}, nil, steps)
+		return out.String(), err
+	}
+	t.Setenv("GITHUB_ACTIONS", "")
+	got, err := ci()
+	want := `"target_directory":"` + filepath.Join(root, "out", "cargo") + `"`
+	if err != nil || !strings.Contains(got, want) || !strings.HasPrefix(got, "== 1/1 where Cargo builds\n") {
+		t.Fatalf("got %v\n%s", err, got)
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	if got, err := ci(); err != nil || !strings.HasPrefix(got, "::group::where Cargo builds\n") {
+		t.Fatalf("on GitHub: %v\n%s", err, got)
+	}
+	var out bytes.Buffer
+	err = ciCommand(Env{Dir: t.TempDir(), Stdout: &out, Stderr: &out}, nil, steps)
+	if err == nil || out.Len() != 0 {
+		t.Fatalf("outside a repository: %v\n%s", err, out.String())
+	}
+}
+
 func TestCIListsItsSteps(t *testing.T) {
 	r := run("ci", "--list")
 	if r.code != ExitOK || strings.Count(r.stdout, "\n") != len(ciSteps()) {

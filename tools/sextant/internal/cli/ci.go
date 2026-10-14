@@ -51,6 +51,11 @@ func ciSteps() []ciStep {
 }
 
 func runCI(env Env, args []string) error {
+	return ciCommand(env, args, ciSteps())
+}
+
+// ciCommand is 'sextant ci' with steps to run.
+func ciCommand(env Env, args []string, steps []ciStep) error {
 	flags := flag.NewFlagSet("ci", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	list := flags.Bool("list", false, "only list the checks")
@@ -58,7 +63,7 @@ func runCI(env Env, args []string) error {
 		return err
 	}
 	if *list {
-		for _, s := range ciSteps() {
+		for _, s := range steps {
 			what := strings.Join(s.args, " ")
 			if s.check != nil {
 				what = "checked by sextant itself"
@@ -83,7 +88,7 @@ func runCI(env Env, args []string) error {
 		errOut: env.Stderr,
 		github: os.Getenv("GITHUB_ACTIONS") == "true",
 	}
-	return r.all(context.Background(), ciSteps())
+	return r.all(context.Background(), steps)
 }
 
 // ciRun runs steps one after the other and stops at the first that fails.

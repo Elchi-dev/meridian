@@ -84,7 +84,8 @@ Loader and UEFI:
 - [x] Physical frame allocator and kernel heap (`lib/frames`, `lib/heap`)
 - [ ] Virtual memory: the kernel maps and unmaps pages of its own
 - [x] The local APIC in x2APIC mode, its timer measured against the TSC, interrupts a hundred times a second and `hlt` in between
-- [ ] The local APIC in xAPIC mode, for processors without x2APIC, and HPET
+- [ ] The local APIC in xAPIC mode, for processors without x2APIC, and HPET; it needs the APIC's page mapped uncached. QEMU without KVM has no x2APIC, so there the kernel runs on one core and spins, which the test image checks
+- [ ] Under QEMU without KVM the time stamp counter and the ACPI timer drift apart, so `kernel.tsc.agrees` fails there
 - [x] All cores started: INIT and startup through the x2APIC, a trampoline below 640 KiB, each core on its own stack and the kernel's tables
 - [x] The other cores get task states of their own, with fault stacks
 - [ ] The other cores get work to do

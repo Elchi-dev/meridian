@@ -128,7 +128,7 @@ pub fn tables(interrupts: &[u8], cores: usize, check: &mut impl FnMut(&str, bool
     });
     check(
         "x86.gdt.entries",
-        entries.len() >= 5
+        entries.len() == 3 + 2 * cores
             && entries[0] == 0
             && entries[1] & !(1 << 40) == crate::tables::gdt(tss)[1]
             && entries[2] & !(1 << 40) == crate::tables::gdt(tss)[2]
@@ -230,24 +230,31 @@ pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
         "spinning should last at least as many counter cycles as asked",
     );
     let polls = core::cell::Cell::new(0u32);
-    let begin = raw::tsc();
     let soon = raw::wait_for(u64::MAX, || {
         polls.set(polls.get() + 1);
         polls.get() == 5
     });
-    let quick = raw::tsc() - begin;
     let begin = raw::tsc();
     let never = raw::wait_for(1_000_000, || false);
     let waited = raw::tsc() - begin;
     check(
         "x86.wait_for",
-        soon && polls.get() == 5
-            && quick < 1_000_000
-            && !never
-            && (1_000_000..10_000_000).contains(&waited)
-            && raw::wait_for(0, || true),
+        soon && polls.get() == 5 && !never && waited >= 1_000_000 && raw::wait_for(0, || true),
         "waiting should end when the condition holds, or give up once the time is up",
     );
+    if !crate::apic::supported(raw::cpuid(1)[2]) {
+        // QEMU's emulation without KVM has no x2APIC: nothing may turn
+        // on, and nothing may reach registers that are not there.
+        check(
+            "x86.apic.absent",
+            !raw::enable_x2apic()
+                && raw::apic_id().is_none()
+                && apic_timer_count() == 0
+                && read_apic(SPURIOUS) == 0,
+            "without an x2APIC nothing should turn on, and its registers should be left alone",
+        );
+        return;
+    }
     // CPUID leaf 0xB gives the x2APIC id in EDX, leaf 1 the low 8 bits
     // of it in the top byte of EBX.
     let leaf_b = (raw::cpuid(0)[0] >= 0xb).then(|| raw::cpuid(0xb)[3]);

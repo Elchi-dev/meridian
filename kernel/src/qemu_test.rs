@@ -296,30 +296,7 @@ fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
 }
 
 fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
-    report.check(
-        "kernel.smp.running",
-        machine
-            .cores
-            .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1)),
-        "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables",
-    );
-    let entries = x86::raw::gdt_entries();
-    let others = machine.cores.map_or(0, |n| n.saturating_sub(1) as usize);
-    report.check(
-        "kernel.smp.task_states",
-        (1..=others).all(|i| entries.get(3 + 2 * i).is_some_and(|e| e >> 40 & 0xf == 0xb))
-            && entries.get(3 + 2 * (others + 1)).is_some_and(|&e| e == 0),
-        "each other core should have loaded a task state of its own, and none past them be set up",
-    );
-    // Each one waits 10 ms after its INIT and twice 0.2 ms after its
-    // startups, and no longer when it starts at once.
-    report.check(
-        "kernel.smp.quick",
-        tsc_hz.is_some_and(|hz| {
-            raw::smp::took() < hz / 1000 * 15 * u64::from(machine.cores.unwrap_or(1))
-        }),
-        "starting the other cores should not wait out the time a core that never starts gets",
-    );
+    smp_checks(report, machine, tsc_hz);
     report.check(
         "kernel.acpi.cores",
         machine.cores.is_some_and(|n| n >= 1),
@@ -356,6 +333,43 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
         "kernel.uptime",
         crate::up(tsc_hz).is_some_and(|s| s < 600),
         "the test machine was switched on less than ten minutes ago",
+    );
+}
+
+/// The other cores: all running on their own task states when there is an
+/// x2APIC to start them with, and none otherwise.
+fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
+    if !x86::apic::supported(x86::raw::cpuid(1)[2]) {
+        report.check(
+            "kernel.smp.alone",
+            raw::smp::running() == (0, 0) && x86::raw::gdt_entries().get(5) == Some(&0),
+            "without an x2APIC no other core should be started or given a task state",
+        );
+        return;
+    }
+    report.check(
+        "kernel.smp.running",
+        machine
+            .cores
+            .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1)),
+        "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables",
+    );
+    let entries = x86::raw::gdt_entries();
+    let others = machine.cores.map_or(0, |n| n.saturating_sub(1) as usize);
+    report.check(
+        "kernel.smp.task_states",
+        (1..=others).all(|i| entries.get(3 + 2 * i).is_some_and(|e| e >> 40 & 0xf == 0xb))
+            && entries.get(3 + 2 * (others + 1)).is_some_and(|&e| e == 0),
+        "each other core should have loaded a task state of its own, and none past them be set up",
+    );
+    // Each one waits 10 ms after its INIT and twice 0.2 ms after its
+    // startups, and no longer when it starts at once.
+    report.check(
+        "kernel.smp.quick",
+        tsc_hz.is_some_and(|hz| {
+            raw::smp::took() < hz / 1000 * 15 * u64::from(machine.cores.unwrap_or(1))
+        }),
+        "starting the other cores should not wait out the time a core that never starts gets",
     );
 }
 
@@ -432,6 +446,14 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
         "OVMF leaves the APIC in xAPIC mode, and nothing reaches its x2APIC registers before",
     );
     x86::qemu_test::apic(&mut |name, ok, why| report.check(name, ok, why));
+    if !x86::apic::supported(x86::raw::cpuid(1)[2]) {
+        report.check(
+            "kernel.timer.none",
+            timer::start(tsc_hz).is_none() && !x86::raw::interrupts_enabled(),
+            "without an x2APIC the kernel should keep spinning, with interrupts off",
+        );
+        return;
+    }
     let tenth = tsc_hz.unwrap_or(0) / 10;
     let period = timer::start(tsc_hz);
     report.check(

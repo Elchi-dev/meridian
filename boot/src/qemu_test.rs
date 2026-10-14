@@ -34,6 +34,9 @@ pub fn run(system: &System, serial: &mut impl Write) -> ! {
         failed: 0,
     };
     uefi::qemu_test::run(system, &mut report);
+    x86::qemu_test::run(&mut |name, ok, why| {
+        uefi::qemu_test::Report::check(&mut report, name, ok, why);
+    });
 
     let (major, _, _) = boot::uefi_version(system.header().revision);
     uefi::qemu_test::Report::check(
@@ -45,5 +48,5 @@ pub fn run(system: &System, serial: &mut impl Write) -> ! {
 
     let failed = report.failed;
     let _ = writeln!(report.out, "TESTS DONE {failed} failed");
-    crate::raw::qemu_exit(failed == 0)
+    x86::raw::qemu_exit(failed == 0)
 }

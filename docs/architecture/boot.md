@@ -10,9 +10,10 @@
   and of the boot services table. A table that fails the check stops the
   loader with `EFI_LOAD_ERROR`.
 - **Serial log.** COM1 at 115200 baud, 8 data bits, no parity, 1 stop bit,
-  FIFOs on. The register values live in `serial.rs` and are tested on the
-  host; the port writes are in `raw.rs`. A board without COM1 reads 0xff
-  from the line status register, so writes go nowhere and nothing hangs.
+  FIFOs on. The driver is in `lib/x86`, shared with the kernel: the
+  register values in `serial.rs`, tested on the host, and the port writes
+  in `raw.rs`. A board without COM1 reads 0xff from the line status
+  register, so writes go nowhere and nothing hangs.
 - **Banner.** The loader names itself, the firmware vendor and revision,
   and the UEFI version. Text for people goes to the firmware console only,
   and to the serial port only when there is no console. OVMF already copies
@@ -21,14 +22,15 @@
 - **Then it waits.** There is no kernel yet, so the loader says so, waits
   for a key and returns to the firmware.
 - **Test image.** Built with the `qemu-test` feature, the loader runs the
-  QEMU checks of `lib/uefi` and its own against OVMF, reports each over the
+  QEMU checks of `lib/uefi`, `lib/x86` and its own against OVMF, reports each over the
   serial port and ends QEMU with exit code 33 (all passed) or 35 (something
   failed). Port 0xf4 is only written in test images. See
   [testing.md](../testing.md).
 
-All `unsafe` code, the entry point, port I/O, halting and the QEMU exit, is
-in `boot/src/raw.rs`; `lib/uefi` keeps its firmware tables in `src/raw/`
-(ADR 0008).
+The loader's own `unsafe` code, the entry point and the panic handler, is
+in `boot/src/raw.rs`. `lib/uefi` keeps its firmware tables in `src/raw/`,
+and `lib/x86` its instructions (port I/O, CPUID, control registers,
+halting, the QEMU exit) in `src/raw.rs` (ADR 0008).
 
 ## M1: what it becomes
 

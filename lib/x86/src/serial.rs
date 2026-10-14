@@ -1,6 +1,6 @@
 //! Programming a 16550-compatible UART, the serial port QEMU and most
 //! desktop boards provide as COM1. Only the register values live here; the
-//! port writes are in `raw`.
+//! port writes are in [`crate::raw::Com1`].
 
 pub const COM1: u16 = 0x3f8;
 
@@ -27,7 +27,7 @@ pub fn init_sequence(baud: u32) -> Option<[(u16, u8); 7]> {
     let divisor = u16::try_from(BASE_BAUD / baud).ok()?;
     let [low, high] = divisor.to_le_bytes();
     Some([
-        (1, 0x00), // interrupt enable: none, the loader polls
+        (1, 0x00), // interrupt enable: none, writes poll
         (3, 0x80), // line control: divisor latch access on
         (0, low),  // divisor latch, low byte
         (1, high), // divisor latch, high byte
@@ -79,6 +79,32 @@ mod tests {
         assert_eq!(divisor(300), 384);
         assert_eq!(init_sequence(300).unwrap()[3], (1, 1));
         assert_eq!(divisor(50), 2304);
+    }
+
+    /// 115200 is 2^9 * 3^2 * 5^2, so it has 90 divisors. Every one of them
+    /// is a reachable rate except 1, whose divisor does not fit 16 bits.
+    #[test]
+    fn every_reachable_rate_round_trips() {
+        let mut reachable = 0;
+        for baud in 1..=BASE_BAUD {
+            let Some(s) = init_sequence(baud) else {
+                assert!(
+                    baud == 1 || !BASE_BAUD.is_multiple_of(baud),
+                    "{baud} should be reachable"
+                );
+                continue;
+            };
+            reachable += 1;
+            let divisor = u32::from(u16::from_le_bytes([s[2].1, s[3].1]));
+            assert_eq!(divisor * baud, BASE_BAUD, "{baud}");
+            let fixed = (s[0], s[1], s[4], s[5], s[6]);
+            assert_eq!(
+                fixed,
+                ((1, 0), (3, 0x80), (3, 3), (2, 0xc7), (4, 0x0b)),
+                "{baud}"
+            );
+        }
+        assert_eq!(reachable, 89);
     }
 
     #[test]

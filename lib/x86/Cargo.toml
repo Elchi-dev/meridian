@@ -1,0 +1,16 @@
+[package]
+name = "x86"
+description = "The x86_64 instructions and devices the loader and the kernel share"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Adds the way out of QEMU through its isa-debug-exit device.
+qemu-test = []

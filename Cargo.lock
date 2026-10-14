@@ -8,6 +8,7 @@ version = "0.0.0"
 dependencies = [
  "bootinfo",
  "uefi",
+ "x86",
 ]
 
 [[package]]
@@ -24,4 +25,8 @@ version = "0.0.0"
 
 [[package]]
 name = "uefi"
+version = "0.0.0"
+
+[[package]]
+name = "x86"
 version = "0.0.0"

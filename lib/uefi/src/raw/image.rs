@@ -59,13 +59,14 @@ impl System {
 
     /// Calls `each` with the device path of every partition or disk the
     /// firmware can read files from, the one this image came from among
-    /// them. Paths longer than [`PATH_BYTES`] are left out.
+    /// them, and returns how many there are. Paths longer than
+    /// [`PATH_BYTES`] are left out.
     ///
     /// # Errors
     ///
     /// The firmware's status, and `BUFFER_TOO_SMALL` for a machine with
     /// more than 32 of them.
-    pub fn file_system_paths(&self, mut each: impl FnMut(&[u8])) -> Result<(), Status> {
+    pub fn file_system_paths(&self, mut each: impl FnMut(&[u8])) -> Result<usize, Status> {
         let mut handles: [Handle; FILE_SYSTEMS] = [ptr::null_mut(); FILE_SYSTEMS];
         let mut size = size_of_val(&handles);
         // SAFETY: LocateHandle writes at most size bytes of handles into
@@ -87,7 +88,7 @@ impl System {
                 each(p);
             }
         }
-        Ok(())
+        Ok(found)
     }
 
     /// The device path of `handle`, copied into `out` with its end node.

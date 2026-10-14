@@ -579,8 +579,8 @@ fn file_systems(system: &System, report: &mut impl Report) {
     });
     report.check(
         "uefi.file_systems",
-        walked.is_ok() && listed >= 1 && found == 1,
-        "the firmware's file systems should include the boot partition, once",
+        walked == Ok(listed) && listed >= 1 && found == 1,
+        "the firmware's file systems should include the boot partition once, each with its path",
     );
 }
 

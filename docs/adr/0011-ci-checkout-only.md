@@ -26,4 +26,4 @@ Linux runs every check on every push, with KVM enabled for QEMU and `SEXTANT_REQ
 
 ## Consequences
 
-CI starts a little slower without caches. Updating `actions/checkout` is a deliberate change to the pinned hash in `.github/workflows/ci.yml` and to this record.
+CI starts a little slower without caches. The macOS runners keep their Go only in the tool cache, so a shell step puts it on the path, and installs Go with Homebrew if the cache ever has none. Updating `actions/checkout` is a deliberate change to the pinned hash in `.github/workflows/ci.yml` and to this record.

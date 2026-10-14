@@ -75,13 +75,13 @@ pub fn build(frames: &mut impl Frames, layout: &Layout<'_>) -> Result<AddressSpa
     let end = direct_map_end(layout.memory_top);
     let data = Flags::WRITABLE | Flags::GLOBAL | no_exec;
     space.map_range(frames, HHDM_BASE, 0, end, data, big)?;
-    // A framebuffer beyond memory gets its own piece of the direct map.
+    // A framebuffer beyond memory gets its own piece of the direct map, and
+    // one inside it nothing more.
     let (fb, fb_size) = layout.framebuffer;
     let fb_end = (fb + fb_size).div_ceil(SIZE_4K) * SIZE_4K;
-    if fb_end > end {
-        let first = (fb & !(SIZE_4K - 1)).max(end);
-        space.map_range(frames, HHDM_BASE + first, first, fb_end - first, data, big)?;
-    }
+    let first = (fb & !(SIZE_4K - 1)).max(end);
+    let beyond = fb_end.saturating_sub(first);
+    space.map_range(frames, HHDM_BASE + first, first, beyond, data, big)?;
 
     let stack_size = STACK_PAGES * SIZE_4K;
     space.map_range(
@@ -90,13 +90,13 @@ pub fn build(frames: &mut impl Frames, layout: &Layout<'_>) -> Result<AddressSpa
         layout.stack_physical,
         stack_size,
         Flags::WRITABLE | no_exec,
-        false,
+        big,
     )?;
 
     let (base, size) = layout.loader;
     let first = base & !(SIZE_4K - 1);
     let last = (base + size).div_ceil(SIZE_4K) * SIZE_4K;
-    space.map_range(frames, first, first, last - first, Flags(0), false)?;
+    space.map_range(frames, first, first, last - first, Flags(0), big)?;
     Ok(space)
 }
 
@@ -169,7 +169,7 @@ impl Pool {
     pub fn handed_out(&self, physical: u64) -> bool {
         physical >= self.start
             && physical < self.start + self.used * SIZE_4K
-            && (physical - self.start).is_multiple_of(SIZE_4K)
+            && physical.is_multiple_of(SIZE_4K)
     }
 }
 
@@ -608,6 +608,12 @@ mod tests {
         let mut huge = layout(&small, ALL);
         huge.memory_top = 1100 * SIZE_1G;
         assert_eq!(frames_needed(&huge), base + 2);
+        let mut no_screen = layout(&small, ALL);
+        no_screen.framebuffer = (0, 0);
+        assert_eq!(frames_needed(&no_screen), base - 1);
+        let mut wide = layout(&small, ALL);
+        wide.framebuffer.1 = 3 * SIZE_1G;
+        assert_eq!(frames_needed(&wide), base + 2);
     }
 
     #[test]
@@ -718,6 +724,19 @@ mod tests {
             page[176..].iter().all(|&b| b == 0xaa),
             "nothing past the last region"
         );
+    }
+
+    #[test]
+    fn pages_that_just_fit_are_enough() {
+        let region = MemoryRegion {
+            start: 0x2000,
+            pages: 3,
+            kind: bootinfo::RegionKind::USABLE,
+            reserved: 0,
+        };
+        let mut page = vec![0; 128 + 2 * 24];
+        write_info(&mut page, &BootInfo::new(), &[region, region]);
+        assert_eq!(&page[152..], &region.to_bytes());
     }
 
     #[test]

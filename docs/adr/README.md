@@ -10,5 +10,7 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0002](0002-dual-licence.md) | License Meridian under MIT or Apache-2.0 | accepted |
 | [0003](0003-zero-dependencies.md) | Take no outside code, and justify every outside file | accepted |
 | [0004](0004-clean-room.md) | Learn Windows behaviour only from public documentation and black-box tests | accepted |
-| [0009](0009-testing-rules.md) | Test every component with real code, and prove the tests can fail | accepted |
+| [0005](0005-meri-format.md) | Write settings and system files in .meri | accepted |
 | [0006](0006-rust-stable-pinned.md) | Build with stable Rust, pinned to one exact version | accepted |
+| [0009](0009-testing-rules.md) | Test every component with real code, and prove the tests can fail | accepted |
+| [0010](0010-sextant-writes-disk-images.md) | Write disk images with sextant itself | accepted |

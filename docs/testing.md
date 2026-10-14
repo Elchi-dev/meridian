@@ -77,6 +77,12 @@ opens the saved status screen and checks the colours at known places, so
 what a person would see is tested too, not only what the kernel believes
 it drew.
 
+The image people boot has no checks and asks for nothing, so a Go test's
+script keeps its screens instead: a script step can wait for a line, pause
+and keep the screen under a name. The test of the plain image keeps the
+status screen twice, 2.5 seconds apart, and checks that only the uptime
+changed in between.
+
 OVMF copies its text console to the serial port. So text a test writes to
 the firmware console also appears in the serial log, exactly as the console
 received it. The `uefi.console.write` check uses this: it writes a probe

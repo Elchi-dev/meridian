@@ -3,10 +3,12 @@
 
 use bootinfo::{MemoryRegion, RegionKind};
 use canvas::palette::{BORDER, GRASS, MUTED, NIGHT, SKY, SURFACE, TANGERINE, TEAL, TEXT, TOMATO};
+use core::fmt::Write;
+
 use canvas::{Canvas, Color, Scratch, Style};
 use font::{Error, Font};
 
-use crate::{Size, Text, bytes_of};
+use crate::{Size, Text, bytes_of, clock};
 
 static INTER: &[u8] = include_bytes!("../../third-party/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../../third-party/fonts/Inter-SemiBold.ttf");
@@ -14,12 +16,19 @@ static INTER_SEMIBOLD: &[u8] = include_bytes!("../../third-party/fonts/Inter-Sem
 /// What the screen shows.
 pub struct Facts<'a> {
     pub processor: &'a str,
+    pub cores: Option<u32>,
+    /// Seconds since the machine was switched on.
+    pub up: Option<u64>,
     pub regions: &'a [MemoryRegion],
 }
 
 const MARGIN: i32 = 56;
 const LABEL_WIDTH: i32 = 140;
 const BAR_HEIGHT: usize = 28;
+const FIRST_ROW: i32 = MARGIN + 130;
+const ROW_HEIGHT: i32 = 32;
+/// The row the uptime is on, which is drawn again as it changes.
+const UPTIME_ROW: i32 = 3;
 
 /// The colour each kind of memory gets on the bar and in its legend.
 #[must_use]
@@ -74,6 +83,21 @@ fn memory_line(regions: &[MemoryRegion]) -> Text<96> {
     line
 }
 
+fn label_style(font: Font<'static>) -> Style<'static> {
+    Style {
+        font,
+        px: 18.0,
+        color: MUTED,
+    }
+}
+
+fn value_style(font: Font<'static>) -> Style<'static> {
+    Style {
+        color: TEXT,
+        ..label_style(font)
+    }
+}
+
 /// Draws the whole screen.
 ///
 /// # Errors
@@ -90,15 +114,8 @@ pub fn draw(
         px: 40.0,
         color: TEXT,
     };
-    let label = Style {
-        font: regular,
-        px: 18.0,
-        color: MUTED,
-    };
-    let value = Style {
-        color: TEXT,
-        ..label
-    };
+    let label = label_style(regular);
+    let value = value_style(regular);
 
     canvas.fill(NIGHT);
     canvas.text(&title, MARGIN, MARGIN + 40, "Meridian", scratch)?;
@@ -108,17 +125,29 @@ pub fn draw(
     let memory = memory_line(regions);
     let mut kernel = Text::<16>::new();
     let _ = core::fmt::write(&mut kernel, format_args!("{}", crate::VERSION));
+    let mut cores = Text::<16>::new();
+    match facts.cores {
+        Some(n) => {
+            let _ = core::fmt::write(&mut cores, format_args!("{n}"));
+        }
+        None => {
+            let _ = cores.write_str(UNKNOWN);
+        }
+    }
     let rows = [
         ("Kernel", kernel.as_str()),
         ("Processor", facts.processor),
+        ("Cores", cores.as_str()),
+        ("Up for", ""),
         ("Memory", memory.as_str()),
     ];
-    let mut baseline = MARGIN + 130;
+    let mut baseline = FIRST_ROW;
     for (name, text) in rows {
         canvas.text(&label, MARGIN, baseline, name, scratch)?;
         canvas.text(&value, MARGIN + LABEL_WIDTH, baseline, text, scratch)?;
-        baseline += 32;
+        baseline += ROW_HEIGHT;
     }
+    uptime(canvas, facts.up, scratch)?;
 
     let bar_width = canvas.width().saturating_sub(2 * MARGIN as usize).min(720);
     let bar_top = baseline + 8;
@@ -154,6 +183,44 @@ pub fn draw(
     }
     Ok(())
 }
+
+/// What a row shows when the kernel could not find it out.
+const UNKNOWN: &str = "unknown";
+
+/// Draws how long the machine has been up over what its row showed
+/// before, so it can be called again as time passes.
+///
+/// # Errors
+///
+/// The font's errors, which only a broken font file causes.
+pub fn uptime(
+    canvas: &mut Canvas<'_>,
+    seconds: Option<u64>,
+    scratch: &mut Scratch,
+) -> Result<(), Error> {
+    let style = value_style(Font::parse(INTER)?);
+    let mut text = Text::<32>::new();
+    match seconds {
+        Some(s) => {
+            let _ = clock::span(s, &mut text);
+        }
+        None => {
+            let _ = text.write_str(UNKNOWN);
+        }
+    }
+    let x = MARGIN + LABEL_WIDTH;
+    let baseline = FIRST_ROW + UPTIME_ROW * ROW_HEIGHT;
+    let width = canvas
+        .width()
+        .saturating_sub(usize::try_from(x).unwrap_or(0))
+        .min(UPTIME_WIDTH);
+    canvas.fill_rect(x, baseline - 22, width, 30, NIGHT);
+    canvas.text(&style, x, baseline, text.as_str(), scratch)?;
+    Ok(())
+}
+
+/// How much room the uptime is cleared in: more than its longest text.
+const UPTIME_WIDTH: usize = 320;
 
 /// A screen position from a size, which on a screen is always small.
 fn to_i32(n: usize) -> i32 {
@@ -268,12 +335,17 @@ mod tests {
     fn drawn(width: usize, height: usize) -> Vec<u32> {
         let mut pixels = vec![0u32; width * height];
         let mut canvas = Canvas::new(&mut pixels, width, height, width, Format::Bgr).unwrap();
-        let facts = Facts {
-            processor: "Test CPU 9000",
-            regions: &sample(),
-        };
-        draw(&mut canvas, &facts, &mut Scratch::new()).unwrap();
+        draw(&mut canvas, &facts(&sample()), &mut Scratch::new()).unwrap();
         pixels
+    }
+
+    fn facts(regions: &[MemoryRegion]) -> Facts<'_> {
+        Facts {
+            processor: "Test CPU 9000",
+            cores: Some(4),
+            up: Some(42),
+            regions,
+        }
     }
 
     fn color_at(pixels: &mut [u32], width: usize, height: usize, x: usize, y: usize) -> Color {
@@ -297,8 +369,8 @@ mod tests {
             .count();
         assert!(title_ink > 400, "{title_ink}");
 
-        // Three rows from MARGIN + 130, 32 apart, then the bar 8 below.
-        let bar_top = 56 + 130 + 3 * 32 + 8;
+        // Five rows from MARGIN + 130, 32 apart, then the bar 8 below.
+        let bar_top = 56 + 130 + 5 * 32 + 8;
         assert_eq!(
             at(56, bar_top + 1),
             GRASS,
@@ -335,10 +407,8 @@ mod tests {
     #[test]
     fn drawing_is_repeatable_and_the_same_in_both_pixel_orders() {
         let (w, h) = (640, 480);
-        let facts = Facts {
-            processor: "Same",
-            regions: &sample(),
-        };
+        let regions = sample();
+        let facts = facts(&regions);
         let mut pictures = Vec::new();
         for format in [Format::Bgr, Format::Bgr, Format::Rgb] {
             let mut px = vec![0u32; w * h];
@@ -365,6 +435,8 @@ mod tests {
             let mut canvas = Canvas::new(&mut px, w, h, w, Format::Bgr).unwrap();
             let facts = Facts {
                 processor: "",
+                cores: None,
+                up: None,
                 regions: &[],
             };
             draw(&mut canvas, &facts, &mut Scratch::new()).unwrap();
@@ -376,7 +448,7 @@ mod tests {
     fn the_legend_names_each_colour_in_order() {
         let (w, h) = (1024, 600);
         let mut px = drawn(w, h);
-        let row = 56 + 130 + 3 * 32 + 8 + 28 + 32 - 6;
+        let row = 56 + 130 + 5 * 32 + 8 + 28 + 32 - 6;
         let mut found = Vec::new();
         for x in 0..w {
             let c = color_at(&mut px, w, h, x, row);
@@ -415,8 +487,180 @@ mod tests {
     fn a_narrow_screen_shrinks_the_bar() {
         let (w, h) = (400, 500);
         let mut px = drawn(w, h);
-        let bar_top = 56 + 130 + 3 * 32 + 8;
+        let bar_top = 56 + 130 + 5 * 32 + 8;
         assert_eq!(color_at(&mut px, w, h, 56 + 287, bar_top + 1), SKY);
         assert_eq!(color_at(&mut px, w, h, 56 + 288, bar_top + 1), SURFACE);
+    }
+
+    fn picture(facts: &Facts<'_>, also: impl FnOnce(&mut Canvas<'_>)) -> Vec<u32> {
+        let (w, h) = (800, 600);
+        let mut px = vec![0u32; w * h];
+        let mut canvas = Canvas::new(&mut px, w, h, w, Format::Bgr).unwrap();
+        draw(&mut canvas, facts, &mut Scratch::new()).unwrap();
+        also(&mut canvas);
+        px
+    }
+
+    fn differing(a: &[u32], b: &[u32]) -> usize {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).filter(|(x, y)| x != y).count()
+    }
+
+    /// The rows of pixels that differ between two pictures 800 wide.
+    fn changed_rows(a: &[u32], b: &[u32]) -> core::ops::RangeInclusive<usize> {
+        let rows: Vec<usize> = (0..a.len())
+            .filter(|&i| a[i] != b[i])
+            .map(|i| i / 800)
+            .collect();
+        assert!(!rows.is_empty(), "the pictures are the same");
+        rows[0]..=rows[rows.len() - 1]
+    }
+
+    #[test]
+    fn each_fact_has_its_row() {
+        let regions = sample();
+        let base = picture(&facts(&regions), |_| {});
+        // Row n has its baseline at 186 + 32 n; letters reach 14 pixels
+        // above it and 4 below.
+        let row = |n: usize| 186 + 32 * n - 14..=186 + 32 * n + 4;
+        let within = |got: core::ops::RangeInclusive<usize>, n: usize| {
+            let want = row(n);
+            assert!(
+                got.start() >= want.start() && got.end() <= want.end(),
+                "{got:?} should be in row {n}, {want:?}"
+            );
+        };
+        let other = |f: Facts<'_>| changed_rows(&base, &picture(&f, |_| {}));
+        within(
+            other(Facts {
+                processor: "Other CPU",
+                ..facts(&regions)
+            }),
+            1,
+        );
+        within(
+            other(Facts {
+                cores: Some(8),
+                ..facts(&regions)
+            }),
+            2,
+        );
+        within(
+            other(Facts {
+                cores: None,
+                ..facts(&regions)
+            }),
+            2,
+        );
+        within(
+            other(Facts {
+                up: Some(4000),
+                ..facts(&regions)
+            }),
+            3,
+        );
+        within(
+            other(Facts {
+                up: None,
+                ..facts(&regions)
+            }),
+            3,
+        );
+    }
+
+    #[test]
+    fn the_uptime_is_drawn_over_the_old_one() {
+        let regions = sample();
+        let later = Facts {
+            up: Some(3 * 86_400 + 7_200),
+            ..facts(&regions)
+        };
+        let fresh = picture(&later, |_| {});
+        let redrawn = picture(&facts(&regions), |c| {
+            uptime(c, Some(3 * 86_400 + 7_200), &mut Scratch::new()).unwrap();
+        });
+        assert_eq!(
+            differing(&fresh, &redrawn),
+            0,
+            "drawing the uptime again leaves no trace of the old one"
+        );
+        let unknown = picture(
+            &Facts {
+                up: None,
+                ..facts(&regions)
+            },
+            |_| {},
+        );
+        let forgotten = picture(&facts(&regions), |c| {
+            uptime(c, None, &mut Scratch::new()).unwrap();
+        });
+        assert_eq!(differing(&unknown, &forgotten), 0);
+    }
+
+    #[test]
+    fn the_uptime_fits_narrow_screens() {
+        for w in [1, 150, 196, 197, 300] {
+            let mut px = vec![0u32; w * 400];
+            let mut canvas = Canvas::new(&mut px, w, 400, w, Format::Bgr).unwrap();
+            uptime(&mut canvas, Some(1_000_000), &mut Scratch::new()).unwrap();
+        }
+    }
+
+    #[test]
+    fn unknown_facts_say_so() {
+        let mut out = Text::<32>::new();
+        out.write_str(UNKNOWN).unwrap();
+        assert_eq!(out.as_str(), "unknown");
+        assert_eq!(UPTIME_ROW, 3);
+    }
+
+    /// Whether row `n` of a picture 800 wide shows `want` as its value,
+    /// drawn here on its own as the oracle.
+    fn row_says(px: &[u32], n: usize, want: &str) -> bool {
+        let (w, h) = (800, 600);
+        let mut alone = vec![0u32; w * h];
+        let mut canvas = Canvas::new(&mut alone, w, h, w, Format::Bgr).unwrap();
+        canvas.fill(NIGHT);
+        let style = value_style(Font::parse(INTER).unwrap());
+        let baseline = 186 + 32 * n;
+        canvas
+            .text(
+                &style,
+                196,
+                i32::try_from(baseline).unwrap(),
+                want,
+                &mut Scratch::new(),
+            )
+            .unwrap();
+        (baseline - 22..baseline + 8)
+            .flat_map(|y| (196..w).map(move |x| y * w + x))
+            .all(|i| px[i] == alone[i])
+    }
+
+    #[test]
+    fn rows_say_what_the_facts_are() {
+        let regions = sample();
+        let base = picture(&facts(&regions), |_| {});
+        assert!(row_says(&base, 0, crate::VERSION));
+        assert!(row_says(&base, 1, "Test CPU 9000"));
+        assert!(row_says(&base, 2, "4"));
+        assert!(!row_says(&base, 2, "5"), "the oracle can tell values apart");
+        assert!(row_says(&base, 3, "42 s"));
+        assert!(row_says(&base, 4, "384.3 MiB free of 384.6 MiB"));
+
+        let unknown = picture(
+            &Facts {
+                cores: None,
+                up: None,
+                ..facts(&regions)
+            },
+            |_| {},
+        );
+        assert!(row_says(&unknown, 2, "unknown"));
+        assert!(row_says(&unknown, 3, "unknown"));
+        let later = picture(&facts(&regions), |c| {
+            uptime(c, Some(3_700), &mut Scratch::new()).unwrap();
+        });
+        assert!(row_says(&later, 3, "1 h 1 min"));
     }
 }

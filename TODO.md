@@ -69,7 +69,7 @@ Loader and UEFI:
 - [x] Kernel: framebuffer text (`lib/canvas` with `lib/font`)
 - [x] Kernel: GDT, TSS with a fault stack, IDT, every exception caught and shown on the panic screen
 - [x] Status screen: processor, free memory, the memory map as a bar
-- [ ] Status screen: CPU cores from the ACPI MADT, uptime, updated live
+- [x] Status screen: CPU cores from the ACPI MADT, uptime from the time stamp counter measured against the ACPI timer, updated live
 - [x] Panic screen in plain English with a QR code of the crash summary (`lib/qr`), checked by a QEMU test and read back with `zbarimg`
 - [x] sextant keeps the test images' screens as PNG files (`SCREEN <name>`)
 - [ ] Booted on the laptop with Secure Boot on, Windows and Arch Linux still starting from the menu

@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"context"
+	pictures "image"
 	"image/png"
 	"io"
 	"os"
@@ -151,6 +152,26 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 	if !strings.Contains(res.Serial, "Meridian boot ") {
 		t.Errorf("no banner in:\n%s", res.Serial)
 	}
+	if !strings.Contains(res.Serial, "\nCores: 2\n") {
+		t.Errorf("the kernel should find the rig's two processors in:\n%s", res.Serial)
+	}
+	if mhz := tscMHz(res.Serial); mhz < 100 {
+		t.Errorf("the kernel measured the time stamp counter at %d MHz", mhz)
+	}
+}
+
+// tscMHz is the time stamp counter rate the kernel logged, or 0.
+func tscMHz(serial string) int {
+	_, after, ok := strings.Cut(serial, "Time stamp counter: ")
+	if !ok {
+		return 0
+	}
+	digits, _, _ := strings.Cut(after, " MHz")
+	mhz, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0
+	}
+	return mhz
 }
 
 // The test image asks for keys with PRESS lines; here the script answers
@@ -177,29 +198,59 @@ func TestAScriptPressesKeysOnTheMachine(t *testing.T) {
 	}
 }
 
-// The image people boot starts the kernel, which says hello and halts.
+// The image people boot starts the kernel, which says hello and then
+// keeps the uptime on its screen current.
 func TestThePlainImageStartsTheKernel(t *testing.T) {
 	r := newRig(t)
 	m := r.machine(diskWithLoader(t, false))
 	m.DebugExit = false
+	screens := t.TempDir()
 	res, err := Run(context.Background(), m, reliable(Options{
 		Timeout: 2 * time.Minute,
 		Script: []Step{
 			{Wait: "Meridian boot "},
 			{Wait: "Meridian kernel "},
-			{Wait: "There is nothing more to do yet. Halting."},
+			{Wait: "There is nothing more to do yet.", Screen: "early"},
+			{Pause: 2500 * time.Millisecond, Screen: "later"},
 		},
 		StopAfterScript: true,
+		Screens:         screens,
 	}))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 3 || !res.Stopped || res.TimedOut {
+	if res.StepsDone != 4 || !res.Stopped || res.TimedOut {
 		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
 	}
 	if strings.Contains(res.Serial, "TEST ") {
 		t.Fatalf("the plain image ran checks:\n%s", res.Serial)
 	}
+	// Only the uptime changed: its value starts at x 196 and its letters
+	// sit on the baseline at y 282.
+	changed := changedArea(t, filepath.Join(screens, "early.png"), filepath.Join(screens, "later.png"))
+	if changed.Empty() || changed.Min.X < 196 || changed.Min.Y < 260 || changed.Max.Y > 290 {
+		t.Fatalf("between the two screens, %v changed; want only the uptime", changed)
+	}
+}
+
+// changedArea is the smallest rectangle that holds every pixel that
+// differs between two pictures of the same size.
+func changedArea(t *testing.T, a, b string) pictures.Rectangle {
+	t.Helper()
+	w, h, first := openScreen(t, a)
+	w2, h2, second := openScreen(t, b)
+	if w != w2 || h != h2 {
+		t.Fatalf("%s is %dx%d, %s %dx%d", a, w, h, b, w2, h2)
+	}
+	var area pictures.Rectangle
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if first(x, y) != second(x, y) {
+				area = area.Union(pictures.Rect(x, y, x+1, y+1))
+			}
+		}
+	}
+	return area
 }
 
 func TestADiskWithoutLoaderTimesOut(t *testing.T) {

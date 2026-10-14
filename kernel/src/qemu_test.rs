@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK_TOP};
 use canvas::Canvas;
 use canvas::palette::{GRASS, INK, NIGHT, SUN, TANGERINE};
+use kernel::machine::Machine;
 use kernel::panic::Details;
 use kernel::{bytes_of, covered, is_tidy};
 use x86::raw::Com1;
@@ -35,6 +36,8 @@ impl<W: Write> Report<'_, W> {
 pub fn run(
     info: &BootInfo,
     regions: &[MemoryRegion],
+    machine: &Machine,
+    tsc_hz: Option<u64>,
     screen: Option<&Canvas<'_>>,
     serial: &mut Com1,
 ) -> ! {
@@ -120,6 +123,7 @@ pub fn run(
         "the loader should have left the firmware's boot services",
     );
 
+    machine_checks(&mut report, machine, tsc_hz);
     screen_checks(&mut report, info, screen);
     if screen.is_some() {
         // sextant keeps the picture and answers with a carriage return.
@@ -278,6 +282,46 @@ fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
     );
 }
 
+fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
+    report.check(
+        "kernel.acpi.cores",
+        machine.cores.is_some_and(|n| n >= 1),
+        "the MADT should list at least the processor the kernel runs on",
+    );
+    let pm_timer = machine.pm_timer;
+    report.check(
+        "kernel.acpi.pm_timer",
+        pm_timer.is_some_and(|(port, bits)| port != 0 && (bits == 24 || bits == 32)),
+        "the FADT should name the power management timer's port",
+    );
+    report.check(
+        "kernel.tsc.calibrated",
+        tsc_hz.is_some_and(|hz| (100_000_000..=10_000_000_000).contains(&hz)),
+        "the time stamp counter should run between 100 MHz and 10 GHz",
+    );
+    // A second measurement, ten times as long, should agree with the
+    // first to within a tenth.
+    let agrees = pm_timer.zip(tsc_hz).is_some_and(|((port, bits), hz)| {
+        let tenth = u32::try_from(acpi::PM_TIMER_HZ / 10).unwrap_or(u32::MAX);
+        let (pm_start, tsc_start) = (raw::pm_timer(port), x86::raw::tsc());
+        while kernel::clock::ticks_between(pm_start, raw::pm_timer(port), bits) < tenth {
+            core::hint::spin_loop();
+        }
+        let ms = (x86::raw::tsc() - tsc_start) / (hz / 1000);
+        (90..=110).contains(&ms)
+    });
+    report.check(
+        "kernel.tsc.agrees",
+        agrees,
+        "100 ms on the ACPI timer should be 100 ms on the calibrated counter",
+    );
+    report.check(
+        "kernel.uptime",
+        crate::up(tsc_hz).is_some_and(|s| s < 600),
+        "the test machine was switched on less than ten minutes ago",
+    );
+}
+
 fn screen_checks<W: Write>(
     report: &mut Report<'_, W>,
     info: &BootInfo,
@@ -304,7 +348,19 @@ fn screen_checks<W: Write>(
         }),
         "the title should be drawn in the top left",
     );
-    let bar_top = 56 + 130 + 3 * 32 + 8 + 1;
+    report.check(
+        "kernel.screen.rows",
+        screen.is_some_and(|c| {
+            // Cores and uptime are rows 2 and 3, from baseline 186, 32 apart.
+            [186 + 64, 186 + 96].iter().all(|&baseline| {
+                (196..400)
+                    .flat_map(|x| (baseline - 14..baseline).map(move |y| (x, y)))
+                    .any(|(x, y)| c.pixel(x, y).is_some_and(|p| p != NIGHT))
+            })
+        }),
+        "the cores and the uptime should be on the screen",
+    );
+    let bar_top = 56 + 130 + 5 * 32 + 8 + 1;
     report.check(
         "kernel.screen.bar",
         screen.is_some_and(|c| {

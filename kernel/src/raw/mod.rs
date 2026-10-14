@@ -48,6 +48,29 @@ extern "sysv64" fn kernel_start(info: *const BootInfo) -> ! {
     crate::run(info, regions, &mut serial)
 }
 
+/// Physical memory as the ACPI tables are read from it: through the direct
+/// map, and only where the memory map says there is something to read.
+pub struct DirectMap<'a>(pub &'a [MemoryRegion]);
+
+impl acpi::Memory for DirectMap<'_> {
+    fn bytes(&self, at: u64, len: usize) -> Option<&[u8]> {
+        if !kernel::readable(self.0, at, u64::try_from(len).ok()?) {
+            return None;
+        }
+        // SAFETY: readable keeps the bytes inside one region of the map
+        // and below the end of the direct map, and nothing in the kernel
+        // writes the firmware's tables.
+        Some(unsafe { core::slice::from_raw_parts((HHDM_BASE + at) as *const u8, len) })
+    }
+}
+
+/// Reads the ACPI power management timer at `port`, which must be the
+/// port the FADT names for it.
+pub fn pm_timer(port: u16) -> u32 {
+    // SAFETY: the timer only counts, so reading it changes nothing.
+    unsafe { x86::raw::read_port_u32(port) }
+}
+
 /// `len` bytes of physical memory, read through the direct map. Only the
 /// test image reads memory this way, and only memory the boot information
 /// names.

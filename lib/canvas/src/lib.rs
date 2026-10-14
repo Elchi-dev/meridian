@@ -217,6 +217,25 @@ impl<'a> Canvas<'a> {
         self.fill_rect(0, 0, self.width, self.height, color);
     }
 
+    /// Copies the rectangle at `x`, `y` to the same place on `to`, as far
+    /// as it lies on both, so a frame drawn off screen reaches the screen
+    /// whole. Pixels change order when the two canvases differ in it.
+    pub fn copy_to(&self, to: &mut Canvas<'_>, x: i32, y: i32, width: usize, height: usize) {
+        let (x0, x1) = clip(x, width, self.width.min(to.width));
+        let (y0, y1) = clip(y, height, self.height.min(to.height));
+        for row in y0..y1 {
+            let from = &self.pixels[row * self.stride + x0..row * self.stride + x1];
+            let onto = &mut to.pixels[row * to.stride + x0..row * to.stride + x1];
+            if self.format == to.format {
+                onto.copy_from_slice(from);
+            } else {
+                for (pixel, &source) in onto.iter_mut().zip(from) {
+                    *pixel = Color::decode(source, self.format).encode(to.format);
+                }
+            }
+        }
+    }
+
     /// Draws one line of text with its baseline at `baseline` and its pen
     /// starting at `x`, blending into what is already there. Returns the
     /// width of the line in pixels, rounded up.
@@ -485,6 +504,94 @@ mod tests {
         assert!(Canvas::new(&mut px, 8, usize::MAX, 10, Format::Rgb).is_none());
         let c = Canvas::new(&mut px, 8, 4, 10, Format::Rgb).unwrap();
         assert_eq!((c.width(), c.height()), (8, 4));
+    }
+
+    /// A canvas of `w` by `h` whose every pixel is its own colour.
+    fn numbered(pixels: &mut [u32], w: usize, h: usize, format: Format) -> Canvas<'_> {
+        let mut c = Canvas::new(pixels, w, h, w, format).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let n = u32::try_from(y * w + x).unwrap();
+                let at = |v: usize| i32::try_from(v).unwrap();
+                c.fill_rect(at(x), at(y), 1, 1, Color::hex(0x0010_2030 + n * 0x0101));
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn a_frame_is_copied_whole_into_rows_further_apart() {
+        let mut frame = vec![0; 6 * 4];
+        let back = numbered(&mut frame, 6, 4, Format::Bgr);
+        let mut buf = Buffer::new(6, 4);
+        let mut screen = buf.canvas(Format::Bgr);
+        back.copy_to(&mut screen, 0, 0, 6, 4);
+        for y in 0..4 {
+            for x in 0..6 {
+                assert_eq!(screen.pixel(x, y), back.pixel(x, y), "({x}, {y})");
+            }
+        }
+        assert!(buf.padding_untouched());
+    }
+
+    #[test]
+    fn only_the_rectangle_is_copied() {
+        let mut frame = vec![0; 6 * 4];
+        let back = numbered(&mut frame, 6, 4, Format::Bgr);
+        let mut buf = Buffer::new(6, 4);
+        let mut screen = buf.canvas(Format::Bgr);
+        back.copy_to(&mut screen, 2, 1, 3, 2);
+        for y in 0..4 {
+            for x in 0..6 {
+                let inside = (2..5).contains(&x) && (1..3).contains(&y);
+                let want = if inside {
+                    back.pixel(x, y)
+                } else {
+                    Some(NIGHT)
+                };
+                assert_eq!(screen.pixel(x, y), want, "({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_copy_stays_on_both_canvases() {
+        let mut frame = vec![0; 5 * 6];
+        let back = numbered(&mut frame, 5, 6, Format::Rgb);
+        let mut buf = Buffer::new(7, 3);
+        let mut screen = buf.canvas(Format::Rgb);
+        back.copy_to(&mut screen, -2, -1, 100, 100);
+        for y in 0..3 {
+            for x in 0..7 {
+                let want = if x < 5 { back.pixel(x, y) } else { Some(NIGHT) };
+                assert_eq!(screen.pixel(x, y), want, "({x}, {y})");
+            }
+        }
+        back.copy_to(&mut screen, i32::MIN, i32::MAX, usize::MAX, 1);
+        assert!(buf.padding_untouched());
+    }
+
+    #[test]
+    fn a_copy_between_pixel_orders_keeps_the_colours() {
+        let mut frame = vec![0; 4 * 2];
+        let back = numbered(&mut frame, 4, 2, Format::Rgb);
+        let mut buf = Buffer::new(4, 2);
+        let mut screen = buf.canvas(Format::Bgr);
+        back.copy_to(&mut screen, 0, 0, 4, 2);
+        for y in 0..2 {
+            for x in 0..4 {
+                assert_eq!(screen.pixel(x, y), back.pixel(x, y), "({x}, {y})");
+            }
+        }
+        assert_ne!(
+            buf.pixels[1],
+            frame_word(&back, 1, 0),
+            "the bytes themselves are swapped"
+        );
+    }
+
+    fn frame_word(c: &Canvas<'_>, x: usize, y: usize) -> u32 {
+        c.pixels[y * c.stride + x]
     }
 
     #[test]

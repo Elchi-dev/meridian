@@ -263,14 +263,14 @@ mod tests {
     #[test]
     fn usable_memory_loses_overlaps_with_reserved_memory_inside_it() {
         let got = run(&[
-            desc(MemoryType::CONVENTIONAL, 0, 16),
-            desc(MemoryType::RESERVED, 4 * PAGE, 2),
+            desc(MemoryType::CONVENTIONAL, 16 * PAGE, 16),
+            desc(MemoryType::RESERVED, 20 * PAGE, 2),
         ]);
         assert_eq!(
             got,
             [
-                region(RegionKind::USABLE, 0, 4),
-                region(RegionKind::RESERVED, 4 * PAGE, 2),
+                region(RegionKind::USABLE, 16 * PAGE, 4),
+                region(RegionKind::RESERVED, 20 * PAGE, 2),
             ]
         );
     }
@@ -308,10 +308,10 @@ mod tests {
     #[test]
     fn an_overlap_of_the_same_kind_merges() {
         let got = run(&[
-            desc(MemoryType::CONVENTIONAL, 0, 4),
-            desc(MemoryType::CONVENTIONAL, 2 * PAGE, 4),
+            desc(MemoryType::CONVENTIONAL, 32 * PAGE, 4),
+            desc(MemoryType::CONVENTIONAL, 34 * PAGE, 4),
         ]);
-        assert_eq!(got, [region(RegionKind::USABLE, 0, 6)]);
+        assert_eq!(got, [region(RegionKind::USABLE, 32 * PAGE, 6)]);
         let inside = run(&[
             desc(MemoryType::RESERVED, 0, 8),
             desc(MemoryType::RESERVED, 2 * PAGE, 2),

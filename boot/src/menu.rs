@@ -188,6 +188,13 @@ mod tests {
     }
 
     #[test]
+    fn a_default_past_the_last_card_falls_back_to_the_first() {
+        assert_eq!(Menu::new(3, 2, 0).selected(), 2);
+        assert_eq!(Menu::new(3, 3, 0).selected(), 0);
+        assert_eq!(Menu::new(3, 9, 0).selected(), 0);
+    }
+
+    #[test]
     fn a_long_tick_starts_at_once() {
         let mut m = Menu::new(2, 0, 5);
         assert_eq!(m.tick(1000), Action::Start(0));

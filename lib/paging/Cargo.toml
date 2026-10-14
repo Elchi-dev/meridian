@@ -1,0 +1,12 @@
+[package]
+name = "paging"
+description = "Builds x86_64 four-level page tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

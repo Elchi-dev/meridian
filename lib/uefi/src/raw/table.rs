@@ -4,6 +4,7 @@ use core::ffi::c_void;
 
 use super::console::{SimpleTextInput, SimpleTextOutput};
 use super::{Event, Handle};
+use crate::memory::MemoryType;
 use crate::{Guid, Status};
 
 /// A slot Meridian does not call yet. It only keeps the table layout; a
@@ -52,9 +53,20 @@ pub struct BootServices {
     pub hdr: TableHeader,
     pub raise_tpl: NotCalled,
     pub restore_tpl: NotCalled,
-    pub allocate_pages: NotCalled,
-    pub free_pages: NotCalled,
-    pub get_memory_map: NotCalled,
+    pub allocate_pages: unsafe extern "efiapi" fn(
+        kind: AllocateType,
+        memory_type: MemoryType,
+        pages: usize,
+        memory: *mut u64,
+    ) -> Status,
+    pub free_pages: unsafe extern "efiapi" fn(memory: u64, pages: usize) -> Status,
+    pub get_memory_map: unsafe extern "efiapi" fn(
+        size: *mut usize,
+        map: *mut u8,
+        key: *mut usize,
+        descriptor_size: *mut usize,
+        descriptor_version: *mut u32,
+    ) -> Status,
     pub allocate_pool: NotCalled,
     pub free_pool: NotCalled,
     pub create_event: NotCalled,
@@ -67,7 +79,11 @@ pub struct BootServices {
     pub install_protocol_interface: NotCalled,
     pub reinstall_protocol_interface: NotCalled,
     pub uninstall_protocol_interface: NotCalled,
-    pub handle_protocol: NotCalled,
+    pub handle_protocol: unsafe extern "efiapi" fn(
+        handle: Handle,
+        protocol: *const Guid,
+        interface: *mut *mut c_void,
+    ) -> Status,
     pub reserved: NotCalled,
     pub register_protocol_notify: NotCalled,
     pub locate_handle: NotCalled,
@@ -95,6 +111,17 @@ pub struct BootServices {
     pub copy_mem: NotCalled,
     pub set_mem: NotCalled,
     pub create_event_ex: NotCalled,
+}
+
+/// `EFI_ALLOCATE_TYPE`: where `AllocatePages` may put the pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct AllocateType(pub u32);
+
+impl AllocateType {
+    pub const ANY_PAGES: AllocateType = AllocateType(0);
+    pub const MAX_ADDRESS: AllocateType = AllocateType(1);
+    pub const ADDRESS: AllocateType = AllocateType(2);
 }
 
 #[repr(C)]
@@ -222,6 +249,14 @@ mod tests {
         assert_eq!(size_of::<BootServices>(), 24 + 8 * 44);
         assert_eq!(offset_of!(BootServices, exit_boot_services), 0xe8);
         assert_eq!(offset_of!(BootServices, locate_protocol), 0x140);
+    }
+
+    #[test]
+    fn allocate_types() {
+        assert_eq!(size_of::<AllocateType>(), 4);
+        assert_eq!(AllocateType::ANY_PAGES.0, 0);
+        assert_eq!(AllocateType::MAX_ADDRESS.0, 1);
+        assert_eq!(AllocateType::ADDRESS.0, 2);
     }
 
     #[test]

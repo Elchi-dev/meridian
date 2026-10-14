@@ -78,9 +78,62 @@ pub fn decode_ucs2(units: &[u16]) -> impl Iterator<Item = char> + '_ {
         .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
 }
 
+/// Encodes a path for `EFI_FILE_PROTOCOL.Open`: UCS-2, NUL-terminated,
+/// with `/` turned into the `\` UEFI separates directories with. Returns
+/// how many units come before the NUL, or `None` when the path does not
+/// fit or holds a character a UEFI file name cannot.
+pub fn file_path(path: &str, buf: &mut [u16]) -> Option<usize> {
+    let mut n = 0;
+    for c in path.chars() {
+        let unit = match c {
+            '/' => u16::from(b'\\'),
+            '\0' => return None,
+            c => u16::try_from(u32::from(c)).ok()?,
+        };
+        if n + 1 >= buf.len() {
+            return None;
+        }
+        buf[n] = unit;
+        n += 1;
+    }
+    *buf.get_mut(n)? = 0;
+    Some(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn path(p: &str, room: usize) -> Option<Vec<u16>> {
+        let mut buf = vec![0xffff; room];
+        let n = file_path(p, &mut buf)?;
+        assert_eq!(buf[n], 0, "the path ends in NUL");
+        Some(buf[..n].to_vec())
+    }
+
+    #[test]
+    fn paths_use_backslashes() {
+        let want: Vec<u16> = "\\meridian\\kernel".encode_utf16().collect();
+        assert_eq!(path("/meridian/kernel", 64), Some(want.clone()));
+        assert_eq!(path("\\meridian\\kernel", 64), Some(want));
+        assert_eq!(path("caf\u{e9}", 8), Some(vec![0x63, 0x61, 0x66, 0xe9]));
+        assert_eq!(path("", 1), Some(vec![]));
+    }
+
+    #[test]
+    fn paths_must_fit_with_their_terminator() {
+        assert_eq!(path("abcd", 5).map(|p| p.len()), Some(4));
+        assert_eq!(path("abcd", 4), None);
+        assert_eq!(path("", 0), None);
+        assert_eq!(path("a", 1), None);
+    }
+
+    #[test]
+    fn paths_refuse_what_ucs2_names_cannot_hold() {
+        assert_eq!(path("a\0b", 8), None);
+        assert_eq!(path("emoji\u{1F600}", 16), None);
+        assert_eq!(path("\u{ffff}", 4), Some(vec![0xffff]));
+    }
 
     fn pieces(s: &str, size: usize) -> Vec<Vec<u16>> {
         let mut enc = Ucs2::new(s);

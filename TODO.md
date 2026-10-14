@@ -1,0 +1,123 @@
+# TODO
+
+Open work, in milestone order. This file is the only issue tracker:
+GitHub issues are off. Why the milestones come in this order is in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+## M0: Foundation
+
+Repository:
+
+- [x] Licences (MIT or Apache-2.0), `.gitignore`, `.gitattributes`
+- [x] `AI_DISCLAIMER.md`
+- [x] Decision records 0001 to 0006, 0009 and 0010, with index and template
+- [x] Decision records 0007 (assembly inside Rust) and 0008 (unsafe in raw modules), committed with the loader
+- [x] README, roadmap, architecture, testing, TODO, changelog, contributing, security
+- [ ] CI workflow in `.github/workflows/ci.yml`: lint, host tests, QEMU tests with KVM, `stats --check`, mutation of changed files; sextant built and tested on macOS and Windows too
+- [x] Decision record 0011 for `actions/checkout`, the only outside action, pinned to a commit hash
+- [ ] Ruleset on `main`: CI must be green, no force pushes
+- [ ] `mutants.meri` with the known equivalent mutants
+
+sextant:
+
+- [x] `help`, `version` with the git revision
+- [x] `stats` with `--check`, `--files`, `--min`
+- [x] `lint`: dashes, markers, stubs, unsafe outside raw modules, outside code without a record
+- [x] The `.meri` reader, specification and 131-case conformance suite
+- [x] GPT, FAT32 and ISO writers, reproducible
+- [x] Settings from `sextant.meri` and `sextant.local.meri`; `stats` takes `min-ratio` from them
+- [ ] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types
+- [ ] `mutate` for Rust and Go
+- [ ] `doctor`, with installing after one "y"
+- [x] `build`
+- [x] `image` (GPT disk image and ISO), stamped with the commit
+- [x] `run`, in a window or headless, `--debug` waits for GDB
+- [x] `test --host` and `test --qemu`, reading the serial protocol and exit codes 33 and 35, answering `PRESS` lines, starting the machine again when the firmware stalls
+- [ ] `ci`
+- [ ] `adr new`
+- [ ] `release`, `flash`, `debug`
+
+Loader and UEFI:
+
+- [x] `lib/uefi`: status codes, GUIDs, memory map, console encoder, system table, checked against UEFI 2.10
+- [x] `boot`: banner, memory map conversion where usable memory loses every overlap, QEMU firmware and keyboard checks
+- [ ] Find out why OVMF under KVM hangs before printing anything in about one boot in four on the development PC, while TCG never does; `qemu.stall` and restarts work around it for now
+
+## M1: Boot
+
+- [ ] TrueType rasterizer in `lib/`, Inter and JetBrains Mono under one decision record
+- [ ] Graphical boot screen with OS cards, countdown, `V` for the full log, `F` for firmware settings
+- [ ] Neutral icon for the Windows card, no Microsoft logo
+- [ ] Detect other systems from `BootOrder`, `Boot####` and a scan of the EFI partition
+- [ ] Start Windows and Linux through `LoadImage` and `StartImage`
+- [ ] Rust `.meri` reader passing the conformance suite; `boot.meri`
+- [ ] Shim under `third-party/` with its decision record; `.sbat` section in `meridian.efi`
+- [ ] Authenticode signer in sextant; development keys per machine, release key as a CI secret
+- [ ] Secure Boot test in QEMU with OVMF's Secure Boot build and enrolled keys
+- [x] Memory regions for the handover (`lib/bootinfo`)
+- [ ] Kernel ELF loading, higher-half page tables, the rest of the handover structure, framebuffer kept without flicker
+- [ ] Kernel: serial log, framebuffer text, GDT, IDT, every exception caught
+- [ ] Status screen: CPU cores from the ACPI MADT, memory map, uptime
+- [ ] Panic screen in plain English with a QR code of the crash summary, checked by a QEMU test
+- [ ] Booted on the laptop with Secure Boot on, Windows and Arch Linux still starting from the menu
+
+## M2: Memory and CPUs
+
+- [ ] Physical frame allocator, virtual memory, kernel heap
+- [ ] Local APIC and x2APIC, HPET and TSC
+- [ ] All cores started
+- [ ] ACPI tables parsed
+
+## M3: Processes
+
+- [ ] Scheduler with 32 priority levels
+- [ ] User mode and system calls
+- [ ] Objects, handles with access masks, security tokens
+- [ ] `.mexec` loader (ELF with Meridian note sections)
+- [ ] IPC channels that carry handles
+- [ ] KASLR
+
+## M4: Storage and Strata
+
+- [ ] virtio-blk, AHCI, NVMe
+- [ ] GPT and FAT32 in the kernel
+- [ ] Strata: copy-on-write, checksums, snapshots, case-preserving names, instant locate index, reserved room for transactions, deduplication and expiry
+- [ ] VFS
+- [ ] No writes to partitions Meridian did not create
+
+## M5: Userland
+
+- [ ] init and the service manager
+- [ ] The shell, with an `sh` mode; `cls` and `clear`
+- [ ] Command-line tools
+- [ ] Text terminal
+
+## M6: Windows programs, step 1
+
+- [ ] PE loader for 64-bit and 32-bit programs
+- [ ] ntdll, kernel32, the C runtime parts console programs need
+- [ ] Registry store
+- [ ] The stop message for missing functions; `exe-check`
+- [ ] Test programs in `tests/win32/` and reference outputs from GitHub's Windows runners
+
+## M7: Horizon
+
+- [ ] CPU compositor with damage tracking; virtio-gpu
+- [ ] PS/2, xHCI and USB HID
+- [ ] Taskbar, launcher, overview, workspaces, notification and control centres, widgets
+- [ ] Terminal, Files, Settings, System monitor, Image viewer, Clock and calendar
+- [ ] Declarative UI toolkit
+- [ ] Keyboard layouts from CLDR, with a decision record
+- [ ] Reserved CPU time and memory for compositor and cursor
+
+## M8: Windows programs, step 2
+
+- [ ] user32 and gdi32
+- [ ] Standard controls in Meridian's look
+- [ ] Who lock
+- [ ] Installer undo
+- [ ] PuTTY and 7-Zip
+
+## Waiting
+
+- [ ] The repository is made public (Samuel); then private vulnerability reporting is switched on

@@ -45,10 +45,14 @@ type command struct {
 
 func commands() []command {
 	return []command{
+		{name: "build", summary: "Build the bootloader", run: runBuild},
 		{name: "help", summary: "Show the commands, or details for one command", run: runHelp},
+		{name: "image", summary: "Write a bootable disk or ISO image", run: runImage},
 		{name: "lint", summary: "Check the project rules that no compiler knows about", run: runLint},
 		{name: "mutate", summary: "Change the code on purpose and check the tests notice", run: runMutate},
+		{name: "run", summary: "Boot Meridian in QEMU", run: runRun},
 		{name: "stats", summary: "Count lines of code and tests per component", run: runStats},
+		{name: "test", summary: "Run the tests on this machine and in QEMU", run: runTest},
 		{name: "version", summary: "Print the version of sextant", run: runVersion},
 	}
 }

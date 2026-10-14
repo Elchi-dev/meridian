@@ -1,8 +1,33 @@
 # Settings for sextant, the Meridian build tool. This file also marks the
 # root of the repository. Settings for one machine only go in
-# sextant.local.meri, which git ignores.
+# sextant.local.meri, which git ignores and which wins over this file.
 
 stats {
     # Lines of tests for every line of code, per component.
     min-ratio = 1.5
+}
+
+build {
+    # Where Cargo puts its output. Relative paths start at the repository.
+    # A machine with little disk but enough RAM can point it at a tmpfs in
+    # its sextant.local.meri, for example dir = "/tmp/meridian-target".
+    dir = "target"
+}
+
+qemu {
+    memory = 512MiB
+    cpus = 4
+    # auto picks KVM on Linux, HVF on Intel Macs, WHPX on Windows, and
+    # falls back to TCG, which emulates every instruction and is slow.
+    accel = auto
+    # How long a test boot may take before sextant gives up.
+    timeout = 2min
+    # How long the firmware may print nothing before a test boot starts the
+    # machine again. OVMF under KVM sometimes hangs at the very start on
+    # some hosts; a slow host emulating with TCG may need more time.
+    stall = 20s
+    # OVMF is found in the usual places for each system. To use another
+    # build, set both files:
+    # firmware = "/path/to/OVMF_CODE.fd"
+    # firmware-vars = "/path/to/OVMF_VARS.fd"
 }

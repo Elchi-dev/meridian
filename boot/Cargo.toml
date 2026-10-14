@@ -1,0 +1,27 @@
+[package]
+name = "boot"
+description = "The Meridian bootloader, a UEFI application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "meridian"
+path = "src/main.rs"
+test = true
+
+[features]
+# Builds the loader as a QEMU test image that reports over the serial port
+# and ends QEMU through its isa-debug-exit device.
+qemu-test = ["uefi/qemu-test", "x86/qemu-test"]
+
+[dependencies]
+bootinfo = { path = "../lib/bootinfo" }
+uefi = { path = "../lib/uefi" }
+x86 = { path = "../lib/x86" }
+
+[lints]
+workspace = true

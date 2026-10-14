@@ -193,7 +193,7 @@ impl<'a> Elf<'a> {
             {
                 return Err(Error::BadSegment(i));
             }
-            if list.len > 0 && segment.vaddr < previous_end {
+            if segment.vaddr < previous_end {
                 return Err(Error::OverlappingSegments);
             }
             previous_end = segment.end();
@@ -855,5 +855,43 @@ mod tests {
             }
             other => panic!("expected an unsupported relocation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_header_alone_is_an_elf_file_without_segments() {
+        let bare = build(ET_DYN, 0x1000, &[]);
+        assert_eq!(bare.len(), 64);
+        let elf = Elf::parse(&bare).unwrap();
+        assert_eq!(elf.segments().err(), Some(Error::NoLoadableSegments));
+    }
+
+    #[test]
+    fn each_permission_comes_from_its_own_bit() {
+        let file = build(
+            ET_DYN,
+            0x1000,
+            &[
+                load_seg(5, 0x1000, b"code", 4),
+                load_seg(6, 0x3000, b"data", 4),
+                load_seg(4, 0x5000, b"rodata", 6),
+                load_seg(1, 0x7000, b"x", 1),
+            ],
+        );
+        let elf = Elf::parse(&file).unwrap();
+        let list = elf.segments().unwrap();
+        let rights: Vec<(bool, bool, bool)> = list
+            .as_slice()
+            .iter()
+            .map(|s| (s.read, s.write, s.execute))
+            .collect();
+        assert_eq!(
+            rights,
+            [
+                (true, false, true),
+                (true, true, false),
+                (true, false, false),
+                (false, false, true)
+            ]
+        );
     }
 }

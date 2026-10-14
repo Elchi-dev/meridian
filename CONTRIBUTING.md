@@ -19,18 +19,15 @@ cd tools/sextant && go build -o sextant ./cmd/sextant
 ## Before every commit
 
 ```
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p boot --target x86_64-unknown-uefi -- -D warnings
-cargo test --workspace
-cd tools/sextant && gofmt -l . && go vet ./... && go test -race ./...
-./sextant lint
-./sextant stats --check
+./sextant ci
 ```
 
-`sextant ci` will run exactly what CI runs, in one command. It is not built
-yet; [docs/testing.md](docs/testing.md) covers QEMU tests and mutation
-testing.
+It runs exactly what CI runs, in the same order, and stops at the first
+check that fails: the project rules, the test lines, formatting, clippy for
+every target, `go vet`, the Go tests with the race detector, the Rust tests
+and the QEMU test image. CI's linux job runs the same command, so the two
+cannot drift apart. `./sextant ci --list` shows the checks.
+[docs/testing.md](docs/testing.md) covers QEMU tests and mutation testing.
 
 ## The rules
 

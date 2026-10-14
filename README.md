@@ -136,6 +136,7 @@ go build -o sextant ./cmd/sextant
 
 ./sextant run        # builds loader and kernel, writes a signed image, boots it
 ./sextant test       # host tests, then the QEMU test image on real firmware
+./sextant ci         # every check CI runs, in its order
 ./sextant stats      # code and test lines per component
 ./sextant lint       # the project rules no compiler knows
 ./sextant doctor     # checks and installs the tools you need (not built yet)

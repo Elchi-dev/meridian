@@ -24,7 +24,7 @@ system will get its own name later.
 | `debug` | like `run`, paused, with GDB attached | planned |
 | `adr new "title"` | the next numbered decision record from the template | planned |
 | `flash DEVICE` | writes the image to a USB stick; refuses any disk that is not removable or has mounted partitions, and asks for the device's size to be typed back | planned |
-| `ci` | exactly what CI runs | planned |
+| `ci [--list]` | every check CI runs, in its order, stopping at the first that fails; CI's linux job runs it, so the two cannot drift apart | works |
 | `release` | release artefacts with checksums | planned |
 
 ## Settings

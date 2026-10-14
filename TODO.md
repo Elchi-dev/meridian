@@ -35,7 +35,7 @@ sextant:
 - [x] `image` (GPT disk image and ISO), stamped with the commit
 - [x] `run`, in a window or headless, `--debug` waits for GDB
 - [x] `test --host` and `test --qemu`, reading the serial protocol and exit codes 33 and 35, answering `PRESS` and `SCREEN` lines, starting the machine again when the firmware stalls
-- [ ] `ci`
+- [x] `ci`, which CI's linux job runs
 - [ ] `adr new`
 - [ ] `release`, `flash`, `debug`
 

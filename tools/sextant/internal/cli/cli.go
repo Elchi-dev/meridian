@@ -50,6 +50,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{name: "build", summary: "Build the bootloader", run: runBuild},
+		{name: "ci", summary: "Run every check CI runs, in its order", run: runCI},
 		{name: "help", summary: "Show the commands, or details for one command", run: runHelp},
 		{name: "image", summary: "Write a bootable disk or ISO image", run: runImage},
 		{name: "lint", summary: "Check the project rules that no compiler knows about", run: runLint},

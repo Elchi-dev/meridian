@@ -5,8 +5,10 @@ package mutate
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
+	"strings"
 )
 
 // Mutant is one change to one source file.
@@ -23,10 +25,7 @@ type Mutant struct {
 
 // Apply returns src with the mutant's change made.
 func (m Mutant) Apply(src []byte) []byte {
-	out := make([]byte, 0, len(src)-(m.End-m.Start)+len(m.To))
-	out = append(out, src[:m.Start]...)
-	out = append(out, m.To...)
-	return append(out, src[m.End:]...)
+	return slices.Concat(src[:m.Start], []byte(m.To), src[m.End:])
 }
 
 func (m Mutant) String() string {
@@ -75,11 +74,8 @@ func (c *collector) operator(start int, op string) {
 }
 
 func (c *collector) sorted() []Mutant {
-	sort.SliceStable(c.out, func(i, j int) bool {
-		if c.out[i].Start != c.out[j].Start {
-			return c.out[i].Start < c.out[j].Start
-		}
-		return c.out[i].Desc < c.out[j].Desc
+	slices.SortStableFunc(c.out, func(a, b Mutant) int {
+		return cmp.Or(cmp.Compare(a.Start, b.Start), strings.Compare(a.Desc, b.Desc))
 	})
 	return c.out
 }

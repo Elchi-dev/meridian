@@ -45,14 +45,16 @@ func GoMutants(path string, src []byte) ([]Mutant, error) {
 	return c.sorted(), nil
 }
 
-// joinsStrings reports a string literal, or a sum that starts with one.
-// Mutating the + between strings only gives code that does not compile.
+// joinsStrings reports a string literal, or an expression built on one.
+// Mutating the + between strings only gives code that does not compile. In
+// valid Go, an operand of + that holds a string literal is itself a string,
+// so the operator inside it needs no check.
 func joinsStrings(e ast.Expr) bool {
 	switch x := e.(type) {
 	case *ast.BasicLit:
 		return x.Kind == token.STRING
 	case *ast.BinaryExpr:
-		return x.Op == token.ADD && (joinsStrings(x.X) || joinsStrings(x.Y))
+		return joinsStrings(x.X) || joinsStrings(x.Y)
 	case *ast.ParenExpr:
 		return joinsStrings(x.X)
 	}

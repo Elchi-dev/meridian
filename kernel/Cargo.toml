@@ -1,0 +1,26 @@
+[package]
+name = "kernel"
+description = "The Meridian kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = true
+
+[features]
+# Builds the kernel as a QEMU test image that reports over the serial port
+# and ends QEMU through its isa-debug-exit device.
+qemu-test = ["x86/qemu-test"]
+
+[dependencies]
+bootinfo = { path = "../lib/bootinfo" }
+x86 = { path = "../lib/x86" }
+
+[lints]
+workspace = true

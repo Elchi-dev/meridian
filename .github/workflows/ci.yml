@@ -54,6 +54,8 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked -p boot --target x86_64-unknown-uefi -- -D warnings
           cargo clippy --locked -p boot --target x86_64-unknown-uefi --features qemu-test -- -D warnings
+          cargo clippy --locked -p kernel --target x86_64-unknown-none -- -D warnings
+          cargo clippy --locked -p kernel --target x86_64-unknown-none --features qemu-test -- -D warnings
 
       - name: go vet and Go tests with the race detector
         working-directory: tools/sextant

@@ -20,6 +20,14 @@ name = "elf"
 version = "0.0.0"
 
 [[package]]
+name = "kernel"
+version = "0.0.0"
+dependencies = [
+ "bootinfo",
+ "x86",
+]
+
+[[package]]
 name = "paging"
 version = "0.0.0"
 

@@ -52,9 +52,10 @@ Meridian is my attempt at the one I want:
   install or a wrong command can be undone with one click.
 
 > Meridian is at the very beginning. Today there is the build tool, the
-> settings format, the disk image writers and a UEFI loader that boots in
-> QEMU, checks the firmware and keyboard it runs on and prepares the memory
-> map for the kernel. **There is no kernel yet.**
+> settings format, the disk image writers, a UEFI loader that boots in QEMU
+> and checks the firmware it runs on, and the first few lines of a kernel:
+> the loader builds its higher-half address space and jumps into it, and
+> the kernel reports the memory it was given. **It does nothing more yet.**
 > Everything below about the running system describes where Meridian is
 > going. [ROADMAP](docs/ROADMAP.md) and [TODO](TODO.md) say exactly what is
 > finished.

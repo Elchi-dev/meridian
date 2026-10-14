@@ -30,9 +30,12 @@ in [ADR 0004](docs/adr/0004-clean-room.md)); that code will be rewritten.
 
 ## Known limits
 
-Meridian has no kernel yet, so most of its security model is design (see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). Two limits are already known
-and written down:
+Meridian's kernel does almost nothing yet, so most of its security model
+is design (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). What exists
+already holds to it: the kernel runs with no-execute pages, write
+protection, nothing mapped both writable and executable, a guard page
+under its stack and nothing mapped at address 0. Two limits are known and
+written down:
 
 - **The chain of trust ends at the loader.** With Secure Boot (planned for
   M1), the firmware and the shim check `meridian.efi`, but the loader does

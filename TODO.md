@@ -15,7 +15,7 @@ Repository:
 - [x] README, roadmap, architecture, testing, TODO, changelog, contributing, security
 - [ ] CI workflow in `.github/workflows/ci.yml`: lint, host tests, QEMU tests with KVM, `stats --check`, mutation of changed files; sextant built and tested on macOS and Windows too
 - [x] Decision record 0011 for `actions/checkout`, the only outside action, pinned to a commit hash
-- [ ] Ruleset on `main`: CI must be green, no force pushes
+- [x] Ruleset on `main`: CI must be green, no force pushes
 - [ ] `mutants.meri` with the known equivalent mutants
 
 sextant:
@@ -41,6 +41,8 @@ Loader and UEFI:
 
 - [x] `lib/uefi`: status codes, GUIDs, memory map, console encoder, system table, checked against UEFI 2.10
 - [x] `boot`: banner, memory map conversion where usable memory loses every overlap, QEMU firmware and keyboard checks
+- [x] `lib/uefi`: pages, the memory map, files on the boot volume, configuration tables, leaving boot services
+- [x] `lib/x86`: the serial port, CPUID, EFER and CR0, shared by loader and kernel
 - [ ] Find out why OVMF under KVM hangs before printing anything in about one boot in four on the development PC, while TCG never does; `qemu.stall` and restarts work around it for now
 
 ## M1: Boot
@@ -55,8 +57,10 @@ Loader and UEFI:
 - [ ] Authenticode signer in sextant; development keys per machine, release key as a CI secret
 - [ ] Secure Boot test in QEMU with OVMF's Secure Boot build and enrolled keys
 - [x] Memory regions for the handover (`lib/bootinfo`)
-- [ ] Kernel ELF loading, higher-half page tables, the rest of the handover structure, framebuffer kept without flicker
-- [ ] Kernel: serial log, framebuffer text, GDT, IDT, every exception caught
+- [x] Kernel ELF loading (`lib/elf`), higher-half page tables (`lib/paging`), the handover structure, the jump
+- [ ] Framebuffer in the handover, kept without flicker
+- [x] Kernel: entry point, serial log, QEMU checks of the handover
+- [ ] Kernel: framebuffer text, GDT, IDT, every exception caught
 - [ ] Status screen: CPU cores from the ACPI MADT, memory map, uptime
 - [ ] Panic screen in plain English with a QR code of the crash summary, checked by a QEMU test
 - [ ] Booted on the laptop with Secure Boot on, Windows and Arch Linux still starting from the menu

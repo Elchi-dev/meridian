@@ -292,6 +292,7 @@ fn files(system: &System, report: &mut impl Report) {
     };
     report.check("uefi.file.info", true, "");
     directories(&root, size, report);
+    listing(&root, report);
 
     let pages = usize::try_from(size.div_ceil(PAGE_SIZE)).unwrap_or(0) + 1;
     let Ok(mut buf) = system.allocate_pages(MemoryType::LOADER_DATA, pages) else {
@@ -343,6 +344,44 @@ fn same_in_chunks(mut file: File<'_>, want: &[u8]) -> bool {
             _ => return false,
         }
     }
+}
+
+/// Lists the EFI folder, which holds BOOT, and BOOT, which holds the
+/// loader.
+fn listing(root: &File<'_>, report: &mut impl Report) {
+    use crate::raw::file::EntryBuffer;
+
+    let mut buf: EntryBuffer = [0; size_of::<EntryBuffer>()];
+    let (mut boot, mut dots, mut count) = (false, 0, 0);
+    if let Ok(mut efi) = root.open("EFI") {
+        while let Ok(Some(entry)) = efi.next_entry(&mut buf) {
+            count += 1;
+            boot |= entry.is_named("BOOT") && entry.info.directory;
+            dots += usize::from(entry.is_named(".") || entry.is_named(".."));
+        }
+    }
+    report.check(
+        "uefi.file.list",
+        boot && dots == 2 && count >= 3,
+        "the EFI folder should list ., .. and the BOOT folder",
+    );
+    let mut loader = false;
+    if let Ok(mut folder) = root.open("EFI/BOOT") {
+        while let Ok(Some(entry)) = folder.next_entry(&mut buf) {
+            loader |=
+                entry.is_named("bootx64.efi") && !entry.info.directory && entry.info.size > 4096;
+        }
+        report.check(
+            "uefi.file.list_end",
+            folder.next_entry(&mut buf).is_ok_and(|e| e.is_none()),
+            "a listing that has ended should stay ended",
+        );
+    }
+    report.check(
+        "uefi.file.list_files",
+        loader,
+        "the BOOT folder should list the loader with its size",
+    );
 }
 
 /// Opens the loader again one directory at a time, and twice at once.

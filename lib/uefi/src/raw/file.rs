@@ -85,6 +85,53 @@ pub struct Info {
     pub directory: bool,
 }
 
+/// One entry of a directory: what `EFI_FILE_INFO` says, and the name,
+/// read from the buffer it was read into.
+#[derive(Clone, Copy, Debug)]
+pub struct Entry<'b> {
+    pub info: Info,
+    name: &'b [u8],
+}
+
+impl Entry<'_> {
+    /// The entry's name, as the file system stores it.
+    pub fn name(&self) -> impl Iterator<Item = char> + '_ {
+        let units = self
+            .name
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&b| u16::from_le_bytes(b));
+        char::decode_utf16(units.take_while(|&u| u != 0))
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+    }
+
+    /// Whether the name is `other`, ignoring ASCII case as FAT does.
+    #[must_use]
+    pub fn is_named(&self, other: &str) -> bool {
+        let mut mine = self.name();
+        let mut theirs = other.chars();
+        loop {
+            match (mine.next(), theirs.next()) {
+                (None, None) => return true,
+                (Some(a), Some(b)) if a.eq_ignore_ascii_case(&b) => {}
+                _ => return false,
+            }
+        }
+    }
+
+    /// Reads an entry from the bytes `EFI_FILE_INFO` takes.
+    fn read(b: &[u8]) -> Option<Entry<'_>> {
+        Some(Entry {
+            info: Info::read(b)?,
+            name: &b[INFO_NAME_AT..],
+        })
+    }
+}
+
+/// Room for one directory entry with a name up to [`PATH_LIMIT`] units.
+pub type EntryBuffer = [u8; INFO_NAME_AT + 2 * (PATH_LIMIT + 1)];
+
 impl Info {
     fn read(b: &[u8]) -> Option<Info> {
         if b.len() < INFO_NAME_AT {
@@ -210,6 +257,26 @@ impl<'a> File<'a> {
         }
         .ok()?;
         Info::read(&buf[..size.min(buf.len())]).ok_or(Status::VOLUME_CORRUPTED)
+    }
+
+    /// The next entry of this directory, read into `buf`, or `None` after
+    /// the last. The entries "." and ".." come too.
+    ///
+    /// # Errors
+    ///
+    /// Returns the firmware's status, `BUFFER_TOO_SMALL` for a name longer
+    /// than [`PATH_LIMIT`].
+    pub fn next_entry<'b>(
+        &mut self,
+        buf: &'b mut EntryBuffer,
+    ) -> Result<Option<Entry<'b>>, Status> {
+        let got = self.read(buf)?;
+        if got == 0 {
+            return Ok(None);
+        }
+        Entry::read(&buf[..got])
+            .map(Some)
+            .ok_or(Status::VOLUME_CORRUPTED)
     }
 
     /// Reads from the current position into `buf` and returns how many
@@ -339,6 +406,43 @@ mod tests {
         );
         let big = info_bytes(u64::MAX - 5, 0x01, "");
         assert_eq!(Info::read(&big).map(|i| i.size), Some(u64::MAX - 5));
+    }
+
+    #[test]
+    fn entries_carry_their_names() {
+        let bytes = info_bytes(0, 0x10, "Microsoft");
+        let entry = Entry::read(&bytes).unwrap();
+        assert!(entry.info.directory);
+        assert_eq!(entry.name().collect::<String>(), "Microsoft");
+        assert!(entry.is_named("microsoft") && entry.is_named("MICROSOFT"));
+        assert!(!entry.is_named("Micro") && !entry.is_named("Microsofts") && !entry.is_named(""));
+        let file = info_bytes(42, 0x20, "grubx64.efi");
+        let entry = Entry::read(&file).unwrap();
+        assert_eq!((entry.info.size, entry.info.directory), (42, false));
+        assert!(entry.is_named("GRUBX64.EFI"));
+        assert_eq!(Entry::read(&file[..INFO_NAME_AT - 1]).map(|e| e.info), None);
+    }
+
+    #[test]
+    fn names_stop_at_their_terminator_and_survive_odd_units() {
+        let mut bytes = info_bytes(0, 0, "ab");
+        bytes.extend_from_slice(&[0x63, 0, 0, 0]);
+        assert_eq!(
+            Entry::read(&bytes).unwrap().name().collect::<String>(),
+            "ab",
+            "nothing after the NUL"
+        );
+        let mut lone = info_bytes(0, 0, "");
+        lone.truncate(INFO_NAME_AT);
+        lone.extend_from_slice(&[0x00, 0xd8, 0x41, 0x00, 0, 0]);
+        assert_eq!(
+            Entry::read(&lone).unwrap().name().collect::<String>(),
+            "\u{fffd}A",
+            "a lone surrogate"
+        );
+        let empty = info_bytes(0, 0, "");
+        assert!(Entry::read(&empty).unwrap().is_named(""));
+        assert_eq!(size_of::<EntryBuffer>(), INFO_NAME_AT + 512);
     }
 
     #[test]

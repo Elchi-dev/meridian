@@ -15,7 +15,7 @@ at 0.x until the native API is stable.
   - The docs: README, roadmap, architecture, testing, contributing and security.
 - **`.meri`, Meridian's settings format**
   - The specification.
-  - A conformance suite of 131 cases: 18 valid documents with their canonical dumps, and 113 invalid ones with their expected errors.
+  - A conformance suite of 134 cases: 18 valid documents with their canonical dumps, and 116 invalid ones with their expected errors.
 - **sextant**
   - `help`, and `version` with the git revision it was built from.
   - `stats`, which counts code and test lines per component. `--check` fails below 1.5 test lines per code line and says how many are missing. Ratios are cut to two decimals, never rounded up.
@@ -48,6 +48,7 @@ at 0.x until the native API is stable.
   - `lib/canvas`: rectangles and text on a framebuffer in either pixel order.
   - `lib/qr`: QR codes of every version and error correction level, without allocating.
   - `lib/acpi`: the root pointer, the XSDT, the MADT and the FADT, with their checksums.
+  - `lib/meri`: `.meri` documents read in Rust without a heap, event by event or setting by setting, for the loader's settings.
   - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
 
 ### Verified
@@ -60,7 +61,8 @@ at 0.x until the native API is stable.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
   - the FAT size calculation overflowed near 2 TiB
   - the ISO tree dropped a file when a folder whose name differed only in case sorted first
-- **`.meri` reader.**
+- **The Rust `.meri` reader** passes the whole conformance suite, and 52,000 generated documents read the same as with sextant's Go reader. `sextant mutate` finds no surviving mutant in it.
+- **sextant's `.meri` reader.**
   - It passes the whole conformance suite.
   - Fuzzing ran 14 million inputs without a failure, after it had found an ordering bug in layering, which is fixed.
   - It reads 113.8 MB/s on the development PC.

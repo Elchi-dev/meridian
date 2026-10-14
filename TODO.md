@@ -24,7 +24,7 @@ sextant:
 - [x] `help`, `version` with the git revision
 - [x] `stats` with `--check`, `--files`, `--min`
 - [x] `lint`: dashes, markers, stubs, unsafe outside raw modules, outside code without a record
-- [x] The `.meri` reader, specification and 131-case conformance suite
+- [x] The `.meri` reader, specification and 134-case conformance suite
 - [x] GPT, FAT32 and ISO writers, reproducible
 - [x] Settings from `sextant.meri` and `sextant.local.meri`; `stats` takes `min-ratio` from them
 - [ ] `stats` counts `unsafe` blocks, functions and impls, not `unsafe extern fn` pointer types

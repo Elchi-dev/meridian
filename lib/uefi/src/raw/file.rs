@@ -110,6 +110,20 @@ impl System {
         NonNull::new(interface.cast()).ok_or(Status::UNSUPPORTED)
     }
 
+    /// Where this image lies in memory, as its first address and its size
+    /// in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the firmware's status if it has no loaded image protocol for
+    /// the image.
+    pub fn image_range(&self) -> Result<(u64, u64), Status> {
+        let image = self.protocol::<LoadedImage>(self.image(), &LOADED_IMAGE_PROTOCOL)?;
+        // SAFETY: the firmware's own loaded image protocol for this image.
+        let image = unsafe { image.as_ref() };
+        Ok((image.image_base as u64, image.image_size))
+    }
+
     /// The root directory of the volume this image was loaded from.
     ///
     /// # Errors

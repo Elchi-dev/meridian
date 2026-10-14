@@ -9,9 +9,9 @@ use super::table::{
     AllocateType, BOOT_SERVICES_SIGNATURE, BootServices, SYSTEM_TABLE_SIGNATURE, SystemTable,
     TableHeader, header_is_valid,
 };
-use crate::Status;
 use crate::memory::{MemoryMap, MemoryType, PAGE_BYTES};
 use crate::text::{InputKey, Ucs2, decode_ucs2};
+use crate::{Guid, Status};
 
 /// Longest firmware vendor name read, in UCS-2 units. Real names are short;
 /// the limit only guards against a missing terminator.
@@ -99,6 +99,25 @@ impl System {
             unsafe { core::slice::from_raw_parts(start, len) }
         };
         decode_ucs2(units)
+    }
+
+    /// The address of the configuration table filed under `guid`, such as
+    /// the ACPI root pointer, or `None` when the firmware has none.
+    #[must_use]
+    pub fn configuration_table(&self, guid: &Guid) -> Option<u64> {
+        let st = self.table();
+        if st.configuration_table.is_null() {
+            return None;
+        }
+        // SAFETY: the firmware keeps number_of_table_entries entries at
+        // configuration_table for as long as boot services run.
+        let entries = unsafe {
+            core::slice::from_raw_parts(st.configuration_table, st.number_of_table_entries)
+        };
+        entries
+            .iter()
+            .find(|e| e.vendor_guid == *guid)
+            .map(|e| e.vendor_table as u64)
     }
 
     /// The firmware's text console, or `None` on firmware without one.
@@ -513,6 +532,58 @@ mod tests {
         let system = open(&mut st).unwrap();
         assert!(system.console().is_none());
         assert_eq!(system.wait_for_key(), Err(Status::UNSUPPORTED));
+    }
+
+    #[test]
+    fn configuration_tables_are_found_by_guid() {
+        use crate::guid::{ACPI_20_TABLE, SMBIOS3_TABLE};
+        use crate::raw::table::ConfigurationTable;
+
+        let mut bs = boot_services(BOOT_SERVICES_SIGNATURE, BS_SIZE);
+        let mut st = system_table(
+            SYSTEM_TABLE_SIGNATURE,
+            ST_SIZE,
+            bs.as_mut_ptr(),
+            core::ptr::null(),
+        );
+        let mut entries = [
+            ConfigurationTable {
+                vendor_guid: SMBIOS3_TABLE,
+                vendor_table: 0x7f00_0000 as *mut _,
+            },
+            ConfigurationTable {
+                vendor_guid: ACPI_20_TABLE,
+                vendor_table: 0x7e00_1000 as *mut _,
+            },
+        ];
+        st.configuration_table = entries.as_mut_ptr();
+        st.number_of_table_entries = 2;
+        let system = open(&mut st).unwrap();
+        assert_eq!(
+            system.configuration_table(&ACPI_20_TABLE),
+            Some(0x7e00_1000)
+        );
+        assert_eq!(
+            system.configuration_table(&SMBIOS3_TABLE),
+            Some(0x7f00_0000)
+        );
+        assert_eq!(system.configuration_table(&crate::guid::FILE_INFO), None);
+
+        st.number_of_table_entries = 1;
+        let system = open(&mut st).unwrap();
+        assert_eq!(
+            system.configuration_table(&ACPI_20_TABLE),
+            None,
+            "past the count"
+        );
+        st.number_of_table_entries = 2;
+        st.configuration_table = core::ptr::null_mut();
+        let system = open(&mut st).unwrap();
+        assert_eq!(
+            system.configuration_table(&ACPI_20_TABLE),
+            None,
+            "no table at all"
+        );
     }
 
     #[test]

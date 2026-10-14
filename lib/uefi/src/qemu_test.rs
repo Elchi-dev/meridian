@@ -65,6 +65,7 @@ pub fn run(system: &System, report: &mut impl Report) {
 
     memory(system, report);
     files(system, report);
+    tables(system, report);
 
     report.press("ret");
     let enter = system.wait_for_key();
@@ -366,5 +367,35 @@ fn directories(root: &File<'_>, size: u64, report: &mut impl Report) {
         "uefi.file.positions",
         reads == (Ok(16), Ok(16), Ok(16)) && a == b && a != c && a.starts_with(b"MZ"),
         "each open file should keep its own position",
+    );
+}
+
+/// Something in the image's own data, to find the image in memory by.
+static MARKER: u8 = 0x4d;
+
+fn tables(system: &System, report: &mut impl Report) {
+    let acpi = system.configuration_table(&crate::guid::ACPI_20_TABLE);
+    report.check(
+        "uefi.config.acpi",
+        acpi.is_some_and(|a| a != 0),
+        "OVMF publishes ACPI 2.0 tables",
+    );
+    report.check(
+        "uefi.config.missing",
+        system
+            .configuration_table(&crate::guid::FILE_INFO)
+            .is_none(),
+        "a GUID that names no table should find nothing",
+    );
+
+    let marker = (&raw const MARKER) as u64;
+    let function: fn(&MemoryMap<'_>, MemoryType, u64, u64) -> bool = covers;
+    let code = function as usize as u64;
+    report.check(
+        "uefi.image.range",
+        system.image_range().is_ok_and(|(base, size)| {
+            (base..base + size).contains(&marker) && (base..base + size).contains(&code)
+        }),
+        "the loaded image's range should hold its own code and data",
     );
 }

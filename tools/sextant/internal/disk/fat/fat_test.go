@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,7 +88,7 @@ func parseBoot(b []byte) bootRecord {
 
 type volume struct {
 	t            *testing.T
-	img          []byte
+	r            io.ReaderAt
 	boot         bootRecord
 	fats         [][]uint32
 	dataStart    int64
@@ -96,15 +98,23 @@ type volume struct {
 
 func openVolume(t *testing.T, img []byte) *volume {
 	t.Helper()
-	b := parseBoot(img)
+	return openVolumeAt(t, bytes.NewReader(img))
+}
+
+// openVolumeAt reads through an io.ReaderAt, so a large sparse image never
+// has to be loaded into memory.
+func openVolumeAt(t *testing.T, r io.ReaderAt) *volume {
+	t.Helper()
+	v := &volume{t: t, r: r}
+	b := parseBoot(v.bytesAt(0, 512))
 	if b.bytesPerSec != 512 {
 		t.Fatalf("bytes per sector = %d", b.bytesPerSec)
 	}
-	v := &volume{t: t, img: img, boot: b}
+	v.boot = b
 	fatBytes := int64(b.fatSz32) * 512
 	for i := range int64(b.numFATs) {
 		start := int64(b.reserved)*512 + i*fatBytes
-		raw := img[start : start+fatBytes]
+		raw := v.bytesAt(start, fatBytes)
 		entries := make([]uint32, len(raw)/4)
 		for j := range entries {
 			entries[j] = binary.LittleEndian.Uint32(raw[j*4:]) & 0x0FFFFFFF
@@ -142,11 +152,19 @@ func (v *volume) chain(first uint32) []uint32 {
 	}
 }
 
+func (v *volume) bytesAt(off, n int64) []byte {
+	v.t.Helper()
+	buf := make([]byte, n)
+	if _, err := v.r.ReadAt(buf, off); err != nil {
+		v.t.Fatalf("read %d bytes at %d: %v", n, off, err)
+	}
+	return buf
+}
+
 func (v *volume) read(first uint32, size int64) []byte {
 	var out []byte
 	for _, c := range v.chain(first) {
-		off := v.dataStart + int64(c-2)*v.clusterBytes
-		out = append(out, v.img[off:off+v.clusterBytes]...)
+		out = append(out, v.bytesAt(v.dataStart+int64(c-2)*v.clusterBytes, v.clusterBytes)...)
 	}
 	return out[:size]
 }
@@ -1105,5 +1123,71 @@ func TestShortfallUsesTheRealClusterSize(t *testing.T) {
 	short, _ := strconv.Atoi(m[3])
 	if uint32(have) != g.clusters || short != (need-have)*4096 {
 		t.Errorf("need %d have %d short %d", need, have, short)
+	}
+}
+
+// Every other test writes 512-byte clusters, where a mix-up between the
+// cluster size and the sector size cannot show. The smallest volume that
+// gets 8 sectors per cluster is 532481 sectors; the file stays sparse.
+func TestEightSectorClusters(t *testing.T) {
+	files := sampleFiles()
+	files["meridian/kernel.elf"] = pattern(3*4096+17, 12)
+	for i := range 50 {
+		files[fmt.Sprintf("wide/an entry with a long name %02d", i)] = pattern(i, byte(i))
+	}
+	path := filepath.Join(t.TempDir(), "big.img")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	size := int64(532481 * 512)
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	// Write once with a kernel that fills its four clusters with EE, so the
+	// real write below has to clear the tail of the last cluster itself.
+	dirty := maps.Clone(files)
+	dirty["meridian/kernel.elf"] = bytes.Repeat([]byte{0xEE}, 4*4096)
+	if _, err := Write(f, 0, Volume{Size: size, Label: "BIG", Time: fixedTime, Files: dirty}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Write(f, 0, Volume{Size: size, Label: "BIG", Time: fixedTime, Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SectorsPerCluster != 8 {
+		t.Fatalf("%d sectors per cluster, the test needs 8", res.SectorsPerCluster)
+	}
+	v := openVolumeAt(t, f)
+	tr := v.walk()
+	for p, want := range files {
+		if !bytes.Equal(tr.files[p], want) {
+			t.Errorf("%q reads back wrong", p)
+		}
+	}
+	// 50 names of 28 characters take 3 entries each, plus "." and "..":
+	// 152 entries of 32 bytes are two clusters of 4096 bytes.
+	if n := len(v.chain(tr.dirs["wide"])); n != 2 {
+		t.Errorf("directory uses %d clusters, want 2", n)
+	}
+	kernel := v.read(tr.ents["meridian/kernel.elf"].first, 4*4096)
+	if !bytes.Equal(kernel[3*4096+17:], make([]byte, 4096-17)) {
+		t.Error("the tail of the last kernel cluster is not zero")
+	}
+	if fsck, err := exec.LookPath("fsck.fat"); err == nil {
+		if out, err := exec.Command(fsck, "-n", path).CombinedOutput(); err != nil {
+			t.Errorf("fsck.fat: %v\n%s", err, out)
+		}
+	} else if os.Getenv("SEXTANT_REQUIRE_TOOLS") == "1" {
+		t.Error("fsck.fat is not installed and SEXTANT_REQUIRE_TOOLS=1")
+	}
+	if mcopy, err := exec.LookPath("mcopy"); err == nil {
+		cmd := exec.Command(mcopy, "-n", "-i", path, "::/meridian/kernel.elf", "-")
+		cmd.Env = append(os.Environ(), "MTOOLS_SKIP_CHECK=1")
+		got, err := cmd.Output()
+		if err != nil || !bytes.Equal(got, files["meridian/kernel.elf"]) {
+			t.Errorf("mcopy reads %d bytes, %v", len(got), err)
+		}
 	}
 }

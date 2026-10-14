@@ -3,7 +3,6 @@ package authenticode
 import (
 	"bytes"
 	"crypto"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -11,7 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
+	"slices"
 	"unicode/utf16"
 )
 
@@ -28,21 +27,14 @@ const (
 type Signer struct {
 	Key  *rsa.PrivateKey
 	Cert *x509.Certificate
-	// Rand is where the signature's randomness comes from; nil means
-	// crypto/rand. PKCS #1 v1.5 signatures need none, so this only matters
-	// for keys that blind their operations.
-	Rand io.Reader
 }
 
 // Sign returns the image with an Authenticode signature by s. A signature
 // the image had already is replaced, and the image is padded to a multiple
 // of 8 bytes first, as the certificate table has to start there.
 func Sign(image []byte, s Signer) ([]byte, error) {
-	if s.Key == nil || s.Cert == nil {
-		return nil, errors.New("signing needs a key and its certificate")
-	}
-	if pub, ok := s.Cert.PublicKey.(*rsa.PublicKey); !ok || !pub.Equal(&s.Key.PublicKey) {
-		return nil, errors.New("the certificate does not belong to the key")
+	if err := s.usable(); err != nil {
+		return nil, err
 	}
 	l, err := parse(image)
 	if err != nil {
@@ -63,6 +55,27 @@ func Sign(image []byte, s Signer) ([]byte, error) {
 	return append(out, entry...), nil
 }
 
+// usable says why s cannot sign, if it cannot.
+func (s Signer) usable() error {
+	if s.Key == nil || s.Cert == nil {
+		return errors.New("signing needs a key and its certificate")
+	}
+	if pub, ok := s.Cert.PublicKey.(*rsa.PublicKey); !ok || !pub.Equal(&s.Key.PublicKey) {
+		return errors.New("the certificate does not belong to the key")
+	}
+	return nil
+}
+
+// sign makes the RSA signature over a SHA-256 digest. PKCS #1 v1.5
+// signatures need no randomness, so none is given.
+func (s Signer) sign(digest [sha256.Size]byte) ([]byte, error) {
+	sig, err := rsa.SignPKCS1v15(nil, s.Key, crypto.SHA256, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign: %w", err)
+	}
+	return sig, nil
+}
+
 // pad8 fills b with zeros to a multiple of 8 bytes, where certificate
 // table entries have to start.
 func pad8(b []byte) []byte {
@@ -72,9 +85,8 @@ func pad8(b []byte) []byte {
 // indirectData is the SpcIndirectDataContent: what is signed, a PE image,
 // and its digest.
 func indirectData(digest [sha256.Size]byte) []byte {
-	name := utf16.Encode([]rune(obsolete))
-	bmp := make([]byte, 0, 2*len(name))
-	for _, u := range name {
+	var bmp []byte
+	for _, u := range utf16.Encode([]rune(obsolete)) {
 		bmp = binary.BigEndian.AppendUint16(bmp, u)
 	}
 	file := tlv(explicit0, tlv(explicit2, tlv(implicitBMP0, bmp)))
@@ -94,12 +106,8 @@ func attribute(id asn1.ObjectIdentifier, value []byte) []byte {
 // sortedSet encodes the elements as the contents of a DER SET OF, which
 // sorts them by their encodings.
 func sortedSet(elements ...[]byte) []byte {
-	sorted := append([][]byte(nil), elements...)
-	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && bytes.Compare(sorted[j], sorted[j-1]) < 0; j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
-		}
-	}
+	sorted := slices.Clone(elements)
+	slices.SortFunc(sorted, bytes.Compare)
 	return bytes.Join(sorted, nil)
 }
 
@@ -121,14 +129,9 @@ func (s Signer) signedData(digest [sha256.Size]byte) ([]byte, error) {
 	)
 	// The signature covers the attributes encoded as a SET, though they
 	// are stored with the [0] tag.
-	toSign := sha256.Sum256(tlv(tagSet, attributes))
-	random := s.Rand
-	if random == nil {
-		random = rand.Reader
-	}
-	sig, err := rsa.SignPKCS1v15(random, s.Key, crypto.SHA256, toSign[:])
+	sig, err := s.sign(sha256.Sum256(tlv(tagSet, attributes)))
 	if err != nil {
-		return nil, fmt.Errorf("sign: %w", err)
+		return nil, err
 	}
 	serial, err := asn1.Marshal(s.Cert.SerialNumber)
 	if err != nil {

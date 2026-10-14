@@ -54,10 +54,23 @@ func sum(t *testing.T, path string) [32]byte {
 	return sha256.Sum256(data)
 }
 
-func TestLoaderGoesWhereFirmwareLooks(t *testing.T) {
-	got := LoaderFiles([]byte("efi"))
-	if len(got) != 1 || string(got["EFI/BOOT/BOOTX64.EFI"]) != "efi" {
+func TestBootFilesGoWhereFirmwareAndLoaderLook(t *testing.T) {
+	got := BootFiles([]byte("efi"), []byte("elf"))
+	if len(got) != 2 || string(got["EFI/BOOT/BOOTX64.EFI"]) != "efi" || string(got["meridian/kernel"]) != "elf" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// The loader is written in Rust, so this reads its source to make sure it
+// looks for the kernel where BootFiles puts it.
+func TestTheLoaderLooksWhereTheKernelGoes(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "boot", "src", "lib.rs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `pub const KERNEL_PATH: &str = "/` + KernelPath + `";`
+	if !strings.Contains(string(src), want) {
+		t.Fatalf("boot/src/lib.rs should say %s", want)
 	}
 }
 

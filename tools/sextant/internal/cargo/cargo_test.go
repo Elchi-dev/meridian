@@ -3,6 +3,7 @@ package cargo
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/binary"
 	"io"
 	"os"
@@ -14,25 +15,28 @@ import (
 
 func TestArgsForEveryVariant(t *testing.T) {
 	tests := []struct {
+		part              Part
 		release, qemuTest bool
 		want              string
 	}{
-		{false, false, "build --locked -p boot --target x86_64-unknown-uefi"},
-		{true, false, "build --locked -p boot --target x86_64-unknown-uefi --release"},
-		{false, true, "build --locked -p boot --target x86_64-unknown-uefi --features qemu-test"},
-		{true, true, "build --locked -p boot --target x86_64-unknown-uefi --release --features qemu-test"},
+		{Loader, false, false, "build --locked -p boot --target x86_64-unknown-uefi"},
+		{Loader, true, false, "build --locked -p boot --target x86_64-unknown-uefi --release"},
+		{Loader, false, true, "build --locked -p boot --target x86_64-unknown-uefi --features qemu-test"},
+		{Loader, true, true, "build --locked -p boot --target x86_64-unknown-uefi --release --features qemu-test"},
+		{Kernel, false, false, "build --locked -p kernel --target x86_64-unknown-none"},
+		{Kernel, true, true, "build --locked -p kernel --target x86_64-unknown-none --release --features qemu-test"},
 	}
 	for _, tt := range tests {
-		l := Loader{Root: "/repo", BuildDir: "/build", Release: tt.release, QEMUTest: tt.qemuTest}
-		if got := strings.Join(l.Args(), " "); got != tt.want {
-			t.Errorf("release %v, test %v:\ngot  %s\nwant %s", tt.release, tt.qemuTest, got, tt.want)
+		b := Build{Part: tt.part, Root: "/repo", BuildDir: "/build", Release: tt.release, QEMUTest: tt.qemuTest}
+		if got := strings.Join(b.Args(), " "); got != tt.want {
+			t.Errorf("%s, release %v, test %v:\ngot  %s\nwant %s", tt.part.Package, tt.release, tt.qemuTest, got, tt.want)
 		}
 	}
 }
 
 func TestTestImagesGetTheirOwnTargetDirectory(t *testing.T) {
-	plain := Loader{BuildDir: "/build"}
-	test := Loader{BuildDir: "/build", QEMUTest: true}
+	plain := Build{Part: Kernel, BuildDir: "/build"}
+	test := Build{Part: Kernel, BuildDir: "/build", QEMUTest: true}
 	if got := plain.Env(); len(got) != 1 || got[0] != "CARGO_TARGET_DIR=/build" {
 		t.Errorf("plain env = %v", got)
 	}
@@ -43,15 +47,17 @@ func TestTestImagesGetTheirOwnTargetDirectory(t *testing.T) {
 
 func TestOutputPaths(t *testing.T) {
 	tests := []struct {
-		l    Loader
+		b    Build
 		want string
 	}{
-		{Loader{BuildDir: "/b"}, filepath.Join("/b", "x86_64-unknown-uefi", "debug", "meridian.efi")},
-		{Loader{BuildDir: "/b", Release: true}, filepath.Join("/b", "x86_64-unknown-uefi", "release", "meridian.efi")},
-		{Loader{BuildDir: "/b", QEMUTest: true}, filepath.Join("/b", "qemu-test", "x86_64-unknown-uefi", "debug", "meridian.efi")},
+		{Build{Part: Loader, BuildDir: "/b"}, filepath.Join("/b", "x86_64-unknown-uefi", "debug", "meridian.efi")},
+		{Build{Part: Loader, BuildDir: "/b", Release: true}, filepath.Join("/b", "x86_64-unknown-uefi", "release", "meridian.efi")},
+		{Build{Part: Loader, BuildDir: "/b", QEMUTest: true}, filepath.Join("/b", "qemu-test", "x86_64-unknown-uefi", "debug", "meridian.efi")},
+		{Build{Part: Kernel, BuildDir: "/b"}, filepath.Join("/b", "x86_64-unknown-none", "debug", "kernel")},
+		{Build{Part: Kernel, BuildDir: "/b", Release: true, QEMUTest: true}, filepath.Join("/b", "qemu-test", "x86_64-unknown-none", "release", "kernel")},
 	}
 	for _, tt := range tests {
-		if got := tt.l.Output(); got != tt.want {
+		if got := tt.b.Output(); got != tt.want {
 			t.Errorf("got %s, want %s", got, tt.want)
 		}
 	}
@@ -90,19 +96,24 @@ func isEFIApplication(data []byte) string {
 	return ""
 }
 
-func TestBuildingTheLoader(t *testing.T) {
-	needCargo(t)
+func repoRoot(t *testing.T) string {
+	t.Helper()
 	root, err := filepath.Abs("../../../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := Loader{Root: root, BuildDir: filepath.Join(os.TempDir(), "sextant-test-build")}
-	path, err := l.Build(context.Background(), io.Discard, io.Discard)
+	return root
+}
+
+func TestBuildingTheLoader(t *testing.T) {
+	needCargo(t)
+	b := Build{Part: Loader, Root: repoRoot(t), BuildDir: filepath.Join(os.TempDir(), "sextant-test-build")}
+	path, err := b.Run(context.Background(), io.Discard, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != l.Output() {
-		t.Fatalf("built %s, expected %s", path, l.Output())
+	if path != b.Output() {
+		t.Fatalf("built %s, expected %s", path, b.Output())
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -113,11 +124,45 @@ func TestBuildingTheLoader(t *testing.T) {
 	}
 }
 
+// The loader reads the kernel as a position independent x86_64 ELF file
+// linked into the higher half.
+func TestBuildingTheKernel(t *testing.T) {
+	needCargo(t)
+	b := Build{Part: Kernel, Root: repoRoot(t), BuildDir: filepath.Join(os.TempDir(), "sextant-test-build")}
+	path, err := b.Run(context.Background(), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if f.Class != elf.ELFCLASS64 || f.Machine != elf.EM_X86_64 || f.Type != elf.ET_DYN {
+		t.Fatalf("class %v, machine %v, type %v", f.Class, f.Machine, f.Type)
+	}
+	if f.Entry < 0xffffffff80000000 {
+		t.Fatalf("entry %#x is not in the top 2 GiB", f.Entry)
+	}
+	var loads int
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_LOAD {
+			loads++
+			if p.Vaddr%0x1000 != 0 || p.Flags&elf.PF_W != 0 && p.Flags&elf.PF_X != 0 {
+				t.Errorf("segment at %#x: flags %v, not page aligned or writable and executable", p.Vaddr, p.Flags)
+			}
+		}
+	}
+	if loads != 3 {
+		t.Errorf("%d loadable segments, want code, read-only data and data", loads)
+	}
+}
+
 func TestCargoFailuresAreReported(t *testing.T) {
 	needCargo(t)
 	var stderr bytes.Buffer
-	l := Loader{Root: t.TempDir(), BuildDir: t.TempDir()}
-	_, err := l.Build(context.Background(), io.Discard, &stderr)
+	b := Build{Part: Loader, Root: t.TempDir(), BuildDir: t.TempDir()}
+	_, err := b.Run(context.Background(), io.Discard, &stderr)
 	if err == nil || !strings.HasPrefix(err.Error(), "cargo [build --locked -p boot") {
 		t.Fatalf("got %v", err)
 	}

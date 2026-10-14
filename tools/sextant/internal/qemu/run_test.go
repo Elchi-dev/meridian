@@ -79,26 +79,30 @@ func reliable(o Options) Options {
 	return o
 }
 
-// buildLoader builds the real loader with Cargo and returns its bytes.
-func buildLoader(t *testing.T, qemuTest bool) []byte {
+// bootFiles builds the real loader and kernel with Cargo and returns the
+// files of the EFI system partition.
+func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 	t.Helper()
-	l := cargo.Loader{Root: repoRoot(t), BuildDir: filepath.Join(os.TempDir(), "sextant-test-build"), QEMUTest: qemuTest}
-	efi, err := l.Build(context.Background(), io.Discard, io.Discard)
-	if err != nil {
-		t.Fatalf("build the loader: %v", err)
+	read := func(part cargo.Part) []byte {
+		b := cargo.Build{Part: part, Root: repoRoot(t), BuildDir: filepath.Join(os.TempDir(), "sextant-test-build"), QEMUTest: qemuTest}
+		path, err := b.Run(context.Background(), io.Discard, io.Discard)
+		if err != nil {
+			t.Fatalf("build %s: %v", part.Package, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
 	}
-	data, err := os.ReadFile(efi)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
+	return image.BootFiles(read(cargo.Loader), read(cargo.Kernel))
 }
 
 // diskWithLoader writes the real loader onto a disk image.
 func diskWithLoader(t *testing.T, qemuTest bool) string {
 	t.Helper()
 	disk := filepath.Join(t.TempDir(), "meridian.img")
-	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: image.LoaderFiles(buildLoader(t, qemuTest))}
+	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: bootFiles(t, qemuTest)}
 	if err := image.Disk(disk, contents); err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +237,7 @@ func TestFreeLocalAddress(t *testing.T) {
 func TestTheISOBootsFromCD(t *testing.T) {
 	r := newRig(t)
 	iso := filepath.Join(t.TempDir(), "meridian.iso")
-	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: image.LoaderFiles(buildLoader(t, true))}
+	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: bootFiles(t, true)}
 	if err := image.ISO(iso, contents); err != nil {
 		t.Fatal(err)
 	}

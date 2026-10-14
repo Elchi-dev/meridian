@@ -10,6 +10,9 @@ use core::fmt::{self, Write};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Where the kernel is on the EFI system partition.
+pub const KERNEL_PATH: &str = "/meridian/kernel";
+
 /// Text for the person in front of the machine. It goes to the firmware
 /// console, and to the serial port only when there is no console: firmware
 /// such as OVMF already mirrors its console to the serial port, and writing

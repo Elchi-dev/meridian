@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/cargo"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
 )
 
@@ -100,11 +101,16 @@ func TestImagePaths(t *testing.T) {
 	}
 }
 
-func TestLoaderFollowsTheVariant(t *testing.T) {
+func TestBuildsFollowTheVariant(t *testing.T) {
 	s := testSession("/b")
-	l := s.loader(variant{release: true, testMode: true})
-	if l.Root != "/repo" || l.BuildDir != "/b" || !l.Release || !l.QEMUTest {
-		t.Fatalf("got %+v", l)
+	for _, part := range []cargo.Part{cargo.Loader, cargo.Kernel} {
+		b := s.build(part, variant{release: true, testMode: true})
+		if b.Part != part || b.Root != "/repo" || b.BuildDir != "/b" || !b.Release || !b.QEMUTest {
+			t.Fatalf("got %+v", b)
+		}
+		if b := s.build(part, variant{}); b.Release || b.QEMUTest {
+			t.Fatalf("a plain variant built %+v", b)
+		}
 	}
 }
 
@@ -179,7 +185,10 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 		t.Fatalf("image: %v, %v", info, err)
 	}
 	r = runIn(realRoot(t), "build")
-	if r.code != ExitOK || !strings.HasSuffix(r.stdout, filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi")+"\n") {
+	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
+	if r.code != ExitOK || len(lines) != 2 ||
+		!strings.HasSuffix(lines[0], filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi")) ||
+		!strings.HasSuffix(lines[1], filepath.Join("x86_64-unknown-none", "debug", "kernel")) {
 		t.Fatalf("exit %d, stdout %q", r.code, r.stdout)
 	}
 }
@@ -191,7 +200,7 @@ func TestQEMUTestsOnTheRealRepository(t *testing.T) {
 	if r.code != ExitOK {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
 	}
-	for _, want := range []string{"== QEMU test image\n", "ok      uefi.keyboard.enter\n", "ok      boot.uefi_version\n", "checks passed in QEMU\n"} {
+	for _, want := range []string{"== QEMU test image\n", "ok      uefi.keyboard.enter\n", "ok      boot.uefi_version\n", "ok      boot.kernel.file\n", "checks passed in QEMU\n"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("missing %q in:\n%s", want, r.stdout)
 		}

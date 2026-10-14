@@ -46,14 +46,20 @@ type variant struct {
 	iso      bool
 }
 
-func (s *session) loader(v variant) cargo.Loader {
-	return cargo.Loader{Root: s.root, BuildDir: s.settings.BuildDir, Release: v.release, QEMUTest: v.testMode}
+func (s *session) build(part cargo.Part, v variant) cargo.Build {
+	return cargo.Build{Part: part, Root: s.root, BuildDir: s.settings.BuildDir, Release: v.release, QEMUTest: v.testMode}
 }
 
-// buildLoader runs Cargo. Its progress goes to stderr, so stdout keeps only
-// what the command reports.
-func (s *session) buildLoader(ctx context.Context, v variant) (string, error) {
-	return s.loader(v).Build(ctx, s.env.Stderr, s.env.Stderr)
+// buildBoot builds the loader and the kernel and returns their paths.
+// Cargo's progress goes to stderr, so stdout keeps only what the command
+// reports.
+func (s *session) buildBoot(ctx context.Context, v variant) (loader, kernel string, err error) {
+	loader, err = s.build(cargo.Loader, v).Run(ctx, s.env.Stderr, s.env.Stderr)
+	if err != nil {
+		return "", "", err
+	}
+	kernel, err = s.build(cargo.Kernel, v).Run(ctx, s.env.Stderr, s.env.Stderr)
+	return loader, kernel, err
 }
 
 // imagePath is where an image of this variant is written by default.
@@ -85,8 +91,12 @@ func (s *session) identity(ctx context.Context) (string, time.Time) {
 	return seed, when
 }
 
-func (s *session) writeImage(ctx context.Context, v variant, loader, out string) error {
-	data, err := os.ReadFile(loader)
+func (s *session) writeImage(ctx context.Context, v variant, loader, kernel, out string) error {
+	loaderData, err := os.ReadFile(loader)
+	if err != nil {
+		return err
+	}
+	kernelData, err := os.ReadFile(kernel)
 	if err != nil {
 		return err
 	}
@@ -94,7 +104,7 @@ func (s *session) writeImage(ctx context.Context, v variant, loader, out string)
 		return err
 	}
 	seed, when := s.identity(ctx)
-	contents := image.Contents{Seed: seed, Time: when, Files: image.LoaderFiles(data)}
+	contents := image.Contents{Seed: seed, Time: when, Files: image.BootFiles(loaderData, kernelData)}
 	if v.iso {
 		return image.ISO(out, contents)
 	}
@@ -153,17 +163,18 @@ func runBuild(env Env, args []string) error {
 		return err
 	}
 	if v.iso {
-		return usageErrorf("build makes the loader; use 'sextant image --iso' for an ISO")
+		return usageErrorf("build makes the loader and the kernel; use 'sextant image --iso' for an ISO")
 	}
 	s, err := openSession(env)
 	if err != nil {
 		return err
 	}
-	path, err := s.buildLoader(context.Background(), *v)
+	loader, kernel, err := s.buildBoot(context.Background(), *v)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(env.Stdout, path)
+	fmt.Fprintln(env.Stdout, loader)
+	fmt.Fprintln(env.Stdout, kernel)
 	return nil
 }
 
@@ -179,7 +190,7 @@ func runImage(env Env, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	loader, err := s.buildLoader(ctx, *v)
+	loader, kernel, err := s.buildBoot(ctx, *v)
 	if err != nil {
 		return err
 	}
@@ -187,7 +198,7 @@ func runImage(env Env, args []string) error {
 	if path == "" {
 		path = s.imagePath(*v)
 	}
-	if err := s.writeImage(ctx, *v, loader, path); err != nil {
+	if err := s.writeImage(ctx, *v, loader, kernel, path); err != nil {
 		return err
 	}
 	fmt.Fprintln(env.Stdout, path)
@@ -206,12 +217,12 @@ func runRun(env Env, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	loader, err := s.buildLoader(ctx, *v)
+	loader, kernel, err := s.buildBoot(ctx, *v)
 	if err != nil {
 		return err
 	}
 	path := s.imagePath(*v)
-	if err := s.writeImage(ctx, *v, loader, path); err != nil {
+	if err := s.writeImage(ctx, *v, loader, kernel, path); err != nil {
 		return err
 	}
 	m, err := s.machine(*v, path)
@@ -284,12 +295,12 @@ func (s *session) hostTests(ctx context.Context) error {
 func (s *session) qemuTests(ctx context.Context) error {
 	v := variant{testMode: true}
 	fmt.Fprintln(s.env.Stdout, "== QEMU test image")
-	loader, err := s.buildLoader(ctx, v)
+	loader, kernel, err := s.buildBoot(ctx, v)
 	if err != nil {
 		return err
 	}
 	path := s.imagePath(v)
-	if err := s.writeImage(ctx, v, loader, path); err != nil {
+	if err := s.writeImage(ctx, v, loader, kernel, path); err != nil {
 		return err
 	}
 	m, err := s.machine(v, path)

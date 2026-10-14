@@ -10,10 +10,24 @@ import (
 	"path/filepath"
 )
 
-const uefiTarget = "x86_64-unknown-uefi"
+// Part is one program Cargo builds for Meridian: its package, the target it
+// runs on, and the name of the file Cargo writes.
+type Part struct {
+	Package string
+	Target  string
+	File    string
+}
 
-// Loader is a build of the UEFI bootloader.
-type Loader struct {
+var (
+	// Loader is the UEFI bootloader.
+	Loader = Part{Package: "boot", Target: "x86_64-unknown-uefi", File: "meridian.efi"}
+	// Kernel is the kernel, an ELF file the loader reads.
+	Kernel = Part{Package: "kernel", Target: "x86_64-unknown-none", File: "kernel"}
+)
+
+// Build is one build of a part.
+type Build struct {
+	Part
 	Root string
 	// BuildDir is sextant's build directory. Test images get a folder of
 	// their own inside it, so switching between running and testing does
@@ -23,49 +37,49 @@ type Loader struct {
 	QEMUTest bool
 }
 
-func (l Loader) targetDir() string {
-	if l.QEMUTest {
-		return filepath.Join(l.BuildDir, "qemu-test")
+func (b Build) targetDir() string {
+	if b.QEMUTest {
+		return filepath.Join(b.BuildDir, "qemu-test")
 	}
-	return l.BuildDir
+	return b.BuildDir
 }
 
 // Args is the Cargo command line, without "cargo".
-func (l Loader) Args() []string {
-	args := []string{"build", "--locked", "-p", "boot", "--target", uefiTarget}
-	if l.Release {
+func (b Build) Args() []string {
+	args := []string{"build", "--locked", "-p", b.Package, "--target", b.Target}
+	if b.Release {
 		args = append(args, "--release")
 	}
-	if l.QEMUTest {
+	if b.QEMUTest {
 		args = append(args, "--features", "qemu-test")
 	}
 	return args
 }
 
 // Env holds the variables Cargo needs on top of the caller's environment.
-func (l Loader) Env() []string {
-	return []string{"CARGO_TARGET_DIR=" + l.targetDir()}
+func (b Build) Env() []string {
+	return []string{"CARGO_TARGET_DIR=" + b.targetDir()}
 }
 
-// Output is where Cargo writes the loader.
-func (l Loader) Output() string {
+// Output is where Cargo writes the part.
+func (b Build) Output() string {
 	profile := "debug"
-	if l.Release {
+	if b.Release {
 		profile = "release"
 	}
-	return filepath.Join(l.targetDir(), uefiTarget, profile, "meridian.efi")
+	return filepath.Join(b.targetDir(), b.Target, profile, b.File)
 }
 
-// Build runs Cargo and returns the path of the loader it built.
-func (l Loader) Build(ctx context.Context, stdout, stderr io.Writer) (string, error) {
-	cmd := exec.CommandContext(ctx, "cargo", l.Args()...)
-	cmd.Dir = l.Root
-	cmd.Env = append(os.Environ(), l.Env()...)
+// Run runs Cargo and returns the path of the file it built.
+func (b Build) Run(ctx context.Context, stdout, stderr io.Writer) (string, error) {
+	cmd := exec.CommandContext(ctx, "cargo", b.Args()...)
+	cmd.Dir = b.Root
+	cmd.Env = append(os.Environ(), b.Env()...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("cargo %v: %w", l.Args(), err)
+		return "", fmt.Errorf("cargo %v: %w", b.Args(), err)
 	}
-	out := l.Output()
+	out := b.Output()
 	if _, err := os.Stat(out); err != nil {
 		return "", fmt.Errorf("cargo finished but %s is missing: %w", out, err)
 	}

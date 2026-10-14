@@ -31,10 +31,16 @@ type Contents struct {
 	Files map[string][]byte
 }
 
-// LoaderFiles places the loader where UEFI firmware looks on removable
-// media and on disks without boot entries.
-func LoaderFiles(loader []byte) map[string][]byte {
-	return map[string][]byte{"EFI/BOOT/BOOTX64.EFI": loader}
+// LoaderPath is where UEFI firmware looks for a loader on removable media
+// and on disks without boot entries.
+const LoaderPath = "EFI/BOOT/BOOTX64.EFI"
+
+// KernelPath is where the loader looks for the kernel.
+const KernelPath = "meridian/kernel"
+
+// BootFiles places the loader and the kernel on the EFI system partition.
+func BootFiles(loader, kernel []byte) map[string][]byte {
+	return map[string][]byte{LoaderPath: loader, KernelPath: kernel}
 }
 
 // fatEpoch is the earliest time FAT can store. Reproducible builds often

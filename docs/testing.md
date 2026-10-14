@@ -77,14 +77,16 @@ under a `qemu-test` cfg, its lines count as test code for that crate.
 
 ### Running one by hand
 
-Until `sextant test --qemu` exists, a test image can be booted directly.
-Run this from the repository root, with OVMF from Arch Linux's `edk2-ovmf`
-package (other systems keep it elsewhere):
+`sextant test --qemu` does all of this. To boot a test image by hand,
+run this from the repository root, with OVMF from Arch Linux's
+`edk2-ovmf` package (other systems keep it elsewhere):
 
 ```
 cargo build -p boot --target x86_64-unknown-uefi --features qemu-test
-mkdir -p out/esp/EFI/BOOT
+cargo build -p kernel --target x86_64-unknown-none --features qemu-test
+mkdir -p out/esp/EFI/BOOT out/esp/meridian
 cp target/x86_64-unknown-uefi/debug/meridian.efi out/esp/EFI/BOOT/BOOTX64.EFI
+cp target/x86_64-unknown-none/debug/kernel out/esp/meridian/kernel
 cp /usr/share/edk2/x64/OVMF_VARS.4m.fd out/vars.fd
 qemu-system-x86_64 -machine q35 -accel kvm -m 256M -nodefaults \
   -display none -no-reboot -serial stdio \

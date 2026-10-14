@@ -46,6 +46,17 @@ pub fn run(system: &System, serial: &mut impl Write) -> ! {
         "the loader misreads the firmware's UEFI version",
     );
 
+    let kernel = system
+        .boot_volume()
+        .and_then(|root| root.open(boot::KERNEL_PATH))
+        .and_then(|file| file.info());
+    uefi::qemu_test::Report::check(
+        &mut report,
+        "boot.kernel.file",
+        kernel.is_ok_and(|i| !i.directory && i.size > 4096),
+        "sextant should put the kernel next to the loader",
+    );
+
     let failed = report.failed;
     let _ = writeln!(report.out, "TESTS DONE {failed} failed");
     x86::raw::qemu_exit(failed == 0)

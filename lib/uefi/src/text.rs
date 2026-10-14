@@ -90,10 +90,7 @@ pub fn file_path(path: &str, buf: &mut [u16]) -> Option<usize> {
             '\0' => return None,
             c => u16::try_from(u32::from(c)).ok()?,
         };
-        if n + 1 >= buf.len() {
-            return None;
-        }
-        buf[n] = unit;
+        *buf.get_mut(n)? = unit;
         n += 1;
     }
     *buf.get_mut(n)? = 0;

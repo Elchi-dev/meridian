@@ -94,10 +94,12 @@ mode through protected mode into long mode on its tables, which map the
 trampoline where it is and the kernel's half as the kernel has it, and
 jumps into the kernel, which switches the core to the kernel's page
 tables and a 16 KiB stack of its own. There it loads the kernel's GDT
-and an IDT of its own with the same gates, turns its APIC on and halts.
-It has no task state of its own yet, so its gates all run on the stack
-it is on: a fault or an NMI there ends in the exception handler rather
-than in a reset of the whole machine. There is no work for it yet. The test image checks every core came in on its own
+and IDT and a task state of its own, which the first core set up before
+it started it, with a 16 KiB fault stack of its own: NMIs, double faults
+and machine checks on it run there, as they do on the first core. Then
+it turns its APIC on and halts, as there is no work for it yet. The GDT
+has room for the task states of 64 cores; cores past them are not
+started. The test image checks every core came in on its own
 stack and the kernel's tables, and that starting them did not wait out
 the time a core that never starts gets.
 

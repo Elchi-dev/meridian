@@ -86,7 +86,8 @@ Loader and UEFI:
 - [x] The local APIC in x2APIC mode, its timer measured against the TSC, interrupts a hundred times a second and `hlt` in between
 - [ ] The local APIC in xAPIC mode, for processors without x2APIC, and HPET
 - [x] All cores started: INIT and startup through the x2APIC, a trampoline below 640 KiB, each core on its own stack and the kernel's tables
-- [ ] The other cores get task states of their own, and work to do
+- [x] The other cores get task states of their own, with fault stacks
+- [ ] The other cores get work to do
 - [ ] ACPI tables parsed
 
 ## M3: Processes

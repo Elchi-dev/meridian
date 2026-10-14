@@ -17,11 +17,31 @@ const DATA: u64 = 0x00cf_9200_0000_ffff;
 /// and the two entries of the task state segment at `tss`.
 #[must_use]
 pub fn gdt(tss: u64) -> [u64; 5] {
+    let [low, high] = task_state_descriptor(tss);
+    [SEGMENTS[0], SEGMENTS[1], SEGMENTS[2], low, high]
+}
+
+/// The entries every global descriptor table starts with: the null
+/// entry, kernel code and kernel data. Task states follow them.
+pub const SEGMENTS: [u64; 3] = [0, CODE, DATA];
+
+/// The two entries of an available task state segment at `tss`.
+#[must_use]
+pub fn task_state_descriptor(tss: u64) -> [u64; 2] {
     // The limit's bits 16 to 19 would go to bits 48 to 51; a task state
     // smaller than 64 KiB leaves them zero.
     let limit = u64::from(TASK_STATE_SIZE) - 1;
-    let low = limit | (tss & 0xff_ffff) << 16 | 0x89 << 40 | (tss >> 24 & 0xff) << 56;
-    [0, CODE, DATA, low, tss >> 32]
+    [
+        limit | (tss & 0xff_ffff) << 16 | 0x89 << 40 | (tss >> 24 & 0xff) << 56,
+        tss >> 32,
+    ]
+}
+
+/// The selector of the task state of core `core` in a table that holds
+/// one task state after another after [`SEGMENTS`].
+#[must_use]
+pub const fn task_state_selector(core: u16) -> u16 {
+    TASK_STATE + 16 * core
 }
 
 /// The size of [`TaskState`] in bytes.
@@ -219,6 +239,26 @@ mod tests {
             assert_eq!(base, tss, "{tss:#x}");
             assert_eq!(t[..3], gdt(0)[..3], "only the task state entries change");
         }
+    }
+
+    #[test]
+    fn each_core_has_a_task_state_selector_of_its_own() {
+        assert_eq!(task_state_selector(0), TASK_STATE);
+        assert_eq!(task_state_selector(1), 0x28);
+        assert_eq!(task_state_selector(63), 0x18 + 63 * 16);
+        for core in 0..64 {
+            let selector = task_state_selector(core);
+            assert_eq!(selector & 0b111, 0, "core {core}: the GDT, ring 0");
+            assert_eq!(
+                usize::from(selector / 8),
+                SEGMENTS.len() + 2 * usize::from(core)
+            );
+        }
+        for tss in [0, 0x1234, 0xffff_ffff_8012_3456] {
+            assert_eq!(task_state_descriptor(tss), gdt(tss)[3..5], "{tss:#x}");
+        }
+        assert_eq!(SEGMENTS, gdt(0)[..3]);
+        assert_eq!(SEGMENTS, [0, 0x00af_9a00_0000_ffff, 0x00cf_9200_0000_ffff]);
     }
 
     #[test]

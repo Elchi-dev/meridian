@@ -258,9 +258,13 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
 /// reaches the handler with the right vector, error code and address.
 fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
     use crate::raw::interrupts::{SPURIOUS, TIMER};
-    x86::qemu_test::tables(&[TIMER, SPURIOUS], &mut |name, ok, why| {
-        report.check(name, ok, why);
-    });
+    x86::qemu_test::tables(
+        &[TIMER, SPURIOUS],
+        raw::interrupts::CORES,
+        &mut |name, ok, why| {
+            report.check(name, ok, why);
+        },
+    );
     let caught = |c: Option<Caught>, vector: u64| c.is_some_and(|c| c.vector == vector);
     report.check(
         "kernel.exception.breakpoint",
@@ -299,10 +303,13 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
             .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1)),
         "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables",
     );
+    let entries = x86::raw::gdt_entries();
+    let others = machine.cores.map_or(0, |n| n.saturating_sub(1) as usize);
     report.check(
-        "kernel.smp.idt",
-        raw::interrupts::others_idt_mirrors(),
-        "the other cores' IDT should have every gate, none on a stack only a task state could name",
+        "kernel.smp.task_states",
+        (1..=others).all(|i| entries.get(3 + 2 * i).is_some_and(|e| e >> 40 & 0xf == 0xb))
+            && entries.get(3 + 2 * (others + 1)).is_some_and(|&e| e == 0),
+        "each other core should have loaded a task state of its own, and none past them be set up",
     );
     // Each one waits 10 ms after its INIT and twice 0.2 ms after its
     // startups, and no longer when it starts at once.

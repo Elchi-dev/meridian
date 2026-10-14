@@ -43,28 +43,30 @@ pub struct Frame {
 /// still have one when the kernel's own is used up.
 const FAULT_STACK: usize = 16 * 1024;
 
+/// The most cores that get a task state, and so are started.
+pub const CORES: usize = 64;
+
 struct Tables {
-    gdt: [u64; 5],
-    tss: TaskState,
+    /// The segments, then a task state for each core.
+    gdt: [u64; 3 + 2 * CORES],
+    task_states: [TaskState; CORES],
     idt: [Gate; 256],
-    /// The IDT the other cores load: the same gates, all on the stack the
-    /// core runs on, since those cores have no task state to name another
-    /// in, and a gate that named one would turn any NMI into a reset.
-    others_idt: [Gate; 256],
+    /// The first core's fault stack; the others get theirs from the frame
+    /// allocator.
     fault_stack: [u8; FAULT_STACK],
 }
 
 struct Shared(UnsafeCell<Tables>);
 
 // SAFETY: install writes the tables once, before anything else reads them,
-// and after that only the processor reads them.
+// and prepare_core writes a core's task state and its descriptor before
+// that core starts; after that only the processors read them.
 unsafe impl Sync for Shared {}
 
 static TABLES: Shared = Shared(UnsafeCell::new(Tables {
-    gdt: [0; 5],
-    tss: TaskState::new(),
+    gdt: [0; 3 + 2 * CORES],
+    task_states: [const { TaskState::new() }; CORES],
     idt: [Gate::MISSING; 256],
-    others_idt: [Gate::MISSING; 256],
     fault_stack: [0; FAULT_STACK],
 }));
 
@@ -93,8 +95,11 @@ pub fn install() {
     // reads the tables before they are loaded below.
     let t = unsafe { &mut *TABLES.0.get() };
     let stack_top = (&raw const t.fault_stack) as u64 + FAULT_STACK as u64;
-    t.tss.interrupt_stacks[0] = stack_top & !0xf;
-    t.gdt = tables::gdt((&raw const t.tss) as u64);
+    t.task_states[0].interrupt_stacks[0] = stack_top & !0xf;
+    t.gdt[..3].copy_from_slice(&tables::SEGMENTS);
+    t.gdt[3..5].copy_from_slice(&tables::task_state_descriptor(
+        (&raw const t.task_states[0]) as u64,
+    ));
     for (vector, stub) in STUBS.iter().enumerate() {
         let stack = u8::from(matches!(vector, 2 | 8 | 18));
         t.idt[vector] = Gate::interrupt(*stub as usize as u64, stack);
@@ -103,11 +108,6 @@ pub fn install() {
     let spurious: unsafe extern "C" fn() = spurious_stub;
     t.idt[usize::from(TIMER)] = Gate::interrupt(timer as usize as u64, 0);
     t.idt[usize::from(SPURIOUS)] = Gate::interrupt(spurious as usize as u64, 0);
-    for (other, gate) in t.others_idt.iter_mut().zip(&t.idt) {
-        if gate.is_present() {
-            *other = Gate::interrupt(gate.handler(), 0);
-        }
-    }
     // SAFETY: the tables live in a static, so they stay where they are,
     // the GDT holds the selectors load_gdt uses and the task state at
     // TASK_STATE, and every present gate leads to a stub below.
@@ -118,46 +118,64 @@ pub fn install() {
     }
 }
 
-/// Loads the kernel's descriptor tables on another processor, which shares
-/// them with the first. It has no task state of its own yet, so it runs
-/// without the fault stack, and so may only halt.
-pub fn load_on_another_core() {
+/// Gives core `number`, from 1 up to [`CORES`], a task state with its
+/// fault stack ending at `stack_top`, which is 16 byte aligned, and
+/// returns the selector it loads it with; `None` for a number without
+/// one.
+pub fn prepare_core(number: usize, stack_top: u64) -> Option<u16> {
+    if !kernel::has_task_state(number, CORES) {
+        return None;
+    }
+    let t = TABLES.0.get();
+    // SAFETY: the task state and the descriptor of a core that has not
+    // started: nothing reads them until that core loads them, and only the
+    // first core, which starts the others one at a time, writes them.
+    unsafe {
+        let state = &raw mut (*t).task_states[number];
+        (*state).interrupt_stacks[0] = stack_top;
+        let entries = (&raw mut (*t).gdt).cast::<u64>().add(3 + 2 * number);
+        let [low, high] = tables::task_state_descriptor(state as u64);
+        entries.write(low);
+        entries.add(1).write(high);
+    }
+    u16::try_from(number).ok().map(tables::task_state_selector)
+}
+
+/// Loads the kernel's descriptor tables and core `number`'s task state on
+/// that core, once [`prepare_core`] made it.
+pub fn load_on_another_core(number: usize) {
+    let Some(selector) = u16::try_from(number).ok().map(tables::task_state_selector) else {
+        return;
+    };
     if !INSTALLED.load(Ordering::Acquire) {
         return;
     }
-    // SAFETY: install wrote the tables and nothing writes them again;
-    // they live in a static.
+    // SAFETY: install wrote the tables, prepare_core this core's task
+    // state, and nothing writes either again; they live in a static.
     let t = unsafe { &*TABLES.0.get() };
-    // SAFETY: the same tables the first processor runs on: permanent, with
-    // the kernel's selectors, and every present gate leads to a stub.
+    // SAFETY: the same GDT and IDT the first core runs on, permanent and
+    // with the kernel's selectors; prepare_core put an available task
+    // state at this core's selector.
     unsafe {
         x86::raw::load_gdt(&t.gdt);
-        x86::raw::load_idt(&t.others_idt);
+        x86::raw::load_task_register(selector);
+        x86::raw::load_idt(&t.idt);
     }
 }
 
-/// Whether this processor runs on the kernel's GDT and the IDT for the
-/// other cores. Only the test image asks.
+/// Whether this processor, core `number`, runs on the kernel's tables and
+/// its own task state with a fault stack. Only the test image asks.
 #[cfg(feature = "qemu-test")]
-pub fn loaded_here() -> bool {
-    // SAFETY: only the addresses of the tables are taken, not their
-    // contents.
+pub fn loaded_here(number: usize) -> bool {
+    // SAFETY: only reading, after prepare_core wrote this core's parts.
     let t = unsafe { &*TABLES.0.get() };
+    let selector = u16::try_from(number).ok().map(tables::task_state_selector);
     x86::raw::gdt_register().base == (&raw const t.gdt) as u64
-        && x86::raw::idt_register().base == (&raw const t.others_idt) as u64
-}
-
-/// Whether the other cores' IDT has every gate of the first core's, each
-/// on the current stack. Only the test image asks.
-#[cfg(feature = "qemu-test")]
-pub fn others_idt_mirrors() -> bool {
-    // SAFETY: install wrote the tables and nothing writes them again.
-    let t = unsafe { &*TABLES.0.get() };
-    t.idt.iter().zip(&t.others_idt).all(|(gate, other)| {
-        gate.is_present() == other.is_present()
-            && gate.handler() == other.handler()
-            && other.stack() == 0
-    }) && t.idt[2].stack() == 1
+        && x86::raw::idt_register().base == (&raw const t.idt) as u64
+        && Some(x86::raw::task_register()) == selector
+        && t.task_states
+            .get(number)
+            .is_some_and(|s| s.interrupt_stacks[0] != 0)
 }
 
 /// Where the stubs bring every exception and interrupt. A timer tick is

@@ -221,6 +221,14 @@ pub fn waiting(out: &mut impl Write, period: Option<u32>) -> fmt::Result {
     }
 }
 
+/// Whether core `number` gets a task state of its own among `cores`: the
+/// first core has the one the kernel starts with, and numbers past the
+/// last have none.
+#[must_use]
+pub fn has_task_state(number: usize, cores: usize) -> bool {
+    (1..cores).contains(&number)
+}
+
 /// How many cores run the kernel when `others` came in besides this one.
 #[must_use]
 pub fn with_this_one(others: u32) -> u32 {
@@ -539,6 +547,15 @@ mod tests {
             out,
             "kernel: there is no room for the frame allocator or the heap\n"
         );
+    }
+
+    #[test]
+    fn other_cores_get_task_states_up_to_the_last() {
+        assert!(!has_task_state(0, 64), "the first core has its own already");
+        assert!(has_task_state(1, 64));
+        assert!(has_task_state(63, 64));
+        assert!(!has_task_state(64, 64), "one past the last");
+        assert!(!has_task_state(1, 1));
     }
 
     #[test]

@@ -177,19 +177,20 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
     #[cfg(feature = "qemu-test")]
     let begin = x86::raw::tsc();
     for (number, &id) in others.iter().enumerate() {
-        let Some(stack) = super::memory::FRAMES
+        let stacks = super::memory::FRAMES
             .lock()
             .as_mut()
-            .and_then(|f| f.alloc_run(STACK_FRAMES, 1))
-        else {
+            .and_then(|f| Some((f.alloc_run(STACK_FRAMES, 1)?, f.alloc_run(STACK_FRAMES, 1)?)));
+        let Some((stack, fault_stack)) = stacks else {
             break;
         };
+        let top = |base: u64| HHDM_BASE + base + STACK_FRAMES * frames::FRAME;
+        if super::interrupts::prepare_core(number + 1, top(fault_stack)).is_none() {
+            break;
+        }
         #[cfg(feature = "qemu-test")]
         STACK_BASE.store(HHDM_BASE + stack, Ordering::Release);
-        STACK.store(
-            HHDM_BASE + stack + STACK_FRAMES * frames::FRAME,
-            Ordering::Release,
-        );
+        STACK.store(top(stack), Ordering::Release);
         NUMBER.store(number as u64 + 1, Ordering::Release);
         let before = RUNNING.load(Ordering::Acquire);
         // INIT, then two startups, as the MultiProcessor Specification
@@ -268,11 +269,12 @@ unsafe extern "C" fn ap_entry() -> ! {
 
 /// The other processors' life so far: the kernel's descriptor tables,
 /// their APIC, a count, and halting.
-extern "sysv64" fn ap_main(_number: u64) -> ! {
-    super::interrupts::load_on_another_core();
+extern "sysv64" fn ap_main(number: u64) -> ! {
+    let number = usize::try_from(number).unwrap_or(0);
+    super::interrupts::load_on_another_core(number);
     let _ = x86::raw::enable_x2apic();
     #[cfg(feature = "qemu-test")]
-    settled();
+    settled(number);
     RUNNING.fetch_add(1, Ordering::AcqRel);
     x86::raw::halt()
 }
@@ -280,12 +282,12 @@ extern "sysv64" fn ap_main(_number: u64) -> ! {
 /// Counts this processor as settled when it runs on the stack it was
 /// given and on the kernel's descriptor tables.
 #[cfg(feature = "qemu-test")]
-fn settled() {
+fn settled(number: usize) {
     let here = 0u8;
     let base = STACK_BASE.load(Ordering::Acquire);
     let on_stack =
         (base..base + STACK_FRAMES * frames::FRAME).contains(&((&raw const here) as u64));
-    if on_stack && super::interrupts::loaded_here() {
+    if on_stack && super::interrupts::loaded_here(number) {
         SETTLED.fetch_add(1, Ordering::AcqRel);
     }
 }

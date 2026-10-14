@@ -109,17 +109,18 @@ pub fn run(check: &mut impl FnMut(&str, bool, &str)) {
     );
 }
 
-/// Checks of the kernel's descriptor tables once it has loaded them. They
-/// run from the kernel's test image, since the firmware needs its own
-/// tables while it runs.
-pub fn tables(interrupts: &[u8], check: &mut impl FnMut(&str, bool, &str)) {
+/// Checks of the kernel's descriptor tables once it has loaded them, with
+/// gates for `interrupts` past the exceptions and room for the task states
+/// of `cores`. They run from the kernel's test image, since the firmware
+/// needs its own tables while it runs.
+pub fn tables(interrupts: &[u8], cores: usize, check: &mut impl FnMut(&str, bool, &str)) {
     use crate::tables::{KERNEL_CODE, KERNEL_DATA, TASK_STATE};
 
     let gdt = raw::gdt_register();
     check(
         "x86.gdt",
-        { gdt.limit } == 39 && { gdt.base } >= 0xffff_8000_0000_0000,
-        "the kernel's five entry GDT should be loaded from the higher half",
+        usize::from(gdt.limit) + 1 == (3 + 2 * cores) * 8 && { gdt.base } >= 0xffff_8000_0000_0000,
+        "the kernel's GDT, its segments and a task state for each core, should be loaded from the higher half",
     );
     let entries = raw::gdt_entries();
     let tss = entries.get(3..5).map_or(0, |e| {
@@ -127,7 +128,7 @@ pub fn tables(interrupts: &[u8], check: &mut impl FnMut(&str, bool, &str)) {
     });
     check(
         "x86.gdt.entries",
-        entries.len() == 5
+        entries.len() >= 5
             && entries[0] == 0
             && entries[1] & !(1 << 40) == crate::tables::gdt(tss)[1]
             && entries[2] & !(1 << 40) == crate::tables::gdt(tss)[2]

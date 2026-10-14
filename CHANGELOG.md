@@ -10,7 +10,7 @@ at 0.x until the native API is stable.
 
 - **Repository**
   - The MIT and Apache-2.0 licences.
-  - Decision records 0001 to 0011.
+  - Decision records 0001 to 0012.
   - CI on GitHub Actions: lint, the test ratio, formatting, clippy, the Go and Rust tests and the QEMU test image on every push; sextant on macOS and Windows on `main` and weekly.
   - The docs: README, roadmap, architecture, testing, contributing and security.
 - **`.meri`, Meridian's settings format**
@@ -23,21 +23,40 @@ at 0.x until the native API is stable.
   - A `.meri` reader, with typed getters and layering of a local file over the shared one.
   - GPT, FAT32 and ISO 9660 writers that need no outside tools and give the same bytes for the same inputs on any machine.
   - Settings from `sextant.meri`, with `sextant.local.meri` for one machine: build directory, QEMU memory, CPUs, accelerator, firmware, timeout and how long the firmware may stay silent.
-  - `build`, `image`, `run` and `test`. Images are stamped with the commit, so a commit always gives the same image. `test` boots the QEMU test image, presses the keys it asks for, and starts the machine again when the firmware hangs before printing anything.
+  - `build`, `image`, `run` and `test`. Images are stamped with the commit, so a commit always gives the same image. `build` puts the loader and the kernel on the EFI partition. `test` boots the QEMU test image, presses the keys it asks for, keeps pictures of the screens it asks for as PNG files, and starts the machine again when the firmware hangs before printing anything.
+  - Scripts for a run, whose steps wait for a line, pause, press keys and keep the screen.
+  - `mutate`, which changes Go and Rust code one mutant at a time in private copies of the repository and runs the tests on each, so tests that cannot fail are found. Known equivalent mutants are listed with a reason in `mutants.meri`.
 - **`lib/uefi`**
   - Status codes with their names and plain-English meanings.
   - GUIDs, the memory map reader, and the UCS-2 console encoder.
   - The system table with its validation, and the firmware tables, written from UEFI 2.10. Only slots Meridian calls have a function type.
+  - Pages and the memory map, files and folders on the boot volume, the framebuffer through graphics output, keys without waiting, configuration tables such as ACPI's, device paths, and loading and starting other EFI applications.
 - **The loader (`boot`)**
   - Banner with the firmware vendor and UEFI version, COM1 logging.
   - The firmware memory map turned into kernel regions (`lib/bootinfo`), with usable memory losing every overlap with any other kind.
   - A QEMU test image that runs every crate's checks against real firmware and ends QEMU with its verdict.
+  - Loading the kernel: the ELF file is checked and relocated (`lib/elf`), the kernel gets its own page tables with a direct map of memory (`lib/paging`), and the handover (`lib/bootinfo`) carries the memory map, the framebuffer and the ACPI root pointer.
+  - A boot screen with a card for each system, a countdown, and the arrow keys and Enter.
+  - Other systems on the boot partition, such as Windows Boot Manager, GRUB and systemd-boot, are found and started from their cards.
+- **The kernel**
+  - Its own GDT, task state and IDT. Every processor exception is shown in plain words, and double faults run on a stack of their own, so running out of stack still ends on the panic screen.
+  - A status screen with the processor, its cores, how long the machine has been up, kept current, and the memory map as a bar.
+  - A panic screen in plain English with a QR code of the crash summary.
+  - Cores from the ACPI MADT, and the time stamp counter measured against the ACPI timer.
+- **Libraries**
+  - `lib/font`: TrueType fonts parsed and rasterized without allocating, with Inter and JetBrains Mono under the SIL Open Font License (decision record 0012).
+  - `lib/canvas`: rectangles and text on a framebuffer in either pixel order.
+  - `lib/qr`: QR codes of every version and error correction level, without allocating.
+  - `lib/acpi`: the root pointer, the XSDT, the MADT and the FADT, with their checksums.
+  - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
 
 ### Verified
 
-- **sextant.** All tests pass with the race detector, at 3873 lines of code and 6643 lines of tests, a ratio of 1.71.
-- **`lib/uefi`.** 52 host tests pass at a ratio of 1.51. Every field offset of the firmware tables is checked against the specification.
-- **Mutation testing**, so far by hand per package: every mutant was killed, or the code was simplified until the mutant disappeared. Three equivalent mutants are known and will be listed in `mutants.meri`.
+- **Test lines.** 22403 lines of tests for 12554 lines of code, a ratio of 1.78, and every component at 1.5 or more.
+- **sextant.** All tests pass with the race detector, at 6320 lines of code and 11026 lines of tests, a ratio of 1.74.
+- **`lib/uefi`.** 84 host tests pass at a ratio of 1.52. Every field offset of the firmware tables is checked against the specification.
+- **Mutation testing.** `sextant mutate` finds no surviving mutant in sextant; a full run takes about an hour and a half. New Rust code is mutated by hand as it is written, and every mutant was killed, or the code was simplified until the mutant disappeared. Two equivalent mutants are listed in `mutants.meri`.
+- **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
   - the FAT size calculation overflowed near 2 TiB
   - the ISO tree dropped a file when a folder whose name differed only in case sorted first
@@ -54,10 +73,14 @@ at 0.x until the native API is stable.
   - a missing glyph being only a warning
 
   - Enter and the down arrow, pressed by sextant through the QEMU monitor
-- **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF; `sextant test --qemu` runs all ten firmware checks in a few seconds.
+- **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF.
+- **On real firmware.** `sextant test --qemu` runs 150 checks in QEMU with KVM: the loader's and every crate's under the firmware, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its screens, five exceptions caused on purpose, a panic and a stack overflow.
+- **What a person sees.** The boot, status, panic and double fault screens are kept as PNG files. A Go test checks their colours and reads the QR codes with `zbarimg`, and on the plain image checks that only the uptime changes in 2.5 seconds.
+- **Another firmware.** CI runs the test image on Ubuntu's OVMF, which found a bug the development PC's OVMF hid: the kernel read the task state through an empty task register. It is fixed.
 - **No machine is left behind.** A test that counts open files before and after two boots, and a test that kills the process that started QEMU and checks QEMU dies with it.
 
 ### Not built yet
 
-The kernel, and with it everything a person would call an operating system.
-See [TODO.md](TODO.md).
+Memory management, interrupts, scheduling, drivers, the file system, the
+desktop and the Win32 personality: everything that makes the kernel more
+than a status screen. See [TODO.md](TODO.md).

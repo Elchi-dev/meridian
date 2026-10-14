@@ -17,11 +17,24 @@ is what exists today; everything after it is still to come.
   protection on, and interrupts off. The kernel refuses boot information
   whose magic, version or size it does not know.
 - **What it does.** It opens COM1 through `lib/x86`, prints its version and
-  how much memory is free and how much it owns, draws the status screen
-  and halts.
+  how much memory is free and how much it owns, reads the ACPI tables,
+  measures the time stamp counter, draws the status screen and then keeps
+  the uptime on it current.
+- **ACPI and time.** `lib/acpi` follows the root pointer the loader passed
+  to the XSDT, counts the processor cores in the MADT that are enabled or
+  can be brought online, and finds the power management timer in the FADT,
+  with its port and whether it counts in 24 or 32 bits. The kernel reads
+  tables only where the memory map has a region and below the end of the
+  direct map, so a broken pointer cannot fault. It measures the time stamp
+  counter against the timer for 10 ms, and gives up after two million
+  reads of a timer that does not move. The uptime is the counter divided by
+  its rate: the time since the machine was switched on. There are no
+  interrupts yet, so the kernel spins and draws the uptime again when the
+  second changes.
 - **The status screen.** In the boot screens' dark look, drawn with
   `lib/canvas` and Inter: the kernel's version, the processor's name from
-  CPUID, the free memory out of all memory, and the memory map as a bar.
+  CPUID, the number of cores, how long the machine has been up, the free
+  memory out of all memory, and the memory map as a bar.
   Reserved ranges above the end of memory are devices, such as QEMU's
   12 GiB PCI window, and are left out.
 - **Descriptor tables and exceptions.** At entry the kernel loads its own
@@ -43,14 +56,18 @@ is what exists today; everything after it is still to come.
 - **Test image.** Built with the `qemu-test` feature, it checks what the
   loader promised: the direct map, its own image mapped at the right
   physical memory, the stack, the processor state, the ACPI root pointer,
-  and that boot services are over. It checks its status screen by reading
+  and that boot services are over. It checks the cores and the timer it
+  found, and measures the counter a second time over 100 ms, which has to
+  agree with the first measurement to within a tenth. It checks its status screen by reading
   the framebuffer back, and checks the loaded tables and five exceptions
   it causes on purpose (breakpoint, invalid opcode, division by zero, a
   read of address 0, a bad selector), each resumed after the fault. Then
   it panics on purpose and checks the panic screen, and then runs out of
   stack on purpose and checks that the double fault reaches the panic
   screen too. sextant keeps the three screens as PNG files, and a Go test
-  reads both QR codes with `zbarimg`.
+  reads both QR codes with `zbarimg`. Another Go test boots the plain
+  image, keeps its status screen twice, 2.5 seconds apart, and checks that
+  only the uptime changed.
 
 ## Shape
 

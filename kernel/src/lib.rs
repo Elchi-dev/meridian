@@ -5,6 +5,7 @@
 
 pub use canvas::Text;
 
+pub mod clock;
 pub mod exceptions;
 pub mod panic;
 pub mod screen;

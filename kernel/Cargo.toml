@@ -19,6 +19,7 @@ test = true
 qemu-test = ["x86/qemu-test"]
 
 [dependencies]
+acpi = { path = "../lib/acpi" }
 bootinfo = { path = "../lib/bootinfo" }
 canvas = { path = "../lib/canvas" }
 font = { path = "../lib/font" }

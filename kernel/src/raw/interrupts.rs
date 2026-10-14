@@ -108,6 +108,35 @@ pub fn install() {
     }
 }
 
+/// Loads the kernel's descriptor tables on another processor, which shares
+/// them with the first. It has no task state of its own yet, so it runs
+/// without the fault stack, and so may only halt.
+pub fn load_on_another_core() {
+    if !INSTALLED.load(Ordering::Acquire) {
+        return;
+    }
+    // SAFETY: install wrote the tables and nothing writes them again;
+    // they live in a static.
+    let t = unsafe { &*TABLES.0.get() };
+    // SAFETY: the same tables the first processor runs on: permanent, with
+    // the kernel's selectors, and every present gate leads to a stub.
+    unsafe {
+        x86::raw::load_gdt(&t.gdt);
+        x86::raw::load_idt(&t.idt);
+    }
+}
+
+/// Whether this processor runs on the kernel's descriptor tables. Only the
+/// test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn loaded_here() -> bool {
+    // SAFETY: only the addresses of the tables are taken, not their
+    // contents.
+    let t = unsafe { &*TABLES.0.get() };
+    x86::raw::gdt_register().base == (&raw const t.gdt) as u64
+        && x86::raw::idt_register().base == (&raw const t.idt) as u64
+}
+
 /// Where the stubs bring every exception and interrupt. A timer tick is
 /// counted and acknowledged; a spurious interrupt needs nothing.
 extern "sysv64" fn exception(frame: &mut Frame) {

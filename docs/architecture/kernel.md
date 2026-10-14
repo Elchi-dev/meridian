@@ -84,6 +84,22 @@ is what exists today; everything after it is still to come.
 - **All CPU cores from M2 on.** Adding several cores later would mean rewriting the locking.
 - **Built with stable Rust** for `x86_64-unknown-none` (ADR 0006). Assembly is written inside Rust (ADR 0007), and every `unsafe` is in a `raw` module (ADR 0008).
 
+## Cores (M2)
+
+Every core starts. The first one reads the MADT for the others' APIC
+ids, copies a trampoline to the first free memory below 640 KiB with
+page tables of its own after it, and sends each core INIT and two
+startup interrupts through the x2APIC. The trampoline runs from real
+mode through protected mode into long mode on its tables, which map the
+trampoline where it is and the kernel's half as the kernel has it, and
+jumps into the kernel, which switches the core to the kernel's page
+tables and a 16 KiB stack of its own. There it loads the kernel's
+descriptor tables, turns its APIC on and halts: it has no task state of
+its own yet, so it may not take faults on the fault stack, and there is
+no work for it. The test image checks every core came in on its own
+stack and the kernel's tables, and that starting them did not wait out
+the time a core that never starts gets.
+
 ## Memory (M2)
 
 - a higher-half kernel, with a direct map of all physical memory

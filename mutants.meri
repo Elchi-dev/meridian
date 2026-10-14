@@ -86,3 +86,24 @@ allow {
     mutation = "body to {}"
     reason = "OVMF masks both 8259s before it starts a loader, so on the test machines masking them again changes nothing; on firmware that leaves lines open it keeps their interrupts off the vectors the exceptions use"
 }
+
+allow {
+    file = "lib/x86/src/raw.rs"
+    line = "if tsc() - begin >= cycles {"
+    mutation = ">= to >"
+    reason = "waiting gives up one counter cycle later at most, which nothing that waits a tenth of a second can tell"
+}
+
+allow {
+    file = "kernel/src/raw/smp.rs"
+    line = "let _ = x86::raw::wait_for(tsc_hz / 10, || RUNNING.load(Ordering::Acquire) > before);"
+    mutation = "/ to *"
+    reason = "the limit only matters for a core that never starts; every core of the test machines starts, and the wait ends as soon as it has"
+}
+
+allow {
+    file = "kernel/src/raw/smp.rs"
+    line = "let _ = x86::raw::wait_for(tsc_hz / 10, || RUNNING.load(Ordering::Acquire) > before);"
+    mutation = "> to >="
+    reason = "every core of the test machines has come in by the end of the 0.2 ms after its first startup, so the wait finds it there either way; on slower hardware it keeps the next core's stack from being set while this one still reads its own"
+}

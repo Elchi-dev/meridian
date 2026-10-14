@@ -47,7 +47,11 @@ pub mod apic {
     pub const ENABLE: u64 = 1 << 11;
     pub const X2APIC: u64 = 1 << 10;
 
+    pub const ID: u32 = 0x802;
     pub const END_OF_INTERRUPT: u32 = 0x80b;
+    /// The interrupt command register, through which a processor sends
+    /// interrupts to others.
+    pub const COMMAND: u32 = 0x830;
     pub const SPURIOUS: u32 = 0x80f;
     pub const LVT_TIMER: u32 = 0x832;
     pub const TIMER_INITIAL: u32 = 0x838;
@@ -71,6 +75,20 @@ pub mod apic {
     #[must_use]
     pub fn periodic(vector: u8) -> u64 {
         u64::from(vector) | PERIODIC
+    }
+
+    /// The command that sends INIT to the processor whose APIC id is `id`,
+    /// which stops it and has it wait for a start.
+    #[must_use]
+    pub fn init(id: u32) -> u64 {
+        u64::from(id) << 32 | 1 << 14 | 0b101 << 8
+    }
+
+    /// The command that starts the processor whose APIC id is `id`, after
+    /// an INIT, in real mode at the start of `page` below 1 MiB.
+    #[must_use]
+    pub fn startup(id: u32, page: u8) -> u64 {
+        u64::from(id) << 32 | 1 << 14 | 0b110 << 8 | u64::from(page)
     }
 
     /// The values to write to `IA32_APIC_BASE`, which holds `base` now, one
@@ -223,6 +241,32 @@ mod tests {
         assert_eq!(apic::periodic(0xff), 0x2_00ff);
         assert_eq!(apic::spurious(0xff), 0x1ff, "bit 8 turns the APIC on");
         assert_eq!(apic::spurious(0x27), 0x127);
+    }
+
+    #[test]
+    fn commands_name_the_processor_and_what_to_do() {
+        assert_eq!((apic::ID, apic::COMMAND), (0x802, 0x830));
+        assert_eq!(apic::init(0), 0x4500, "INIT, level asserted");
+        assert_eq!(apic::init(3), 0x3_0000_4500);
+        assert_eq!(apic::init(u32::MAX), 0xffff_ffff_0000_4500);
+        assert_eq!(apic::startup(1, 0x08), 0x1_0000_4608, "the page at 0x8000");
+        assert_eq!(apic::startup(0x1_0203, 0x9f), 0x1_0203_0000_469f);
+    }
+
+    #[test]
+    fn init_and_startup_differ_only_in_what_they_ask() {
+        for id in [0, 1, 7, 0xff, 0x100, 0xdead_beef, u32::MAX] {
+            let init = apic::init(id);
+            assert_eq!(init >> 32, u64::from(id), "{id}: the destination");
+            assert_eq!(init & 0xffff_ffff, 0x4500);
+            for page in [0x01, 0x08, 0x9f, 0xff] {
+                let startup = apic::startup(id, page);
+                assert_eq!(startup >> 32, u64::from(id));
+                assert_eq!(startup & 0xff, u64::from(page), "{id}: the page");
+                assert_eq!(startup & 0xff00, 0x4600, "{id}: startup, asserted");
+                assert_eq!(init ^ startup, 0x0300 | u64::from(page));
+            }
+        }
     }
 
     #[test]

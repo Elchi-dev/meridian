@@ -114,6 +114,25 @@ pub fn bits_home(regions: &[MemoryRegion], bytes: u64) -> Option<u64> {
     })
 }
 
+/// The pages the code that starts the other processors needs: its code
+/// and data, and three page tables.
+pub const TRAMPOLINE_PAGES: u64 = 4;
+
+/// Where that code goes: the first free memory below the legacy video
+/// memory at 640 KiB with room for it, past page 0, which a processor
+/// cannot start at. The frame allocator never hands out memory there.
+#[must_use]
+pub fn trampoline_home(regions: &[MemoryRegion]) -> Option<u64> {
+    const LEGACY: u64 = 0xa_0000;
+    free_ranges(regions).find_map(|(start, len)| {
+        let first = start
+            .max(MemoryRegion::PAGE_SIZE)
+            .next_multiple_of(MemoryRegion::PAGE_SIZE);
+        let end = first + TRAMPOLINE_PAGES * MemoryRegion::PAGE_SIZE;
+        (end <= (start + len).min(LEGACY)).then_some(first)
+    })
+}
+
 /// How many frames the allocator starts with: every whole frame of free
 /// memory above the first MiB.
 #[must_use]
@@ -199,6 +218,19 @@ pub fn waiting(out: &mut impl Write, period: Option<u32>) -> fmt::Result {
             "Timer: 100 interrupts a second, {p} APIC counts apart; the processor sleeps in between"
         ),
         None => writeln!(out, "Timer: none, so the uptime is kept by spinning"),
+    }
+}
+
+/// How many processors run the kernel: this one and `others`, of the
+/// `cores` the MADT lists.
+///
+/// # Errors
+///
+/// Those of `out`.
+pub fn running(out: &mut impl Write, cores: Option<u32>, others: u32) -> fmt::Result {
+    match cores {
+        Some(n) => writeln!(out, "Cores running: {} of {n}", others + 1),
+        None => writeln!(out, "Cores running: 1, as the MADT is missing"),
     }
 }
 
@@ -359,6 +391,45 @@ mod tests {
     }
 
     #[test]
+    fn the_trampoline_goes_low_but_not_to_page_0() {
+        assert_eq!(
+            trampoline_home(&sample()),
+            Some(0x1000),
+            "page 0 is skipped"
+        );
+        let pages = |start, pages| region(start, pages, RegionKind::USABLE);
+        assert_eq!(
+            trampoline_home(&[pages(0x8000, 4)]),
+            Some(0x8000),
+            "exactly four pages"
+        );
+        assert_eq!(trampoline_home(&[pages(0x8000, 3)]), None);
+        assert_eq!(
+            trampoline_home(&[pages(0x8800, 5)]),
+            Some(0x9000),
+            "on a page"
+        );
+        assert_eq!(
+            trampoline_home(&[pages(0x9c000, 8)]),
+            Some(0x9c000),
+            "up to 640 KiB"
+        );
+        assert_eq!(trampoline_home(&[pages(0x9d000, 8)]), None, "past it");
+        assert_eq!(
+            trampoline_home(&[pages(0x10_0000, 64)]),
+            None,
+            "above 1 MiB"
+        );
+        assert_eq!(
+            trampoline_home(&[region(0x8000, 8, RegionKind::KERNEL), pages(0x20000, 4)]),
+            Some(0x20000),
+            "free memory only"
+        );
+        assert_eq!(trampoline_home(&[pages(0, 5)]), Some(0x1000));
+        assert_eq!(trampoline_home(&[pages(0, 4)]), None, "page 0 leaves three");
+    }
+
+    #[test]
     fn the_back_buffer_is_one_frame_in_kernel_memory() {
         let r = sample();
         let with = |at: u64, width: u32, height: u32| {
@@ -462,6 +533,19 @@ mod tests {
             out,
             "kernel: there is no room for the frame allocator or the heap\n"
         );
+    }
+
+    #[test]
+    fn how_many_cores_run() {
+        let mut out = String::new();
+        running(&mut out, Some(4), 3).unwrap();
+        assert_eq!(out, "Cores running: 4 of 4\n");
+        out.clear();
+        running(&mut out, Some(12), 0).unwrap();
+        assert_eq!(out, "Cores running: 1 of 12\n");
+        out.clear();
+        running(&mut out, None, 0).unwrap();
+        assert_eq!(out, "Cores running: 1, as the MADT is missing\n");
     }
 
     #[test]

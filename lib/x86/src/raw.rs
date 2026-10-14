@@ -161,6 +161,15 @@ pub fn enable_no_execute() -> bool {
     supported
 }
 
+/// The physical address of the page table root, with its flags.
+#[must_use]
+pub fn read_cr3() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR3 changes nothing.
+    unsafe { asm!("mov {}, cr3", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    value
+}
+
 #[must_use]
 pub fn read_cr0() -> u64 {
     let value: u64;
@@ -524,6 +533,21 @@ pub fn read_apic(register: u32) -> u64 {
     unsafe { read_msr(register) }
 }
 
+/// Waits until `done` says so or the time stamp counter has moved on by
+/// `cycles`, and returns whether `done` said so.
+pub fn wait_for(cycles: u64, done: impl Fn() -> bool) -> bool {
+    let begin = tsc();
+    loop {
+        if done() {
+            return true;
+        }
+        if tsc() - begin >= cycles {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Waits until the time stamp counter has moved on by `cycles`.
 pub fn spin(cycles: u64) {
     let begin = tsc();
@@ -542,6 +566,38 @@ pub fn apic_timer_count() -> u32 {
     // changes nothing.
     let count = unsafe { read_msr(apic::TIMER_CURRENT) };
     u32::try_from(count & 0xffff_ffff).unwrap_or(0)
+}
+
+/// This processor's APIC id, once the x2APIC is on.
+#[must_use]
+pub fn apic_id() -> Option<u32> {
+    if !X2APIC_ON.load(Ordering::Acquire) {
+        return None;
+    }
+    // SAFETY: the x2APIC is on, so the register exists; reading it
+    // changes nothing.
+    u32::try_from(unsafe { read_msr(apic::ID) }).ok()
+}
+
+/// Sends INIT to the processor whose APIC id is `id`, which stops it.
+///
+/// # Safety
+///
+/// `id` must name another processor that runs nothing the system needs,
+/// as one that has waited since the firmware started this one does.
+pub unsafe fn send_init(id: u32) {
+    write_apic(apic::COMMAND, apic::init(id));
+}
+
+/// Starts the processor whose APIC id is `id`, after [`send_init`], in
+/// real mode at the start of `page`.
+///
+/// # Safety
+///
+/// As for [`send_init`], and `page` must hold code that brings that
+/// processor somewhere safe.
+pub unsafe fn send_startup(id: u32, page: u8) {
+    write_apic(apic::COMMAND, apic::startup(id, page));
 }
 
 /// Tells the APIC the interrupt it delivered last is handled.

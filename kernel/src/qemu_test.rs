@@ -293,6 +293,22 @@ fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
 
 fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
     report.check(
+        "kernel.smp.running",
+        machine
+            .cores
+            .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1)),
+        "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables",
+    );
+    // Each one waits 10 ms after its INIT and twice 0.2 ms after its
+    // startups, and no longer when it starts at once.
+    report.check(
+        "kernel.smp.quick",
+        tsc_hz.is_some_and(|hz| {
+            raw::smp::took() < hz / 1000 * 15 * u64::from(machine.cores.unwrap_or(1))
+        }),
+        "starting the other cores should not wait out the time a core that never starts gets",
+    );
+    report.check(
         "kernel.acpi.cores",
         machine.cores.is_some_and(|n| n >= 1),
         "the MADT should list at least the processor the kernel runs on",
@@ -345,6 +361,14 @@ pub fn before_drawing(screen: Option<&Canvas<'_>>) {
 
 static BOOT_SCREEN_KEPT: AtomicBool = AtomicBool::new(false);
 
+/// Notes whether the APIC is still as OVMF left it, before starting the
+/// other cores turns it on.
+pub fn before_cores() {
+    APIC_OFF_BEFORE.store(x86::qemu_test::apic_is_off(), Ordering::Release);
+}
+
+static APIC_OFF_BEFORE: AtomicBool = AtomicBool::new(false);
+
 fn handover_screen_checks<W: Write>(
     report: &mut Report<'_, W>,
     info: &BootInfo,
@@ -390,6 +414,11 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
     use x86::apic;
     use x86::raw::read_apic;
 
+    report.check(
+        "x86.apic.off_before",
+        APIC_OFF_BEFORE.load(Ordering::Acquire),
+        "OVMF leaves the APIC in xAPIC mode, and nothing reaches its x2APIC registers before",
+    );
     x86::qemu_test::apic(&mut |name, ok, why| report.check(name, ok, why));
     let tenth = tsc_hz.unwrap_or(0) / 10;
     let period = timer::start(tsc_hz);

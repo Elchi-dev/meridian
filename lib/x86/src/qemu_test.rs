@@ -202,10 +202,21 @@ pub fn tables(interrupts: &[u8], check: &mut impl FnMut(&str, bool, &str)) {
     );
 }
 
+/// Whether the APIC is as OVMF leaves it: in xAPIC mode, with nothing
+/// reaching its x2APIC registers yet and interrupts off. The kernel's test
+/// image asks before it starts the other cores, which turns it on.
+#[must_use]
+pub fn apic_is_off() -> bool {
+    !raw::x2apic_enabled()
+        && raw::apic_timer_count() == 0
+        && raw::read_apic(crate::apic::SPURIOUS) == 0
+        && !raw::interrupts_enabled()
+}
+
 /// The x2APIC and its timer, from the kernel's test image with interrupts
 /// off and before the kernel starts the timer itself: spinning, the APIC
-/// off at first and then in x2APIC mode, its timer counting down without
-/// an interrupt, set up for one, and stopped, and the spurious vector.
+/// in x2APIC mode, its timer counting down without an interrupt, set up
+/// for one, and stopped, and the spurious vector.
 pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
     use crate::apic::{LVT_TIMER, MASKED, SPURIOUS, TIMER_INITIAL, periodic, spurious};
     use raw::{apic_timer_count, read_apic};
@@ -217,13 +228,40 @@ pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
         raw::tsc() - begin >= 1_000_000,
         "spinning should last at least as many counter cycles as asked",
     );
+    let polls = core::cell::Cell::new(0u32);
+    let begin = raw::tsc();
+    let soon = raw::wait_for(u64::MAX, || {
+        polls.set(polls.get() + 1);
+        polls.get() == 5
+    });
+    let quick = raw::tsc() - begin;
+    let begin = raw::tsc();
+    let never = raw::wait_for(1_000_000, || false);
+    let waited = raw::tsc() - begin;
     check(
-        "x86.apic.off_before",
-        !raw::x2apic_enabled()
-            && apic_timer_count() == 0
-            && read_apic(SPURIOUS) == 0
-            && !raw::interrupts_enabled(),
-        "OVMF leaves the APIC in xAPIC mode, and nothing reaches its x2APIC registers before",
+        "x86.wait_for",
+        soon && polls.get() == 5
+            && quick < 1_000_000
+            && !never
+            && (1_000_000..10_000_000).contains(&waited)
+            && raw::wait_for(0, || true),
+        "waiting should end when the condition holds, or give up once the time is up",
+    );
+    // CPUID leaf 0xB gives the x2APIC id in EDX, leaf 1 the low 8 bits
+    // of it in the top byte of EBX.
+    let leaf_b = (raw::cpuid(0)[0] >= 0xb).then(|| raw::cpuid(0xb)[3]);
+    let low = raw::cpuid(1)[1] >> 24;
+    let id = raw::apic_id();
+    check(
+        "x86.apic.id",
+        id.is_some_and(|id| id & 0xff == low && leaf_b.is_none_or(|b| b == id)),
+        "the x2APIC id should be the one CPUID reports for this processor",
+    );
+    let cr3 = raw::read_cr3();
+    check(
+        "x86.cr3",
+        cr3 != 0 && cr3.is_multiple_of(4096) && cr3 >> 52 == 0,
+        "the page table root should be a page address, with no flags and no context id",
     );
     check(
         "x86.apic.x2apic",

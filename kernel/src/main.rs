@@ -36,6 +36,11 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
         .pm_timer
         .and_then(|(port, bits)| machine::calibrate(|| raw::pm_timer(port), bits, x86::raw::tsc));
     let _ = kernel::describe(serial, &machine, tsc_hz);
+    #[cfg(feature = "qemu-test")]
+    qemu_test::before_cores();
+    let memory = raw::DirectMap(regions);
+    let others = raw::smp::start_others(regions, machine::madt(&memory, info.rsdp), tsc_hz);
+    let _ = kernel::running(serial, machine.cores, others);
     let screen = raw::screen(&info.framebuffer);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_drawing(screen.as_ref());

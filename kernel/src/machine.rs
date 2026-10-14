@@ -20,16 +20,21 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
     let Ok(xsdt) = acpi::xsdt_address(memory, rsdp) else {
         return Machine::default();
     };
-    let cores = acpi::find(memory, xsdt, b"APIC")
-        .and_then(|at| acpi::table(memory, at, b"APIC"))
-        .and_then(acpi::processors)
-        .ok()
+    let cores = madt(memory, rsdp)
+        .and_then(|t| acpi::processors(t).ok())
         .map(|p| p.usable);
     let pm_timer = acpi::find(memory, xsdt, b"FACP")
         .and_then(|at| acpi::table(memory, at, b"FACP"))
         .ok()
         .and_then(|fadt| Some((acpi::pm_timer_port(fadt)?, acpi::pm_timer_bits(fadt))));
     Machine { cores, pm_timer }
+}
+
+/// The MADT, which lists the processors, when the ACPI tables have one.
+pub fn madt(memory: &impl Memory, rsdp: u64) -> Option<&[u8]> {
+    let xsdt = acpi::xsdt_address(memory, rsdp).ok()?;
+    let at = acpi::find(memory, xsdt, b"APIC").ok()?;
+    acpi::table(memory, at, b"APIC").ok()
 }
 
 /// The most times the timer is read while waiting for 10 ms to pass; a

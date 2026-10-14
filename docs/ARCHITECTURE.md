@@ -101,6 +101,7 @@ meridian/
   lib/paging/      x86_64 page tables                                exists
   lib/x86/         serial port and CPU instructions                  exists
   lib/font/        TrueType parser and rasterizer                    exists
+  lib/meri/        .meri reader that needs no heap                   exists
   lib/...          more no_std crates for kernel and userland        planned
   user/            init, shell, command-line tools, terminal, apps   planned
   win32/           PE loader, ntdll, kernel32, user32, gdi32 ...     planned

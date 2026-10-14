@@ -787,6 +787,48 @@ mod tests {
         assert!(penalty(&code) >= 40, "a finder lookalike costs 40");
     }
 
+    #[test]
+    fn a_finder_lookalike_counts_at_either_end_of_a_line() {
+        let lookalike = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0];
+        let score = |at: &dyn Fn(usize) -> (usize, usize)| {
+            let mut code = Code::new();
+            code.size = 21;
+            for y in 0..21 {
+                for x in 0..21 {
+                    code.set(x, y, (x + y) % 2 == 0);
+                }
+            }
+            for (i, &d) in lookalike.iter().enumerate() {
+                let (x, y) = at(i);
+                code.set(x, y, d == 1);
+            }
+            penalty(&code)
+        };
+        // The checkerboard looks the same mirrored or turned, so each of
+        // these is the first one seen from another side.
+        let first = score(&|i| (i, 10));
+        assert!(first >= 40);
+        assert_eq!(score(&|i| (20 - i, 10)), first, "at the end of a row");
+        assert_eq!(score(&|i| (10, i)), first, "at the top of a column");
+        assert_eq!(score(&|i| (10, 20 - i)), first, "at the bottom of a column");
+    }
+
+    #[test]
+    fn nothing_is_drawn_outside_the_code() {
+        let mut code = Code::new();
+        for len in [0, 100, 1000, 2953] {
+            encode(&vec![0x5a; len], Ecc::Low, &mut code).unwrap();
+            let inside = code.size * code.size;
+            for at in inside..WORDS * 64 {
+                assert!(
+                    !get(&code.dark, at) && !get(&code.function, at),
+                    "version {}: bit {at} past the last module",
+                    code.version
+                );
+            }
+        }
+    }
+
     fn require_tool(name: &str) -> bool {
         if Command::new(name).arg("--version").output().is_ok() {
             return true;

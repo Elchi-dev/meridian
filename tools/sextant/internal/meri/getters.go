@@ -46,17 +46,17 @@ func wrongType(key string, it Item, want string) *Error {
 	return errorAt(it.Pos, CodeWrongType, "%s must be %s, found %s", key, want, found)
 }
 
-// value returns the entry's value, or a wrong-type error pointing at the
-// block when the name belongs to blocks.
-func (b *Block) value(key, want string) (Value, bool, *Error) {
+// value returns the entry's value, nil when there is no entry, and a
+// wrong-type error pointing at the block when the name belongs to blocks.
+func (b *Block) value(key, want string) (*Value, *Error) {
 	it, ok := b.entry(key)
 	if !ok {
-		return Value{}, false, nil
+		return nil, nil
 	}
 	if it.Block != nil {
-		return Value{}, true, wrongType(key, it, want)
+		return nil, wrongType(key, it, want)
 	}
-	return it.Value, true, nil
+	return &it.Value, nil
 }
 
 func asText(v Value) (string, bool) {
@@ -82,31 +82,31 @@ func mismatch(key string, v Value, want string) *Error {
 
 // String accepts strings and words.
 func (b *Block) String(key, def string) (string, error) {
-	v, ok, err := b.value(key, wantText)
-	if err != nil || !ok {
+	v, err := b.value(key, wantText)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
-	if s, ok := asText(v); ok {
+	if s, ok := asText(*v); ok {
 		return s, nil
 	}
-	return def, mismatch(key, v, wantText)
+	return def, mismatch(key, *v, wantText)
 }
 
 func (b *Block) Int(key string, def int64) (int64, error) {
-	v, ok, err := b.value(key, wantInt)
-	if err != nil || !ok {
+	v, err := b.value(key, wantInt)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
 	if v.Kind != KindInt {
-		return def, mismatch(key, v, wantInt)
+		return def, mismatch(key, *v, wantInt)
 	}
 	return v.Int, nil
 }
 
 // Float accepts integers too.
 func (b *Block) Float(key string, def float64) (float64, error) {
-	v, ok, err := b.value(key, wantFloat)
-	if err != nil || !ok {
+	v, err := b.value(key, wantFloat)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
 	switch v.Kind {
@@ -115,28 +115,28 @@ func (b *Block) Float(key string, def float64) (float64, error) {
 	case KindInt:
 		return float64(v.Int), nil
 	}
-	return def, mismatch(key, v, wantFloat)
+	return def, mismatch(key, *v, wantFloat)
 }
 
 func (b *Block) Bool(key string, def bool) (bool, error) {
-	v, ok, err := b.value(key, wantBool)
-	if err != nil || !ok {
+	v, err := b.value(key, wantBool)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
 	if v.Kind != KindBool {
-		return def, mismatch(key, v, wantBool)
+		return def, mismatch(key, *v, wantBool)
 	}
 	return v.Bool, nil
 }
 
 // Strings returns a list whose items are all strings or words.
 func (b *Block) Strings(key string, def []string) ([]string, error) {
-	v, ok, err := b.value(key, wantTexts)
-	if err != nil || !ok {
+	v, err := b.value(key, wantTexts)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
 	if v.Kind != KindList {
-		return def, mismatch(key, v, wantTexts)
+		return def, mismatch(key, *v, wantTexts)
 	}
 	out := make([]string, 0, len(v.List))
 	for i, e := range v.List {
@@ -171,38 +171,46 @@ var durationUnits = map[string]int64{
 	"d":   int64(24 * time.Hour),
 }
 
-// scaled multiplies a quantity's number by a unit's factor exactly and
-// reports whether the result is a whole number and whether it fits 64 bits.
-func scaled(num string, factor int64) (n int64, whole, fits bool) {
+// scaling says how exactly a quantity turned into a whole number.
+type scaling int
+
+const (
+	exact scaling = iota
+	notWhole
+	tooLarge
+)
+
+// scaled multiplies a quantity's number by a unit's factor exactly.
+func scaled(num string, factor int64) (int64, scaling) {
 	r, ok := new(big.Rat).SetString(num)
 	if !ok {
-		return 0, false, false
+		return 0, notWhole
 	}
 	r.Mul(r, new(big.Rat).SetInt64(factor))
 	if !r.IsInt() {
-		return 0, false, false
+		return 0, notWhole
 	}
 	if !r.Num().IsInt64() {
-		return 0, true, false
+		return 0, tooLarge
 	}
-	return r.Num().Int64(), true, true
+	return r.Num().Int64(), exact
 }
 
 // Size returns a size in bytes. The result is exact: 1.5KiB is 1536.
 func (b *Block) Size(key string, def int64) (int64, error) {
-	v, ok, err := b.value(key, wantSize)
-	if err != nil || !ok {
+	v, err := b.value(key, wantSize)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
 	factor, known := sizeUnits[v.Unit]
 	if v.Kind != KindQuantity || !known {
-		return def, mismatch(key, v, wantSize)
+		return def, mismatch(key, *v, wantSize)
 	}
-	n, whole, fits := scaled(v.Num, factor)
+	n, how := scaled(v.Num, factor)
 	switch {
-	case !whole:
+	case how == notWhole:
 		return def, errorAt(v.Pos, CodeOutOfRange, "%s must be a whole number of bytes, and %s%s is not", key, v.Num, v.Unit)
-	case !fits:
+	case how == tooLarge:
 		return def, errorAt(v.Pos, CodeOutOfRange, "%s is too large; sizes must fit in 64 bits", key)
 	case n < 0:
 		return def, errorAt(v.Pos, CodeOutOfRange, "%s cannot be negative", key)
@@ -212,19 +220,19 @@ func (b *Block) Size(key string, def int64) (int64, error) {
 
 // Duration returns a duration. Negative durations are allowed.
 func (b *Block) Duration(key string, def time.Duration) (time.Duration, error) {
-	v, ok, err := b.value(key, wantDuration)
-	if err != nil || !ok {
+	v, err := b.value(key, wantDuration)
+	if v == nil {
 		return def, nilIfEmpty(err)
 	}
 	factor, known := durationUnits[v.Unit]
 	if v.Kind != KindQuantity || !known {
-		return def, mismatch(key, v, wantDuration)
+		return def, mismatch(key, *v, wantDuration)
 	}
-	n, whole, fits := scaled(v.Num, factor)
+	n, how := scaled(v.Num, factor)
 	switch {
-	case !whole:
+	case how == notWhole:
 		return def, errorAt(v.Pos, CodeOutOfRange, "%s must be a whole number of nanoseconds, and %s%s is not", key, v.Num, v.Unit)
-	case !fits:
+	case how == tooLarge:
 		return def, errorAt(v.Pos, CodeOutOfRange, "%s is too long; durations must fit in 64 bits of nanoseconds", key)
 	}
 	return time.Duration(n), nil

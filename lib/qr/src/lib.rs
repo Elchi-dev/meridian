@@ -143,7 +143,7 @@ fn put(bits: &mut [u64], at: usize, on: bool) {
 /// [`Error::TooLong`] when no version holds the data.
 pub fn encode(data: &[u8], ecc: Ecc, code: &mut Code) -> Result<(), Error> {
     let version = (1..=40)
-        .find(|&v| bits_needed(data.len(), v) <= data_codewords(v, ecc) * 8)
+        .find(|&v| bits_needed(data.len(), v).div_ceil(8) <= data_codewords(v, ecc))
         .ok_or(Error::TooLong)?;
     let mut words = [0u8; MAX_CODEWORDS];
     let data_len = data_codewords(version, ecc);
@@ -220,8 +220,8 @@ fn fill_data(data: &[u8], version: u8, out: &mut [u8]) {
     }
     let capacity = bits.out.len() * 8;
     // In byte mode the bits so far always end 4 short of a whole byte, so
-    // the 4 bit terminator and the zeros up to the byte are the same thing.
-    bits.push(0, (8 - bits.len % 8) % 8);
+    // the 4 bit terminator also fills it up.
+    bits.push(0, 4);
     for pad in [0xec, 0x11].into_iter().cycle() {
         if bits.len == capacity {
             break;
@@ -457,7 +457,7 @@ fn place(code: &mut Code, words: &[u8]) {
                 }
             }
         }
-        if right < 2 {
+        if right == 1 {
             break;
         }
         right -= 2;
@@ -511,10 +511,10 @@ fn penalty(code: &Code) -> u32 {
                 } else {
                     run = 1;
                 }
-                if run == 5 {
-                    score += 3;
-                } else if run > 5 {
-                    score += 1;
+                match run {
+                    5 => score += 3,
+                    6.. => score += 1,
+                    _ => {}
                 }
                 if i + 11 <= size {
                     let window = (0..11).fold(0u32, |acc, k| acc << 1 | u32::from(at(i + k)));

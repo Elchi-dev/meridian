@@ -817,6 +817,141 @@ fn append_to_boot_order(system: &System, numbers: &[u16]) -> Result<(), uefi::St
     system.set_variable(&BOOT_ORDER, &GLOBAL_VARIABLE, lasting, &order[..listed])
 }
 
+/// Where the Go test of enrolling a key puts the write for each Secure
+/// Boot database, in the order the writes have to be made, with the name
+/// of the check for each.
+const KEY_FILES: [(&str, &[u16], &uefi::Guid, &str); 3] = [
+    (
+        "/meridian/keys/db.auth",
+        &uefi::variable::ALLOWED,
+        &uefi::guid::IMAGE_SECURITY_DATABASE,
+        "boot.enroll.db",
+    ),
+    (
+        "/meridian/keys/KEK.auth",
+        &uefi::variable::KEY_EXCHANGE_KEY,
+        &uefi::guid::GLOBAL_VARIABLE,
+        "boot.enroll.kek",
+    ),
+    (
+        "/meridian/keys/PK.auth",
+        &uefi::variable::PLATFORM_KEY,
+        &uefi::guid::GLOBAL_VARIABLE,
+        "boot.enroll.pk",
+    ),
+];
+/// Copies of the loader the Go test leaves unsigned, and signs with a key
+/// nobody enrolled.
+const UNSIGNED_COPY: &str = "/EFI/unsigned/tool.efi";
+const FOREIGN_COPY: &str = "/EFI/foreign/tool.efi";
+
+/// When the partition carries the writes of the Go test of enrolling a
+/// key: in Setup Mode it makes them and restarts; after that, with Secure
+/// Boot on, it checks that the firmware refuses a program the key did not
+/// sign and starts one it did, and ends the run. Without them it does
+/// nothing.
+pub fn enrollment(system: &System, serial: &mut impl Write) {
+    let Ok(root) = system.boot_volume() else {
+        return;
+    };
+    if root.open(KEY_FILES[2].0).is_err() {
+        return;
+    }
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    if flag(system, &uefi::variable::SETUP_MODE) == Some(1) {
+        enroll(system, &root, &mut report);
+    } else {
+        enforced(system, &mut report);
+    }
+}
+
+/// A one byte global variable such as `SetupMode`.
+fn flag(system: &System, name: &[u16]) -> Option<u8> {
+    let mut one = [0u8; 1];
+    system
+        .variable(name, &uefi::guid::GLOBAL_VARIABLE, &mut one)
+        .ok()
+        .and_then(|(_, data)| data.first().copied())
+}
+
+fn enroll<W: Write>(system: &System, root: &uefi::raw::file::File<'_>, report: &mut Serial<'_, W>) {
+    use uefi::qemu_test::Report;
+    use uefi::variable::Attributes;
+
+    let attributes = Attributes::NON_VOLATILE
+        .with(Attributes::BOOTSERVICE_ACCESS)
+        .with(Attributes::RUNTIME_ACCESS)
+        .with(Attributes::TIME_BASED_AUTHENTICATED_WRITE_ACCESS);
+    for (file, name, vendor, check) in KEY_FILES {
+        let mut data = [0u8; 4096];
+        let written = root
+            .open(file)
+            .and_then(|mut f| f.read_all(&mut data))
+            .and_then(|n| system.set_variable(name, vendor, attributes, &data[..n]));
+        report.check(
+            check,
+            written.is_ok(),
+            "the firmware should take the signed write while in Setup Mode",
+        );
+    }
+    report.check(
+        "boot.enroll.user_mode",
+        flag(system, &uefi::variable::SETUP_MODE) == Some(0),
+        "writing the platform key should end Setup Mode",
+    );
+    stop_on_failure(report);
+    let status = system.reset(uefi::raw::table::ResetType::COLD);
+    report.check(
+        "boot.enroll.restart",
+        false,
+        "the machine should restart to turn Secure Boot on",
+    );
+    let _ = writeln!(report.out, "the restart came back with {status}");
+    stop_on_failure(report);
+}
+
+fn enforced<W: Write>(system: &System, report: &mut Serial<'_, W>) {
+    use uefi::Status;
+    use uefi::qemu_test::Report;
+
+    report.check(
+        "boot.enroll.secure_boot",
+        flag(system, &uefi::variable::SECURE_BOOT) == Some(1)
+            && flag(system, &uefi::variable::SETUP_MODE) == Some(0),
+        "after the restart Secure Boot should be on, with the key enrolled",
+    );
+    let refused = |file| {
+        matches!(
+            system.load_image(file).err(),
+            Some(Status::ACCESS_DENIED | Status::SECURITY_VIOLATION)
+        )
+    };
+    report.check(
+        "boot.enroll.unsigned_refused",
+        refused(UNSIGNED_COPY),
+        "the firmware should refuse a copy of the loader nobody signed",
+    );
+    report.check(
+        "boot.enroll.foreign_refused",
+        refused(FOREIGN_COPY),
+        "the firmware should refuse a copy signed with a key it does not know",
+    );
+    let started = system.load_image(boot::LOADER_PATH).and_then(|mut image| {
+        image.set_options(&CHAIN_OPTIONS)?;
+        Ok(image.start())
+    });
+    report.check(
+        "boot.enroll.signed_started",
+        started == Ok(CHAINED),
+        "the loader, signed with the enrolled key, should start again under Secure Boot",
+    );
+    let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
+    x86::raw::qemu_exit(report.failed == 0);
+}
+
 /// What the loader's copy returns when it was started as a test.
 pub const CHAINED: uefi::Status = uefi::Status::ABORTED;
 

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/authenticode"
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/disk/gpt"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/image"
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/secureboot"
 )
 
 // Ubuntu's and Debian's OVMF ship a Secure Boot build with a template
@@ -103,6 +105,80 @@ func TestSecureBootRefusesOtherLoaders(t *testing.T) {
 		res := secureBoot(t, r, loader, "Access Denied")
 		if res.StepsDone != 1 || strings.Contains(res.Serial, "Meridian boot") {
 			t.Errorf("%s: steps %d\n%s", name, res.StepsDone, res.Serial)
+		}
+	}
+}
+
+// OVMF built with Secure Boot and a variable store without keys, where
+// the distributions put them: the firmware starts in Setup Mode.
+var blankSecureBoot = []Firmware{
+	{Code: "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", Vars: "/usr/share/OVMF/OVMF_VARS_4M.fd"},
+	{Code: "/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd", Vars: "/usr/share/edk2/x64/OVMF_VARS.4m.fd"},
+	{Code: "/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd", Vars: "/usr/share/edk2/ovmf/OVMF_VARS.fd"},
+}
+
+// The test image enrolls a key of Meridian's own from Setup Mode, with
+// the writes sextant makes, and restarts. With Secure Boot then on, the
+// firmware starts the loader signed with that key, and the loader sees
+// the firmware refuse a copy of itself unsigned or signed with another
+// key, and start one signed with the enrolled key.
+// No distribution's key or template is involved.
+func TestMeridiansOwnKeyIsEnrolledAndEnforced(t *testing.T) {
+	r := newRig(t)
+	var fw Firmware
+	for _, f := range blankSecureBoot {
+		if FileExists(f.Code) && FileExists(f.Vars) {
+			fw = f
+			break
+		}
+	}
+	need(t, fw.Code != "", "OVMF built with Secure Boot, with a blank variable store")
+	signer, err := authenticode.NewSigner("Meridian test key", time.Unix(1_760_000_000, 0), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := bootFiles(t, true)
+	unsigned := files[image.LoaderPath]
+	signed, err := authenticode.Sign(unsigned, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := authenticode.NewSigner("Meridian key nobody enrolled", time.Unix(1_760_000_000, 0), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := authenticode.Sign(unsigned, stranger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files[image.LoaderPath] = signed
+	files["EFI/unsigned/tool.efi"] = unsigned
+	files["EFI/foreign/tool.efi"] = foreign
+	owner, err := gpt.ParseGUID("0E6F5E4C-2A33-4B8C-9C0D-5D2E8E1A7F31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes, err := secureboot.Enroll(signer, owner, time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range secureboot.Databases {
+		files["meridian/keys/"+v.Name+".auth"] = writes[i]
+	}
+	m := r.machine(diskWithFiles(t, files))
+	m.SecureBoot = true
+	m.Firmware = fw
+	m.Reboot = true
+	res, err := Run(context.Background(), m, reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true}))
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, res.Serial)
+	}
+	if err := ParseReport(res.Serial).Verdict(res.ExitCode, res.TimedOut, LastLine(res.Serial)); err != nil {
+		t.Fatalf("%v\n%s", err, res.Serial)
+	}
+	for _, name := range []string{"db", "kek", "pk", "user_mode", "secure_boot", "unsigned_refused", "foreign_refused", "signed_started"} {
+		if !strings.Contains(res.Serial, "TEST boot.enroll."+name+" ok") {
+			t.Errorf("no boot.enroll.%s in:\n%s", name, res.Serial)
 		}
 	}
 }

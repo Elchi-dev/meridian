@@ -28,6 +28,7 @@ at 0.x until the native API is stable.
   - Every image carries a loader signed with Authenticode, by the key `sign.key` names or by a development key sextant makes once per machine. Every image also carries a `boot.meri` with the defaults written out.
   - `mutate`, which changes Go and Rust code one mutant at a time in private copies of the repository and runs the tests on each, so tests that cannot fail are found. A mutant in a crate with QEMU checks that its host tests miss is tried on real firmware too. Known equivalent mutants are listed with a reason in `mutants.meri`.
   - On an ISO, files whose names ISO 9660 cannot hold are only on the EFI system partition inside it, which is all the firmware reads.
+  - The writes that enroll a key in a firmware's Secure Boot databases from Setup Mode: db, KEK and PK as authenticated variables, signed with a detached PKCS #7 signature.
 - **`lib/uefi`**
   - Status codes with their names and plain-English meanings.
   - GUIDs, the memory map reader, and the UCS-2 console encoder.
@@ -68,7 +69,7 @@ at 0.x until the native API is stable.
 
 - **Test lines.** 28131 lines of tests for 15523 lines of code, a ratio of 1.81, and every component at 1.5 or more.
 - **sextant.** All tests pass with the race detector, at 6944 lines of code and 12558 lines of tests, a ratio of 1.80, on Linux, macOS and Windows.
-- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest.
+- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest. OVMF in Setup Mode takes Meridian's own key through the authenticated variable writes sextant makes, refuses a write whose signature was changed, and afterwards starts only what that key signed.
 - **`lib/uefi`.** 108 host tests pass at a ratio of 1.60. Every field offset of the firmware tables is checked against the specification.
 - **Mutation testing.** A run over every Rust crate, 1957 mutants with the QEMU checks for `boot`, `kernel`, `lib/uefi` and `lib/x86`, leaves none surviving. Each survivor along the way got a test, or simpler code with nothing equivalent left to change. sextant has no surviving mutant either; a full run of it takes about an hour and a half. Ten equivalent mutants, eight in Rust and two in Go, are listed in `mutants.meri` with the reason each cannot change behaviour.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.

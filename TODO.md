@@ -65,7 +65,7 @@ Loader and UEFI:
 - [x] Authenticode signer in sextant; development keys per machine
 - [ ] The release key as a CI secret, which Samuel adds
 - [x] Secure Boot test in QEMU with OVMF's Secure Boot build and enrolled keys (Ubuntu's snakeoil test key)
-- [ ] Enroll Meridian's own development key into a test variable store, so the Secure Boot test needs no distribution's template
+- [x] Enroll Meridian's own development key into a test variable store, so the Secure Boot test needs no distribution's template
 - [x] Memory regions for the handover (`lib/bootinfo`)
 - [x] Kernel ELF loading (`lib/elf`), higher-half page tables (`lib/paging`), the handover structure, the jump
 - [x] Framebuffer in the handover

@@ -104,7 +104,11 @@ func (s *session) writeImage(ctx context.Context, v variant, loader, kernel, out
 		return err
 	}
 	seed, when := s.identity(ctx)
-	contents := image.Contents{Seed: seed, Time: when, Files: image.BootFiles(loaderData, kernelData)}
+	files := image.BootFiles(loaderData, kernelData)
+	if v.testMode {
+		files = image.TestFiles(loaderData, kernelData)
+	}
+	contents := image.Contents{Seed: seed, Time: when, Files: files}
 	if v.iso {
 		return image.ISO(out, contents)
 	}

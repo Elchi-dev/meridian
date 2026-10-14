@@ -61,6 +61,16 @@ func TestBootFilesGoWhereFirmwareAndLoaderLook(t *testing.T) {
 	}
 }
 
+func TestTestImagesCarryAnExampleSystem(t *testing.T) {
+	got := TestFiles([]byte("efi"), []byte("elf"))
+	if len(got) != 3 || string(got["EFI/example/grubx64.efi"]) != "efi" || string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" {
+		t.Fatalf("got %v", got)
+	}
+	if len(BootFiles([]byte("efi"), []byte("elf"))) != 2 {
+		t.Fatal("plain images carry no example")
+	}
+}
+
 // The loader is written in Rust, so this reads its source to make sure it
 // looks for the kernel where BootFiles puts it.
 func TestTheLoaderLooksWhereTheKernelGoes(t *testing.T) {

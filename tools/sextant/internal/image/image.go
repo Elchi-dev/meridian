@@ -43,6 +43,18 @@ func BootFiles(loader, kernel []byte) map[string][]byte {
 	return map[string][]byte{LoaderPath: loader, KernelPath: kernel}
 }
 
+// ExamplePath is where test images put a second copy of the loader, for
+// the boot screen to find as another system and start.
+const ExamplePath = "EFI/example/grubx64.efi"
+
+// TestFiles are the files of a test image: the boot files, and the
+// loader once more as an example of another system.
+func TestFiles(loader, kernel []byte) map[string][]byte {
+	files := BootFiles(loader, kernel)
+	files[ExamplePath] = loader
+	return files
+}
+
 // fatEpoch is the earliest time FAT can store. Reproducible builds often
 // set SOURCE_DATE_EPOCH to 0 or 1, which FAT cannot represent.
 var fatEpoch = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)

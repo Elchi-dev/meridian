@@ -97,6 +97,9 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 		}
 		return data
 	}
+	if qemuTest {
+		return image.TestFiles(read(cargo.Loader), read(cargo.Kernel))
+	}
 	return image.BootFiles(read(cargo.Loader), read(cargo.Kernel))
 }
 
@@ -495,7 +498,8 @@ func openScreen(t *testing.T, path string) (int, int, func(x, y int) [3]uint32) 
 }
 
 // checkBootScreen looks at the loader's boot screen: dark all round, and
-// the one card in the middle, chosen, with its orange tile.
+// two cards in the middle, Meridian first and chosen, with its orange
+// tile, and the example system next to it with a green one.
 func checkBootScreen(t *testing.T, path string) {
 	t.Helper()
 	w, h, rgb := openScreen(t, path)
@@ -505,11 +509,14 @@ func checkBootScreen(t *testing.T, path string) {
 			t.Errorf("pixel %v is %x, want the dark background", at, got)
 		}
 	}
-	// The card is 200 by 230 in the middle; its tile starts 36 below its
-	// top and is 96 wide.
-	tileX, tileY := (w-200)/2+52+2, (h-230)/2+36+2
-	if got := rgb(tileX, tileY); got != tangerine {
-		t.Errorf("the tile's corner is %x, want tangerine", got)
+	// Two cards of 200 by 230, 32 apart, in the middle; each tile starts
+	// 36 below its card's top, 52 in from its side.
+	left, tileY := (w-432)/2, (h-230)/2+36+2
+	if got := rgb(left+52+2, tileY); got != tangerine {
+		t.Errorf("Meridian's tile corner is %x, want tangerine", got)
+	}
+	if got := rgb(left+232+52+2, tileY); got != [3]uint32{0x33, 0xc6, 0x70} {
+		t.Errorf("the example's tile corner is %x, want grass green", got)
 	}
 }
 

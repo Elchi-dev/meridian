@@ -16,15 +16,18 @@ use core::mem::size_of;
 use boot::handover::{self, Layout, Problem};
 use boot::menu::{Action, Key, Menu};
 use boot::screen::{Card, Kind};
-use boot::{KERNEL_PATH, Out, banner, memory};
+use boot::{KERNEL_PATH, Out, banner, memory, systems};
 use bootinfo::{
     BootInfo, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, STACK_PAGES, STACK_TOP, Stack,
 };
+use canvas::Text;
 use canvas::{Canvas, Format, Scratch};
+use core::fmt::Write;
 use uefi::Status;
 use uefi::guid::ACPI_20_TABLE;
 use uefi::memory::{MemoryType, PAGE_BYTES, PAGE_SIZE};
 use uefi::raw::System;
+use uefi::raw::file::EntryBuffer;
 use uefi::raw::graphics::PixelFormat;
 use x86::Features;
 use x86::raw::Com1;
@@ -53,23 +56,118 @@ fn run(system: System, serial: &mut Com1) -> Status {
     #[cfg(feature = "qemu-test")]
     qemu_test::checks(&system, serial);
 
-    let cards = [Card {
+    let mut others: [Option<Other>; SYSTEM_LIMIT] = Default::default();
+    let found = find_systems(&system, &mut others);
+    let mut cards = [Card {
         kind: Kind::Meridian,
         name: "Meridian",
-    }];
+    }; SYSTEM_LIMIT + 1];
+    for (card, other) in cards[1..].iter_mut().zip(others.iter().flatten()) {
+        *card = Card {
+            kind: other.kind,
+            name: other.name.as_str(),
+        };
+    }
+    let cards = &cards[..=found];
     #[cfg(feature = "qemu-test")]
-    let chosen = choose(&system, &cards, 0, |frame, screen| {
-        qemu_test::boot_screen(&system, frame, screen, serial);
-    });
-    #[cfg(not(feature = "qemu-test"))]
-    let chosen = choose(&system, &cards, 3, |_, _| {});
-    let _ = chosen;
+    qemu_test::systems_found(cards, serial);
+
+    // Another system that comes back, or fails to start, brings the boot
+    // screen back.
+    let mut round = 0;
+    loop {
+        #[cfg(feature = "qemu-test")]
+        let chosen = choose(&system, cards, 0, |frame, screen| {
+            qemu_test::boot_screen(&system, round, frame, screen, serial);
+        });
+        #[cfg(not(feature = "qemu-test"))]
+        let chosen = choose(&system, cards, 3, |_, _| {});
+        let Some(other) = chosen.checked_sub(1).and_then(|i| others[i].as_ref()) else {
+            break;
+        };
+        let status = start_other(&system, other.path.as_str());
+        let _ = writeln!(
+            serial,
+            "boot: {} came back with {status}",
+            other.name.as_str()
+        );
+        #[cfg(feature = "qemu-test")]
+        qemu_test::other_came_back(status, serial);
+        round += 1;
+    }
+    let _ = round;
 
     let (system, problem) = match prepare(&system) {
         Ok(ready) => raw::start(system, ready),
         Err(problem) => (system, problem),
     };
     give_up(&system, &problem, serial)
+}
+
+/// The most other systems the boot screen offers.
+const SYSTEM_LIMIT: usize = 8;
+
+/// Another system found on the partition.
+struct Other {
+    kind: Kind,
+    name: Text<48>,
+    /// Its loader, from the root of the partition.
+    path: Text<160>,
+}
+
+/// Looks through the folders of \EFI for the loaders of other systems and
+/// returns how many it put into `found`.
+fn find_systems(system: &System, found: &mut [Option<Other>; SYSTEM_LIMIT]) -> usize {
+    let Ok(root) = system.boot_volume() else {
+        return 0;
+    };
+    let Ok(mut efi) = root.open("EFI") else {
+        return 0;
+    };
+    let mut buf: EntryBuffer = [0; size_of::<EntryBuffer>()];
+    let mut count = 0;
+    while count < SYSTEM_LIMIT {
+        let Ok(Some(entry)) = efi.next_entry(&mut buf) else {
+            break;
+        };
+        if !entry.info.directory {
+            continue;
+        }
+        let mut folder = Text::<64>::new();
+        for c in entry.name() {
+            let _ = folder.write_char(c);
+        }
+        let folder = folder.as_str();
+        let exists = |file: &str| {
+            let mut path = Text::<160>::new();
+            write!(path, "EFI/{folder}/{file}").is_ok() && root.open(path.as_str()).is_ok()
+        };
+        if let Some((kind, file)) = systems::classify(folder, exists) {
+            let mut name = Text::new();
+            let _ = name.write_str(systems::display_name(folder, kind));
+            let mut path = Text::new();
+            let _ = write!(path, "/EFI/{folder}/{file}");
+            found[count] = Some(Other { kind, name, path });
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Starts another system's loader and returns its status if it comes
+/// back. The test image hands it the options that make the loader's own
+/// copy return at once.
+fn start_other(system: &System, path: &str) -> Status {
+    let image = system.load_image(path);
+    #[cfg(feature = "qemu-test")]
+    let image = image.and_then(|mut image| {
+        image.set_options(qemu_test::chain_options())?;
+        Ok(image)
+    });
+    match image {
+        Ok(image) => image.start(),
+        Err(status) => status,
+    }
 }
 
 /// Shows the boot screen until a system is chosen, and returns its index.

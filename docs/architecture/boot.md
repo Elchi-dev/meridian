@@ -58,12 +58,26 @@ halting, the QEMU exit) in `src/raw.rs` (ADR 0008).
 ### The boot screen
 
 - **Look.** A graphical screen in the boot screens' fixed dark look, drawn into the GOP framebuffer with `lib/canvas` and Inter. The loader draws each frame off the screen and copies it whole, so nothing tears. Cards are solid with a 1 px border and a solid offset shadow; the chosen one gets a tangerine frame and shadow. Exists.
-- **The menu.** Systems appear as cards, each with a tile in its colour and the first letter of its name. Left and Right choose, Enter starts, a countdown of 3 seconds starts the chosen one, and any key stops it. When more systems are found than cards fit, the row follows the choice. Exists, with Meridian as the only card until other systems are found.
+- **The menu.** Systems appear as cards, each with a tile in its colour and the first letter of its name. Left and Right choose, Enter starts, a countdown of 3 seconds starts the chosen one, and any key stops it. When more systems are found than cards fit, the row follows the choice. Exists.
 - **Keys.** V shows the full log at any time (the transparency Samuel asked for: "full power if the user is sure he wants it"). F opens the firmware settings.
 - **Text.** A TrueType rasterizer written for Meridian, with grayscale anti-aliasing and no hinting. It is shared with the kernel and Horizon through a `lib/` crate. The font files (Inter and JetBrains Mono) are the only outside files, under one decision record.
 - **The Windows card** gets a W on a sky blue tile, not Microsoft's logo.
 
 ### Finding other systems
+
+What exists: the loader looks through every folder of `\EFI` except
+`BOOT` and `meridian` for the loaders it knows, best first: Windows Boot
+Manager (`Boot\bootmgfw.efi`), systemd-boot, a shim before GRUB (so the
+system keeps starting with Secure Boot on), and rEFInd. A folder named
+after a known distribution gets its name ("arch" shows as Arch Linux).
+Each one found gets a card behind Meridian's, and choosing it loads and
+starts that loader from the same partition through `LoadImage` and
+`StartImage`. If it comes back, the boot screen comes back. Test images
+carry a second copy of the loader as `\EFI\example\grubx64.efi`, which
+the test image finds, starts from the boot screen with Right and Enter,
+and sees come back.
+
+Still to come:
 
 - **The firmware's entries.** The firmware variables `BootOrder` and `Boot####` give the other systems the firmware knows about, with their descriptions and device paths.
 - **Scanning.** The EFI partition is also scanned for well-known loaders: `\EFI\Microsoft\Boot\bootmgfw.efi`, GRUB, systemd-boot.

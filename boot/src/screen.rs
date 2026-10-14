@@ -194,7 +194,11 @@ pub fn draw(
         let tile_x = x + (CARD_WIDTH - TILE) / 2;
         let tile_y = top + 36;
         canvas.fill_rect(at(tile_x), at(tile_y), TILE, TILE, card.kind.color());
-        let monogram = card.name.chars().next().unwrap_or('?');
+        let monogram = card
+            .name
+            .chars()
+            .next()
+            .map_or('?', |c| c.to_ascii_uppercase());
         let mut buf = [0u8; 4];
         centred(
             canvas,
@@ -541,6 +545,25 @@ mod tests {
             }
         }
         assert!(ink > 60, "the question mark should be drawn: {ink}");
+    }
+
+    #[test]
+    fn the_monogram_is_a_capital_letter() {
+        let tile = |name: &'static str| {
+            let card = [Card {
+                kind: Kind::Linux,
+                name,
+            }];
+            let mut p = drawn(&card, &Menu::new(1, 0, 0), 640, 480);
+            let (left, top, _) = cards_layout(640, 480, 1);
+            let (x0, y0) = (left + (CARD_WIDTH - TILE) / 2, top + 36);
+            (y0..y0 + TILE)
+                .flat_map(|y| (x0..x0 + TILE).map(move |x| (x, y)))
+                .map(|(x, y)| p.at(x, y))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tile("example"), tile("Example"));
+        assert_ne!(tile("example"), tile("Fxample"));
     }
 
     #[test]

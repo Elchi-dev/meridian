@@ -156,9 +156,68 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
     );
 }
 
+/// The options the loader's copy is started with.
+pub fn chain_options() -> &'static [u16] {
+    &CHAIN_OPTIONS
+}
+
+/// The example system sextant puts on test images is found, behind
+/// Meridian.
+pub fn systems_found(cards: &[boot::screen::Card<'_>], serial: &mut impl Write) {
+    use boot::screen::Kind;
+    use uefi::qemu_test::Report;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    report.check(
+        "boot.systems.found",
+        cards.len() == 2
+            && cards[0].kind == Kind::Meridian
+            && cards[1].kind == Kind::Linux
+            && cards[1].name == "example",
+        "the example system on the test image should be found as a second card",
+    );
+    stop_on_failure(&mut report);
+}
+
+/// The example system was started from the boot screen and came back.
+pub fn other_came_back(status: uefi::Status, serial: &mut impl Write) {
+    use uefi::qemu_test::Report;
+
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    report.check(
+        "boot.systems.started",
+        status == CHAINED,
+        "choosing the example system should start it, and it should come back with ABORTED",
+    );
+    stop_on_failure(&mut report);
+}
+
+/// Ends the run when a check failed: the kernel would start next and
+/// report only its own failures.
+fn stop_on_failure<W: Write>(report: &mut Serial<'_, W>) {
+    if report.failed > 0 {
+        let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
+        x86::raw::qemu_exit(false);
+    }
+}
+
 /// The boot screen's first frame: check it, have sextant keep it, and
-/// choose the only card with Enter, the way a person would.
-pub fn boot_screen(system: &System, frame: &[u32], screen: &[u32], serial: &mut impl Write) {
+/// choose with the keys a person would press. The first time round that
+/// is Right and Enter, which starts the example system; when it has come
+/// back, Enter starts Meridian.
+pub fn boot_screen(
+    system: &System,
+    round: u32,
+    frame: &[u32],
+    screen: &[u32],
+    serial: &mut impl Write,
+) {
     use canvas::palette::{NIGHT, TANGERINE};
     use uefi::qemu_test::Report;
 
@@ -193,13 +252,16 @@ pub fn boot_screen(system: &System, frame: &[u32], screen: &[u32], serial: &mut 
         system.pixels().is_err() && width > 0,
         "the screen should still be held by the boot screen while it is shown",
     );
-    let _ = writeln!(report.out, "SCREEN boot");
-    let answer = system.wait_for_key();
-    report.check(
-        "boot.screen.kept",
-        answer.is_ok_and(|k| k.unicode_char == 0x0d),
-        "sextant should answer SCREEN with a carriage return, read as Enter",
-    );
+    if round == 0 {
+        let _ = writeln!(report.out, "SCREEN boot");
+        let answer = system.wait_for_key();
+        report.check(
+            "boot.screen.kept",
+            answer.is_ok_and(|k| k.unicode_char == 0x0d),
+            "sextant should answer SCREEN with a carriage return, read as Enter",
+        );
+        report.press("right");
+    }
     report.press("ret");
     if report.failed > 0 {
         let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);

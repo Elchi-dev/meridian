@@ -51,8 +51,10 @@ Loader and UEFI:
 - [x] Graphical boot screen with OS cards, arrow keys, Enter, countdown, drawn off screen and copied whole
 - [ ] `V` for the full log, `F` for firmware settings on the boot screen
 - [x] Neutral icon for the Windows card (a W on a sky blue tile), no Microsoft logo
-- [ ] Detect other systems from `BootOrder`, `Boot####` and a scan of the EFI partition
-- [ ] Start Windows and Linux through `LoadImage` and `StartImage`
+- [x] Detect other systems by a scan of the EFI partition
+- [ ] Detect other systems from `BootOrder` and `Boot####`, for loaders outside the EFI partition
+- [x] Start other systems through `LoadImage` and `StartImage`, and come back to the boot screen if they return
+- [ ] Start Windows and Linux on the laptop, with Secure Boot on
 - [ ] Rust `.meri` reader passing the conformance suite; `boot.meri`
 - [ ] Shim under `third-party/` with its decision record; `.sbat` section in `meridian.efi`
 - [ ] Authenticode signer in sextant; development keys per machine, release key as a CI secret

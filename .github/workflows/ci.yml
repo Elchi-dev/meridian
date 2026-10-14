@@ -83,10 +83,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install QEMU and OVMF for the QEMU checks
+      # The same tools as the linux job, since tests that read the images
+      # back insist on them here too.
+      - name: Install QEMU, OVMF and the image checking tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq qemu-system-x86 ovmf
+          sudo apt-get install -yq qemu-system-x86 ovmf dosfstools mtools xorriso fdisk libarchive-tools qrencode zbar-tools
 
       - name: Let the runner user open /dev/kvm
         run: |

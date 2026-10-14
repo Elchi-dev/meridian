@@ -15,8 +15,9 @@ use core::fmt::Write;
 use bootinfo::{BootInfo, MemoryRegion};
 use canvas::{Canvas, Scratch};
 use kernel::screen::Facts;
+use x86::raw::Com1;
 
-fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut impl Write) -> ! {
+fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     let _ = kernel::greet(serial, regions);
     let mut screen = raw::screen(&info.framebuffer);
     if let Some(canvas) = screen.as_mut() {
@@ -40,13 +41,13 @@ fn finish(
     info: &BootInfo,
     regions: &[MemoryRegion],
     screen: Option<&Canvas<'_>>,
-    serial: &mut impl Write,
+    serial: &mut Com1,
 ) -> ! {
     qemu_test::run(info, regions, screen, serial)
 }
 
 #[cfg(not(feature = "qemu-test"))]
-fn finish(_: &BootInfo, _: &[MemoryRegion], _: Option<&Canvas<'_>>, serial: &mut impl Write) -> ! {
+fn finish(_: &BootInfo, _: &[MemoryRegion], _: Option<&Canvas<'_>>, serial: &mut Com1) -> ! {
     let _ = writeln!(serial, "There is nothing more to do yet. Halting.");
     x86::raw::halt()
 }

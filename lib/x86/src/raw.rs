@@ -23,6 +23,21 @@ impl Com1 {
         Com1 { _only_com1: () }
     }
 
+    /// The next byte that arrived, waiting through at most `polls` reads
+    /// of the line status. A board without COM1 reads back 0xff, which
+    /// looks like data, so a 0xff byte counts as nothing.
+    #[must_use]
+    pub fn receive(&mut self, polls: u32) -> Option<u8> {
+        for _ in 0..polls {
+            let status = inb(serial::COM1 + serial::LINE_STATUS);
+            if status != 0xff && status & serial::DATA_READY != 0 {
+                return Some(inb(serial::COM1));
+            }
+            core::hint::spin_loop();
+        }
+        None
+    }
+
     fn send(byte: u8) {
         for _ in 0..serial::MAX_POLLS {
             if inb(serial::COM1 + serial::LINE_STATUS) & serial::TRANSMIT_EMPTY != 0 {
@@ -53,8 +68,9 @@ fn outb(port: u16, value: u8) {
 
 fn inb(port: u16) -> u8 {
     let value: u8;
-    // SAFETY: only called with the COM1 line status register, which reads
-    // without side effects.
+    // SAFETY: only called with COM1's line status register, which reads
+    // without side effects, and its receive register, which only takes
+    // the byte that arrived.
     unsafe {
         asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
     }

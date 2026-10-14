@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"context"
+	"image/png"
 	"io"
 	"os"
 	"os/exec"
@@ -111,7 +112,8 @@ func diskWithLoader(t *testing.T, qemuTest bool) string {
 
 func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 	r := newRig(t)
-	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true}))
+	screens := t.TempDir()
+	res, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true, Screens: screens}))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
@@ -128,6 +130,7 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 			t.Errorf("check %s did not run; passed: %v", want, report.Passed)
 		}
 	}
+	checkStatusScreen(t, res.Screens, filepath.Join(screens, "status.png"))
 	if !strings.Contains(res.Serial, consoleProbe) {
 		t.Errorf("the console probe did not reach the screen whole:\n%s", res.Serial)
 	}
@@ -455,4 +458,39 @@ func TestQEMUDiesWithTheProcessThatStartedIt(t *testing.T) {
 		_ = p.Kill()
 	}
 	t.Fatalf("QEMU (pid %d) kept running after the process that started it was killed", machine)
+}
+
+// checkStatusScreen looks at the picture of the kernel's status screen: the
+// dark background in the corners and the orange line under the title.
+func checkStatusScreen(t *testing.T, saved []string, want string) {
+	t.Helper()
+	if len(saved) != 1 || saved[0] != want {
+		t.Fatalf("screens saved: %v, want %s", saved, want)
+	}
+	f, err := os.Open(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	if b.Dx() < 640 || b.Dy() < 480 {
+		t.Fatalf("the screen is %v", b)
+	}
+	rgb := func(x, y int) [3]uint32 {
+		r, g, bl, _ := img.At(x, y).RGBA()
+		return [3]uint32{r >> 8, g >> 8, bl >> 8}
+	}
+	night, tangerine := [3]uint32{0x15, 0x17, 0x1a}, [3]uint32{0xff, 0x96, 0x33}
+	for _, at := range [][2]int{{0, 0}, {b.Dx() - 1, b.Dy() - 1}, {b.Dx() - 1, 0}} {
+		if got := rgb(at[0], at[1]); got != night {
+			t.Errorf("pixel %v is %x, want the dark background", at, got)
+		}
+	}
+	if got := rgb(60, 116); got != tangerine {
+		t.Errorf("the line under the title is %x, want tangerine", got)
+	}
 }

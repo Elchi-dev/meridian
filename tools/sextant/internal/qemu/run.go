@@ -34,8 +34,13 @@ type Options struct {
 	// its keys are sent, for images that do not end by themselves.
 	StopAfterScript bool
 	// AnswerPress presses the key named on every "PRESS <key>" line the
-	// machine writes. Test images use it to check keyboard input.
+	// machine writes, and answers every "SCREEN <name>" line with a
+	// newline on the serial port. Test images use it to check keyboard
+	// input and to have their screens kept.
 	AnswerPress bool
+	// Screens, when set, is the folder where the screen goes as
+	// <name>.png for every "SCREEN <name>" line.
+	Screens string
 	// FirmwareStall, when set, gives up on a run whose firmware has not
 	// printed any text after this long, and Attempts says how often to start
 	// the machine before giving up for good. OVMF under KVM sometimes hangs
@@ -55,6 +60,8 @@ type Result struct {
 	// firmware printed anything. Attempts counts the machines started.
 	FirmwareStalled bool
 	Attempts        int
+	// Screens are the pictures saved, in the order the machine asked.
+	Screens []string
 }
 
 // Run boots the machine and waits for QEMU to end, the timeout to pass or
@@ -109,11 +116,19 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return Result{}, err
+	}
+	defer stdin.Close()
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("start %s: %w", m.Binary, err)
 	}
 
-	watcher := &scriptWatcher{steps: opts.Script, address: monitorAddr, stop: cancel, stopAfter: opts.StopAfterScript, answer: opts.AnswerPress}
+	watcher := &scriptWatcher{
+		steps: opts.Script, address: monitorAddr, stop: cancel, stopAfter: opts.StopAfterScript, answer: opts.AnswerPress,
+		serialIn: stdin, screens: opts.Screens, work: work,
+	}
 	var stalled atomic.Bool
 	if opts.FirmwareStall > 0 {
 		timer := time.AfterFunc(opts.FirmwareStall, func() {
@@ -127,7 +142,7 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 	serial := watcher.read(stdout, opts.Live)
 	waitErr := cmd.Wait()
 
-	res := Result{Serial: Clean(serial), StepsDone: watcher.done, Stopped: watcher.stopped, FirmwareStalled: stalled.Load()}
+	res := Result{Serial: Clean(serial), StepsDone: watcher.done, Stopped: watcher.stopped, FirmwareStalled: stalled.Load(), Screens: watcher.saved}
 	var exit *exec.ExitError
 	switch {
 	case watcher.stopped || res.FirmwareStalled:
@@ -161,6 +176,11 @@ type scriptWatcher struct {
 	stopped   bool
 	err       error
 	monitor   net.Conn
+
+	serialIn io.Writer
+	screens  string
+	work     string
+	saved    []string
 }
 
 func (w *scriptWatcher) read(r io.Reader, live io.Writer) string {
@@ -217,26 +237,66 @@ func (w *scriptWatcher) advance(clean string, from int) int {
 	return from
 }
 
-// answerPresses presses the key of every complete "PRESS <key>" line it
-// has not seen yet.
+// answerPresses answers every complete "PRESS <key>" and "SCREEN <name>"
+// line it has not seen yet.
 func (w *scriptWatcher) answerPresses(clean string) {
 	for w.answer && w.err == nil {
 		end := strings.IndexByte(clean[w.pressFrom:], '\n')
 		if end < 0 {
 			return
 		}
-		line := clean[w.pressFrom : w.pressFrom+end]
+		line := strings.TrimSpace(clean[w.pressFrom : w.pressFrom+end])
 		w.pressFrom += end + 1
+		var err error
 		if key, ok := strings.CutPrefix(line, "PRESS "); ok {
-			if err := w.press(strings.TrimSpace(key)); err != nil {
-				w.err = err
-				w.stop()
-			}
+			err = w.press(strings.TrimSpace(key))
+		} else if name, ok := strings.CutPrefix(line, "SCREEN "); ok {
+			err = w.screen(strings.TrimSpace(name))
+		}
+		if err != nil {
+			w.err = err
+			w.stop()
 		}
 	}
 }
 
+// screen saves the machine's screen as name.png, when screens are kept,
+// and then tells the machine to go on.
+func (w *scriptWatcher) screen(name string) error {
+	if !screenName(name) {
+		return fmt.Errorf("the machine asked to keep a screen named %q; names are lower case letters, digits and dashes", name)
+	}
+	if w.screens != "" {
+		ppm := filepath.Join(w.work, name+".ppm")
+		if err := w.command("screendump " + ppm); err != nil {
+			return err
+		}
+		img, err := waitForPPM(ppm, 10*time.Second)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(w.screens, name+".png")
+		if err := writePNG(out, img); err != nil {
+			return err
+		}
+		w.saved = append(w.saved, out)
+	}
+	if _, err := io.WriteString(w.serialIn, "\n"); err != nil {
+		return fmt.Errorf("answer the machine after its screen: %w", err)
+	}
+	return nil
+}
+
 func (w *scriptWatcher) press(key string) error {
+	if err := w.command("sendkey " + key); err != nil {
+		return fmt.Errorf("send key %q: %w", key, err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	return nil
+}
+
+// command sends one line to the QEMU monitor, connecting first if needed.
+func (w *scriptWatcher) command(line string) error {
 	if w.monitor == nil {
 		var err error
 		for attempt := 0; attempt < 50; attempt++ {
@@ -250,11 +310,8 @@ func (w *scriptWatcher) press(key string) error {
 			return fmt.Errorf("connect to the QEMU monitor at %s: %w", w.address, err)
 		}
 	}
-	if _, err := fmt.Fprintf(w.monitor, "sendkey %s\n", key); err != nil {
-		return fmt.Errorf("send key %q: %w", key, err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	return nil
+	_, err := fmt.Fprintf(w.monitor, "%s\n", line)
+	return err
 }
 
 // freeLocalAddress asks the system for a free TCP port on the loopback

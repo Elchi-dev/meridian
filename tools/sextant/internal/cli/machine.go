@@ -307,9 +307,14 @@ func (s *session) qemuTests(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	screens := filepath.Join(s.settings.BuildDir, "screens")
+	if err := os.MkdirAll(screens, 0o755); err != nil {
+		return err
+	}
 	res, err := qemu.Run(ctx, m, qemu.Options{
 		Timeout:       s.settings.QEMU.Timeout,
 		AnswerPress:   true,
+		Screens:       screens,
 		Live:          s.env.Stderr,
 		FirmwareStall: s.settings.QEMU.Stall,
 		Attempts:      3,
@@ -326,6 +331,9 @@ func (s *session) qemuTests(ctx context.Context) error {
 	}
 	for _, f := range report.Failed {
 		fmt.Fprintf(s.env.Stdout, "FAILED  %s: %s\n", f.Name, f.Why)
+	}
+	for _, shot := range res.Screens {
+		fmt.Fprintf(s.env.Stdout, "screen  %s\n", shot)
 	}
 	if err := report.Verdict(res.ExitCode, res.TimedOut, qemu.LastLine(res.Serial)); err != nil {
 		return err

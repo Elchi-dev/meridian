@@ -53,6 +53,12 @@ TESTS DONE 1 failed
 
 - `TEST <name> ok` for a passed check.
 - `TEST <name> FAILED <why>` for a failed one, saying what a failure means.
+- `PRESS <key>` asks sextant to type a key, named as the QEMU monitor
+  names it, such as `ret` or `down`.
+- `SCREEN <name>` asks sextant to keep a picture of the screen. sextant
+  saves it as `screens/<name>.png` in the build directory and then sends a
+  newline on the serial port, which the image waits for before it draws
+  anything else. Names are lower case letters, digits and dashes.
 - `TESTS DONE <n> failed` once at the end.
 - **The exit code.** The image then writes to port 0xf4. QEMU exits with
   `(value << 1) | 1`: **33** when everything passed, **35** when something
@@ -60,6 +66,12 @@ TESTS DONE 1 failed
   means the image crashed or hung, which also counts as a failure.
 
 ### Checking what reached the screen
+
+The kernel's test image checks its own screens by reading the framebuffer
+back, and keeps a picture of each with `SCREEN`. A Go test of the runner
+opens the saved status screen and checks the colours at known places, so
+what a person would see is tested too, not only what the kernel believes
+it drew.
 
 OVMF copies its text console to the serial port. So text a test writes to
 the firmware console also appears in the serial log, exactly as the console

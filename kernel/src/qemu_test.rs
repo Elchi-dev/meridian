@@ -9,6 +9,7 @@ use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK
 use canvas::Canvas;
 use canvas::palette::{GRASS, NIGHT, TANGERINE};
 use kernel::{bytes_of, covered, is_tidy};
+use x86::raw::Com1;
 
 use crate::raw::{self, mapped, physical};
 
@@ -32,7 +33,7 @@ pub fn run(
     info: &BootInfo,
     regions: &[MemoryRegion],
     screen: Option<&Canvas<'_>>,
-    serial: &mut impl Write,
+    serial: &mut Com1,
 ) -> ! {
     let mut report = Report {
         out: serial,
@@ -117,6 +118,18 @@ pub fn run(
     );
 
     screen_checks(&mut report, info, screen);
+    if screen.is_some() {
+        // sextant keeps the picture and answers with a newline.
+        // The same port, not a new one: opening it again would clear an
+        // answer that came quickly.
+        let _ = writeln!(report.out, "SCREEN status");
+        let answer = report.out.receive(1 << 24);
+        report.check(
+            "kernel.screen.kept",
+            answer == Some(b'\n'),
+            "sextant should answer SCREEN with a newline on the serial port",
+        );
+    }
 
     let failed = report.failed;
     let _ = writeln!(report.out, "TESTS DONE {failed} failed");

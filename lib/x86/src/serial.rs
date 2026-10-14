@@ -7,8 +7,10 @@ pub const COM1: u16 = 0x3f8;
 /// The UART's input clock divided by 16, the baud rate at divisor 1.
 pub const BASE_BAUD: u32 = 115_200;
 
-/// Line status register and its "transmit holding register empty" bit.
+/// Line status register, its "data ready" bit and its "transmit holding
+/// register empty" bit.
 pub const LINE_STATUS: u16 = 5;
+pub const DATA_READY: u8 = 0x01;
 pub const TRANSMIT_EMPTY: u8 = 0x20;
 
 /// How often to poll the line status before giving up on a byte. A board
@@ -136,5 +138,6 @@ mod tests {
     #[test]
     fn register_constants() {
         assert_eq!((COM1, LINE_STATUS, TRANSMIT_EMPTY), (0x3f8, 5, 0x20));
+        assert_eq!(DATA_READY, 1);
     }
 }

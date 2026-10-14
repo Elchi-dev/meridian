@@ -111,7 +111,7 @@ Wine or ReactOS ([ADR 0004](docs/adr/0004-clean-room.md)).
 
 | Part | What it is | State today |
 | --- | --- | --- |
-| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | boot screen with cards for the systems on the EFI partition, the log, the firmware settings and `boot.meri`; loads the kernel and hands it memory, framebuffer and ACPI; the shim is not in yet |
+| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | boot screen with cards for the systems on the EFI partition and the firmware's boot options, the log, the firmware settings and `boot.meri`; loads the kernel and hands it memory, framebuffer and ACPI; the shim is not in yet |
 | [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | its own descriptor tables, every exception on a panic screen with a QR code, a status screen with cores and a live uptime; no memory manager or interrupts yet (M2) |
 | `lib/uefi` | UEFI types and firmware calls, written from the specification | done for what the loader calls, checked against OVMF |
 | `lib` | `no_std` crates shared by kernel and userland, tested on the host | `acpi`, `bootinfo`, `canvas`, `elf`, `font`, `meri`, `paging`, `qr`, `uefi`, `x86` |
@@ -214,8 +214,8 @@ The test bar holds for every component, from the first commit on:
   otherwise.
 - **Mutation testing.** `sextant mutate` changes the code one mutant at a
   time, and every change no test notices has to get a test, or an entry in
-  `mutants.meri` that explains why it cannot change behaviour. Running it on
-  every change in CI comes next.
+  `mutants.meri` that explains why it cannot change behaviour. CI mutates
+  what every push changes, with the checks on real firmware.
 - **No mocks, no stubs.** Firmware code is tested against real firmware in
   QEMU, with pictures of every screen. The disk images are read back by
   `fsck.fat`, `sfdisk` and `xorriso`, QR codes by `zbarimg`, and signatures
@@ -226,20 +226,20 @@ On 14 October 2026:
 
 | Component | Code | Tests | Ratio |
 | --- | --- | --- | --- |
-| `boot` | 1629 | 2451 | 1.50 |
-| `kernel` | 952 | 1704 | 1.78 |
-| `lib/acpi` | 124 | 306 | 2.46 |
+| `boot` | 1879 | 2975 | 1.58 |
+| `kernel` | 955 | 1800 | 1.88 |
+| `lib/acpi` | 124 | 325 | 2.62 |
 | `lib/bootinfo` | 164 | 254 | 1.54 |
-| `lib/canvas` | 283 | 425 | 1.50 |
-| `lib/elf` | 265 | 487 | 1.83 |
-| `lib/font` | 908 | 2577 | 2.83 |
+| `lib/canvas` | 277 | 425 | 1.53 |
+| `lib/elf` | 265 | 523 | 1.97 |
+| `lib/font` | 898 | 2616 | 2.91 |
 | `lib/meri` | 1240 | 1962 | 1.58 |
-| `lib/paging` | 182 | 491 | 2.69 |
-| `lib/qr` | 496 | 792 | 1.59 |
-| `lib/uefi` | 1494 | 2292 | 1.53 |
-| `lib/x86` | 439 | 674 | 1.53 |
-| `tools/sextant` | 6826 | 12153 | 1.78 |
-| total | 15002 | 26568 | 1.77 |
+| `lib/paging` | 182 | 509 | 2.79 |
+| `lib/qr` | 496 | 830 | 1.67 |
+| `lib/uefi` | 1616 | 2596 | 1.60 |
+| `lib/x86` | 483 | 758 | 1.56 |
+| `tools/sextant` | 6944 | 12558 | 1.80 |
+| total | 15523 | 28131 | 1.81 |
 
 `sextant stats` prints the current numbers.
 

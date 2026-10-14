@@ -91,6 +91,13 @@ pub mod apic {
         u64::from(id) << 32 | 1 << 14 | 0b110 << 8 | u64::from(page)
     }
 
+    /// The command that sends interrupt `vector` to the processor whose
+    /// APIC id is `id`.
+    #[must_use]
+    pub fn fixed(id: u32, vector: u8) -> u64 {
+        u64::from(id) << 32 | 1 << 14 | u64::from(vector)
+    }
+
     /// The values to write to `IA32_APIC_BASE`, which holds `base` now, one
     /// after the other: the APIC on, then its x2APIC mode, the only order
     /// the SDM allows from an APIC that is off.
@@ -251,6 +258,9 @@ mod tests {
         assert_eq!(apic::init(u32::MAX), 0xffff_ffff_0000_4500);
         assert_eq!(apic::startup(1, 0x08), 0x1_0000_4608, "the page at 0x8000");
         assert_eq!(apic::startup(0x1_0203, 0x9f), 0x1_0203_0000_469f);
+        assert_eq!(apic::fixed(0, 0x21), 0x4021, "fixed delivery, asserted");
+        assert_eq!(apic::fixed(3, 0xff), 0x3_0000_40ff);
+        assert_eq!(apic::fixed(u32::MAX, 0), 0xffff_ffff_0000_4000);
     }
 
     #[test]
@@ -265,6 +275,19 @@ mod tests {
                 assert_eq!(startup & 0xff, u64::from(page), "{id}: the page");
                 assert_eq!(startup & 0xff00, 0x4600, "{id}: startup, asserted");
                 assert_eq!(init ^ startup, 0x0300 | u64::from(page));
+            }
+        }
+    }
+
+    #[test]
+    fn an_interrupt_differs_from_init_only_in_mode_and_vector() {
+        for id in [0, 1, 7, 0xff, 0x100, 0xdead_beef, u32::MAX] {
+            for vector in [0x00, 0x20, 0x21, 0x7f, 0xfe, 0xff] {
+                let fixed = apic::fixed(id, vector);
+                assert_eq!(fixed >> 32, u64::from(id), "{id}: the destination");
+                assert_eq!(fixed & 0xff, u64::from(vector), "{id}: the vector");
+                assert_eq!(fixed & 0x700, 0, "{id}: fixed delivery");
+                assert_eq!(apic::init(id) ^ fixed, 0x500 | u64::from(vector));
             }
         }
     }

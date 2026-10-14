@@ -608,6 +608,16 @@ pub unsafe fn send_startup(id: u32, page: u8) {
     write_apic(apic::COMMAND, apic::startup(id, page));
 }
 
+/// Sends interrupt `vector` to the processor whose APIC id is `id`.
+///
+/// # Safety
+///
+/// That processor's interrupt descriptor table must have a handler for
+/// `vector`.
+pub unsafe fn send_interrupt(id: u32, vector: u8) {
+    write_apic(apic::COMMAND, apic::fixed(id, vector));
+}
+
 /// Tells the APIC the interrupt it delivered last is handled.
 pub fn end_of_interrupt() {
     write_apic(apic::END_OF_INTERRUPT, 0);
@@ -633,6 +643,19 @@ pub fn mask_legacy_pics() {
 pub unsafe fn enable_interrupts() {
     // SAFETY: the caller promises every vector has its handler.
     unsafe { asm!("sti", options(nomem, nostack)) };
+}
+
+/// Lets this processor take interrupts and sleeps until one comes. One
+/// that arrives between the two still wakes it, since `sti` holds them
+/// back for one more instruction.
+///
+/// # Safety
+///
+/// As for [`enable_interrupts`].
+pub unsafe fn enable_interrupts_and_wait() {
+    // SAFETY: the caller promises every vector has its handler; halting
+    // touches no memory.
+    unsafe { asm!("sti", "hlt", options(nomem, nostack)) };
 }
 
 /// Stops this processor taking maskable interrupts.

@@ -55,7 +55,7 @@ Loader and UEFI:
 - [x] Neutral icon for the Windows card (a W on a sky blue tile), no Microsoft logo
 - [x] Detect other systems by a scan of the EFI partition
 - [x] Detect other systems from `BootOrder` and `Boot####`, for loaders outside the EFI partition
-- [ ] A QEMU test with a second disk, for a boot option on another drive and one with a short path that goes through `BootNext`
+- [x] A QEMU test with a second disk, for a boot option on another drive and one with a short path that goes through `BootNext`
 - [x] Start other systems through `LoadImage` and `StartImage`, and come back to the boot screen if they return
 - [ ] Start Windows and Linux on the laptop, with Secure Boot on
 - [x] Rust `.meri` reader passing the conformance suite (`lib/meri`), without allocating

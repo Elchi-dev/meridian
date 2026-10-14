@@ -75,6 +75,7 @@ fn run(system: System, serial: &mut Com1) -> Status {
     {
         qemu_test::checks(&system, serial);
         qemu_test::add_firmware_option(&system, serial);
+        qemu_test::second_disk(&system, serial);
     }
 
     let mut others: [Option<Other>; SYSTEM_LIMIT] = Default::default();

@@ -91,7 +91,13 @@ ones Windows writes that start at the partition, it sets `BootNext` and
 restarts, and the firmware starts the option itself. The test image adds
 three options before the loader looks: one it starts from the third card
 and that comes back, one switched off and one for a loader the scan finds
-anyway, which must get no card.
+anyway, which must get no card. A Go test gives the test image a second
+disk with a copy of the loader and two more options for it: one with the
+whole device path, which the loader starts and which comes back, and one
+with the short path that starts at the partition. OVMF's `LoadImage`
+refuses that one with `NOT_FOUND`, so the loader sets `BootNext` and
+restarts, and the copy reports from the second disk that the firmware
+started it through that option.
 
 Still to come:
 

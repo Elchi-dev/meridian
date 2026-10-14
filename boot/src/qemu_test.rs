@@ -528,7 +528,7 @@ const FIRMWARE_EXAMPLE_NUMBER: u16 = 0x0100;
 /// takes it back, since starting it that way needs a restart.
 pub fn add_firmware_option(system: &System, serial: &mut impl Write) {
     use uefi::guid::GLOBAL_VARIABLE;
-    use uefi::load_option::{self, ACTIVE, BOOT_NEXT, BOOT_ORDER};
+    use uefi::load_option::{self, ACTIVE, BOOT_NEXT};
     use uefi::qemu_test::Report;
     use uefi::variable::Attributes;
 
@@ -561,18 +561,11 @@ pub fn add_firmware_option(system: &System, serial: &mut impl Write) {
             "/EFI/example/grubx64.efi",
         ),
     ];
-    let mut order = [0u8; 256];
-    let mut listed = match system.variable(&BOOT_ORDER, &GLOBAL_VARIABLE, &mut order) {
-        Ok((_, data)) => data.len(),
-        Err(_) => 0,
-    };
     let mut added = true;
     for (number, attributes, description, file) in options {
         added &= write_option(system, number, attributes, description, file).is_ok();
-        order[listed..listed + 2].copy_from_slice(&number.to_le_bytes());
-        listed += 2;
     }
-    let ordered = system.set_variable(&BOOT_ORDER, &GLOBAL_VARIABLE, lasting, &order[..listed]);
+    let ordered = append_to_boot_order(system, &options.map(|o| o.0));
     report.check(
         "boot.firmware_option.added",
         added && ordered.is_ok(),
@@ -622,6 +615,19 @@ fn write_option(
     let base = system.boot_device_path(&mut base)?;
     let len = uefi::device_path::with_file(base, file, &mut path)
         .ok_or(uefi::Status::BUFFER_TOO_SMALL)?;
+    write_option_at(system, number, attributes, description, &path[..len])
+}
+
+/// Writes boot option `number` for the loader at the whole device path
+/// `path`.
+fn write_option_at(
+    system: &System,
+    number: u16,
+    attributes: u32,
+    description: &str,
+    path: &[u8],
+) -> Result<(), uefi::Status> {
+    let len = path.len();
     let mut option = [0u8; 2048];
     let mut at = 0;
     let mut put = |bytes: &[u8]| {
@@ -633,7 +639,7 @@ fn write_option(
     for unit in description.encode_utf16().chain([0]) {
         put(&unit.to_le_bytes());
     }
-    put(&path[..len]);
+    put(path);
     let lasting = uefi::variable::Attributes::NON_VOLATILE
         .with(uefi::variable::Attributes::BOOTSERVICE_ACCESS)
         .with(uefi::variable::Attributes::RUNTIME_ACCESS);
@@ -643,6 +649,172 @@ fn write_option(
         lasting,
         &option[..at],
     )
+}
+
+/// The boot options for the loader's copy on a second disk: one with its
+/// whole device path, and one with the short path that starts at the
+/// partition, which only the firmware can follow.
+const SECOND_DISK: u16 = 0x0103;
+const SECOND_DISK_SHORT: u16 = 0x0104;
+const SECOND_DISK_NAMES: [&str; 2] = ["Second disk", "Second disk, short"];
+/// Where the Go test puts the loader's copy on the second disk.
+const SECOND_DISK_FILE: &str = "/EFI/second/loader.efi";
+
+/// With a second disk, which the Go test of boot options on another drive
+/// gives the machine: adds the two options for the loader's copy there,
+/// finds them as the boot screen does, starts the one with the whole path
+/// and sees it come back, then starts the short one, which the loader
+/// leaves to the firmware with a restart. Without a second disk it does
+/// nothing.
+pub fn second_disk(system: &System, serial: &mut impl Write) {
+    use uefi::device_path::{from_partition, partition, with_file};
+    use uefi::load_option::ACTIVE;
+    use uefi::qemu_test::Report;
+    use uefi::raw::image::PATH_BYTES;
+
+    let mut own = [0u8; PATH_BYTES];
+    let own = system.boot_device_path(&mut own).ok().and_then(partition);
+    let mut other = [0u8; PATH_BYTES];
+    let mut other_len = 0;
+    let _ = system.file_system_paths(|p| {
+        let theirs = partition(p);
+        if other_len == 0 && theirs.is_some() && theirs != own {
+            other[..p.len()].copy_from_slice(p);
+            other_len = p.len();
+        }
+    });
+    if other_len == 0 {
+        return;
+    }
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let mut whole = [0u8; PATH_BYTES];
+    let whole = with_file(&other[..other_len], SECOND_DISK_FILE, &mut whole).map(|n| &whole[..n]);
+    let added = whole.is_some_and(|whole| {
+        let [name, short_name] = SECOND_DISK_NAMES;
+        write_option_at(system, SECOND_DISK, ACTIVE, name, whole).is_ok()
+            && from_partition(whole).is_some_and(|short| {
+                write_option_at(system, SECOND_DISK_SHORT, ACTIVE, short_name, short).is_ok()
+            })
+            && append_to_boot_order(system, &[SECOND_DISK, SECOND_DISK_SHORT]).is_ok()
+    });
+    report.check(
+        "boot.second_disk.options",
+        added,
+        "the options for the copy on the second disk should be written and put in BootOrder",
+    );
+    stop_on_failure(&mut report);
+
+    let mut found: [Option<crate::Other>; boot::screen::SYSTEM_LIMIT] = Default::default();
+    crate::find_systems(system, &mut found);
+    let card = |number: u16| {
+        found
+            .iter()
+            .flatten()
+            .find(|o| o.option.as_ref().is_some_and(|f| f.number == number))
+    };
+    let (Some(whole), Some(short)) = (card(SECOND_DISK), card(SECOND_DISK_SHORT)) else {
+        report.check(
+            "boot.second_disk.found",
+            false,
+            "both options on the second disk should get cards",
+        );
+        stop_on_failure(&mut report);
+        return;
+    };
+    report.check(
+        "boot.second_disk.found",
+        [whole.name.as_str(), short.name.as_str()] == SECOND_DISK_NAMES,
+        "both options on the second disk should get cards with their descriptions",
+    );
+    let status = crate::start_other(system, whole, report.out);
+    report.check(
+        "boot.second_disk.whole_path",
+        status == CHAINED,
+        "the copy on the second disk should start from its whole path and come back",
+    );
+    stop_on_failure(&mut report);
+    let status = crate::start_other(system, short, report.out);
+    let _ = writeln!(report.out, "the short option came back with {status}");
+    report.check(
+        "boot.second_disk.restart",
+        false,
+        "the short option should have been left to the firmware with a restart",
+    );
+    stop_on_failure(&mut report);
+}
+
+/// In the copy on the second disk, when the firmware started it through
+/// the short option after the restart: checks it came from the partition
+/// that option names and that the firmware used up `BootNext`, then ends
+/// the run.
+pub fn after_restart(system: &System, serial: &mut impl Write) {
+    use uefi::device_path::partition;
+    use uefi::guid::GLOBAL_VARIABLE;
+    use uefi::load_option::{self, BOOT_CURRENT, BOOT_NEXT, LoadOption};
+    use uefi::qemu_test::Report;
+    use uefi::raw::image::PATH_BYTES;
+
+    let mut two = [0u8; 2];
+    let current = system
+        .variable(&BOOT_CURRENT, &GLOBAL_VARIABLE, &mut two)
+        .ok()
+        .and_then(|(_, data)| load_option::numbers(data)?.next());
+    if current != Some(SECOND_DISK_SHORT) {
+        return;
+    }
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
+    };
+    let mut own = [0u8; PATH_BYTES];
+    let own = system.boot_device_path(&mut own).ok().and_then(partition);
+    let mut data = [0u8; 2048];
+    let named = system
+        .variable(
+            &load_option::variable(SECOND_DISK_SHORT),
+            &GLOBAL_VARIABLE,
+            &mut data,
+        )
+        .ok()
+        .and_then(|(_, data)| LoadOption::parse(data))
+        .and_then(|option| partition(option.path));
+    let mut next = [0u8; 2];
+    let used_up = system
+        .variable(&BOOT_NEXT, &GLOBAL_VARIABLE, &mut next)
+        .is_err();
+    report.check(
+        "boot.second_disk.short_path",
+        own.is_some() && own == named && used_up,
+        "after the restart the firmware should start the copy from the partition the short option names",
+    );
+    let _ = writeln!(report.out, "TESTS DONE {} failed", report.failed);
+    x86::raw::qemu_exit(report.failed == 0);
+}
+
+/// Puts `numbers` at the end of `BootOrder`.
+fn append_to_boot_order(system: &System, numbers: &[u16]) -> Result<(), uefi::Status> {
+    use uefi::guid::GLOBAL_VARIABLE;
+    use uefi::load_option::BOOT_ORDER;
+    use uefi::variable::Attributes;
+
+    let mut order = [0u8; 256];
+    let mut listed = system
+        .variable(&BOOT_ORDER, &GLOBAL_VARIABLE, &mut order)
+        .map_or(0, |(_, data)| data.len());
+    for number in numbers {
+        let slot = order
+            .get_mut(listed..listed + 2)
+            .ok_or(uefi::Status::BUFFER_TOO_SMALL)?;
+        slot.copy_from_slice(&number.to_le_bytes());
+        listed += 2;
+    }
+    let lasting = Attributes::NON_VOLATILE
+        .with(Attributes::BOOTSERVICE_ACCESS)
+        .with(Attributes::RUNTIME_ACCESS);
+    system.set_variable(&BOOT_ORDER, &GLOBAL_VARIABLE, lasting, &order[..listed])
 }
 
 /// What the loader's copy returns when it was started as a test.

@@ -421,6 +421,40 @@ func TestFreeLocalAddress(t *testing.T) {
 	}
 }
 
+// The test image adds two boot options for a copy of the loader on a
+// second disk: one with its whole device path, which the loader starts
+// itself and which comes back, and one with the short path that starts at
+// the partition, which only the firmware can follow. For that one the
+// loader asks for BootNext and restarts, and the copy reports from the
+// second disk and ends the run.
+func TestBootOptionsOnASecondDisk(t *testing.T) {
+	r := newRig(t)
+	files := bootFiles(t, true)
+	second := filepath.Join(t.TempDir(), "second.img")
+	copyOnly := map[string][]byte{"EFI/second/loader.efi": files[image.LoaderPath]}
+	if err := image.Disk(second, image.Contents{Seed: t.Name() + " second", Time: time.Unix(1_760_000_000, 0), Files: copyOnly}); err != nil {
+		t.Fatal(err)
+	}
+	m := r.machine(diskWithFiles(t, files))
+	m.SecondDisk = second
+	m.Reboot = true
+	res, err := Run(context.Background(), m, reliable(Options{Timeout: 2 * time.Minute, AnswerPress: true}))
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, res.Serial)
+	}
+	if err := ParseReport(res.Serial).Verdict(res.ExitCode, res.TimedOut, LastLine(res.Serial)); err != nil {
+		t.Fatalf("%v\n%s", err, res.Serial)
+	}
+	for _, name := range []string{"options", "found", "whole_path", "short_path"} {
+		if !strings.Contains(res.Serial, "TEST boot.second_disk."+name+" ok") {
+			t.Errorf("no boot.second_disk.%s in:\n%s", name, res.Serial)
+		}
+	}
+	if strings.Contains(res.Serial, "TEST kernel.entered") {
+		t.Error("the run should end on the second disk, before any kernel starts")
+	}
+}
+
 // An ESP larger than 32MiB does not fit El Torito's 16-bit sector count,
 // so the boot entry says 0 and the firmware has to read the image to its
 // end. This boots it to prove OVMF does.

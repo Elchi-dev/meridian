@@ -46,6 +46,8 @@ extern "efiapi" fn efi_main(image: uefi::raw::Handle, table: *mut SystemTable) -
         );
         return crate::qemu_test::CHAINED;
     }
+    #[cfg(feature = "qemu-test")]
+    crate::qemu_test::after_restart(&system, &mut serial);
     crate::run(system, &mut serial)
 }
 

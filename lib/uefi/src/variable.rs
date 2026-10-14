@@ -71,6 +71,13 @@ pub fn u64_value(data: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(data.try_into().ok()?))
 }
 
+/// Whether the firmware, by the data of its [`OS_INDICATIONS_SUPPORTED`],
+/// can open its settings at the next start.
+#[must_use]
+pub fn offers_firmware_ui(supported: &[u8]) -> bool {
+    u64_value(supported).is_some_and(|bits| bits & BOOT_TO_FIRMWARE_UI != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +141,16 @@ mod tests {
         assert!(!Attributes::NON_VOLATILE.contains(both));
         assert!(both.contains(Attributes::default()));
         assert_eq!(Attributes::NON_VOLATILE.0, 1);
+    }
+
+    #[test]
+    fn the_firmware_ui_is_offered_by_its_bit() {
+        assert!(offers_firmware_ui(&1u64.to_le_bytes()));
+        assert!(offers_firmware_ui(&0x41u64.to_le_bytes()));
+        assert!(!offers_firmware_ui(&0x40u64.to_le_bytes()));
+        assert!(!offers_firmware_ui(&0u64.to_le_bytes()));
+        assert!(!offers_firmware_ui(&[1]), "eight bytes or nothing");
+        assert!(!offers_firmware_ui(&[]));
     }
 
     #[test]

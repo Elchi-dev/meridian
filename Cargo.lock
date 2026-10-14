@@ -18,6 +18,13 @@ name = "bootinfo"
 version = "0.0.0"
 
 [[package]]
+name = "canvas"
+version = "0.0.0"
+dependencies = [
+ "font",
+]
+
+[[package]]
 name = "elf"
 version = "0.0.0"
 

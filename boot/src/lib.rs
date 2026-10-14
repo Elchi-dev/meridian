@@ -5,6 +5,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod handover;
+pub mod log;
 pub mod memory;
 pub mod menu;
 pub mod screen;

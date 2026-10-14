@@ -89,10 +89,11 @@ func read(path string) (*meri.Block, error) {
 }
 
 // absolute resolves a path from the settings: relative ones start at the
-// repository.
+// repository. Either way it comes back cleaned, with the separators of the
+// system it runs on.
 func absolute(root, p string) string {
 	if filepath.IsAbs(p) {
-		return p
+		return filepath.Clean(p)
 	}
 	return filepath.Join(root, p)
 }

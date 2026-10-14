@@ -114,6 +114,13 @@ func TestRelativeFoldersStartAtTheRoot(t *testing.T) {
 	}
 }
 
+func TestAbsoluteFoldersAreCleaned(t *testing.T) {
+	c := load(t, "build { dir = \""+rooted("/a/b/../c/")+"\" }\n")
+	if want := filepath.Clean(rooted("/a/c")); c.BuildDir != want {
+		t.Fatalf("build dir = %q, want %q", c.BuildDir, want)
+	}
+}
+
 func TestLocalFileWins(t *testing.T) {
 	c := load(t, "qemu {\n    cpus = 2\n    memory = 1GiB\n}\nbuild { dir = \"a\" }\n", "qemu { cpus = 8 }\nbuild { dir = \""+rooted("/fast/tmpfs")+"\" }\n")
 	if c.QEMU.CPUs != 8 || c.QEMU.Memory != 1<<30 || c.BuildDir != rooted("/fast/tmpfs") {

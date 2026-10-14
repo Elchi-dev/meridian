@@ -2,6 +2,7 @@
 
 - Status: proposed | accepted | replaced by NNNN
 - Date: YYYY-MM-DD
+- Allows: only for records that let outside code or files in, a comma-separated list of crates, Go modules, CI actions or paths under third-party/ (`sextant lint` reads it; delete the line otherwise)
 
 ## Context
 

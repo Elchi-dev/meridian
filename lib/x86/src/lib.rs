@@ -112,6 +112,31 @@ mod tests {
     }
 
     #[test]
+    fn the_time_stamp_counter_keeps_time() {
+        // Measured twice against the system's clock, the counter runs at
+        // the same rate, as an invariant counter does.
+        let rate = || {
+            let (start, cycles) = (std::time::Instant::now(), raw::tsc());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let counted = u128::from(raw::tsc() - cycles);
+            counted * 1_000_000 / start.elapsed().as_micros()
+        };
+        let (first, second) = (rate(), rate());
+        assert!(
+            (100_000_000..100_000_000_000).contains(&first),
+            "{first} Hz"
+        );
+        assert!(
+            raw::tsc() > u64::from(u32::MAX),
+            "the build machine has been on for more than a few seconds, so the high half counts too"
+        );
+        assert!(
+            first.abs_diff(second) * 10 < first,
+            "{first} Hz, then {second} Hz"
+        );
+    }
+
+    #[test]
     fn text_joins_registers_in_order() {
         let regs = [
             u32::from_le_bytes(*b"Genu"),

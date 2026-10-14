@@ -44,6 +44,34 @@ pub struct BootInfo {
     /// The UEFI system table, for the runtime services that outlive the
     /// loader: the clock, firmware variables and resetting the machine.
     pub uefi_system_table: u64,
+    pub framebuffer: Framebuffer,
+}
+
+/// The screen as the firmware left it, still showing what the loader drew.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Framebuffer {
+    /// Physical address of the top left pixel, or 0 without a screen.
+    pub base: u64,
+    pub size: u64,
+    pub width: u32,
+    pub height: u32,
+    /// Pixels from the start of one row to the start of the next.
+    pub stride: u32,
+    pub format: PixelFormat,
+}
+
+/// How the four bytes of a pixel are ordered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct PixelFormat(pub u32);
+
+impl PixelFormat {
+    pub const NONE: PixelFormat = PixelFormat(0);
+    /// Red, green, blue, unused.
+    pub const RGB: PixelFormat = PixelFormat(1);
+    /// Blue, green, red, unused.
+    pub const BGR: PixelFormat = PixelFormat(2);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -142,6 +170,7 @@ impl BootInfo {
             stack: Stack::default(),
             rsdp: 0,
             uefi_system_table: 0,
+            framebuffer: Framebuffer::default(),
         }
     }
 
@@ -167,6 +196,13 @@ impl BootInfo {
         ];
         for (chunk, word) in out[16..].chunks_mut(8).zip(words) {
             chunk.copy_from_slice(&word.to_le_bytes());
+        }
+        let fb = &self.framebuffer;
+        out[96..104].copy_from_slice(&fb.base.to_le_bytes());
+        out[104..112].copy_from_slice(&fb.size.to_le_bytes());
+        let fields = [fb.width, fb.height, fb.stride, fb.format.0];
+        for (chunk, field) in out[112..].chunks_mut(4).zip(fields) {
+            chunk.copy_from_slice(&field.to_le_bytes());
         }
         out
     }
@@ -265,11 +301,16 @@ mod tests {
             (offset_of!(BootInfo, stack), 64),
             (offset_of!(BootInfo, rsdp), 80),
             (offset_of!(BootInfo, uefi_system_table), 88),
+            (offset_of!(BootInfo, framebuffer), 96),
         ];
         for (got, want) in offsets {
             assert_eq!(got, want);
         }
-        assert_eq!(size_of::<BootInfo>(), 96);
+        assert_eq!(size_of::<BootInfo>(), 128);
+        assert_eq!(size_of::<Framebuffer>(), 32);
+        assert_eq!(offset_of!(Framebuffer, width), 16);
+        assert_eq!(offset_of!(Framebuffer, stride), 24);
+        assert_eq!(offset_of!(Framebuffer, format), 28);
         assert_eq!(offset_of!(MemoryMap, count), 8);
         assert_eq!(offset_of!(KernelImage, virtual_base), 8);
         assert_eq!(offset_of!(KernelImage, size), 16);
@@ -299,12 +340,20 @@ mod tests {
             },
             rsdp: 0x9999,
             uefi_system_table: 0xaaaa,
+            framebuffer: Framebuffer {
+                base: 0xbbbb,
+                size: 0xcccc,
+                width: 0xdd,
+                height: 0xee,
+                stride: 0xff,
+                format: PixelFormat::BGR,
+            },
             ..BootInfo::new()
         };
         let b = info.to_bytes();
         assert_eq!(&b[0..8], b"MERIDIAN");
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), VERSION);
-        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 96);
+        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 128);
         let fields = [
             (
                 offset_of!(BootInfo, memory) + offset_of!(MemoryMap, regions),
@@ -338,6 +387,14 @@ mod tests {
         for (at, want) in fields {
             assert_eq!(u64_at(&b, at), want, "offset {at}");
         }
+        let fb = offset_of!(BootInfo, framebuffer);
+        assert_eq!(u64_at(&b, fb + offset_of!(Framebuffer, base)), 0xbbbb);
+        assert_eq!(u64_at(&b, fb + offset_of!(Framebuffer, size)), 0xcccc);
+        let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        assert_eq!(u32_at(fb + offset_of!(Framebuffer, width)), 0xdd);
+        assert_eq!(u32_at(fb + offset_of!(Framebuffer, height)), 0xee);
+        assert_eq!(u32_at(fb + offset_of!(Framebuffer, stride)), 0xff);
+        assert_eq!(u32_at(fb + offset_of!(Framebuffer, format)), 2);
     }
 
     #[test]
@@ -353,6 +410,32 @@ mod tests {
         assert_eq!(u64_at(&b, offset_of!(MemoryRegion, pages)), 0x42);
         assert_eq!(&b[16..20], &4u32.to_le_bytes());
         assert_eq!(&b[20..24], &0xdead_beef_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn pixel_formats_are_numbered_from_none() {
+        assert_eq!(PixelFormat::default(), PixelFormat::NONE);
+        assert_eq!(
+            [PixelFormat::NONE.0, PixelFormat::RGB.0, PixelFormat::BGR.0],
+            [0, 1, 2]
+        );
+        assert_eq!(size_of::<PixelFormat>(), 4);
+    }
+
+    /// A fresh structure is the header, the direct map's base and zeros:
+    /// the loader fills in everything else, and a field it forgets reads
+    /// as absent rather than as garbage.
+    #[test]
+    fn a_new_structure_is_zero_past_the_header() {
+        let b = BootInfo::new().to_bytes();
+        assert_eq!(&b[..8], b"MERIDIAN");
+        let hhdm = offset_of!(BootInfo, hhdm);
+        assert_eq!(u64_at(&b, hhdm), HHDM_BASE);
+        for (i, &byte) in b.iter().enumerate().skip(16) {
+            if !(hhdm..hhdm + 8).contains(&i) {
+                assert_eq!(byte, 0, "byte {i}");
+            }
+        }
     }
 
     #[test]

@@ -611,11 +611,11 @@ mod tests {
         ];
         let mut page = vec![0xaa; 4096];
         write_info(&mut page, &info, &regions);
-        assert_eq!(&page[..96], &info.to_bytes());
-        assert_eq!(&page[96..120], &regions[0].to_bytes());
-        assert_eq!(&page[120..144], &regions[1].to_bytes());
+        assert_eq!(&page[..128], &info.to_bytes());
+        assert_eq!(&page[128..152], &regions[0].to_bytes());
+        assert_eq!(&page[152..176], &regions[1].to_bytes());
         assert!(
-            page[144..].iter().all(|&b| b == 0xaa),
+            page[176..].iter().all(|&b| b == 0xaa),
             "nothing past the last region"
         );
     }
@@ -629,7 +629,7 @@ mod tests {
             kind: bootinfo::RegionKind::USABLE,
             reserved: 0,
         };
-        let mut page = vec![0; 96 + 24 + 10];
+        let mut page = vec![0; 128 + 24 + 10];
         write_info(&mut page, &BootInfo::new(), &[region, region]);
     }
 

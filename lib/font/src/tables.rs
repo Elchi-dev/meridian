@@ -667,7 +667,7 @@ fn simple(
     let mut first = 0;
     for i in 0..n {
         let end = end_at(i)?;
-        if end < first || end >= count {
+        if end < first {
             return Err(err());
         }
         contour(&mut points, end - first + 1, sink, t).ok_or_else(err)?;

@@ -29,7 +29,7 @@ pub(crate) fn f2dot14_at(data: &[u8], at: usize) -> Option<f32> {
 
 /// The bytes from `start` for `len`, if they are all there.
 pub(crate) fn slice(data: &[u8], start: usize, len: usize) -> Option<&[u8]> {
-    data.get(start..start.checked_add(len)?)
+    data.get(start..start.saturating_add(len))
 }
 
 #[cfg(test)]

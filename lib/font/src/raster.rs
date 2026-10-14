@@ -192,11 +192,12 @@ impl<'a> Rasterizer<'a> {
     }
 }
 
-/// Coverage as a byte: the amount of the pixel the shape covers, counting
-/// overlaps once, rounded to the nearest of 256 steps.
+/// Coverage as a byte: the amount of the pixel the shape covers, rounded
+/// to the nearest of 256 steps. The cast stops at 255, so parts that
+/// overlap count once.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn to_byte(sum: f32) -> u8 {
-    (clamp(sum.abs(), 0.0, 1.0) * 255.0 + 0.5) as u8
+    (sum.abs() * 255.0 + 0.5) as u8
 }
 
 /// How many lines a curve needs. One segment strays from the curve by at
@@ -250,6 +251,48 @@ impl OutlineSink for PixelSink<'_, '_> {
 
     fn close(&mut self) {
         self.raster.line(self.last, self.start);
-        self.last = self.start;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spread(x: f32, y: f32) -> u32 {
+        // A curve whose p0 - 2c + p2 is (x, y).
+        segments(
+            Point::new(0.0, 0.0),
+            Point::new(-x / 2.0, -y / 2.0),
+            Point::new(0.0, 0.0),
+        )
+    }
+
+    #[test]
+    fn curves_get_enough_segments() {
+        // n segments stray by spread / (4 n^2), which must stay within
+        // 0.05 pixels.
+        assert_eq!(spread(0.0, 0.0), 1);
+        assert_eq!(spread(0.19, 0.0), 1);
+        assert_eq!(spread(0.0, 0.21), 2);
+        assert_eq!(spread(-0.79, 0.1), 2);
+        assert_eq!(spread(0.1, -0.81), 3);
+        assert_eq!(spread(-4.9, 0.0), 5);
+        assert_eq!(spread(0.0, 5.1), 6);
+        assert_eq!(spread(900.0, 0.0), 64);
+        assert_eq!(spread(1e9, 1e9), 64);
+        assert_eq!(spread(f32::NAN, 0.0), 1);
+    }
+
+    #[test]
+    fn coverage_rounds_to_the_nearest_step() {
+        assert_eq!(to_byte(0.0), 0);
+        assert_eq!(to_byte(0.5), 128);
+        assert_eq!(to_byte(-0.5), 128);
+        assert_eq!(to_byte(1.0 / 255.0 * 0.49), 0);
+        assert_eq!(to_byte(1.0 / 255.0 * 0.51), 1);
+        assert_eq!(to_byte(1.0), 255);
+        assert_eq!(to_byte(-1.0), 255);
+        assert_eq!(to_byte(2.0), 255);
+        assert_eq!(to_byte(f32::NAN), 0);
     }
 }

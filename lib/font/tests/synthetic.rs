@@ -122,9 +122,9 @@ fn mapping() -> Vec<u8> {
         },
         Segment {
             start: 0x2000,
-            end: 0x2002,
+            end: 0x2003,
             delta: 1,
-            glyphs: Some(vec![6, 7, 40]),
+            glyphs: Some(vec![6, 7, 40, 0]),
         },
         Segment {
             start: 0x3000,
@@ -295,6 +295,57 @@ fn composites_move_scale_and_turn_their_parts() {
 }
 
 #[test]
+fn every_kind_of_component_can_be_followed_by_another() {
+    // Each scale takes a different number of bytes, so the component after
+    // it is only found if they are all skipped right.
+    let parts = [
+        Component {
+            scale: Scale::Uniform(0.5),
+            ..component(1, 0, 0)
+        },
+        Component {
+            scale: Scale::Xy(1.5, 0.5),
+            ..component(1, 10, 0)
+        },
+        Component {
+            scale: Scale::Matrix(0.0, 1.0, -1.0, 0.0),
+            ..component(1, 0, 10)
+        },
+        component(1, -5, -5),
+    ];
+    let mut b = builder();
+    b.glyphs
+        .push(glyph(600, 0, composite(&parts, [-700, -5, 760, 695])));
+    let data = b.build();
+    let font = Font::parse(&data).unwrap();
+    let mut want = polygon(&moved(&SQUARE, |x, y| (x * 0.5, y * 0.5)));
+    want.extend(polygon(&moved(&SQUARE, |x, y| (x * 1.5 + 10.0, y * 0.5))));
+    want.extend(polygon(&moved(&SQUARE, |x, y| (-y, x + 10.0))));
+    want.extend(polygon(&moved(&SQUARE, |x, y| (x - 5.0, y - 5.0))));
+    assert_eq!(record(&font, 10).unwrap().commands, want);
+}
+
+#[test]
+fn nested_transforms_apply_inside_out() {
+    // Glyph 7 turned and scaled again: its parts are turned first, then
+    // the whole is mapped by the outer matrix, offset included.
+    let mut b = builder();
+    let outer = Component {
+        scale: Scale::Matrix(0.5, 0.25, -0.25, 0.5),
+        flags: 0x0800,
+        ..component(7, 30, -40)
+    };
+    b.glyphs
+        .push(glyph(600, 0, composite(&[outer], [-400, -200, 100, 300])));
+    let data = b.build();
+    let font = Font::parse(&data).unwrap();
+    let m = |(x, y): (f32, f32)| (0.5 * x - 0.25 * y + 25.0, 0.25 * x + 0.5 * y - 12.5);
+    let mut want = polygon(&moved(&SQUARE, |x, y| m((-y - 20.0, x + 10.0))));
+    want.extend(polygon(&moved(&SQUARE, |x, y| m((-y + 10.0, x + 20.0)))));
+    assert_eq!(record(&font, 10).unwrap().commands, want);
+}
+
+#[test]
 fn composites_have_limits() {
     // Glyph 1 holding itself never ends by itself.
     let mut b = builder();
@@ -332,13 +383,14 @@ fn chain(levels: u32) -> (Vec<u8>, u16) {
 
 #[test]
 fn composites_nest_as_deep_as_allowed() {
-    let (data, top) = chain(MAX_COMPONENT_DEPTH);
+    // The limit the documentation gives.
+    assert_eq!(MAX_COMPONENT_DEPTH, 8);
+    let (data, top) = chain(8);
     let font = Font::parse(&data).unwrap();
-    let shift = MAX_COMPONENT_DEPTH as f32;
-    let want = polygon(&moved(&SQUARE, |x, y| (x + shift, y)));
+    let want = polygon(&moved(&SQUARE, |x, y| (x + 8.0, y)));
     assert_eq!(record(&font, top).unwrap().commands, want);
 
-    let (data, top) = chain(MAX_COMPONENT_DEPTH + 1);
+    let (data, top) = chain(9);
     let font = Font::parse(&data).unwrap();
     assert_eq!(record(&font, top).err(), Some(Error::TooDeep));
     assert_eq!(record(&font, top - 1).map(|r| r.commands.len()), Ok(5));
@@ -352,22 +404,20 @@ fn composites_have_a_component_budget() {
         b.glyphs[4] = glyph(600, 0, composite(&parts, [0, 0, 500, 700]));
         b.build()
     };
-    let data = many(MAX_COMPONENTS);
+    assert_eq!(MAX_COMPONENTS, 64);
+    let data = many(64);
     let font = Font::parse(&data).unwrap();
     let closes = |r: &Recorder| r.commands.iter().filter(|c| **c == Command::Close).count();
-    assert_eq!(
-        record(&font, 4).map(|r| closes(&r)),
-        Ok(5 * MAX_COMPONENTS as usize)
-    );
-    let data = many(MAX_COMPONENTS + 1);
+    assert_eq!(record(&font, 4).map(|r| closes(&r)), Ok(5 * 64));
+    let data = many(65);
     let font = Font::parse(&data).unwrap();
     assert_eq!(record(&font, 4).err(), Some(Error::TooDeep));
     // Nested components count too: glyph 8 holds glyph 4, which holds
     // all of its own.
-    let data = many(MAX_COMPONENTS - 1);
+    let data = many(63);
     let font = Font::parse(&data).unwrap();
     assert_eq!(record(&font, 8).err(), Some(Error::TooDeep));
-    let data = many(MAX_COMPONENTS - 2);
+    let data = many(62);
     let font = Font::parse(&data).unwrap();
     assert!(record(&font, 8).is_ok());
 }
@@ -475,8 +525,11 @@ fn format4_maps_by_delta_and_by_list() {
         ('\u{1fff}', None),
         ('\u{2000}', Some(7)),
         ('\u{2001}', Some(8)),
-        // Past the glyphs the font has.
+        // Past the glyphs the font has, and no glyph even with the delta.
         ('\u{2002}', None),
+        ('\u{2003}', None),
+        // Just before a segment whose delta would give a glyph.
+        ('\u{2fff}', None),
         ('\u{3000}', Some(8)),
         ('\u{3001}', Some(9)),
         ('\u{3002}', None),
@@ -495,7 +548,7 @@ fn format12_maps_every_plane() {
         (0x41, 0x42, 1),
         (0x3000, 0x3002, 7),
         (0x1f600, 0x1f600, 9),
-        (0x2_0000, 0x2_0000, 70000),
+        (0x2_0000, 0x2_0000, 65539),
     ];
     let mut b = builder();
     b.cmap = cmap(&[(3, 10, format12(&groups))]);
@@ -519,6 +572,31 @@ fn format12_maps_every_plane() {
     for (c, want) in cases {
         assert_eq!(font.glyph_index(c), want, "{c:?}");
     }
+}
+
+#[test]
+fn format4_stops_after_its_last_segment() {
+    // Without the closing segment for U+FFFF, a character past the last
+    // segment would land in the arrays after it; here the bytes there
+    // would map U+0005 to glyph 5.
+    let mut table = cmap(&[(
+        3,
+        1,
+        format4(&[Segment {
+            start: 1,
+            end: 2,
+            delta: 1,
+            glyphs: None,
+        }]),
+    )]);
+    table.extend_from_slice(&[0, 0]);
+    let mut b = builder();
+    b.cmap = table;
+    let data = b.build();
+    let font = Font::parse(&data).unwrap();
+    assert_eq!(font.glyph_index('\u{1}'), Some(2));
+    assert_eq!(font.glyph_index('\u{2}'), Some(3));
+    assert_eq!(font.glyph_index('\u{5}'), None);
 }
 
 #[test]
@@ -549,6 +627,11 @@ fn cmap_prefers_the_full_repertoire() {
         Ok(Some(2))
     );
     assert_eq!(pick(&[(0, 3, bmp.clone())]), Ok(Some(1)));
+    // Past the last segment, here without the usual one for U+FFFF.
+    let mut b = builder();
+    b.cmap = cmap(&[(3, 1, bmp.clone())]);
+    let data = b.build();
+    assert_eq!(Font::parse(&data).unwrap().glyph_index('B'), None);
     assert_eq!(
         pick(&[(1, 0, bmp.clone()), (3, 1, bmp.clone())]),
         Ok(Some(1))
@@ -776,6 +859,42 @@ fn metric_and_location_tables_must_be_long_enough() {
     let loca = Some(Error::Malformed(*b"loca"));
     assert_eq!(malformed(*b"loca", |l| l.truncate(21)), loca);
     assert_eq!(malformed(*b"loca", |l| l.truncate(22)), None);
+    // Long offsets take four bytes each.
+    let long = |len: usize| {
+        let mut b = builder();
+        b.long_loca = true;
+        let mut tables = b.tables();
+        for (t, d) in &mut tables {
+            if t == b"loca" {
+                d.truncate(len);
+            }
+        }
+        Font::parse(&assemble(0x0001_0000, &tables)).err()
+    };
+    assert_eq!(long(43), loca);
+    assert_eq!(long(44), None);
+}
+
+#[test]
+fn glyphs_past_the_count_are_errors_even_with_room_in_the_tables() {
+    let mut tables = builder().tables();
+    for (tag, data) in &mut tables {
+        if tag == b"hmtx" {
+            data.extend_from_slice(&[0x7f; 8]);
+        }
+        if tag == b"loca" {
+            // An eleventh glyph, empty, that `maxp` does not count.
+            let last = data[data.len() - 2..].to_vec();
+            data.extend_from_slice(&last);
+        }
+    }
+    let data = assemble(0x0001_0000, &tables);
+    let font = Font::parse(&data).unwrap();
+    let (hmtx, loca) = (Error::Malformed(*b"hmtx"), Error::Malformed(*b"loca"));
+    assert_eq!(font.h_metrics(10), Err(hmtx));
+    assert_eq!(font.bounds(10), Err(loca));
+    assert_eq!(record(&font, 10).err(), Some(loca));
+    assert_eq!(font.h_metrics(9), Ok((2100, -255)));
 }
 
 #[test]
@@ -830,9 +949,14 @@ fn broken_simple_glyphs_are_errors() {
     long[18..20].copy_from_slice(&900u16.to_be_bytes());
     assert_eq!(fails(long), glyf);
 
-    // A box upside down, and one cut short.
+    // A box upside down, one back to front, and one cut short.
     let mut upside = good.clone();
     upside[4..6].copy_from_slice(&500u16.to_be_bytes());
+    let mut backwards = good.clone();
+    backwards[2..4].copy_from_slice(&500u16.to_be_bytes());
+    let data = with_glyph2(backwards);
+    let font = Font::parse(&data).unwrap();
+    assert_eq!(font.bounds(2), Err(Error::Malformed(*b"glyf")));
     let data = with_glyph2(upside);
     let font = Font::parse(&data).unwrap();
     assert_eq!(font.bounds(2), Err(Error::Malformed(*b"glyf")));

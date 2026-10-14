@@ -487,7 +487,8 @@ fn rasterize_checks_sizes_and_buffers() {
         let r = font.rasterize(g, px, shift, &mut scratch, &mut out);
         assert_eq!(r, Err(Error::BadSize), "{px} {shift}");
     }
-    assert!(font.placement(g, MAX_PIXEL_SIZE, 1.0).unwrap().is_some());
+    assert_eq!(MAX_PIXEL_SIZE, 1024.0);
+    assert!(font.placement(g, 1024.0, 1.0).unwrap().is_some());
     let space = glyph(&font, ' ');
     assert_eq!(font.placement(space, 16.0, 0.0), Ok(None));
     assert_eq!(font.rasterize(space, 16.0, 0.0, &mut [], &mut []), Ok(None));

@@ -137,6 +137,19 @@ fn random_triangles_match_exact_coverage() {
 }
 
 #[test]
+fn narrow_canvases_keep_their_rows() {
+    let mut rng = Rng(7);
+    for width in 1..4 {
+        for _ in 0..50 {
+            let triangle: Vec<[f64; 2]> = (0..3)
+                .map(|_| [rng.range(-1.0, width as f64 + 1.0), rng.range(0.0, 6.0)])
+                .collect();
+            assert_exact(width, 6, &[triangle]);
+        }
+    }
+}
+
+#[test]
 fn shapes_past_the_canvas_are_clipped() {
     // Left of the canvas counts as on its left edge and right of it as on
     // its right edge, which is exactly clipping for coverage inside it.

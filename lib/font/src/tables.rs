@@ -731,3 +731,38 @@ fn contour(
     sink.close();
     Some(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_composed_transform_applies_the_inner_one_first() {
+        let outer = Transform {
+            a: 2.0,
+            b: 0.5,
+            c: -1.0,
+            d: 3.0,
+            e: 10.0,
+            f: -4.0,
+        };
+        let inner = Transform {
+            a: 0.5,
+            b: -2.0,
+            c: 1.5,
+            d: 4.0,
+            e: -3.0,
+            f: 7.0,
+        };
+        let both = outer.then(inner);
+        for p in [
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 2.0),
+            Point::new(-3.0, 0.25),
+        ] {
+            assert_eq!(both.apply(p), outer.apply(inner.apply(p)), "{p:?}");
+        }
+        assert_eq!(Transform::IDENTITY.then(inner), inner);
+        assert_eq!(inner.then(Transform::IDENTITY), inner);
+    }
+}

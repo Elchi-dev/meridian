@@ -198,6 +198,36 @@ func fileID(name string, dir bool) (string, error) {
 	return base + "." + ext + ";1", nil
 }
 
+// Fits reports whether ISO 9660 can name a file at path, so that Write
+// takes it.
+func Fits(path string) bool {
+	_, err := pathIDs(path)
+	return err == nil
+}
+
+// pathIDs gives the identifier of each part of path, or why ISO 9660
+// cannot name it.
+func pathIDs(p string) ([]string, error) {
+	parts := strings.Split(p, "/")
+	if len(parts) > maxDepth {
+		return nil, fmt.Errorf("iso: %q is %d levels deep, ISO 9660 allows %d", p, len(parts), maxDepth)
+	}
+	ids := make([]string, len(parts))
+	pathBytes := len(parts) - 1
+	for i, part := range parts {
+		id, err := fileID(part, i < len(parts)-1)
+		if err != nil {
+			return nil, fmt.Errorf("iso: path %q: %w", p, err)
+		}
+		ids[i] = id
+		pathBytes += len(id)
+	}
+	if pathBytes > maxPathBytes {
+		return nil, fmt.Errorf("iso: %q is %d bytes long as an ISO 9660 path, the limit is %d", p, pathBytes, maxPathBytes)
+	}
+	return ids, nil
+}
+
 func buildTree(files map[string][]byte) (*node, error) {
 	root := &node{}
 	paths := make([]string, 0, len(files))
@@ -206,18 +236,15 @@ func buildTree(files map[string][]byte) (*node, error) {
 	}
 	slices.Sort(paths)
 	for _, p := range paths {
-		parts := strings.Split(p, "/")
-		if len(parts) > maxDepth {
-			return nil, fmt.Errorf("iso: %q is %d levels deep, ISO 9660 allows %d", p, len(parts), maxDepth)
+		ids, err := pathIDs(p)
+		if err != nil {
+			return nil, err
 		}
-		cur, pathBytes := root, len(parts)-1
+		parts := strings.Split(p, "/")
+		cur := root
 		for i, part := range parts {
 			last := i == len(parts)-1
-			id, err := fileID(part, !last)
-			if err != nil {
-				return nil, fmt.Errorf("iso: path %q: %w", p, err)
-			}
-			pathBytes += len(id)
+			id := ids[i]
 			key := strings.ToUpper(part)
 			var child *node
 			for _, c := range cur.children {
@@ -242,9 +269,6 @@ func buildTree(files map[string][]byte) (*node, error) {
 				cur.children = append(cur.children, child)
 			}
 			cur = child
-		}
-		if pathBytes > maxPathBytes {
-			return nil, fmt.Errorf("iso: %q is %d bytes long as an ISO 9660 path, the limit is %d", p, pathBytes, maxPathBytes)
 		}
 	}
 	sortTree(root)

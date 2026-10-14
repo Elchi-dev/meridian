@@ -666,6 +666,35 @@ func TestLimitsThatStillFit(t *testing.T) {
 	}
 }
 
+func TestFitsAgreesWithWrite(t *testing.T) {
+	paths := map[string]bool{
+		"EFI/BOOT/BOOTX64.EFI":                  true,
+		strings.Repeat("F", 27) + ".TXT":        true,
+		strings.Repeat("D", 31) + "/f":          true,
+		"1/2/3/4/5/6/7/8":                       true,
+		".hidden":                               true,
+		longPath(24):                            true,
+		"a-b":                                   false,
+		"dir.x/f":                               false,
+		strings.Repeat("D", 32) + "/f":          false,
+		strings.Repeat("F", 28) + ".TXT":        false,
+		"a.b.c":                                 false,
+		"a//b":                                  false,
+		"/a":                                    false,
+		"1/2/3/4/5/6/7/8/9":                     false,
+		longPath(25):                            false,
+		"long-name-" + strings.Repeat("x", 244): false,
+	}
+	for p, want := range paths {
+		in := sampleImage()
+		in.Files = map[string][]byte{p: {1}}
+		_, err := Write(newFile(t), in)
+		if Fits(p) != want || (err == nil) != want {
+			t.Errorf("%q: Fits says %v, Write says %v, want %v", p, Fits(p), err, want)
+		}
+	}
+}
+
 // longPath builds seven directories of 31 characters and a file whose
 // identifier is base + ".TXTX;1": 7*31 + 7 separators + base + 7 bytes.
 func longPath(base int) string {

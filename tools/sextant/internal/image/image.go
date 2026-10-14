@@ -156,7 +156,9 @@ func writeDisk(f *os.File, c Contents) error {
 }
 
 // ISO writes an ISO 9660 image whose El Torito boot entry is the EFI
-// system partition. The files are also visible on the CD itself.
+// system partition. The files are also visible on the CD itself, all but
+// those whose names ISO 9660 cannot hold, such as the test images' long
+// one; the firmware and the loader only read the partition.
 func ISO(path string, c Contents) error {
 	esp, err := os.CreateTemp("", "sextant-esp-")
 	if err != nil {
@@ -178,11 +180,22 @@ func ISO(path string, c Contents) error {
 	if err != nil {
 		return err
 	}
-	_, err = iso.Write(f, iso.Image{VolumeID: "MERIDIAN", Time: c.Time, Files: c.Files, BootImage: boot})
+	_, err = iso.Write(f, iso.Image{VolumeID: "MERIDIAN", Time: c.Time, Files: onCD(c.Files), BootImage: boot})
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
 	return err
+}
+
+// onCD are the files ISO 9660 can name.
+func onCD(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for p, data := range files {
+		if iso.Fits(p) {
+			out[p] = data
+		}
+	}
+	return out
 }
 
 // BuildTime is the time stamped into images. SOURCE_DATE_EPOCH wins, as

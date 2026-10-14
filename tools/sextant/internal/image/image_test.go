@@ -265,6 +265,22 @@ func TestISOAsXorrisoSeesIt(t *testing.T) {
 	}
 }
 
+func TestATestImageMakesAnISO(t *testing.T) {
+	files := TestFiles([]byte("efi"), []byte("elf"))
+	cd := onCD(files)
+	if _, ok := cd[LongName]; ok || len(cd) != len(files)-1 {
+		t.Fatalf("on the CD: %d of %d files, the long name among them: %v", len(cd), len(files), ok)
+	}
+	for p, data := range cd {
+		if string(files[p]) != string(data) {
+			t.Errorf("%s changed on the way to the CD", p)
+		}
+	}
+	if err := ISO(filepath.Join(t.TempDir(), "test.iso"), Contents{Seed: "iso", Time: stamp, Files: files}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestErrorsFromTheWriters(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "no", "such", "dir", "x.img")
 	if err := Disk(missingDir, Contents{Seed: "x", Time: stamp}); err == nil {
@@ -279,6 +295,12 @@ func TestErrorsFromTheWriters(t *testing.T) {
 	}
 	if err := ISO(filepath.Join(t.TempDir(), "big.iso"), Contents{Seed: "x", Time: stamp, Files: tooBig}); err == nil || !strings.HasPrefix(err.Error(), "EFI system partition: ") {
 		t.Errorf("a file larger than the ISO's partition: %v", err)
+	}
+	// FAT's clock starts in 1980 and is clamped; ISO 9660 refuses what it
+	// cannot store, after the file was made.
+	early := time.Date(1899, 12, 31, 0, 0, 0, 0, time.UTC)
+	if err := ISO(filepath.Join(t.TempDir(), "early.iso"), Contents{Seed: "x", Time: early, Files: files()}); err == nil || !strings.Contains(err.Error(), "between 1900 and 2155") {
+		t.Errorf("a time before ISO 9660's: %v", err)
 	}
 }
 

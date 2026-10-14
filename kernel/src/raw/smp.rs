@@ -7,10 +7,12 @@
 
 use alloc::vec::Vec;
 use core::arch::{global_asm, naked_asm};
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use bootinfo::{HHDM_BASE, MemoryRegion};
 use kernel::CORE_STACK_PAGES;
+
+use super::interrupts::{CORES, SPURIOUS, WAKE};
 
 // The trampoline. It runs at whatever page it was copied to, so it finds
 // itself from CS, which the startup interrupt sets to the page, and keeps
@@ -118,8 +120,93 @@ static STACK_BASE: AtomicU64 = AtomicU64::new(0);
 /// them found themselves on the stack they were given and on the kernel's
 /// descriptor tables.
 static RUNNING: AtomicU32 = AtomicU32::new(0);
+
+/// A job for one of the other cores: a function, what it works on, and
+/// what came of it.
+struct Mailbox {
+    /// The job's function as an address, or 0 while none waits.
+    job: AtomicUsize,
+    argument: AtomicU64,
+    result: AtomicU64,
+    /// Whether the core has finished the last job it was sent.
+    done: AtomicBool,
+    /// Whether the core waits for jobs, and the APIC id that wakes it.
+    ready: AtomicBool,
+    apic_id: AtomicU32,
+}
+
+static MAILBOXES: [Mailbox; CORES] = [const {
+    Mailbox {
+        job: AtomicUsize::new(0),
+        argument: AtomicU64::new(0),
+        result: AtomicU64::new(0),
+        done: AtomicBool::new(true),
+        ready: AtomicBool::new(false),
+        apic_id: AtomicU32::new(0),
+    }
+}; CORES];
+
+/// Sends core `number` the job `work(argument)` and wakes it. Returns
+/// false when that core does not wait for jobs or has not finished the
+/// last one.
+pub fn send(number: usize, work: fn(u64) -> u64, argument: u64) -> bool {
+    let Some(mailbox) = MAILBOXES.get(number) else {
+        return false;
+    };
+    if !mailbox.ready.load(Ordering::Acquire)
+        || mailbox
+            .done
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return false;
+    }
+    mailbox.argument.store(argument, Ordering::Release);
+    mailbox.job.store(work as usize, Ordering::Release);
+    // SAFETY: a ready core runs on the kernel's IDT, which has the handler
+    // for WAKE.
+    unsafe { x86::raw::send_interrupt(mailbox.apic_id.load(Ordering::Acquire), WAKE) };
+    true
+}
+
+/// Waits up to `cycles` of the time stamp counter for core `number` to
+/// finish the last job it was sent, and returns what came of it.
+pub fn wait(number: usize, cycles: u64) -> Option<u64> {
+    let mailbox = MAILBOXES.get(number)?;
+    let finished = mailbox.ready.load(Ordering::Acquire)
+        && x86::raw::wait_for(cycles, || mailbox.done.load(Ordering::Acquire));
+    finished.then(|| mailbox.result.load(Ordering::Acquire))
+}
+
+/// The job that tells whether a core takes work: it answers with the
+/// APIC id of the core that runs it.
+fn own_id(_: u64) -> u64 {
+    x86::raw::apic_id().map_or(u64::MAX, u64::from)
+}
+
+/// Runs the jobs core `number` is sent, and sleeps in between.
+fn work(mailbox: &Mailbox) -> ! {
+    loop {
+        x86::raw::disable_interrupts();
+        let job = mailbox.job.swap(0, Ordering::AcqRel);
+        if job == 0 {
+            // SAFETY: this core runs on the kernel's IDT, and its APIC only
+            // delivers WAKE and spurious interrupts, which have handlers.
+            unsafe { x86::raw::enable_interrupts_and_wait() };
+            continue;
+        }
+        // SAFETY: only send stores a job, and only a fn(u64) -> u64.
+        let work = unsafe { core::mem::transmute::<usize, fn(u64) -> u64>(job) };
+        let result = work(mailbox.argument.load(Ordering::Acquire));
+        mailbox.result.store(result, Ordering::Release);
+        mailbox.done.store(true, Ordering::Release);
+    }
+}
 #[cfg(feature = "qemu-test")]
 static SETTLED: AtomicU32 = AtomicU32::new(0);
+/// How many of them answered the first job they were sent.
+#[cfg(feature = "qemu-test")]
+static ANSWERED: AtomicU32 = AtomicU32::new(0);
 /// How many counter cycles starting them took. Only the test image keeps
 /// it.
 #[cfg(feature = "qemu-test")]
@@ -129,10 +216,11 @@ static TOOK: AtomicU64 = AtomicU64::new(0);
 /// them settled on their own stack and the kernel's tables. Only the test
 /// image asks.
 #[cfg(feature = "qemu-test")]
-pub fn running() -> (u32, u32) {
+pub fn running() -> (u32, u32, u32) {
     (
         RUNNING.load(Ordering::Acquire),
         SETTLED.load(Ordering::Acquire),
+        ANSWERED.load(Ordering::Acquire),
     )
 }
 
@@ -144,7 +232,8 @@ pub fn took() -> u64 {
 }
 
 /// Starts every usable processor the MADT lists but this one, one after
-/// the other, and returns how many came into the kernel. Starts none
+/// the other, and returns how many came into the kernel and answered a
+/// first job with their own APIC id. Starts none
 /// without the MADT, an x2APIC, a known counter rate `tsc_hz`, room for
 /// the trampoline below 640 KiB, or frames for their stacks.
 pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Option<u64>) -> u32 {
@@ -190,6 +279,10 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
         STACK_BASE.store(stack - CORE_STACK_PAGES * frames::FRAME, Ordering::Release);
         STACK.store(stack, Ordering::Release);
         NUMBER.store(number as u64, Ordering::Release);
+        let Some(mailbox) = MAILBOXES.get(number) else {
+            break;
+        };
+        mailbox.apic_id.store(id, Ordering::Release);
         let before = RUNNING.load(Ordering::Acquire);
         // INIT, then two startups, as the MultiProcessor Specification
         // asks; a processor that started at the first ignores the second.
@@ -207,7 +300,18 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
     }
     #[cfg(feature = "qemu-test")]
     TOOK.store(x86::raw::tsc() - begin, Ordering::Release);
-    RUNNING.load(Ordering::Acquire)
+    for number in 1..=others.len() {
+        let _ = send(number, own_id, 0);
+    }
+    let answered = others
+        .iter()
+        .enumerate()
+        .filter(|&(index, &id)| wait(index + 1, tsc_hz / 100) == Some(u64::from(id)))
+        .count();
+    let answered = u32::try_from(answered).unwrap_or(u32::MAX);
+    #[cfg(feature = "qemu-test")]
+    ANSWERED.store(answered, Ordering::Release);
+    answered
 }
 
 /// Copies the trampoline to `home`, gives it page tables after it and
@@ -265,16 +369,21 @@ unsafe extern "C" fn ap_entry() -> ! {
     )
 }
 
-/// The other processors' life so far: the kernel's descriptor tables,
-/// their APIC, a count, and halting.
+/// The other processors' life: the kernel's descriptor tables, their
+/// APIC, a count, then the jobs they are sent.
 extern "sysv64" fn ap_main(number: u64) -> ! {
     let number = usize::try_from(number).unwrap_or(0);
     super::interrupts::load_on_another_core(number);
     let _ = x86::raw::enable_x2apic();
+    x86::raw::set_spurious_vector(SPURIOUS);
     #[cfg(feature = "qemu-test")]
     settled(number);
+    let Some(mailbox) = MAILBOXES.get(number) else {
+        x86::raw::halt()
+    };
+    mailbox.ready.store(true, Ordering::Release);
     RUNNING.fetch_add(1, Ordering::AcqRel);
-    x86::raw::halt()
+    work(mailbox)
 }
 
 /// Counts this processor as settled when it runs on the stack it was

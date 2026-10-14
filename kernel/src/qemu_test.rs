@@ -263,9 +263,9 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
 /// The kernel's own tables are loaded, and each exception a check asks for
 /// reaches the handler with the right vector, error code and address.
 fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
-    use crate::raw::interrupts::{SPURIOUS, TIMER};
+    use crate::raw::interrupts::{SPURIOUS, TIMER, WAKE};
     x86::qemu_test::tables(
-        &[TIMER, SPURIOUS],
+        &[TIMER, WAKE, SPURIOUS],
         raw::interrupts::CORES,
         &mut |name, ok, why| {
             report.check(name, ok, why);
@@ -348,7 +348,7 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
     if !x86::apic::supported(x86::raw::cpuid(1)[2]) {
         report.check(
             "kernel.smp.alone",
-            raw::smp::running() == (0, 0) && x86::raw::gdt_entries().get(5) == Some(&0),
+            raw::smp::running() == (0, 0, 0) && x86::raw::gdt_entries().get(5) == Some(&0),
             "without an x2APIC no other core should be started or given a task state",
         );
         return;
@@ -357,8 +357,8 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
         "kernel.smp.running",
         machine
             .cores
-            .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1)),
-        "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables",
+            .is_some_and(|n| n > 1 && raw::smp::running() == (n - 1, n - 1, n - 1)),
+        "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables, and answered with its own APIC id",
     );
     let entries = x86::raw::gdt_entries();
     let others = machine.cores.map_or(0, |n| n.saturating_sub(1) as usize);
@@ -382,12 +382,66 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
         }) && expected::read_at(kernel::core_stack_top(others + 1, false) - 8).is_some(),
         "each other core's stacks should be mapped, with nothing below them, and no more stacks than cores",
     );
+    work_checks(report, others, tsc_hz.unwrap_or(0) / 10);
     report.check(
         "kernel.smp.quick",
         tsc_hz.is_some_and(|hz| {
             raw::smp::took() < hz / 1000 * 15 * u64::from(machine.cores.unwrap_or(1))
         }),
         "starting the other cores should not wait out the time a core that never starts gets",
+    );
+}
+
+static HOLD: AtomicBool = AtomicBool::new(false);
+
+/// A job that keeps its core busy until the test lets it go.
+fn held(argument: u64) -> u64 {
+    while HOLD.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    argument + 1
+}
+
+/// A job whose result depends on every step of it.
+fn squares(n: u64) -> u64 {
+    (1..=n).map(|i| i * i).sum()
+}
+
+/// Sends the `others` other cores jobs, all at once and one while a core
+/// is busy, and waits up to `cycles` for each.
+fn work_checks<W: Write>(report: &mut Report<'_, W>, others: usize, cycles: u64) {
+    use raw::smp::{send, wait};
+    let n = |core: usize| 1000 * core as u64;
+    let sent = (1..=others).all(|core| send(core, squares, n(core)));
+    let done = (1..=others).all(|core| wait(core, cycles) == Some(squares(n(core))));
+    report.check(
+        "kernel.smp.work",
+        others > 0 && sent && done,
+        "each other core should run the job it is sent, alongside the rest, and give back its result",
+    );
+    HOLD.store(true, Ordering::Release);
+    let taken = send(1, held, 41);
+    let refused = !send(1, squares, 1);
+    let busy = wait(1, cycles / 10).is_none();
+    HOLD.store(false, Ordering::Release);
+    let back = wait(1, cycles) == Some(42);
+    report.check(
+        "kernel.smp.busy",
+        taken
+            && refused
+            && busy
+            && back
+            && !send(0, squares, 1)
+            && !send(others + 1, squares, 1)
+            && wait(others + 1, cycles).is_none(),
+        "a busy core should take no second job until it is done, and only other cores that run take jobs",
+    );
+    // Each job comes with an interrupt. Two that meet while one waits are
+    // taken as one, so only at least one for each core is certain.
+    report.check(
+        "kernel.smp.slept",
+        x86::raw::wait_for(cycles, || raw::interrupts::woken() >= others as u64),
+        "the other cores should sleep between jobs and be woken for them",
     );
 }
 

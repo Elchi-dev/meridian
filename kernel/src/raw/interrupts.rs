@@ -76,6 +76,8 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// one the APIC gives for interrupts it gave up on.
 pub const TIMER: u8 = 0x20;
 pub const SPURIOUS: u8 = 0xff;
+/// The interrupt that wakes another core for a job.
+pub const WAKE: u8 = 0x21;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
@@ -83,6 +85,18 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "qemu-test")]
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Acquire)
+}
+
+/// How many times another core was woken for a job. Only the test image
+/// counts.
+#[cfg(feature = "qemu-test")]
+static WOKEN: AtomicU64 = AtomicU64::new(0);
+
+/// How many times another core was woken for a job. Only the test image
+/// asks.
+#[cfg(feature = "qemu-test")]
+pub fn woken() -> u64 {
+    WOKEN.load(Ordering::Acquire)
 }
 
 /// Loads the kernel's global descriptor table, task state segment and
@@ -106,7 +120,9 @@ pub fn install() {
     }
     let timer: unsafe extern "C" fn() = timer_stub;
     let spurious: unsafe extern "C" fn() = spurious_stub;
+    let wake: unsafe extern "C" fn() = wake_stub;
     t.idt[usize::from(TIMER)] = Gate::interrupt(timer as usize as u64, 0);
+    t.idt[usize::from(WAKE)] = Gate::interrupt(wake as usize as u64, 0);
     t.idt[usize::from(SPURIOUS)] = Gate::interrupt(spurious as usize as u64, 0);
     // SAFETY: the tables live in a static, so they stay where they are,
     // the GDT holds the selectors load_gdt uses and the task state at
@@ -194,6 +210,12 @@ extern "sysv64" fn exception(frame: &mut Frame) {
         x86::raw::end_of_interrupt();
         return;
     }
+    if frame.vector == u64::from(WAKE) {
+        #[cfg(feature = "qemu-test")]
+        WOKEN.fetch_add(1, Ordering::AcqRel);
+        x86::raw::end_of_interrupt();
+        return;
+    }
     if frame.vector == u64::from(SPURIOUS) {
         return;
     }
@@ -271,6 +293,11 @@ macro_rules! stubs {
 #[unsafe(naked)]
 unsafe extern "C" fn timer_stub() {
     naked_asm!("push 0", "push {v}", "jmp {common}", v = const TIMER, common = sym common)
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn wake_stub() {
+    naked_asm!("push 0", "push {v}", "jmp {common}", v = const WAKE, common = sym common)
 }
 
 #[unsafe(naked)]

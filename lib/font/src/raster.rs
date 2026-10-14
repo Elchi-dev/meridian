@@ -270,6 +270,8 @@ mod tests {
         assert_eq!(spread(0.1, -0.81), 3);
         assert_eq!(spread(-4.9, 0.0), 5);
         assert_eq!(spread(0.0, 5.1), 6);
+        assert_eq!(spread(4.0 * TOLERANCE, 0.0), 1, "just within");
+        assert_eq!(spread(0.0, 16.0 * TOLERANCE), 2, "just within for two");
         assert_eq!(spread(900.0, 0.0), 64);
         assert_eq!(spread(1e9, 1e9), 64);
         assert_eq!(spread(f32::NAN, 0.0), 1);

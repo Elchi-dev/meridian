@@ -575,6 +575,19 @@ fn format12_maps_every_plane() {
 }
 
 #[test]
+fn a_glyph_number_past_the_last_glyph_is_missing() {
+    let mut b = builder();
+    let count = u16::try_from(b.glyphs.len()).unwrap();
+    let last = u32::from(count - 1);
+    b.cmap = cmap(&[(3, 10, format12(&[(0x41, 0x43, last - 1)]))]);
+    let data = b.build();
+    let font = Font::parse(&data).unwrap();
+    assert_eq!(font.glyph_index('A'), Some(count - 2));
+    assert_eq!(font.glyph_index('B'), Some(count - 1), "the last glyph");
+    assert_eq!(font.glyph_index('C'), None, "one past it");
+}
+
+#[test]
 fn format4_stops_after_its_last_segment() {
     // Without the closing segment for U+FFFF, a character past the last
     // segment would land in the arrays after it; here the bytes there

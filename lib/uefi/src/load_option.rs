@@ -8,6 +8,9 @@ use crate::variable::name;
 pub const BOOT_ORDER: [u16; 10] = name("BootOrder");
 /// The number of the boot option the firmware started this time.
 pub const BOOT_CURRENT: [u16; 12] = name("BootCurrent");
+/// The number of the boot option the firmware tries first at the next
+/// start, once, before it goes back to `BootOrder`.
+pub const BOOT_NEXT: [u16; 9] = name("BootNext");
 
 /// The option can be started.
 pub const ACTIVE: u32 = 0x1;

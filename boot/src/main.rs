@@ -14,7 +14,7 @@ mod raw;
 use core::mem::size_of;
 
 use boot::handover::{self, Layout, Problem};
-use boot::{KERNEL_PATH, Out, banner};
+use boot::{KERNEL_PATH, Out, banner, memory};
 use bootinfo::{
     BootInfo, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, STACK_PAGES, STACK_TOP, Stack,
 };
@@ -126,13 +126,13 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         )
         .map_err(firmware("finding memory for the memory map"))?
         .keep();
-    let memory_top = system
-        .memory_map(map)
-        .map_err(firmware("reading the memory map"))?
-        .descriptors()
-        .map(|d| d.end())
-        .max()
-        .unwrap_or(0);
+    let screen = system.framebuffer().ok();
+    let memory_top = memory::memory_top(
+        system
+            .memory_map(map)
+            .map_err(firmware("reading the memory map"))?
+            .descriptors(),
+    );
 
     let layout = Layout {
         kernel_virtual: first,
@@ -141,6 +141,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         stack_physical: stack.start(),
         loader,
         memory_top,
+        framebuffer: screen.map_or((0, 0), |fb| (fb.base, fb.size)),
         features: Features::detect(),
     };
     let count = usize::try_from(handover::frames_needed(&layout)).unwrap_or(usize::MAX);
@@ -165,6 +166,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         },
         rsdp: system.configuration_table(&ACPI_20_TABLE).unwrap_or(0),
         uefi_system_table: system.table_address(),
+        framebuffer: handover::framebuffer(screen),
         ..BootInfo::new()
     };
     Ok(Ready {

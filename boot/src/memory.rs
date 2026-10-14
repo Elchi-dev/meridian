@@ -109,6 +109,18 @@ fn tidy(regions: &mut [MemoryRegion]) -> usize {
     kept
 }
 
+/// Where memory ends in the firmware's map: the end of the last descriptor
+/// that is not reserved. Reserved ranges above it are devices, such as
+/// PCI windows far beyond all memory, which the direct map leaves out.
+#[must_use]
+pub fn memory_top(descriptors: impl Iterator<Item = MemoryDescriptor>) -> u64 {
+    descriptors
+        .filter(|d| kind_of(d.ty) != RegionKind::RESERVED)
+        .map(|d| d.end())
+        .max()
+        .unwrap_or(0)
+}
+
 /// The highest physical address any region reaches, which is how far the
 /// direct map has to go.
 #[must_use]
@@ -119,6 +131,28 @@ pub fn top(regions: &[MemoryRegion]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_ends_before_the_device_windows() {
+        let map = [
+            desc(MemoryType::CONVENTIONAL, 0, 0xa0),
+            desc(MemoryType::BOOT_SERVICES_DATA, 0x10_0000, 0x1_0000),
+            desc(MemoryType::ACPI_NVS, 0x1ff7_8000, 0x88),
+            desc(MemoryType::RESERVED, 0xe000_0000, 0x1_0000),
+            desc(MemoryType::MMIO, 0xffc0_0000, 0x400),
+            desc(MemoryType::RESERVED, 0xfd_0000_0000, 0x30_0000),
+        ];
+        assert_eq!(memory_top(map.into_iter()), 0x2000_0000);
+        assert_eq!(memory_top([map[0]].into_iter()), 0xa_0000);
+        assert_eq!(memory_top(map[3..].iter().copied()), 0, "devices only");
+        assert_eq!(memory_top(core::iter::empty()), 0);
+        let runtime = desc(MemoryType::RUNTIME_SERVICES_DATA, 0x3000_0000, 1);
+        assert_eq!(
+            memory_top([map[0], runtime].into_iter()),
+            0xa_0000,
+            "runtime memory is reserved too"
+        );
+    }
 
     fn desc(ty: MemoryType, start: u64, pages: u64) -> MemoryDescriptor {
         MemoryDescriptor {

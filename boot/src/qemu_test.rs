@@ -140,6 +140,12 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         "the boot information and the memory map should have room",
     );
     report.check(
+        "boot.prepare.framebuffer",
+        info.framebuffer == boot::handover::framebuffer(system.framebuffer().ok())
+            && info.framebuffer.base != 0,
+        "the framebuffer the firmware set up should be passed on",
+    );
+    report.check(
         "boot.prepare.info",
         info.check().is_ok() && info.memory.count == 0,
         "the boot information should pass its check and wait for the final map",

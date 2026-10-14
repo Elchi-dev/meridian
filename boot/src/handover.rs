@@ -21,8 +21,10 @@ pub struct Layout<'a> {
     /// The loader's own image, which has to stay where it is until the
     /// jump is done.
     pub loader: (u64, u64),
-    /// The highest physical address the memory map reaches.
+    /// Where memory ends, without the device windows above it.
     pub memory_top: u64,
+    /// The framebuffer's physical address and size, or zeros without one.
+    pub framebuffer: (u64, u64),
     pub features: Features,
 }
 
@@ -71,14 +73,15 @@ pub fn build(frames: &mut impl Frames, layout: &Layout<'_>) -> Result<AddressSpa
     }
 
     let end = direct_map_end(layout.memory_top);
-    space.map_range(
-        frames,
-        HHDM_BASE,
-        0,
-        end,
-        Flags::WRITABLE | Flags::GLOBAL | no_exec,
-        big,
-    )?;
+    let data = Flags::WRITABLE | Flags::GLOBAL | no_exec;
+    space.map_range(frames, HHDM_BASE, 0, end, data, big)?;
+    // A framebuffer beyond memory gets its own piece of the direct map.
+    let (fb, fb_size) = layout.framebuffer;
+    let fb_end = (fb + fb_size).div_ceil(SIZE_4K) * SIZE_4K;
+    if fb_end > end {
+        let first = (fb & !(SIZE_4K - 1)).max(end);
+        space.map_range(frames, HHDM_BASE + first, first, fb_end - first, data, big)?;
+    }
 
     let stack_size = STACK_PAGES * SIZE_4K;
     space.map_range(
@@ -115,10 +118,14 @@ pub fn frames_needed(layout: &Layout<'_>) -> u64 {
     } else {
         end / SIZE_1G
     };
+    // At most a level 1 table at each unaligned end, a level 2 table per
+    // GiB and one more where it crosses one, and a level 3 table likewise.
+    let screen = 4 + layout.framebuffer.1.div_ceil(SIZE_1G);
     16 + span.div_ceil(SIZE_2M)
         + layout.loader.1.div_ceil(SIZE_2M)
         + end.div_ceil(512 * SIZE_1G)
         + direct
+        + screen
 }
 
 /// How many pages to set aside for the memory map read just before the
@@ -163,6 +170,28 @@ impl Pool {
         physical >= self.start
             && physical < self.start + self.used * SIZE_4K
             && (physical - self.start).is_multiple_of(SIZE_4K)
+    }
+}
+
+/// The firmware's framebuffer as the boot information describes it, or
+/// no screen at all.
+#[must_use]
+pub fn framebuffer(fb: Option<uefi::raw::graphics::Framebuffer>) -> bootinfo::Framebuffer {
+    use uefi::raw::graphics::PixelFormat;
+
+    let Some(fb) = fb else {
+        return bootinfo::Framebuffer::default();
+    };
+    bootinfo::Framebuffer {
+        base: fb.base,
+        size: fb.size,
+        width: fb.width,
+        height: fb.height,
+        stride: fb.stride,
+        format: match fb.format {
+            PixelFormat::Rgb => bootinfo::PixelFormat::RGB,
+            PixelFormat::Bgr => bootinfo::PixelFormat::BGR,
+        },
     }
 }
 
@@ -304,6 +333,7 @@ mod tests {
             stack_physical: STACK_PHYS,
             loader: (0x7e00_0123, 0x2_0000),
             memory_top: 512 << 20,
+            framebuffer: (0x8000_0000, 1280 * 800 * 4),
             features,
         }
     }
@@ -382,6 +412,42 @@ mod tests {
         let last = at(&mut heap, &space, HHDM_BASE + 4 * SIZE_1G - 1);
         assert_eq!(last.map(|t| t.0), Some(4 * SIZE_1G - 1));
         assert_eq!(at(&mut heap, &space, HHDM_BASE + 4 * SIZE_1G), None);
+    }
+
+    #[test]
+    fn a_framebuffer_beyond_memory_is_mapped_on_its_own() {
+        let mut heap = Heap::new();
+        let segments = kernel_segments();
+        let mut l = layout(&segments, ALL);
+        l.framebuffer = (0x40_0000_0123, 0x80_0000);
+        let space = build(&mut heap, &l).unwrap();
+        let rw = P | G | W | NX;
+        let first = at(&mut heap, &space, HHDM_BASE + 0x40_0000_0123);
+        assert_eq!(first.map(|t| (t.0, t.1)), Some((0x40_0000_0123, rw)));
+        let last = at(&mut heap, &space, HHDM_BASE + 0x40_0080_0122);
+        assert_eq!(last.map(|t| t.0), Some(0x40_0080_0122));
+        assert_eq!(at(&mut heap, &space, HHDM_BASE + 0x40_0080_1000), None);
+        assert_eq!(
+            at(&mut heap, &space, HHDM_BASE + 0x3f_ffff_f000),
+            None,
+            "nothing below it"
+        );
+        assert_eq!(
+            at(&mut heap, &space, HHDM_BASE + 0x1_0000_0000),
+            None,
+            "the direct map still ends at 4 GiB"
+        );
+
+        let mut overlapping = layout(&segments, ALL);
+        overlapping.framebuffer = (4 * SIZE_1G - 0x1000, 0x3000);
+        let mut heap = Heap::new();
+        let space = build(&mut heap, &overlapping).unwrap();
+        let tail = at(&mut heap, &space, HHDM_BASE + 4 * SIZE_1G + 0x1fff);
+        assert_eq!(
+            tail.map(|t| t.0),
+            Some(4 * SIZE_1G + 0x1fff),
+            "only the part past the end is added"
+        );
     }
 
     #[test]
@@ -505,6 +571,7 @@ mod tests {
                         },
                     );
                     l.memory_top = memory_top;
+                    l.framebuffer = (0x7f_ff80_0000, 0x200_0000);
                     let needed = frames_needed(&l);
                     let mut heap = Heap {
                         limit: usize::try_from(needed).unwrap(),
@@ -570,6 +637,39 @@ mod tests {
         assert!(!pool.handed_out(0x3f_f000));
         assert!(!pool.handed_out(0x40_0800), "not the start of a frame");
         assert_eq!(Pool::new(0x1000, 0).take(), None);
+    }
+
+    #[test]
+    fn the_framebuffer_keeps_its_numbers_and_pixel_order() {
+        use uefi::raw::graphics::{Framebuffer, PixelFormat};
+
+        let fb = Framebuffer {
+            base: 0x40_0000_0000,
+            size: 0x80_0000,
+            width: 1920,
+            height: 1080,
+            stride: 2048,
+            format: PixelFormat::Bgr,
+        };
+        let handed = framebuffer(Some(fb));
+        assert_eq!(
+            (
+                handed.base,
+                handed.size,
+                handed.width,
+                handed.height,
+                handed.stride
+            ),
+            (0x40_0000_0000, 0x80_0000, 1920, 1080, 2048)
+        );
+        assert_eq!(handed.format, bootinfo::PixelFormat::BGR);
+        let rgb = framebuffer(Some(Framebuffer {
+            format: PixelFormat::Rgb,
+            ..fb
+        }));
+        assert_eq!(rgb.format, bootinfo::PixelFormat::RGB);
+        assert_eq!(framebuffer(None), bootinfo::Framebuffer::default());
+        assert_eq!(framebuffer(None).base, 0, "no screen");
     }
 
     #[test]

@@ -52,7 +52,7 @@ func TestEmptyFileGivesTheDefaults(t *testing.T) {
 	if c != want {
 		t.Fatalf("got %+v\nwant %+v", c, want)
 	}
-	if want.MinRatio != 1.5 || want.QEMU.Memory != 512<<20 || want.QEMU.CPUs != 4 || want.QEMU.Accel != "auto" || want.QEMU.Timeout != 2*time.Minute {
+	if want.MinRatio != 1.5 || want.QEMU.Memory != 512<<20 || want.QEMU.CPUs != 4 || want.QEMU.Accel != "auto" || want.QEMU.Timeout != 2*time.Minute || want.QEMU.Stall != 20*time.Second {
 		t.Fatalf("defaults changed: %+v", want)
 	}
 	if want.BuildDir != filepath.Join(root, "target") || want.Root != root {
@@ -75,12 +75,13 @@ qemu {
     firmware = "/fw/code.fd"
     firmware-vars = "/fw/vars.fd"
     timeout = 90s
+    stall = 45s
 }
 `)
 	if c.MinRatio != 2.5 || c.BuildDir != "/tmp/meridian-build" {
 		t.Errorf("stats or build: %+v", c)
 	}
-	want := QEMU{Memory: 2 << 30, CPUs: 12, Accel: "tcg", Code: "/fw/code.fd", Vars: "/fw/vars.fd", Timeout: 90 * time.Second}
+	want := QEMU{Memory: 2 << 30, CPUs: 12, Accel: "tcg", Code: "/fw/code.fd", Vars: "/fw/vars.fd", Timeout: 90 * time.Second, Stall: 45 * time.Second}
 	if c.QEMU != want {
 		t.Errorf("qemu = %+v\nwant   %+v", c.QEMU, want)
 	}
@@ -158,6 +159,7 @@ func TestRangeChecks(t *testing.T) {
 		{"qemu { firmware = \"/a\" }", "set qemu.firmware and qemu.firmware-vars together, or neither"},
 		{"qemu { firmware-vars = \"/b\" }", "set qemu.firmware and qemu.firmware-vars together, or neither"},
 		{"qemu { timeout = 0s }", "qemu.timeout must be longer than zero"},
+		{"qemu { stall = 0s }", "qemu.stall must be longer than zero"},
 	}
 	for _, tt := range tests {
 		if msg := loadErr(t, tt.doc+"\n"); msg != tt.want {

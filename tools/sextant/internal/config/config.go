@@ -38,6 +38,9 @@ type QEMU struct {
 	Code    string
 	Vars    string
 	Timeout time.Duration
+	// Stall is how long the firmware may stay silent before a test boot
+	// starts the machine again.
+	Stall time.Duration
 }
 
 // Defaults are the values used for settings neither file sets.
@@ -51,6 +54,7 @@ func Defaults(root string) Config {
 			CPUs:    4,
 			Accel:   "auto",
 			Timeout: 2 * time.Minute,
+			Stall:   20 * time.Second,
 		},
 	}
 }
@@ -143,6 +147,11 @@ func fromDocument(root string, doc *meri.Block) (Config, error) {
 	keep(err)
 	if c.QEMU.Timeout <= 0 {
 		keep(errors.New("qemu.timeout must be longer than zero"))
+	}
+	c.QEMU.Stall, err = q.Duration("stall", c.QEMU.Stall)
+	keep(err)
+	if c.QEMU.Stall <= 0 {
+		keep(errors.New("qemu.stall must be longer than zero"))
 	}
 
 	if len(errs) > 0 {

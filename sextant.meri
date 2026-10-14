@@ -22,6 +22,10 @@ qemu {
     accel = auto
     # How long a test boot may take before sextant gives up.
     timeout = 2min
+    # How long the firmware may print nothing before a test boot starts the
+    # machine again. OVMF under KVM sometimes hangs at the very start on
+    # some hosts; a slow host emulating with TCG may need more time.
+    stall = 20s
     # OVMF is found in the usual places for each system. To use another
     # build, set both files:
     # firmware = "/path/to/OVMF_CODE.fd"

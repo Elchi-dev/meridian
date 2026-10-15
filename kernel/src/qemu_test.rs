@@ -390,6 +390,66 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
             }),
         "the boot disk's partition table should list sextant's one EFI system partition of 64 MiB from 1 MiB on",
     );
+    ahci_port_checks(report, disk.port);
+}
+
+/// What an AHCI port sends back and how it gets over trouble: a read
+/// leaves the disk's answer in the drive's own frame and gives its buffer
+/// back, a command the disk refuses fails with an answer that says so and
+/// leaves the port working, and a port left stopped with its addresses
+/// above 4 GiB, as a firmware might leave it, works once started again.
+fn ahci_port_checks<W: Write>(report: &mut Report<'_, W>, port: usize) {
+    use ahci::port::{
+        COMMAND, COMMAND_LIST_HIGH, FAILED, RECEIVE, RECEIVED_HIGH, RECEIVING, RUNNING, START,
+    };
+    use raw::ahci::{
+        Error, answer, command, port_register, read_sectors, restart, set_port_register,
+    };
+    // A register FIS from the device, with the status and error registers.
+    let answered = |failed: bool| {
+        answer(port).is_some_and(|fis| {
+            fis[0] == 0x34 && (fis[2] & u8::try_from(FAILED).unwrap_or(0) != 0) == failed
+        })
+    };
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let mut header = [0u8; 512];
+    let before = free();
+    let read = read_sectors(port, 1, &mut header).is_ok() && header[..8] == *b"EFI PART";
+    report.check(
+        "kernel.ahci.answer",
+        read && answered(false) && before.is_some() && free() == before,
+        "a read should leave the disk's answer in the drive's own frame and give its buffer back",
+    );
+    let refused = command(port, ahci::ata::NOP) == Err(Error::Failed);
+    let aborted = answered(true) && answer(port).is_some_and(|fis| fis[3] & 0x04 != 0);
+    let mut again = [0u8; 512];
+    let works = read_sectors(port, 1, &mut again).is_ok() && again == header && answered(false);
+    report.check(
+        "kernel.ahci.error",
+        refused && aborted && works,
+        "NOP should fail with the disk saying it aborted it, and the port should read again afterwards",
+    );
+    set_port_register(
+        port,
+        COMMAND,
+        port_register(port, COMMAND) & !(START | RECEIVE),
+    );
+    let stopped = (0..1000).any(|_| port_register(port, COMMAND) & (RUNNING | RECEIVING) == 0);
+    set_port_register(port, COMMAND_LIST_HIGH, 1);
+    set_port_register(port, RECEIVED_HIGH, 1);
+    let restarted = restart(port);
+    again.fill(0);
+    let works = read_sectors(port, 1, &mut again).is_ok() && again == header && answered(false);
+    report.check(
+        "kernel.ahci.restart",
+        stopped && restarted && works,
+        "a port left stopped with its addresses above 4 GiB should read again once started",
+    );
 }
 
 /// The NVM Express controller a test machine with a disk has next to

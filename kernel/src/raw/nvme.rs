@@ -7,7 +7,6 @@ use core::sync::atomic::{Ordering, fence};
 
 use bootinfo::HHDM_BASE;
 use nvme::{Capabilities, Command, Completion, Controller, Namespace, State, register};
-use paging::Flags;
 
 use super::memory::{self, Spin};
 
@@ -139,16 +138,7 @@ fn submit(
 /// and its first namespace who they are, and makes a pair of queues for
 /// reading. Says whether it is ready.
 pub fn start(registers: u64) -> bool {
-    let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
-    let mapped = (0..2).all(|page| {
-        memory::map_page(
-            kernel::NVME_REGISTERS + page * 4096,
-            (registers & !0xfff) + page * 4096,
-            flags,
-        )
-        .is_ok()
-    });
-    if !mapped {
+    if !memory::map_registers(kernel::NVME_REGISTERS, registers & !0xfff, 2) {
         return false;
     }
     let low = u64::from(register32(register::CAPABILITIES));

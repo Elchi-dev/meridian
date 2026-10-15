@@ -8,7 +8,6 @@ use core::sync::atomic::{Ordering, fence};
 
 use ahci::{Attached, Identity, ata, hba, port};
 use bootinfo::HHDM_BASE;
-use paging::Flags;
 
 use super::memory::{self, Spin};
 
@@ -69,22 +68,12 @@ fn wait(done: impl Fn() -> bool) -> bool {
 /// maps them, switches it to AHCI, and gets every port with a device on it
 /// ready, asking each disk who it is. Returns how many drives it found.
 pub fn start(registers: u64) -> usize {
-    let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
-    let mapped = (0..2).all(|page| {
-        memory::map_page(
-            kernel::AHCI_REGISTERS + page * 4096,
-            (registers & !0xfff) + page * 4096,
-            flags,
-        )
-        .is_ok()
-    });
-    if !mapped {
+    if !memory::map_registers(kernel::AHCI_REGISTERS, registers & !0xfff, 2) {
         return 0;
     }
     set_register(hba::CONTROL, register(hba::CONTROL) | hba::AHCI_ENABLE);
-    let implemented = register(hba::PORTS);
     let mut found = 0;
-    for n in (0..32).filter(|n| implemented & 1 << n != 0) {
+    for n in ahci::ports(register(hba::PORTS)) {
         let base = port::base(n);
         let attached = ahci::attached(
             register(base + port::STATUS),
@@ -93,9 +82,13 @@ pub fn start(registers: u64) -> usize {
         if attached == Attached::Nothing {
             continue;
         }
-        let Some(frame) = prepare(n) else {
+        let Some(frame) = memory::device_frame() else {
             continue;
         };
+        if !start_port(n, frame) {
+            memory::give_back(frame);
+            continue;
+        }
         let mut drive = Drive {
             port: n,
             attached,
@@ -111,9 +104,17 @@ pub fn start(registers: u64) -> usize {
     found
 }
 
-/// Stops port `n`, points it at a frame of its own for its commands and
-/// what the device sends, and starts it again.
-fn prepare(n: usize) -> Option<u64> {
+/// Writes `address` into the register at `offset` and the one after it.
+fn set_address(offset: usize, address: u64) {
+    let (low, high) = ahci::halves(address);
+    set_register(offset, low);
+    set_register(offset + 4, high);
+}
+
+/// Stops port `n`, points it at `frame` for its commands and what the
+/// device sends, clears the errors it noted, and starts it again: what a
+/// port needs before its first command, and after one failed.
+fn start_port(n: usize, frame: u64) -> bool {
     let base = port::base(n);
     let command = register(base + port::COMMAND);
     set_register(
@@ -122,35 +123,23 @@ fn prepare(n: usize) -> Option<u64> {
     );
     let idle = wait(|| register(base + port::COMMAND) & (port::RUNNING | port::RECEIVING) == 0);
     if !idle {
-        return None;
+        return false;
     }
-    let frame = memory::device_frame()?;
-    let split = |address: u64| {
-        let half = |bits: u64| u32::try_from(bits & 0xffff_ffff).unwrap_or(0);
-        (half(address), half(address >> 32))
-    };
-    let (list, list_high) = split(frame + COMMAND_LIST);
-    let (received, received_high) = split(frame + RECEIVED);
-    set_register(base + port::COMMAND_LIST, list);
-    set_register(base + port::COMMAND_LIST_HIGH, list_high);
-    set_register(base + port::RECEIVED, received);
-    set_register(base + port::RECEIVED_HIGH, received_high);
+    set_address(base + port::COMMAND_LIST, frame + COMMAND_LIST);
+    set_address(base + port::RECEIVED, frame + RECEIVED);
     set_register(base + port::ERRORS, u32::MAX);
-    set_register(base + port::INTERRUPTS, u32::MAX);
     set_register(
         base + port::COMMAND,
         register(base + port::COMMAND) | port::RECEIVE,
     );
     let ready = wait(|| register(base + port::TASK_FILE) & (port::BUSY | port::DATA_REQUEST) == 0);
-    if !ready {
-        memory::give_back(frame);
-        return None;
+    if ready {
+        set_register(
+            base + port::COMMAND,
+            register(base + port::COMMAND) | port::START,
+        );
     }
-    set_register(
-        base + port::COMMAND,
-        register(base + port::COMMAND) | port::START,
-    );
-    Some(frame)
+    ready
 }
 
 /// Runs `fis` on `drive`, moving `bytes` between the device and the frame
@@ -182,12 +171,21 @@ fn issue(
             || register(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0
     });
     fence(Ordering::SeqCst);
-    if !answered {
-        return Err(Error::Timeout);
+    let failed = register(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0;
+    if answered && !failed {
+        return Ok(());
     }
-    let failed = register(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0
-        || register(base + port::TASK_FILE) & port::FAILED != 0;
-    if failed { Err(Error::Failed) } else { Ok(()) }
+    // A port stops taking commands after an error, and one that never
+    // answered still has its command; starting it again clears both. One
+    // that cannot be started again is no drive any more.
+    if !start_port(drive.port, drive.frame) {
+        DRIVES.lock()[drive.port] = None;
+    }
+    Err(if answered {
+        Error::Failed
+    } else {
+        Error::Timeout
+    })
 }
 
 /// Asks the disk on `drive` who it is.
@@ -203,6 +201,66 @@ fn identify(drive: &Drive) -> Option<Identity> {
     };
     memory::give_back(buffer);
     answer.ok().map(|()| Identity::read(&data))
+}
+
+/// Sends `command` to the disk on port `n`, with a sector's room for what
+/// it sends back. Only the test image does, to see one fail.
+///
+/// # Errors
+///
+/// As for [`read_sectors`].
+#[cfg(feature = "qemu-test")]
+pub fn command(n: usize, command: u8) -> Result<(), Error> {
+    let drive = DRIVES
+        .lock()
+        .get(n)
+        .copied()
+        .flatten()
+        .ok_or(Error::NoDisk)?;
+    let fis = ahci::command_fis(command, 0, 0).ok_or(Error::OutOfRange)?;
+    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
+    let answer = issue(&drive, &fis, false, buffer, 512);
+    memory::give_back(buffer);
+    answer
+}
+
+/// The register FIS the device on port `n` last sent, where the port puts
+/// it in the drive's frame. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn answer(n: usize) -> Option<[u8; 20]> {
+    let drive = DRIVES.lock().get(n).copied().flatten()?;
+    let mut fis = [0u8; 20];
+    // SAFETY: the drive's frame is its own, and the port is done writing
+    // the answer to the last command into it.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (HHDM_BASE + drive.frame + RECEIVED + 0x40) as *const u8,
+            fis.as_mut_ptr(),
+            fis.len(),
+        );
+    };
+    Some(fis)
+}
+
+/// The register at `offset` of port `n`. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn port_register(n: usize, offset: usize) -> u32 {
+    register(port::base(n) + offset)
+}
+
+/// Sets the register at `offset` of port `n`. Only the test image does, to
+/// leave a port as a firmware might.
+#[cfg(feature = "qemu-test")]
+pub fn set_port_register(n: usize, offset: usize, value: u32) {
+    set_register(port::base(n) + offset, value);
+}
+
+/// Starts port `n` again on its drive's frame. Only the test image does,
+/// once it left the port as a firmware might.
+#[cfg(feature = "qemu-test")]
+pub fn restart(n: usize) -> bool {
+    let drive = DRIVES.lock().get(n).copied().flatten();
+    drive.is_some_and(|d| start_port(n, d.frame))
 }
 
 /// The drives found, by port.

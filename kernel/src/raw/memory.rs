@@ -349,6 +349,13 @@ pub fn device_frame() -> Option<u64> {
     Some(frame)
 }
 
+/// Maps the `pages` pages of a device's registers from physical `phys` on
+/// at `virt`, uncached and never executed. Says whether all of them are.
+pub fn map_registers(virt: u64, phys: u64, pages: u64) -> bool {
+    let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
+    (0..pages).all(|page| map_page(virt + page * 4096, phys + page * 4096, flags).is_ok())
+}
+
 /// Gives a frame from [`device_frame`] back.
 pub fn give_back(frame: u64) {
     if let Some(frames) = FRAMES.lock().as_mut() {

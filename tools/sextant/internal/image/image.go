@@ -156,15 +156,22 @@ const FirmwareExamplePath = "EFI/other/tool.efi"
 // a path the loader opens can be: with its leading slash, 255 characters.
 var LongName = "long-name-" + strings.Repeat("x", 244)
 
+// AgainSuffix names the second copy test images carry of each program, so
+// the loader and the kernel go through a list of more than one.
+const AgainSuffix = "_again"
+
 // TestFiles are the files of a test image: the boot files with settings
-// of their own, the loader twice more as examples of other systems, and a
-// file with a name as long as a path may be.
+// of their own, the loader twice more as examples of other systems, each
+// program a second time, and a file with a name as long as a path may be.
 func TestFiles(b Boot) map[string][]byte {
 	files := BootFiles(b)
 	files[ExamplePath] = b.Loader
 	files[FirmwareExamplePath] = b.Loader
 	files[SettingsPath] = []byte(testSettings)
 	files[LongName] = []byte("long name\n")
+	for name, data := range b.Programs {
+		files[ProgramsPath+"/"+name+AgainSuffix] = data
+	}
 	return files
 }
 

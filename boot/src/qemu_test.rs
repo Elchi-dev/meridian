@@ -162,10 +162,10 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
     );
     report.check(
         "boot.prepare.programs",
-        info.modules.count == 1
+        info.modules.count == 2
             && info.modules.list >= bootinfo::HHDM_BASE
             && info.modules.list % PAGE_SIZE == 0,
-        "the one program on test images should be listed for the kernel",
+        "hello and its copy on test images should be listed for the kernel",
     );
     report.check(
         "boot.prepare.info",

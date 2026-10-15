@@ -1027,10 +1027,17 @@ fn user_fault_checks<W: Write>(report: &mut Report<'_, W>) {
 fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
     use raw::user::{self, seen};
     let hello = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello");
+    let again = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello_again");
     report.check(
         "kernel.programs.read",
-        hello.is_some_and(|(m, file)| file.starts_with(b"\x7fELF") && m.size == file.len() as u64),
-        "the loader should hand over hello from meridian/programs",
+        raw::modules(info, regions).count() == 2
+            && hello.is_some_and(|(m, file)| {
+                file.starts_with(b"\x7fELF") && m.size == file.len() as u64
+            })
+            && hello
+                .zip(again)
+                .is_some_and(|((m, file), (n, copy))| m.start != n.start && file == copy),
+        "the loader should hand over hello and its copy from meridian/programs, each whole",
     );
     let free = || {
         raw::memory::FRAMES

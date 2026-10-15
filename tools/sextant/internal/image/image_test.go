@@ -90,7 +90,8 @@ func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
 
 func TestTestImagesCarryAnExampleSystem(t *testing.T) {
 	got := TestFiles(bootParts())
-	if len(got) != len(BootFiles(bootParts()))+3 || len(LongName) != 254 || string(got[LongName]) != "long name\n" ||
+	if len(got) != len(BootFiles(bootParts()))+5 || len(LongName) != 254 || string(got[LongName]) != "long name\n" ||
+		string(got["meridian/programs/hello_again"]) != "hi" || string(got["meridian/programs/init_again"]) != "first" ||
 		string(got["EFI/example/grubx64.efi"]) != "efi" || string(got["EFI/other/tool.efi"]) != "efi" ||
 		string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" || string(got[FirmwarePath]) != "shim" {
 		t.Fatalf("got %v", got)

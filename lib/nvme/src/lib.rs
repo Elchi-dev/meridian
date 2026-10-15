@@ -122,6 +122,13 @@ fn low(value: u64) -> u32 {
     u32::try_from(value & 0xffff_ffff).unwrap_or(0)
 }
 
+/// The low and the high half of `value`, for a 64-bit register written as
+/// two 32-bit ones, as some controllers want.
+#[must_use]
+pub fn halves(value: u64) -> (u32, u32) {
+    (low(value), low(value >> 32))
+}
+
 fn command(opcode: u8, id: u16, namespace: u32, data: u64, words: [u32; 6]) -> Command {
     let mut c = [0u8; 64];
     c[0] = opcode;
@@ -400,6 +407,13 @@ mod tests {
             );
             assert!(c[52..64].iter().all(|&b| b == 0), "the last three words");
         }
+    }
+
+    #[test]
+    fn a_register_of_64_bits_is_written_in_halves() {
+        assert_eq!(halves(0x0000_0001_7ffd_f000), (0x7ffd_f000, 1));
+        assert_eq!(halves(0x7ffd_f000), (0x7ffd_f000, 0));
+        assert_eq!(halves(u64::MAX), (u32::MAX, u32::MAX));
     }
 
     #[test]

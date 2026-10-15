@@ -187,3 +187,77 @@ func TestMeridiansOwnKeyIsEnrolledAndEnforced(t *testing.T) {
 		}
 	}
 }
+
+// OVMF built with Secure Boot and Microsoft's keys enrolled, as a PC from
+// a shop has them, where the distributions put it.
+var microsoftSecureBoot = []Firmware{
+	{Code: "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", Vars: "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"},
+	{Code: "/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd", Vars: "/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd"},
+}
+
+// On firmware with Microsoft's keys the shim starts, refuses the loader,
+// whose key nobody enrolled, and starts MokManager. sextant presses
+// through enrolling the certificate on the image, as a person would, and
+// after the restart the shim starts the loader, and the loader the kernel,
+// with Secure Boot on.
+func TestTheShimStartsTheLoaderOnceItsKeyIsEnrolled(t *testing.T) {
+	r := newRig(t)
+	var fw Firmware
+	for _, f := range microsoftSecureBoot {
+		if FileExists(f.Code) && FileExists(f.Vars) {
+			fw = f
+			break
+		}
+	}
+	need(t, fw.Code != "", "OVMF built with Secure Boot, with Microsoft's keys enrolled")
+	signer, err := authenticode.NewSigner("Meridian test key", time.Unix(1_760_000_000, 0), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := bootFiles(t, false)
+	signed, err := authenticode.Sign(files[image.LoaderPath], signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files[image.LoaderPath] = signed
+	files[image.CertificatePath] = signer.Cert.Raw
+	m := r.machine(diskWithFiles(t, files))
+	m.DebugExit = false
+	m.SecureBoot = true
+	m.Firmware = fw
+	m.Reboot = true
+	// MokManager drops keys that come while it draws, so they come at the
+	// pace of a person: the first once the text is there, then one after
+	// another with a pause.
+	var script []Step
+	press := func(wait string, keys ...string) {
+		script = append(script, Step{Wait: wait, Pause: 500 * time.Millisecond, Keys: keys[:1]})
+		for _, k := range keys[1:] {
+			script = append(script, Step{Pause: 400 * time.Millisecond, Keys: []string{k}})
+		}
+	}
+	press("Verification failed", "ret")
+	press("to perform MOK management", "spc")
+	press("Enroll key from disk", "down", "ret")
+	press("MERIDIAN", "ret")
+	// The partition's top holds EFI/, then the certificate.
+	press("meridian.cer", "down", "ret")
+	press("View key 0", "down", "ret")
+	press("Enroll the key(s)?", "down", "ret")
+	press("Reboot", "ret")
+	script = append(script, Step{Wait: "Meridian boot"}, Step{Wait: "Secure Boot: on"}, Step{Wait: "Meridian kernel "})
+	res, err := Run(context.Background(), m, reliable(Options{
+		Timeout:         3 * time.Minute,
+		Script:          script,
+		StopAfterScript: true,
+	}))
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, res.Serial)
+	}
+	if res.StepsDone != len(script) || !res.Stopped || res.TimedOut {
+		t.Fatalf("steps %d of %d, stopped %v, timed out %v\n%s", res.StepsDone, len(script), res.Stopped, res.TimedOut, Clean(res.Serial))
+	}
+	if n := strings.Count(Clean(res.Serial), "Meridian boot"); n != 1 {
+		t.Errorf("the loader should start once, after its key was enrolled, not %d times", n)
+	}
+}

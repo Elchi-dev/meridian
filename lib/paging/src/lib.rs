@@ -100,6 +100,23 @@ pub fn is_canonical(virt: u64) -> bool {
     top == 0 || top == 0x1_ffff
 }
 
+/// Hands every frame the 4 KiB pages under `table`, a table of `level`,
+/// map to `free`, then the tables under it, then `table` itself.
+fn release_table(frames: &mut impl Frames, table: u64, level: usize, free: &mut impl FnMut(u64)) {
+    for i in 0..512 {
+        let entry = frames.table(table)[i];
+        if entry & Flags::PRESENT.0 == 0 {
+            continue;
+        }
+        if level == 1 {
+            free(entry & Flags::ADDRESS);
+        } else if entry & Flags::HUGE == 0 {
+            release_table(frames, entry & Flags::ADDRESS, level - 1, free);
+        }
+    }
+    free(table);
+}
+
 fn index(virt: u64, level: usize) -> usize {
     ((virt >> (12 + 9 * (level - 1))) & 0x1ff) as usize
 }
@@ -255,6 +272,28 @@ impl AddressSpace {
         let frame = *leaf & Flags::ADDRESS;
         *leaf = 0;
         Ok(frame)
+    }
+
+    /// Takes out everything under the root table's entries `slots`, the
+    /// lower half being `0..256`: each table under them and each frame
+    /// their 4 KiB pages map goes to `free`, once, and the entries are
+    /// cleared. Frames that larger pages map are not handed out one by one,
+    /// so they are left to whoever mapped them. The root table stays.
+    pub fn release(
+        &mut self,
+        frames: &mut impl Frames,
+        slots: core::ops::Range<usize>,
+        mut free: impl FnMut(u64),
+    ) {
+        for slot in slots {
+            let Some(&entry) = frames.table(self.root).get(slot) else {
+                break;
+            };
+            if entry & Flags::PRESENT.0 != 0 {
+                release_table(frames, entry & Flags::ADDRESS, 3, &mut free);
+                frames.table(self.root)[slot] = 0;
+            }
+        }
     }
 
     /// Where `virt` leads: the physical address, the leaf entry's flags
@@ -945,5 +984,104 @@ mod tests {
         assert_eq!(Flags::WRITABLE.0, 2);
         assert_eq!(Flags::USER.0, 4);
         assert_eq!(Flags::WRITE_THROUGH.0, 8);
+    }
+
+    #[test]
+    fn releasing_the_lower_half_frees_each_of_its_frames_once() {
+        let mut heap = Heap::new();
+        let mut s = space(&mut heap);
+        let before = heap.used();
+        let user = Flags::USER | Flags::WRITABLE;
+        for (i, virt) in [0x40_0000, 0x40_1000, 0x7f_f000, 0x1_0000_0000]
+            .into_iter()
+            .enumerate()
+        {
+            s.map(
+                &mut heap,
+                virt,
+                0x9000_0000 + i as u64 * SIZE_4K,
+                PageSize::Size4K,
+                user,
+            )
+            .unwrap();
+        }
+        s.map(&mut heap, 0x4000_0000, 0x8000_0000, PageSize::Size2M, user)
+            .unwrap();
+        s.map(&mut heap, KERNEL + 0x1000, 0x10_0000, PageSize::Size4K, RW)
+            .unwrap();
+        let tables = heap.used();
+        let mut freed = Vec::new();
+        s.release(&mut heap, 0..256, |f| freed.push(f));
+        let leaves: Vec<u64> = (0..4).map(|i| 0x9000_0000 + i * SIZE_4K).collect();
+        for leaf in &leaves {
+            assert_eq!(
+                freed.iter().filter(|&&f| f == *leaf).count(),
+                1,
+                "{leaf:#x} once"
+            );
+        }
+        assert!(
+            !freed.contains(&0x8000_0000),
+            "a 2 MiB page's memory is not one frame"
+        );
+        let mut unique = freed.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), freed.len(), "nothing twice");
+        // The lower half's tables: one level 3 table; three level 2 tables,
+        // below 1 GiB, at 1 GiB for the 2 MiB page and at 4 GiB; and three
+        // level 1 tables, for 4 MiB, for 8 MiB less a page, and at 4 GiB.
+        // The kernel's stay.
+        let lower_tables = freed.len() - leaves.len();
+        assert_eq!(lower_tables, 1 + 3 + 3);
+        assert!(
+            lower_tables < tables - before,
+            "the kernel's tables are not among them"
+        );
+        for virt in [0x40_0000, 0x7f_f000, 0x1_0000_0000, 0x4000_0000] {
+            assert_eq!(s.translate(&mut heap, virt), None, "{virt:#x} is gone");
+        }
+        assert!(
+            s.translate(&mut heap, KERNEL + 0x1000).is_some(),
+            "the kernel's half stays"
+        );
+        assert!(heap.table(s.root())[..256].iter().all(|&e| e == 0));
+        let mut again = Vec::new();
+        s.release(&mut heap, 0..256, |f| again.push(f));
+        assert!(again.is_empty(), "nothing is left to free twice");
+    }
+
+    #[test]
+    fn releasing_takes_only_the_slots_asked_for() {
+        let mut heap = Heap::new();
+        let mut s = space(&mut heap);
+        s.map(
+            &mut heap,
+            0x40_0000,
+            0x9000_0000,
+            PageSize::Size4K,
+            Flags::USER,
+        )
+        .unwrap();
+        s.map(
+            &mut heap,
+            0x80_0000_0000,
+            0x9000_1000,
+            PageSize::Size4K,
+            Flags::USER,
+        )
+        .unwrap();
+        let mut freed = Vec::new();
+        s.release(&mut heap, 1..2, |f| freed.push(f));
+        assert!(freed.contains(&0x9000_1000) && !freed.contains(&0x9000_0000));
+        assert!(s.translate(&mut heap, 0x40_0000).is_some(), "slot 0 stays");
+        assert_eq!(
+            s.translate(&mut heap, 0x80_0000_0000),
+            None,
+            "slot 1 is gone"
+        );
+        let mut none = Vec::new();
+        s.release(&mut heap, 600..700, |f| none.push(f));
+        assert!(none.is_empty(), "slots past the table are no slots");
     }
 }

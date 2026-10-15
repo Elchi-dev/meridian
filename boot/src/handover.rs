@@ -12,8 +12,11 @@ use x86::Features;
 /// Everything the address space is built from.
 #[derive(Clone, Copy, Debug)]
 pub struct Layout<'a> {
-    /// The loaded kernel image, as `Elf::span` gives it: the virtual
-    /// address it starts at, and where its bytes are in physical memory.
+    /// The loaded kernel image: where it was linked to start, as
+    /// `Elf::span` gives it and its segments count from, the virtual
+    /// address it runs at instead, and where its bytes are in physical
+    /// memory.
+    pub kernel_linked: u64,
     pub kernel_virtual: u64,
     pub kernel_physical: u64,
     pub segments: &'a [Segment],
@@ -26,6 +29,22 @@ pub struct Layout<'a> {
     /// The framebuffer's physical address and size, or zeros without one.
     pub framebuffer: (u64, u64),
     pub features: Features,
+}
+
+/// Where the kernel's code model wants it: in the top 2 GiB, which it may
+/// start anywhere in on a 2 MiB boundary. The last 2 MiB stay free, so no
+/// address in the kernel is near the end of the address space.
+pub const KERNEL_AREA: u64 = 0xffff_ffff_8000_0000;
+pub const KERNEL_AREA_SIZE: u64 = 2 * SIZE_1G - SIZE_2M;
+
+/// Where a kernel image of `size` bytes starts for the random number
+/// `random`: one of the 2 MiB boundaries in [`KERNEL_AREA`] from which it
+/// fits, about a thousand for a kernel of a few MiB.
+#[must_use]
+pub fn kernel_base(size: u64, random: u64) -> u64 {
+    let needs = size.div_ceil(SIZE_2M).max(1);
+    let places = (KERNEL_AREA_SIZE / SIZE_2M).saturating_sub(needs) + 1;
+    KERNEL_AREA + random % places * SIZE_2M
 }
 
 /// How far the direct map goes: all of memory, and at least the first
@@ -59,9 +78,10 @@ pub fn build(frames: &mut impl Frames, layout: &Layout<'_>) -> Result<AddressSpa
     let big = layout.features.pages_1g;
     let mut space = AddressSpace::new(frames)?;
 
+    let moved = layout.kernel_virtual.wrapping_sub(layout.kernel_linked);
     for s in layout.segments {
-        let start = s.vaddr & !(SIZE_4K - 1);
-        let end = s.end().div_ceil(SIZE_4K) * SIZE_4K;
+        let start = s.vaddr.wrapping_add(moved) & !(SIZE_4K - 1);
+        let end = s.end().wrapping_add(moved).div_ceil(SIZE_4K) * SIZE_4K;
         let mut flags = Flags::GLOBAL;
         if s.write {
             flags = flags | Flags::WRITABLE | no_exec;
@@ -111,7 +131,7 @@ pub fn frames_needed(layout: &Layout<'_>) -> u64 {
         .iter()
         .map(Segment::end)
         .max()
-        .map_or(0, |end| end - layout.kernel_virtual);
+        .map_or(0, |end| end - layout.kernel_linked);
     let end = direct_map_end(layout.memory_top);
     let direct = if layout.features.pages_1g {
         0
@@ -327,6 +347,7 @@ mod tests {
 
     fn layout(segments: &[Segment], features: Features) -> Layout<'_> {
         Layout {
+            kernel_linked: KERNEL,
             kernel_virtual: KERNEL,
             kernel_physical: KERNEL_PHYS,
             segments,
@@ -386,6 +407,69 @@ mod tests {
         );
         assert_eq!(at(&mut heap, &space, KERNEL + 0xa000), None);
         assert_eq!(at(&mut heap, &space, KERNEL - 1), None);
+    }
+
+    #[test]
+    fn a_kernel_placed_elsewhere_is_mapped_there() {
+        let mut heap = Heap::new();
+        let segments = kernel_segments();
+        let moved = KERNEL + 0x2340_0000;
+        let mut l = layout(&segments, ALL);
+        l.kernel_virtual = moved;
+        let space = build(&mut heap, &l).unwrap();
+        assert_eq!(
+            at(&mut heap, &space, moved + 0x1234),
+            Some((KERNEL_PHYS + 0x1234, P | G, PageSize::Size4K)),
+            "code, from the same bytes"
+        );
+        assert_eq!(
+            at(&mut heap, &space, moved + 0x5010).map(|t| (t.0, t.1)),
+            Some((KERNEL_PHYS + 0x5010, P | G | NX))
+        );
+        assert_eq!(
+            at(&mut heap, &space, moved + 0x9697).map(|t| (t.0, t.1)),
+            Some((KERNEL_PHYS + 0x9697, P | G | W | NX))
+        );
+        assert_eq!(
+            at(&mut heap, &space, KERNEL + 0x1234),
+            None,
+            "nothing where it was linked"
+        );
+        assert_eq!(at(&mut heap, &space, moved + 0xa000), None);
+        assert_eq!(frames_needed(&l), frames_needed(&layout(&segments, ALL)));
+    }
+
+    #[test]
+    fn the_kernel_starts_on_a_2_mib_boundary_of_the_top_2_gib() {
+        let size = 3 * SIZE_2M + 0x1234;
+        assert_eq!(kernel_base(size, 0), KERNEL_AREA, "where it was linked");
+        assert_eq!(kernel_base(size, 1), KERNEL_AREA + SIZE_2M);
+        let places = (KERNEL_AREA_SIZE / SIZE_2M) - 4 + 1;
+        assert_eq!(
+            kernel_base(size, places - 1),
+            KERNEL_AREA + KERNEL_AREA_SIZE - 4 * SIZE_2M,
+            "the last place it fits"
+        );
+        assert_eq!(kernel_base(size, places), KERNEL_AREA, "and round again");
+        for random in [7, 0xdead_beef, u64::MAX, 0x8000_0000_0000_0001] {
+            let base = kernel_base(size, random);
+            assert_eq!(base % SIZE_2M, 0, "{random:#x}");
+            assert!(base >= KERNEL_AREA);
+            assert!(base + size <= KERNEL_AREA + KERNEL_AREA_SIZE, "{random:#x}");
+        }
+        let seen: std::collections::BTreeSet<u64> =
+            (0..5000).map(|r| kernel_base(size, r * 7919)).collect();
+        assert_eq!(seen.len() as u64, places, "every place is used");
+    }
+
+    #[test]
+    fn even_a_kernel_too_big_for_the_area_gets_a_place() {
+        assert_eq!(
+            kernel_base(0, 5),
+            KERNEL_AREA + 5 * SIZE_2M,
+            "an empty one takes a slot"
+        );
+        assert_eq!(kernel_base(4 * SIZE_1G, 12345), KERNEL_AREA);
     }
 
     #[test]

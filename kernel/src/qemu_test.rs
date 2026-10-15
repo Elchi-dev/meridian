@@ -84,8 +84,10 @@ pub fn run(
     report.check(
         "kernel.image.mapped",
         info.kernel.size >= 4096
-            && mapped(info.kernel.virtual_base, 4096) == physical(info.kernel.physical, 4096),
-        "the kernel's virtual and physical first page should be the same memory",
+            && mapped(info.kernel.virtual_base, 4096) == physical(info.kernel.physical, 4096)
+            && (info.kernel.virtual_base..info.kernel.virtual_base + info.kernel.size)
+                .contains(&(run as *const () as usize as u64)),
+        "the kernel should run from the base the loader chose, its virtual and physical first page the same memory",
     );
 
     let marker = 0u8;
@@ -192,11 +194,15 @@ pub fn after_panic(screen: Option<&Canvas<'_>>, details: &Details<'_>, serial: &
             let here = 0u8;
             let on_fault_stack =
                 raw::interrupts::fault_stack().contains(&((&raw const here) as u64));
+            // The loader puts the kernel somewhere in the top 2 GiB.
+            let in_kernel = details
+                .location
+                .strip_prefix("the instruction at 0x")
+                .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                .is_some_and(|at| at >= 0xffff_ffff_8000_0000);
             report.check(
                 "kernel.double_fault",
-                details.message.starts_with("double fault: ")
-                    && details.location.starts_with("the instruction at 0xffffffff8")
-                    && on_fault_stack,
+                details.message.starts_with("double fault: ") && in_kernel && on_fault_stack,
                 "running out of stack should end on the panic screen as a double fault in the kernel, on the fault stack",
             );
             crash_screen_checks(&mut report, screen, "double-fault");

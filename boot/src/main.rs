@@ -680,10 +680,13 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
     if !handover::entry_is_code(segments.as_slice(), entry) {
         return Err(Problem::BadEntry(entry));
     }
+    // Without RDRAND the time stamp counter is the best guess there is: it
+    // varies with how long the firmware took.
+    let base = handover::kernel_base(span, x86::raw::rdrand().unwrap_or_else(x86::raw::tsc));
     let mut image = system
         .allocate_pages(KERNEL_TYPE, pages_for(span))
         .map_err(firmware("finding memory for the kernel"))?;
-    elf.load(image.bytes(), first).map_err(Problem::Kernel)?;
+    elf.load(image.bytes(), base).map_err(Problem::Kernel)?;
     let _ = buf.free();
     let modules = read_programs(system);
 
@@ -713,7 +716,8 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
     );
 
     let layout = Layout {
-        kernel_virtual: first,
+        kernel_linked: first,
+        kernel_virtual: base,
         kernel_physical: image.start(),
         segments: segments.as_slice(),
         stack_physical: stack.start(),
@@ -735,7 +739,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
     let info = BootInfo {
         kernel: KernelImage {
             physical: image.start(),
-            virtual_base: first,
+            virtual_base: base,
             size: span,
         },
         stack: Stack {
@@ -751,7 +755,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
     };
     Ok(Ready {
         root: space.root(),
-        entry,
+        entry: entry - first + base,
         info,
         page: page.keep(),
         page_at,

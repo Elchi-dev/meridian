@@ -115,6 +115,17 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         }
     };
     report.check("boot.prepare", true, "");
+    let bases: [Option<u64>; 2] = core::array::from_fn(|_| {
+        crate::prepare(system)
+            .ok()
+            .map(|again| again.info.kernel.virtual_base)
+    });
+    let first = ready.info.kernel.virtual_base;
+    report.check(
+        "boot.prepare.random",
+        bases.iter().all(Option::is_some) && bases.iter().any(|&b| b != Some(first)),
+        "of three times the kernel is prepared, at least two should pick another base",
+    );
     let info = ready.info;
     let kernel = info.kernel;
     report.check(
@@ -127,8 +138,11 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         kernel.size > 0
             && kernel.physical % PAGE_SIZE == 0
             && kernel.size % PAGE_SIZE == 0
-            && kernel.virtual_base == 0xffff_ffff_8000_0000,
-        "the kernel should be whole pages, placed where it was linked",
+            && kernel.virtual_base % (2 << 20) == 0
+            && kernel.virtual_base >= boot::handover::KERNEL_AREA
+            && kernel.virtual_base + kernel.size
+                <= boot::handover::KERNEL_AREA + boot::handover::KERNEL_AREA_SIZE,
+        "the kernel should be whole pages, on a 2 MiB boundary of the top 2 GiB",
     );
     report.check(
         "boot.prepare.entry",

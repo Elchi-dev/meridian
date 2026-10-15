@@ -42,6 +42,11 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     });
     let tsc_hz = tsc.map(|t| t.hz);
     let _ = kernel::describe(serial, &machine, tsc);
+    raw::pci::start(machine.ecam);
+    raw::pci::each(|at, h| {
+        let _ = serial.write_str("kernel: ");
+        let _ = kernel::pci_function(serial, at, &h);
+    });
     raw::keep_modules(info, regions);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_cores();

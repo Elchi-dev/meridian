@@ -15,6 +15,8 @@ pub struct Machine {
     pub pm_timer: Option<(u16, u32)>,
     /// The physical address of the HPET's registers.
     pub hpet: Option<u64>,
+    /// Where the configuration space of PCI segment 0 lies.
+    pub ecam: Option<acpi::Ecam>,
 }
 
 /// A clock the time stamp counter is measured against: how often it ticks
@@ -65,10 +67,15 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
         .and_then(|at| acpi::table(memory, at, b"HPET"))
         .ok()
         .and_then(acpi::hpet_address);
+    let ecam = acpi::find(memory, xsdt, b"MCFG")
+        .and_then(|at| acpi::table(memory, at, b"MCFG"))
+        .ok()
+        .and_then(|mcfg| acpi::ecam_regions(mcfg).find(|e| e.segment == 0));
     Machine {
         cores,
         pm_timer,
         hpet,
+        ecam,
     }
 }
 
@@ -211,6 +218,7 @@ mod tests {
                 cores: Some(4),
                 pm_timer: Some((0x608, 32)),
                 hpet: None,
+                ecam: None,
             }
         );
     }
@@ -224,6 +232,7 @@ mod tests {
                 cores: Some(2),
                 pm_timer: None,
                 hpet: None,
+                ecam: None,
             }
         );
         let ram = tables(&[fadt(0x408, 0)]);
@@ -233,6 +242,7 @@ mod tests {
                 cores: None,
                 pm_timer: Some((0x408, 24)),
                 hpet: None,
+                ecam: None,
             }
         );
         let ram = tables(&[fadt(0, 0)]);
@@ -243,6 +253,36 @@ mod tests {
         let mut body = vec![0u8; 20];
         body[8..16].copy_from_slice(&address.to_le_bytes());
         sdt(*b"HPET", &body)
+    }
+
+    fn mcfg(entries: &[(u64, u16, u8, u8)]) -> Vec<u8> {
+        let mut body = vec![0u8; 8];
+        for &(base, segment, first, last) in entries {
+            body.extend_from_slice(&base.to_le_bytes());
+            body.extend_from_slice(&segment.to_le_bytes());
+            body.extend_from_slice(&[first, last, 0, 0, 0, 0]);
+        }
+        sdt(*b"MCFG", &body)
+    }
+
+    #[test]
+    fn pci_comes_from_the_mcfg_of_segment_0() {
+        let ram = tables(&[
+            madt(2),
+            mcfg(&[(0x1_0000_0000, 1, 0, 0xff), (0xb000_0000, 0, 0, 0xff)]),
+        ]);
+        assert_eq!(
+            read(&ram, 0x1000).ecam,
+            Some(acpi::Ecam {
+                base: 0xb000_0000,
+                segment: 0,
+                first_bus: 0,
+                last_bus: 0xff
+            })
+        );
+        let other = tables(&[mcfg(&[(0x1_0000_0000, 1, 0, 0xff)])]);
+        assert_eq!(read(&other, 0x1000).ecam, None, "only another segment");
+        assert_eq!(read(&tables(&[madt(2)]), 0x1000).ecam, None, "no MCFG");
     }
 
     #[test]

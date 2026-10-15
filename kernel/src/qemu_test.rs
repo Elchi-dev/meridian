@@ -146,6 +146,7 @@ pub fn run(
         );
     }
 
+    pci_checks(&mut report);
     timer_checks(&mut report, tsc_hz, info, regions);
     exception_checks(&mut report);
     protection_checks(&mut report);
@@ -265,6 +266,34 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
             "sextant should answer SCREEN with a carriage return on the serial port",
         );
     }
+}
+
+/// PCI through the MCFG's ECAM region: q35's host bridge at 00:00.0 and its
+/// AHCI controller are found, with the controller's registers in memory,
+/// every function once and in order, and where no function is, none.
+fn pci_checks<W: Write>(report: &mut Report<'_, W>) {
+    use pci::{Address, Bar};
+    let mut found = alloc::vec::Vec::new();
+    raw::pci::each(|at, h| found.push((at, h)));
+    let host = found.first().is_some_and(|(at, h)| {
+        at.bus == 0 && at.device == 0 && at.function == 0 && h.kind() == "host bridge"
+    });
+    let ahci = found
+        .iter()
+        .find(|(_, h)| (h.class, h.subclass, h.interface) == (0x01, 0x06, 0x01));
+    let registers =
+        ahci.is_some_and(|(_, h)| matches!(h.bar(5), Bar::Memory { address, .. } if address != 0));
+    let in_order = found.windows(2).all(|pair| pair[0].0 < pair[1].0);
+    let nobody = Address {
+        bus: 0xff,
+        device: 31,
+        function: 7,
+    };
+    report.check(
+        "kernel.pci.found",
+        host && registers && in_order && raw::pci::header(nobody).is_none(),
+        "q35's host bridge and AHCI controller should be found, each function once, the controller's registers in memory",
+    );
 }
 
 /// The kernel stays off the pages of ring 3: SMEP and SMAP are on, so

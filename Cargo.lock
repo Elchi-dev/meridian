@@ -80,6 +80,7 @@ dependencies = [
  "handles",
  "heap",
  "paging",
+ "pci",
  "qr",
  "sched",
  "x86",

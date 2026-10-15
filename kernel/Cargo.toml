@@ -30,6 +30,7 @@ frames = { path = "../lib/frames" }
 handles = { path = "../lib/handles" }
 heap = { path = "../lib/heap" }
 paging = { path = "../lib/paging" }
+pci = { path = "../lib/pci" }
 sched = { path = "../lib/sched" }
 qr = { path = "../lib/qr" }
 x86 = { path = "../lib/x86" }

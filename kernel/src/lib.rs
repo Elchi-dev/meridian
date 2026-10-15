@@ -283,6 +283,25 @@ pub fn describe(
     }
 }
 
+/// Writes the line the kernel logs for the PCI function at `at`: where it
+/// is, who made it and what it is.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn pci_function(out: &mut impl Write, at: pci::Address, h: &pci::Header) -> fmt::Result {
+    writeln!(
+        out,
+        "PCI {:02x}:{:02x}.{} {:04x}:{:04x} {}",
+        at.bus,
+        at.device,
+        at.function,
+        h.vendor,
+        h.device,
+        h.kind()
+    )
+}
+
 /// The most cores that get a task state, and so are started.
 pub const CORES: usize = 64;
 
@@ -293,6 +312,12 @@ pub const CORE_STACKS: u64 = 0xffff_fe00_0000_0000;
 
 /// The pages of each of those stacks.
 pub const CORE_STACK_PAGES: u64 = 4;
+
+/// Where the configuration space of PCI's segment 0 is mapped, uncached,
+/// page by page as the kernel reads it: in the slot for devices'
+/// registers, 256 MiB after its start, with room for the 256 MiB of 256
+/// buses.
+pub const PCI_CONFIG: u64 = APIC_PAGE + (256 << 20);
 
 /// Where the local APIC's registers are mapped, uncached, on processors
 /// without an x2APIC: the first page of a slot of the root table for
@@ -638,6 +663,7 @@ mod tests {
             cores: Some(12),
             pm_timer: Some((0x408, 24)),
             hpet: None,
+            ecam: None,
         };
         let measured = |hz, against| Some(machine::Measured { hz, against });
         describe(
@@ -687,6 +713,7 @@ mod tests {
             cores: Some(1),
             pm_timer: None,
             hpet: None,
+            ecam: None,
         };
         assert!(describe(&mut Broken, &known, None).is_err());
     }
@@ -715,6 +742,53 @@ mod tests {
             "a slot of the root table nothing else uses"
         );
         assert_eq!((last - 1) >> 39 & 0x1ff, 508);
+    }
+
+    /// A writer that takes nothing.
+    struct Full;
+
+    impl Write for Full {
+        fn write_str(&mut self, _: &str) -> fmt::Result {
+            Err(fmt::Error)
+        }
+    }
+
+    #[test]
+    fn a_pci_function_is_logged_by_where_it_is_and_what_it_is() {
+        let mut bytes = [0u8; 64];
+        bytes[0..4].copy_from_slice(&[0x86, 0x80, 0x22, 0x29]);
+        bytes[9..12].copy_from_slice(&[0x01, 0x06, 0x01]);
+        let h = pci::Header::read(&bytes).unwrap();
+        let mut out = String::new();
+        let at = pci::Address {
+            bus: 0,
+            device: 0x1f,
+            function: 2,
+        };
+        pci_function(&mut out, at, &h).unwrap();
+        assert_eq!(out, "PCI 00:1f.2 8086:2922 SATA controller (AHCI)\n");
+        let mut out = String::new();
+        let far = pci::Address {
+            bus: 0xa3,
+            device: 4,
+            function: 7,
+        };
+        pci_function(&mut out, far, &h).unwrap();
+        assert!(out.starts_with("PCI a3:04.7 "), "{out}");
+        assert!(pci_function(&mut Full, at, &h).is_err());
+    }
+
+    #[test]
+    fn pci_configuration_space_lies_with_the_other_devices() {
+        assert_eq!(PCI_CONFIG >> 39 & 0x1ff, 506);
+        assert_eq!(
+            (PCI_CONFIG + (256 << 20) - 1) >> 39 & 0x1ff,
+            506,
+            "all of it"
+        );
+        const { assert!(PCI_CONFIG > HPET_PAGE + 4096) };
+        assert_eq!(PCI_CONFIG >> 47, 0x1_ffff, "in the kernel's half");
+        assert_eq!(PCI_CONFIG % (2 << 20), 0);
     }
 
     #[test]

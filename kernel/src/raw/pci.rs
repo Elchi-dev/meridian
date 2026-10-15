@@ -76,6 +76,23 @@ pub fn set_command(at: Address, command: u16) {
     }
 }
 
+/// Sets the buses the bridge at `at` leads to, the one right behind it and
+/// the last below it, and returns the ones it had. Only the test image
+/// does, to see [`each`] keep away from a bridge that leads nowhere.
+#[cfg(feature = "qemu-test")]
+pub fn set_buses(at: Address, secondary: u8, subordinate: u8) -> Option<(u8, u8)> {
+    let register = (config(at)? + 0x18) as *mut u32;
+    // SAFETY: as in enable; the primary bus and the latency timer go back
+    // as they were.
+    unsafe {
+        let buses = core::ptr::read_volatile(register);
+        let value = buses & 0xff00_00ff | u32::from(secondary) << 8 | u32::from(subordinate) << 16;
+        core::ptr::write_volatile(register, value);
+        let [_, secondary, subordinate, _] = buses.to_le_bytes();
+        Some((secondary, subordinate))
+    }
+}
+
 /// The header of the function at `at`, or none where no function is.
 pub fn header(at: Address) -> Option<Header> {
     let virt = config(at)?;
@@ -112,8 +129,11 @@ pub fn each(mut found: impl FnMut(Address, Header)) {
                     continue;
                 };
                 found(at, h);
-                if h.layout == 1 && h.secondary_bus > bus && waiting < buses.len() {
-                    buses[waiting] = h.secondary_bus;
+                if h.layout == 1
+                    && h.secondary_bus > bus
+                    && let Some(next) = buses.get_mut(waiting)
+                {
+                    *next = h.secondary_bus;
                     waiting += 1;
                 }
                 if function == 0 && !h.multifunction {

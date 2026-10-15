@@ -293,10 +293,13 @@ fn pci_checks<W: Write>(report: &mut Report<'_, W>) {
         ahci.is_some_and(|(_, h)| matches!(h.bar(5), Bar::Memory { address, .. } if address != 0));
     let enabled = ahci.is_some_and(|&(at, _)| {
         let before = raw::pci::command(at).unwrap_or(0);
-        raw::pci::set_command(at, before & !0x6);
-        let off = raw::pci::command(at).is_some_and(|c| c & 0x6 == 0);
+        raw::pci::set_command(at, 0);
+        let off = raw::pci::command(at) == Some(0);
         raw::pci::enable(at);
-        off && raw::pci::command(at).is_some_and(|c| c & 0x6 == 0x6 && c & !0x6 == before & !0x6)
+        let alone = raw::pci::command(at) == Some(0x6);
+        raw::pci::set_command(at, before & !0x6);
+        raw::pci::enable(at);
+        off && alone && raw::pci::command(at) == Some(before | 0x6)
     });
     let in_order = found.windows(2).all(|pair| pair[0].0 < pair[1].0);
     let nobody = Address {
@@ -321,6 +324,25 @@ fn pci_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.pci.bridge",
         behind && found.iter().all(|(at, _)| at.bus <= 1),
         "the root port the test machine has should lead to its random number generator, on a bus of its own",
+    );
+    let nowhere = bridge.is_some_and(|&(at, _)| {
+        let Some((secondary, subordinate)) = raw::pci::set_buses(at, 0, 0) else {
+            return false;
+        };
+        let mut seen = alloc::vec::Vec::new();
+        raw::pci::each(|at, h| seen.push((at, h)));
+        raw::pci::set_buses(at, secondary, subordinate);
+        let mut again = 0;
+        raw::pci::each(|_, _| again += 1);
+        seen.windows(2).all(|pair| pair[0].0 < pair[1].0)
+            && seen.iter().all(|(at, _)| at.bus == 0)
+            && seen.iter().any(|(a, h)| *a == at && h.secondary_bus == 0)
+            && again == found.len()
+    });
+    report.check(
+        "kernel.pci.nowhere",
+        nowhere,
+        "a bridge whose bus is not above its own, as before anyone numbers it, should not be followed",
     );
     report.check(
         "kernel.pci.enabled",

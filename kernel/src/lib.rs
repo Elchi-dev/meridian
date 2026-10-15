@@ -721,7 +721,7 @@ mod tests {
         assert_eq!(APIC_PAGE % 4096, 0);
         assert_eq!(APIC_PAGE >> 39 & 0x1ff, 506);
         assert_eq!(APIC_PAGE >> 47, 0x1_ffff, "in the kernel's half");
-        assert!(APIC_PAGE < CORE_STACKS && APIC_PAGE > bootinfo::HHDM_BASE);
+        const { assert!(APIC_PAGE < CORE_STACKS && APIC_PAGE > bootinfo::HHDM_BASE) };
     }
 
     #[test]

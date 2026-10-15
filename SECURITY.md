@@ -37,9 +37,7 @@ protection, nothing mapped both writable and executable, a guard page
 under its stack and nothing mapped at address 0. Two limits are known and
 written down:
 
-- **The chain of trust ends at the loader.** With Secure Boot (planned for
-  M1), the firmware and the shim check `meridian.efi`, but the loader does
-  not check the kernel's signature yet. That needs Meridian's own SHA-256
-  and signature code.
-- **Images are unsigned until M1.** The disk images built today carry no
-  signatures, and nothing on them is checked at boot.
+- **The chain of trust ends at the loader.** With Secure Boot on, the
+  firmware checks the shim and the shim checks `meridian.efi`, but the
+  loader does not check the kernel's signature yet. That needs Meridian's
+  own SHA-256 and signature code.

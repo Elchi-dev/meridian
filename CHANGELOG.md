@@ -10,7 +10,7 @@ at 0.x until the native API is stable.
 
 - **Repository**
   - The MIT and Apache-2.0 licences.
-  - Decision records 0001 to 0012.
+  - Decision records 0001 to 0013.
   - CI on GitHub Actions: `sextant ci` on every push, then mutation testing of what the push changed; sextant on macOS and Windows on `main` and weekly.
   - The docs: README, roadmap, architecture, testing, contributing and security.
 - **`.meri`, Meridian's settings format**
@@ -22,7 +22,7 @@ at 0.x until the native API is stable.
   - `doctor`, which checks Go, rustup and the pinned Rust toolchain, QEMU, OVMF, access to KVM and the tools the tests check sextant's work with, says how to fix what is missing, and installs it with the machine's package manager after one "y".
   - `ci`, every check CI runs in its order: the project rules, the test lines, Go and Rust formatting, clippy for every target, `go vet`, the Go tests with the race detector, the Rust tests and the QEMU test image. CI's linux job runs `sextant ci` itself.
   - `stats`, which counts code and test lines per component. `--check` fails below 1.5 test lines per code line and says how many are missing. Ratios are cut to two decimals, never rounded up.
-  - `lint`, which rejects em and en dashes, leftover markers in comments, `todo!()` and `unimplemented!()`, `unsafe` outside `raw` modules, and outside code or files without an accepted decision record.
+  - `lint`, which rejects em and en dashes, leftover markers in comments, `todo!()` and `unimplemented!()`, `unsafe` outside `raw` modules, and outside code or files without an accepted decision record. A file under `third-party/` also has to match the SHA-256 its record names.
   - A `.meri` reader, with typed getters and layering of a local file over the shared one.
   - GPT, FAT32 and ISO 9660 writers that need no outside tools and give the same bytes for the same inputs on any machine.
   - Settings from `sextant.meri`, with `sextant.local.meri` for one machine: build directory, QEMU memory, CPUs, accelerator, firmware, timeout and how long the firmware may stay silent.
@@ -49,6 +49,7 @@ at 0.x until the native API is stable.
   - Other systems on the boot partition, such as Windows Boot Manager, GRUB and systemd-boot, are found and started from their cards.
   - The firmware's own boot options are offered as cards too, for systems on other disks. An option the loader cannot load from its path is left to the firmware through `BootNext` and a restart.
   - An `.sbat` section, which current shims require.
+  - Secure Boot without firmware settings (decision record 0013): images start through Ubuntu's shim, signed by Microsoft, with the loader next to it as `grubx64.efi`. On the first boot the shim opens MokManager, where the person enrolls `meridian.cer` from the top of the disk once; after that every boot is silent.
   - No flicker into the kernel: the boot screen stays on the screen until the kernel's first frame, drawn in room the loader set aside, replaces it whole.
 - **The kernel**
   - Its own GDT, task state and IDT. Every processor exception is shown in plain words, and double faults run on a stack of their own, so running out of stack still ends on the panic screen.
@@ -78,7 +79,7 @@ at 0.x until the native API is stable.
 
 - **Test lines.** 31262 lines of tests for 17488 lines of code, a ratio of 1.78, and every component at 1.5 or more.
 - **sextant.** All tests pass with the race detector, at 7712 lines of code and 13743 lines of tests, a ratio of 1.78, on Linux, macOS and Windows.
-- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest. OVMF in Setup Mode takes Meridian's own key through the authenticated variable writes sextant makes, refuses a write whose signature was changed, and afterwards starts only what that key signed.
+- **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest. OVMF in Setup Mode takes Meridian's own key through the authenticated variable writes sextant makes, refuses a write whose signature was changed, and afterwards starts only what that key signed. OVMF with Microsoft's keys, as a PC from a shop has them, starts the shim, which refuses the loader until a Go test has pressed through enrolling `meridian.cer` in MokManager, and starts it after the restart; with another key's certificate enrolled it keeps refusing.
 - **`lib/uefi`.** 111 host tests pass at a ratio of 1.60. Every field offset of the firmware tables is checked against the specification.
 - **Mutation testing.** A run over every Rust crate, 2183 mutants with the QEMU checks for `boot`, `kernel`, `lib/uefi` and `lib/x86`, leaves none surviving, and each file changed after that run was mutated again on its own with the same result. Each survivor along the way got a test, or simpler code with nothing equivalent left to change. sextant has no surviving mutant either; a full run of it takes about an hour and a half. Sixteen equivalent mutants, fourteen in Rust and two in Go, are listed in `mutants.meri` with the reason each cannot change behaviour.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
@@ -99,7 +100,7 @@ at 0.x until the native API is stable.
   - a missing glyph being only a warning
 
   - Enter and the down arrow, pressed by sextant through the QEMU monitor
-- **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF.
+- **Images boot.** A GPT disk and an ISO written by sextant both boot through the shim into the loader on OVMF.
 - **On real firmware.** `sextant test --qemu` runs 224 checks in QEMU with KVM: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its frames and heap, pages it maps and unmaps, its timer, the other cores starting, their guarded stacks and the jobs they take, its screens, five exceptions caused on purpose, a panic and a stack overflow. Without KVM, where QEMU's processor has no x2APIC and the kernel stays on one core, 209 checks run.
 - **Boot options on another disk.** A Go test gives the test image a second disk: an option with the whole path to a loader there starts and comes back, and one with the short path Windows uses goes through `BootNext` and a restart, after which the firmware starts it from the second disk.
 - **The keys and settings on a real machine.** Go tests press F on OVMF and see its setup after the restart, and boot the plain image with `verbose` and `default = example` and see the log, the countdown and the example starting.

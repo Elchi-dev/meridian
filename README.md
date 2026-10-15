@@ -111,7 +111,7 @@ Wine or ReactOS ([ADR 0004](docs/adr/0004-clean-room.md)).
 
 | Part | What it is | State today |
 | --- | --- | --- |
-| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | boot screen with cards for the systems on the EFI partition and the firmware's boot options, the log, the firmware settings and `boot.meri`; loads the kernel and hands it memory, framebuffer and ACPI; the shim is not in yet |
+| [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | boot screen with cards for the systems on the EFI partition and the firmware's boot options, the log, the firmware settings and `boot.meri`; loads the kernel and hands it memory, framebuffer and ACPI; starts through Ubuntu's shim signed by Microsoft, with Meridian's key enrolled once in MokManager |
 | [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | its own descriptor tables, every exception on a panic screen with a QR code, a status screen with cores and a live uptime; a frame allocator and a heap, the APIC timer, so the processor sleeps between ticks, and every core started (M2 has begun) |
 | `lib/uefi` | UEFI types and firmware calls, written from the specification | done for what the loader calls, checked against OVMF |
 | `lib` | `no_std` crates shared by kernel and userland, tested on the host | `acpi`, `bootinfo`, `canvas`, `elf`, `font`, `meri`, `paging`, `qr`, `uefi`, `x86` |

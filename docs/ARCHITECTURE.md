@@ -9,7 +9,7 @@ into the big parts, and [the decision records](adr/README.md) say why.
 ```
   firmware (UEFI)
       |
-  shim, signed by Microsoft's UEFI CA          planned (M1)
+  shim, signed by Microsoft's UEFI CA          exists, Ubuntu's (record 0013)
       |
   meridian.efi, the loader                     exists, signed by sextant
       |   boot menu, other systems, log, boot.meri

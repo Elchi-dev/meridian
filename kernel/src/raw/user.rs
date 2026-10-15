@@ -329,7 +329,7 @@ pub fn system_call(frame: &mut Frame) {
 /// Writes to the log how the running program ended, under its name.
 fn ended(how: core::fmt::Arguments<'_>) {
     let name = with_process(|p| Ok(p.name.clone())).unwrap_or_default();
-    let serial = x86::raw::Com1::already_open();
+    let serial = super::serial::already_open();
     #[cfg(not(feature = "qemu-test"))]
     let _ = kernel::log::ended(&mut { serial }, &name, how);
     #[cfg(feature = "qemu-test")]
@@ -603,7 +603,7 @@ fn log(at: u64, len: u64) -> u64 {
     x86::raw::with_user_access(|| unsafe {
         core::ptr::copy_nonoverlapping(at as *const u8, text.as_mut_ptr(), text.len());
     });
-    let mut serial = x86::raw::Com1::already_open();
+    let mut serial = super::serial::already_open();
     let _ = serial.write_str("user: ");
     for &byte in text.iter() {
         let _ = serial.write_char(kernel::log::shown(byte));

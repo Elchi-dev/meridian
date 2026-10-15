@@ -16,6 +16,7 @@ use kernel::{bytes_of, covered, is_tidy};
 use x86::raw::Com1;
 
 use crate::raw::interrupts::expected::{self, Caught};
+use crate::raw::serial::Serial;
 use crate::raw::{self, mapped, physical};
 
 struct Report<'a, W: Write> {
@@ -41,7 +42,7 @@ pub fn run(
     tsc_hz: Option<u64>,
     display: Option<&Display<'_>>,
     free: Option<usize>,
-    serial: &mut Com1,
+    serial: &mut Serial,
 ) -> ! {
     let mut report = Report {
         out: serial,
@@ -135,10 +136,10 @@ pub fn run(
     handover_screen_checks(&mut report, info, regions, display);
     if screen.is_some() {
         // sextant keeps the picture and answers with a carriage return.
-        // The same port, not a new one: opening it again would clear an
-        // answer that came quickly.
+        // COM1 as it is, not opened again: that would clear an answer that
+        // came quickly.
         let _ = writeln!(report.out, "SCREEN status");
-        let answer = report.out.receive(1 << 24);
+        let answer = Com1::already_open().receive(1 << 24);
         report.check(
             "kernel.screen.kept",
             answer == Some(b'\r'),

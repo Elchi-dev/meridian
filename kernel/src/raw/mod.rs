@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod memory;
 pub mod nvme;
 pub mod pci;
+pub mod serial;
 pub mod smp;
 pub mod thread;
 pub mod timer;
@@ -28,11 +29,12 @@ use canvas::{Canvas, Format};
 use kernel::{Text, panic::Details};
 #[cfg(not(test))]
 use qr::Code;
+#[cfg(not(test))]
 use x86::raw::Com1;
 
 #[unsafe(no_mangle)]
 extern "sysv64" fn kernel_start(info: *const BootInfo) -> ! {
-    let mut serial = Com1::open();
+    let mut serial = serial::open();
     // SAFETY: the loader passes the boot information it built, mapped in
     // the direct map, and does not run again to change it.
     let Some(info) = (unsafe { info.as_ref() }) else {

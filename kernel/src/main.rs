@@ -19,7 +19,7 @@ use canvas::Scratch;
 use kernel::display::Display;
 use kernel::machine::{self, Machine};
 use kernel::screen::Facts;
-use x86::raw::Com1;
+use raw::serial::Serial;
 
 /// Whole seconds since the machine was switched on, from the time stamp
 /// counter, once its rate `tsc_hz` is known.
@@ -27,7 +27,7 @@ fn up(tsc_hz: Option<u64>) -> Option<u64> {
     x86::raw::tsc().checked_div(tsc_hz?)
 }
 
-fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
+fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Serial) -> ! {
     let _ = kernel::greet(serial, regions);
     let free = raw::memory::take(regions);
     raw::memory::prepare_kernel_half();
@@ -83,7 +83,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
 
 /// Finds every PCI function, logs it, and starts the first AHCI and the
 /// first NVM Express controller, logging each drive and what it holds.
-fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Com1) {
+fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Serial) {
     raw::pci::start(ecam);
     let mut found = kernel::disk::Controllers::default();
     raw::pci::each(|at, h| {
@@ -121,7 +121,7 @@ fn finish(
     tsc_hz: Option<u64>,
     display: Option<&mut Display<'_>>,
     free: Option<usize>,
-    serial: &mut Com1,
+    serial: &mut Serial,
 ) -> ! {
     qemu_test::run(
         info,
@@ -145,7 +145,7 @@ fn finish(
     tsc_hz: Option<u64>,
     display: Option<&mut Display<'_>>,
     _: Option<usize>,
-    serial: &mut Com1,
+    serial: &mut Serial,
 ) -> ! {
     let _ = writeln!(serial, "There is nothing more to do yet.");
     let timer = raw::timer::start(tsc_hz);

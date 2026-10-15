@@ -128,3 +128,94 @@ allow {
     mutation = "+ to -"
     reason = "deeper calls itself until the stack runs out, so the sum after the call is never taken"
 }
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "set_register(hba::CONTROL, register(hba::CONTROL) | hba::AHCI_ENABLE);"
+    mutation = "| to &"
+    reason = "QEMU's controller speaks only AHCI and keeps AE set whatever is written to it, so no write can turn AHCI off there"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let command = register(base + port::COMMAND);"
+    mutation = "+ to -"
+    reason = "reading the wrong register makes the write below clear every other bit of PxCMD as well; QEMU keeps none of them besides the ones that start and stop the port, so the port comes back as it was, which kernel.ahci.restart compares"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "register(base + port::COMMAND) | port::RECEIVE,"
+    mutation = "+ to -"
+    reason = "as for reading PxCMD before stopping the port: only the bit set here is one QEMU keeps"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let idle = wait(|| register(base + port::COMMAND) & (port::RUNNING | port::RECEIVING) == 0);"
+    mutation = "+ to -"
+    reason = "QEMU stops a port's engines the moment ST and FRE are cleared, so the wait for them ends at once whatever it looks at"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let idle = wait(|| register(base + port::COMMAND) & (port::RUNNING | port::RECEIVING) == 0);"
+    mutation = "| to &"
+    reason = "as above: QEMU's engines are stopped by the time the wait first looks"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "return false;"
+    mutation = "false to true"
+    reason = "this is the port that does not stop in time, which QEMU never has, as above"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "set_address(base + port::COMMAND_LIST, frame + COMMAND_LIST);"
+    mutation = "+ to -"
+    reason = "both offsets are 0: the command list starts the port's registers and the drive's frame alike"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "set_register(base + port::ERRORS, u32::MAX);"
+    mutation = "+ to -"
+    reason = "QEMU never sets a bit of PxSERR, so leaving it alone changes nothing there, and the register written instead lies in reserved space"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let ready = wait(|| register(base + port::TASK_FILE) & (port::BUSY | port::DATA_REQUEST) == 0);"
+    mutation = "+ to -"
+    reason = "QEMU's disk is never busy and never asks for data while its port starts, so the wait ends at once whatever it looks at"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let ready = wait(|| register(base + port::TASK_FILE) & (port::BUSY | port::DATA_REQUEST) == 0);"
+    mutation = "| to &"
+    reason = "as above: QEMU's disk is idle by the time the wait first looks"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let answer = issue(&drive, &fis, false, buffer, bytes);"
+    mutation = "false to true"
+    reason = "QEMU takes the direction of a transfer from the ATA command, not from the write bit of the command header"
+}
+
+allow {
+    file = "kernel/src/raw/pci.rs"
+    line = "if function == 0 && !h.multifunction {"
+    mutation = "== to !="
+    reason = "the walk then goes on past function 0 of a device with only that one; on q35 the other functions of such a device read as nobody there, so it finds the same functions"
+}
+
+allow {
+    file = "kernel/src/raw/nvme.rs"
+    line = "if !wait(|| state() != State::Off) || state() != State::Ready {"
+    mutation = "|| to &&"
+    reason = "QEMU's controller never fails as it comes up, so a controller that answered in time is always ready there"
+}

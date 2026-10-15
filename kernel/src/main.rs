@@ -43,10 +43,28 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     let tsc_hz = tsc.map(|t| t.hz);
     let _ = kernel::describe(serial, &machine, tsc);
     raw::pci::start(machine.ecam);
+    let mut controller = None;
     raw::pci::each(|at, h| {
         let _ = serial.write_str("kernel: ");
         let _ = kernel::pci_function(serial, at, &h);
+        if (h.class, h.subclass, h.interface) == (0x01, 0x06, 0x01) && controller.is_none() {
+            controller = Some((at, h.bar(5)));
+        }
     });
+    if let Some((at, pci::Bar::Memory { address, .. })) = controller {
+        raw::pci::enable(at);
+        raw::ahci::start(address);
+        for drive in raw::ahci::drives().iter().flatten() {
+            let _ = serial.write_str("kernel: ");
+            let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
+            let mut sector = [0u8; 512];
+            if raw::ahci::read_sectors(drive.port, 1, &mut sector).is_ok()
+                && sector.starts_with(b"EFI PART")
+            {
+                let _ = writeln!(serial, "kernel: AHCI port {}: a GPT disk", drive.port);
+            }
+        }
+    }
     raw::keep_modules(info, regions);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_cores();

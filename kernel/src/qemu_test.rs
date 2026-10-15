@@ -146,7 +146,7 @@ pub fn run(
         );
     }
 
-    pci_checks(&mut report);
+    device_checks(&mut report);
     timer_checks(&mut report, tsc_hz, info, regions);
     exception_checks(&mut report);
     protection_checks(&mut report);
@@ -268,6 +268,12 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
     }
 }
 
+/// The devices the kernel finds and drives.
+fn device_checks<W: Write>(report: &mut Report<'_, W>) {
+    pci_checks(report);
+    ahci_checks(report);
+}
+
 /// PCI through the MCFG's ECAM region: q35's host bridge at 00:00.0 and its
 /// AHCI controller are found, with the controller's registers in memory,
 /// every function once and in order, and where no function is, none.
@@ -283,6 +289,13 @@ fn pci_checks<W: Write>(report: &mut Report<'_, W>) {
         .find(|(_, h)| (h.class, h.subclass, h.interface) == (0x01, 0x06, 0x01));
     let registers =
         ahci.is_some_and(|(_, h)| matches!(h.bar(5), Bar::Memory { address, .. } if address != 0));
+    let enabled = ahci.is_some_and(|&(at, _)| {
+        let before = raw::pci::command(at).unwrap_or(0);
+        raw::pci::set_command(at, before & !0x6);
+        let off = raw::pci::command(at).is_some_and(|c| c & 0x6 == 0);
+        raw::pci::enable(at);
+        off && raw::pci::command(at).is_some_and(|c| c & 0x6 == 0x6 && c & !0x6 == before & !0x6)
+    });
     let in_order = found.windows(2).all(|pair| pair[0].0 < pair[1].0);
     let nobody = Address {
         bus: 0xff,
@@ -293,6 +306,60 @@ fn pci_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.pci.found",
         host && registers && in_order && raw::pci::header(nobody).is_none(),
         "q35's host bridge and AHCI controller should be found, each function once, the controller's registers in memory",
+    );
+    report.check(
+        "kernel.pci.enabled",
+        enabled,
+        "enabling the AHCI controller should turn on its memory and bus master bits and leave the others",
+    );
+}
+
+/// The drives on q35's AHCI controller. Booted from a disk, the first disk
+/// says it is QEMU's, and its first sectors are the protective MBR and the
+/// GPT header sextant wrote, its last the GPT's copy, and nothing past it
+/// is read. Booted from a CD, the CD is there as an optical drive.
+fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
+    use ahci::Attached;
+    use raw::ahci::{Error, read_sectors};
+    let drives = raw::ahci::drives();
+    let disk = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == Attached::Disk);
+    let optical = drives
+        .iter()
+        .flatten()
+        .any(|d| d.attached == Attached::Optical);
+    let Some(disk) = disk else {
+        report.check(
+            "kernel.ahci.found",
+            optical,
+            "booted from a CD, the CD should be found as an optical drive",
+        );
+        return;
+    };
+    let identity = disk.identity;
+    report.check(
+        "kernel.ahci.found",
+        identity.is_some_and(|i| {
+            i.model() == "QEMU HARDDISK" && i.sectors > 2048 && i.sector_size == 512
+        }),
+        "the boot disk should say it is QEMU's, with more than 1 MiB of 512-byte sectors",
+    );
+    let sectors = identity.map_or(0, |i| i.sectors);
+    let mut first = [0u8; 1024];
+    let mut last = [0u8; 512];
+    let read = read_sectors(disk.port, 0, &mut first).is_ok()
+        && read_sectors(disk.port, sectors.saturating_sub(1), &mut last).is_ok();
+    let mbr = first[510..512] == [0x55, 0xaa] && first[0x1c2] == 0xee;
+    let gpt = first[512..520] == *b"EFI PART" && last[..8] == *b"EFI PART";
+    let mut past = [0u8; 512];
+    let refused = read_sectors(disk.port, sectors, &mut past) == Err(Error::OutOfRange)
+        && read_sectors(disk.port, 0, &mut past[..100]) == Err(Error::OutOfRange);
+    report.check(
+        "kernel.ahci.read",
+        read && mbr && gpt && refused,
+        "the disk's first sectors should be the protective MBR and GPT header, its last the copy, and no sector past it read",
     );
 }
 

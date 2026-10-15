@@ -302,6 +302,36 @@ pub fn pci_function(out: &mut impl Write, at: pci::Address, h: &pci::Header) -> 
     )
 }
 
+/// Writes the line the kernel logs for the drive on AHCI port `port`: a
+/// disk's model and size, or what else is attached.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn drive_line(
+    out: &mut impl Write,
+    port: usize,
+    attached: ahci::Attached,
+    identity: Option<&ahci::Identity>,
+) -> fmt::Result {
+    write!(out, "AHCI port {port}: ")?;
+    match (attached, identity) {
+        (ahci::Attached::Disk, Some(disk)) => writeln!(
+            out,
+            "{}, {} sectors of {} bytes",
+            disk.model(),
+            disk.sectors,
+            disk.sector_size
+        ),
+        (ahci::Attached::Disk, None) => writeln!(out, "a disk that did not say what it is"),
+        (ahci::Attached::Optical, _) => writeln!(out, "an optical drive"),
+        (ahci::Attached::Other(signature), _) => {
+            writeln!(out, "a device with signature {signature:#010x}")
+        }
+        (ahci::Attached::Nothing, _) => writeln!(out, "nothing"),
+    }
+}
+
 /// The most cores that get a task state, and so are started.
 pub const CORES: usize = 64;
 
@@ -312,6 +342,10 @@ pub const CORE_STACKS: u64 = 0xffff_fe00_0000_0000;
 
 /// The pages of each of those stacks.
 pub const CORE_STACK_PAGES: u64 = 4;
+
+/// Where an AHCI controller's registers are mapped, uncached: the two
+/// pages 2 MiB into the slot for devices' registers, room for 32 ports.
+pub const AHCI_REGISTERS: u64 = APIC_PAGE + (2 << 20);
 
 /// Where the configuration space of PCI's segment 0 is mapped, uncached,
 /// page by page as the kernel reads it: in the slot for devices'
@@ -776,6 +810,57 @@ mod tests {
         pci_function(&mut out, far, &h).unwrap();
         assert!(out.starts_with("PCI a3:04.7 "), "{out}");
         assert!(pci_function(&mut Full, at, &h).is_err());
+    }
+
+    #[test]
+    fn each_drive_is_logged_with_what_it_says() {
+        let mut data = [0u8; 512];
+        for (i, pair) in b"QEMU HARDDISK                           "
+            .chunks(2)
+            .enumerate()
+        {
+            data[54 + 2 * i] = pair[1];
+            data[55 + 2 * i] = pair[0];
+        }
+        data[120..124].copy_from_slice(&0x2_0000u32.to_le_bytes());
+        let disk = ahci::Identity::read(&data);
+        let line = |attached, identity| {
+            let mut out = String::new();
+            drive_line(&mut out, 2, attached, identity).unwrap();
+            out
+        };
+        assert_eq!(
+            line(ahci::Attached::Disk, Some(&disk)),
+            "AHCI port 2: QEMU HARDDISK, 131072 sectors of 512 bytes\n"
+        );
+        assert_eq!(
+            line(ahci::Attached::Disk, None),
+            "AHCI port 2: a disk that did not say what it is\n"
+        );
+        assert_eq!(
+            line(ahci::Attached::Optical, None),
+            "AHCI port 2: an optical drive\n"
+        );
+        assert_eq!(
+            line(ahci::Attached::Other(0x9669_0101), None),
+            "AHCI port 2: a device with signature 0x96690101\n"
+        );
+        assert_eq!(
+            line(ahci::Attached::Nothing, None),
+            "AHCI port 2: nothing\n"
+        );
+        assert!(drive_line(&mut Full, 0, ahci::Attached::Optical, None).is_err());
+    }
+
+    #[test]
+    fn ahci_registers_lie_between_the_timers_and_pci() {
+        assert_eq!(AHCI_REGISTERS >> 39 & 0x1ff, 506);
+        const { assert!(AHCI_REGISTERS > HPET_PAGE && AHCI_REGISTERS + 0x2000 <= PCI_CONFIG) };
+        assert_eq!(AHCI_REGISTERS % 4096, 0);
+        assert!(
+            ahci::port::base(31) + 0x80 <= 0x2000,
+            "two pages hold every port"
+        );
     }
 
     #[test]

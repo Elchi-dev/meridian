@@ -2,6 +2,7 @@
 //! loader jumps to, the descriptor tables and exceptions, the screen, and
 //! what happens when the kernel has to stop.
 
+pub mod ahci;
 pub mod apic;
 pub mod hpet;
 pub mod interrupts;

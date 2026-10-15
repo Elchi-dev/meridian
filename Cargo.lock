@@ -75,6 +75,7 @@ version = "0.0.0"
 dependencies = [
  "abi",
  "acpi",
+ "ahci",
  "bootinfo",
  "canvas",
  "channel",

@@ -31,6 +31,41 @@ fn config(at: Address) -> Option<u64> {
     }
 }
 
+/// Lets the function at `at` answer at the memory its registers are mapped
+/// to and read and write memory itself, as a controller that moves data
+/// does: bits 1 and 2 of its command register.
+pub fn enable(at: Address) {
+    let Some(virt) = config(at) else {
+        return;
+    };
+    let register = (virt + 4) as *mut u32;
+    // SAFETY: config mapped the function's configuration space; the upper
+    // half written as 0 leaves its status bits, which clear on a 1, alone.
+    unsafe {
+        let command = core::ptr::read_volatile(register) & 0xffff;
+        core::ptr::write_volatile(register, command | 0x6);
+    }
+}
+
+/// The command register of the function at `at`. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn command(at: Address) -> Option<u16> {
+    let virt = config(at)?;
+    // SAFETY: as in enable, reading only.
+    let word = unsafe { core::ptr::read_volatile((virt + 4) as *const u32) };
+    u16::try_from(word & 0xffff).ok()
+}
+
+/// Sets the command register of the function at `at`. Only the test image
+/// does, to see [`enable`] turn its bits on.
+#[cfg(feature = "qemu-test")]
+pub fn set_command(at: Address, command: u16) {
+    if let Some(virt) = config(at) {
+        // SAFETY: as in enable.
+        unsafe { core::ptr::write_volatile((virt + 4) as *mut u32, u32::from(command)) };
+    }
+}
+
 /// The header of the function at `at`, or none where no function is.
 pub fn header(at: Address) -> Option<Header> {
     let virt = config(at)?;

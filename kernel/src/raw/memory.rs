@@ -339,6 +339,23 @@ pub fn map_stack(top: u64, pages: u64) -> Result<(), paging::Error> {
     Ok(())
 }
 
+/// A frame of memory of its own for a device to read and write, zeroed,
+/// or none when none is left. It goes back with [`give_back`].
+pub fn device_frame() -> Option<u64> {
+    let frame = FRAMES.lock().as_mut()?.alloc()?;
+    // SAFETY: a frame just taken from the allocator, so nothing else uses
+    // it, in the direct map, and a whole frame long.
+    unsafe { core::ptr::write_bytes((HHDM_BASE + frame) as *mut u8, 0, 4096) };
+    Some(frame)
+}
+
+/// Gives a frame from [`device_frame`] back.
+pub fn give_back(frame: u64) {
+    if let Some(frames) = FRAMES.lock().as_mut() {
+        let _ = frames.free(frame);
+    }
+}
+
 /// Maps `pages` fresh pages, zeroed, from `at` on in the address space at
 /// `root`, with `flags`.
 ///

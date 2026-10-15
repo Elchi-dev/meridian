@@ -94,6 +94,10 @@ name = "paging"
 version = "0.0.0"
 
 [[package]]
+name = "pci"
+version = "0.0.0"
+
+[[package]]
 name = "program"
 version = "0.0.0"
 dependencies = [

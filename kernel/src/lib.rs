@@ -12,6 +12,7 @@ pub mod hpet;
 pub mod machine;
 pub mod panic;
 pub mod screen;
+pub mod thread;
 
 use core::fmt::{self, Write};
 

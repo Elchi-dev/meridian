@@ -96,7 +96,9 @@ Loader and UEFI:
 
 ## M3: Processes
 
-- [ ] Scheduler with 32 priority levels
+- [x] Kernel threads on the first core: 32 priority levels (`lib/sched`), a switch when one gives way, sleeping on the timer, an idle thread
+- [ ] Preemption: the timer takes the processor from a thread whose time is up
+- [ ] Threads on every core, instead of the jobs the other cores take now
 - [ ] User mode and system calls
 - [ ] Objects, handles with access masks, security tokens
 - [ ] `.mexec` loader (ELF with Meridian note sections)

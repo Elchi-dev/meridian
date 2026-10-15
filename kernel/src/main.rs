@@ -99,8 +99,9 @@ fn finish(
     )
 }
 
-/// Keeps the uptime on the screen current. There are no interrupts yet to
-/// wake the processor, so it waits by spinning.
+/// Keeps the uptime on the screen current. With the timer it sleeps a
+/// tenth of a second between looks, while the idle thread halts the
+/// processor; without one it spins.
 #[cfg(not(feature = "qemu-test"))]
 fn finish(
     _: &BootInfo,
@@ -114,6 +115,7 @@ fn finish(
     let _ = writeln!(serial, "There is nothing more to do yet.");
     let timer = raw::timer::start(tsc_hz);
     let _ = kernel::waiting(serial, timer);
+    raw::thread::start();
     let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
         x86::raw::halt()
     };
@@ -127,7 +129,7 @@ fn finish(
             shown = now;
         }
         if timer.is_some() {
-            x86::raw::wait_for_interrupt();
+            raw::thread::sleep(raw::timer::HZ / 10);
         } else {
             core::hint::spin_loop();
         }

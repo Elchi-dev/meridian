@@ -143,6 +143,22 @@ Windows thread priorities map one to one. The compositor and the cursor get
 reserved CPU time and memory, so input stays smooth even with every core at
 100 %.
 
+What exists: kernel threads on the first core. `lib/sched` keeps the
+threads that are ready in 32 queues, one per priority, with a bit for every
+queue that holds one; the highest goes first and threads of one priority
+take turns. Each thread has a 32 KiB stack at `kernel::thread::STACKS`
+with an unmapped page below it. A switch keeps the six registers a
+function has to keep and the flags on the thread's stack, so every thread
+has its own interrupt flag. A thread runs until it gives way, sleeps for a
+number of timer ticks or ends; an idle thread at priority 0 halts the
+processor until the next interrupt and then wakes the sleepers whose time
+has come. The status screen's uptime now sleeps a tenth of a second between
+looks. The test image checks threads taking turns, the order of
+priorities, a sleep that ends on time and not a tick late, the guard below
+a thread's stack, and that all 62 threads that can be started at once
+start, end and free their numbers. Preemption and threads on the other
+cores come next.
+
 ## IPC (M3)
 
 Typed message channels that can carry handles, used by every service and by

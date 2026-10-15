@@ -7,6 +7,7 @@ pub mod hpet;
 pub mod interrupts;
 pub mod memory;
 pub mod smp;
+pub mod thread;
 pub mod timer;
 
 #[cfg(not(test))]

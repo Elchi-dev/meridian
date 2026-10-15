@@ -81,8 +81,7 @@ pub const WAKE: u8 = 0x21;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// How many times the timer has interrupted. Only the test image counts.
-#[cfg(feature = "qemu-test")]
+/// How many times the timer has interrupted.
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Acquire)
 }

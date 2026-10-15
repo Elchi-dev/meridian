@@ -4,7 +4,7 @@
 //! sextant reads.
 
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, RegionKind, STACK_PAGES, STACK_TOP};
 use canvas::Canvas;
@@ -598,6 +598,7 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
         ticks() > before,
         "a halted processor should wake at the next tick",
     );
+    thread_checks(report);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);
@@ -608,6 +609,154 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
             && x86::raw::apic_timer_count() == 0
             && read_apic(apic::LVT_TIMER) & apic::MASKED != 0,
         "once stopped, the timer should count no more and interrupt no more",
+    );
+}
+
+/// What the threads in the checks below leave behind: numbers in the order
+/// they noted them, and a count of those that ran.
+static TRAIL: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static NOTED: AtomicU32 = AtomicU32::new(0);
+static RAN: AtomicU32 = AtomicU32::new(0);
+static HERE: AtomicU64 = AtomicU64::new(0);
+
+fn note(value: u64) {
+    let at = NOTED.fetch_add(1, Ordering::AcqRel) as usize;
+    if let Some(slot) = TRAIL.get(at) {
+        slot.store(value, Ordering::Release);
+    }
+}
+
+fn trail() -> ([u64; 8], usize) {
+    let noted = NOTED.load(Ordering::Acquire) as usize;
+    (TRAIL.each_ref().map(|t| t.load(Ordering::Acquire)), noted)
+}
+
+fn forget_the_trail() {
+    NOTED.store(0, Ordering::Release);
+    for t in &TRAIL {
+        t.store(0, Ordering::Release);
+    }
+}
+
+/// Notes its argument three times, giving way after each.
+extern "C" fn taking_turns(me: u64) {
+    for _ in 0..3 {
+        note(me);
+        raw::thread::yield_now();
+    }
+}
+
+/// Notes its argument once and ends.
+extern "C" fn noting(me: u64) {
+    note(me);
+}
+
+/// Counts that it ran and ends.
+extern "C" fn counting(_: u64) {
+    RAN.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Keeps where its stack is.
+extern "C" fn where_am_i(_: u64) {
+    let here = 0u8;
+    HERE.store((&raw const here) as u64, Ordering::Release);
+}
+
+/// Kernel threads on the first core, with the timer running: taking
+/// turns, going by priority, sleeping on the timer, each on a stack of its
+/// own with nothing below, and ending, so their numbers can be used again.
+fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
+    use kernel::thread::{STACK_PAGES, THREADS, stack_top};
+    use raw::interrupts::ticks;
+    use raw::thread::{self, Error, NORMAL};
+    thread::start();
+
+    forget_the_trail();
+    let a = thread::spawn(taking_turns, 1, NORMAL);
+    let b = thread::spawn(taking_turns, 2, NORMAL);
+    for _ in 0..20 {
+        thread::yield_now();
+    }
+    let (noted, count) = trail();
+    report.check(
+        "kernel.thread.turns",
+        a.is_ok_and(|a| a > 0)
+            && b.is_ok_and(|b| b > 0)
+            && a != b
+            && thread::current() == 0
+            && count == 6
+            && noted[..6] == [1, 2, 1, 2, 1, 2],
+        "two threads of the first one's priority should take turns each time one gives way",
+    );
+
+    forget_the_trail();
+    let spawned =
+        [(10, 2), (20, 20), (30, 9)].map(|(me, priority)| thread::spawn(noting, me, priority));
+    thread::yield_now();
+    let (before_sleep, early) = trail();
+    let ticks_then = ticks();
+    thread::sleep(3);
+    let slept = ticks() - ticks_then;
+    let (after_sleep, count) = trail();
+    report.check(
+        "kernel.thread.priority",
+        spawned.iter().all(Result::is_ok)
+            && early == 2
+            && before_sleep[..2] == [20, 30]
+            && count == 3
+            && after_sleep[..3] == [20, 30, 10],
+        "higher priorities should run first, and lower ones only once the first thread sleeps",
+    );
+    // With interrupts off nothing ticks, so a sleep that is over at once
+    // has to come back without waiting for the timer.
+    let (at, back) = x86::raw::without_interrupts(|| {
+        let at = ticks();
+        thread::sleep(0);
+        (at, ticks())
+    });
+    report.check(
+        "kernel.thread.sleep",
+        (3..=30).contains(&slept) && thread::current() == 0 && back == at,
+        "a sleeping thread should wake once the timer has ticked as often as it asked, and not before",
+    );
+
+    let slot = thread::spawn(where_am_i, 0, NORMAL);
+    thread::yield_now();
+    let here = HERE.load(Ordering::Acquire);
+    report.check(
+        "kernel.thread.stack",
+        slot.is_ok_and(|s| {
+            let top = stack_top(s);
+            let bottom = top - STACK_PAGES * 4096;
+            (bottom..top).contains(&here)
+                && raw::interrupts::expected::read_at(bottom - 8)
+                    .is_some_and(|c| c.address == bottom - 8)
+        }),
+        "a thread should run on a stack of its own, with nothing mapped below it",
+    );
+
+    RAN.store(0, Ordering::Release);
+    let mut started = 0;
+    let full = loop {
+        match thread::spawn(counting, 0, 1) {
+            Ok(_) => started += 1,
+            Err(e) => break e,
+        }
+        if started > THREADS {
+            break Error::NoStack;
+        }
+    };
+    thread::sleep(3);
+    let again = thread::spawn(noting, 0, NORMAL);
+    thread::yield_now();
+    report.check(
+        "kernel.thread.ended",
+        full == Error::Full
+            && started == THREADS - 2
+            && RAN.load(Ordering::Acquire) as usize == started
+            && again.is_ok()
+            && thread::spawn(noting, 0, 32) == Err(Error::NoSuchPriority(32)),
+        "every thread there can be should start and end, and an ended one's number should be used again",
     );
 }
 

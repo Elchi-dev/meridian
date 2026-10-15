@@ -141,6 +141,23 @@ impl Gate {
         }
     }
 
+    /// An interrupt gate to `handler` that code in ring 3 may use with
+    /// `int` as well, for system calls; it runs on the current stack, which
+    /// coming from ring 3 is the task state's ring 0 stack.
+    #[must_use]
+    pub const fn user_interrupt(handler: u64) -> Gate {
+        let mut gate = Gate::interrupt(handler, 0);
+        gate.attributes = 0xee;
+        gate
+    }
+
+    /// The lowest privilege level, 0 to 3, that may use the gate with
+    /// `int`; interrupts and exceptions reach it from any.
+    #[must_use]
+    pub fn ring(&self) -> u8 {
+        self.attributes >> 5 & 3
+    }
+
     /// Where the gate leads.
     #[must_use]
     pub fn handler(&self) -> u64 {
@@ -377,6 +394,22 @@ mod tests {
         }
         assert!(!Gate::MISSING.is_present());
         assert_eq!(Gate::default(), Gate::MISSING);
+    }
+
+    #[test]
+    fn only_the_system_call_gate_opens_to_ring_3() {
+        let kernel = Gate::interrupt(0xffff_ffff_8000_1234, 0);
+        let user = Gate::user_interrupt(0xffff_ffff_8000_1234);
+        assert_eq!((kernel.ring(), user.ring()), (0, 3));
+        assert_eq!(user.attributes, 0xee, "present, ring 3, interrupt gate");
+        assert_eq!(user.handler(), kernel.handler());
+        assert_eq!(
+            (user.selector, user.stack()),
+            (KERNEL_CODE, 0),
+            "kernel code, on the ring 0 stack"
+        );
+        assert!(user.is_present());
+        assert_eq!(Gate::MISSING.ring(), 0);
     }
 
     #[test]

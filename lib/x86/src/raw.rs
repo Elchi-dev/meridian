@@ -25,6 +25,13 @@ impl Com1 {
         Com1 { _only_com1: () }
     }
 
+    /// COM1 as it was set up already, for code that writes to it without
+    /// holding the [`Com1`] it was opened as.
+    #[must_use]
+    pub fn already_open() -> Com1 {
+        Com1 { _only_com1: () }
+    }
+
     /// The next byte that arrived, waiting through at most `polls` reads
     /// of the line status. A board without COM1 reads back 0xff, which
     /// looks like data, so a 0xff byte counts as nothing.
@@ -707,6 +714,52 @@ pub fn mask_legacy_pics() {
     unsafe {
         asm!("out dx, al", in("dx") 0xa1_u16, in("al") 0xff_u8, options(nomem, nostack, preserves_flags));
         asm!("out dx, al", in("dx") 0x21_u16, in("al") 0xff_u8, options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Leaves the kernel for ring 3 at `rip`, with the stack at `rsp` and
+/// interrupts on, and every general register cleared so nothing of the
+/// kernel's shows there.
+///
+/// # Safety
+///
+/// `rip` and `rsp` must lie in pages mapped for ring 3, the task state must
+/// hold the kernel stack to come back on, and the IDT must give ring 3 a
+/// way back through a system call gate; whatever ring 3 does then cannot
+/// harm the kernel.
+pub unsafe fn enter_user(rip: u64, rsp: u64) -> ! {
+    // SAFETY: the caller promises the pages, the stack to come back on and
+    // the gates; iretq takes the processor to ring 3 with the selectors
+    // pushed here.
+    unsafe {
+        asm!(
+            "push {ss}",
+            "push rdi",
+            "push 0x202",
+            "push {cs}",
+            "push rsi",
+            "xor eax, eax",
+            "xor ebx, ebx",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "xor esi, esi",
+            "xor edi, edi",
+            "xor ebp, ebp",
+            "xor r8d, r8d",
+            "xor r9d, r9d",
+            "xor r10d, r10d",
+            "xor r11d, r11d",
+            "xor r12d, r12d",
+            "xor r13d, r13d",
+            "xor r14d, r14d",
+            "xor r15d, r15d",
+            "iretq",
+            ss = const tables::USER_DATA as u64,
+            cs = const tables::USER_CODE as u64,
+            in("rdi") rsp,
+            in("rsi") rip,
+            options(noreturn),
+        );
     }
 }
 

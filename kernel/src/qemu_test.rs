@@ -1001,6 +1001,11 @@ fn user_checks<W: Write>(report: &mut Report<'_, W>) {
         "the first program should say hello from ring 3 through a system call, and end with 0",
     );
     report.check(
+        "kernel.user.stack_segment",
+        seen::STACK_SEGMENT.load(Ordering::Acquire) == u64::from(x86::tables::KERNEL_DATA),
+        "a system call from ring 3 should run on the kernel's own stack segment, not the null one the processor leaves",
+    );
+    report.check(
         "kernel.user.stack",
         exits(ran(&probe::STACK, 0), 42),
         "a program's stack should work in ring 3",

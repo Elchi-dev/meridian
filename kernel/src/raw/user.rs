@@ -170,7 +170,7 @@ fn finish() -> ! {
 /// answer goes back in rax.
 pub fn system_call(frame: &mut Frame) {
     #[cfg(feature = "qemu-test")]
-    seen::RING.store(frame.cs & 3, core::sync::atomic::Ordering::Release);
+    seen::called_from(frame.cs);
     frame.rax = match syscall::decode(frame.rax, [frame.rdi, frame.rsi, frame.rdx, frame.r10]) {
         Call::Exit(code) => {
             let _ = writeln!(
@@ -1024,14 +1024,22 @@ pub mod seen {
 
     use kernel::thread::THREADS;
 
-    /// The privilege level the last system call came from.
+    /// The privilege level the last system call came from, and the stack
+    /// segment the kernel ran it on.
     pub static RING: AtomicU64 = AtomicU64::new(0);
+    pub static STACK_SEGMENT: AtomicU64 = AtomicU64::new(0);
     /// Each thread's exit code, and the vector of the fault that ended it.
     static EXIT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static FAULT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static ERROR: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static LOG: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
     static LOG_LEN: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn called_from(cs: u64) {
+        RING.store(cs & 3, Ordering::Release);
+        let (_, ss) = x86::raw::segments();
+        STACK_SEGMENT.store(u64::from(ss), Ordering::Release);
+    }
 
     pub(super) fn exited(code: u64) {
         if let Some(e) = EXIT.get(super::thread::current()) {
@@ -1089,6 +1097,7 @@ pub mod seen {
     /// Forgets what thread `slot` and the last program left.
     pub fn forget(slot: usize) {
         RING.store(0, Ordering::Release);
+        STACK_SEGMENT.store(0, Ordering::Release);
         LOG_LEN.store(0, Ordering::Release);
         if let (Some(e), Some(f)) = (EXIT.get(slot), FAULT.get(slot)) {
             e.store(u64::MAX, Ordering::Release);

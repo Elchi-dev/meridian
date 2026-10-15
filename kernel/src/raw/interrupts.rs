@@ -279,6 +279,14 @@ unsafe extern "C" fn common() {
         "push r13",
         "push r14",
         "push r15",
+        // Coming from ring 3 leaves SS null, and every thread this one
+        // switches to would keep running on it. iretq takes the
+        // program's own back from the frame.
+        "test byte ptr [rsp + 144], 3",
+        "jz 2f",
+        "mov ax, {kernel_data}",
+        "mov ss, ax",
+        "2:",
         "mov rdi, rsp",
         "cld",
         "call {handler}",
@@ -300,6 +308,7 @@ unsafe extern "C" fn common() {
         "add rsp, 16",
         "iretq",
         handler = sym exception,
+        kernel_data = const x86::tables::KERNEL_DATA,
     );
 }
 

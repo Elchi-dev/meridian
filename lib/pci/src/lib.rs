@@ -41,6 +41,8 @@ pub struct Header {
     pub multifunction: bool,
     /// The base address registers of a device; a bridge has two.
     pub bars: [u32; 6],
+    /// The bus behind a bridge, or 0 for a device.
+    pub secondary_bus: u8,
 }
 
 /// The vendor id configuration space reads as where no function is.
@@ -71,6 +73,11 @@ impl Header {
             layout: bytes[14] & 0x7f,
             multifunction: bytes[14] & 0x80 != 0,
             bars,
+            secondary_bus: if bytes[14] & 0x7f == 1 {
+                bytes[0x19]
+            } else {
+                0
+            },
         })
     }
 
@@ -293,6 +300,20 @@ mod tests {
             [0, 0, 0x04, 0x06],
             1,
             [0xfe80_0000, 0, 0x0100_0100, 0, 0, 0],
+        );
+        let mut behind = bridge;
+        behind[0x19] = 3;
+        assert_eq!(
+            Header::read(&behind).unwrap().secondary_bus,
+            3,
+            "the bus behind it"
+        );
+        let mut device = space(1, 2, [0; 4], 0, [0; 6]);
+        device[0x19] = 3;
+        assert_eq!(
+            Header::read(&device).unwrap().secondary_bus,
+            0,
+            "a device has none"
         );
         let h = Header::read(&bridge).unwrap();
         assert_eq!(h.kind(), "PCI bridge");

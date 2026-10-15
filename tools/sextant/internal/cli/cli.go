@@ -55,6 +55,7 @@ func commands() []command {
 		{name: "doctor", summary: "Check the tools Meridian needs and install what is missing", run: runDoctor},
 		{name: "help", summary: "Show the commands, or details for one command", run: runHelp},
 		{name: "image", summary: "Write a bootable disk or ISO image", run: runImage},
+		{name: "key", summary: "Make the release key and its certificate: sextant key new release.pem", run: runKey},
 		{name: "lint", summary: "Check the project rules that no compiler knows about", run: runLint},
 		{name: "mutate", summary: "Change the code on purpose and check the tests notice", run: runMutate},
 		{name: "run", summary: "Boot Meridian in QEMU", run: runRun},

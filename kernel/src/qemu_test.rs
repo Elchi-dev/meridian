@@ -1379,6 +1379,12 @@ fn low_memory_checks<W: Write>(report: &mut Report<'_, W>, file: Option<&[u8]>) 
 /// faults, even where the processor still remembered the page.
 fn given_back_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::user::{probe, seen};
+    report.check(
+        "kernel.user.spawn_names",
+        ended_with(ran(&probe::SPAWN_LONGEST, 0), abi::BAD_ADDRESS)
+            && ended_with(ran(&probe::SPAWN_TOO_LONG, 0), abi::NO_SUCH_PROGRAM),
+        "a name of 32 bytes may be spawned and is read from the program's memory; one of 33 is no file's",
+    );
     let stale = ran(&probe::STALE, 0);
     report.check(
         "kernel.user.given_back",

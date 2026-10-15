@@ -328,18 +328,8 @@ pub fn system_call(frame: &mut Frame) {
 
 /// Writes to the log how the running program ended, under its name.
 fn ended(how: core::fmt::Arguments<'_>) {
-    let mut serial = x86::raw::Com1::already_open();
-    let _ = serial.write_str("user: ");
-    let named = with_process(|p| {
-        for &byte in &p.name {
-            let _ = serial.write_char(kernel::log::shown(byte));
-        }
-        Ok(!p.name.is_empty())
-    });
-    if named != Ok(true) {
-        let _ = serial.write_str("the program");
-    }
-    let _ = writeln!(serial, " {how}");
+    let name = with_process(|p| Ok(p.name.clone())).unwrap_or_default();
+    let _ = kernel::log::ended(&mut x86::raw::Com1::already_open(), &name, how);
 }
 
 /// Closes the object `object` stands for, whatever its kind.
@@ -357,7 +347,7 @@ pub fn close_object(object: u64) {
 fn spawn_program(len: u64, at: u64, carry: u64) -> Result<u64, u64> {
     let count = usize::try_from(len)
         .ok()
-        .filter(|&n| n > 0 && n <= bootinfo::Module::NAME)
+        .filter(|&n| n <= bootinfo::Module::NAME)
         .ok_or(syscall::NO_SUCH_PROGRAM)?;
     if !memory::user_readable(at, len) {
         return Err(syscall::BAD_ADDRESS);
@@ -801,6 +791,31 @@ pub mod probe {
         "mov eax, {exit}",
         "int 0x2e",
         "ud2",
+        // Asks to spawn a program by the longest name there may be, from
+        // memory that is not its own, and ends with the answer.
+        ".global meridian_spawn_longest_start",
+        "meridian_spawn_longest_start:",
+        "mov edi, 32",
+        "mov esi, 0x900000",
+        "xor edx, edx",
+        "mov eax, {spawn}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // The same with a name one byte too long.
+        ".global meridian_spawn_too_long_start",
+        "meridian_spawn_too_long_start:",
+        "mov edi, 33",
+        "mov esi, 0x900000",
+        "xor edx, edx",
+        "mov eax, {spawn}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
         // Sets the AC flag and ends through a system call.
         ".global meridian_set_ac_start",
         "meridian_set_ac_start:",
@@ -1088,6 +1103,7 @@ pub mod probe {
         close = const syscall::CLOSE,
         map = const syscall::MAP,
         unmap = const syscall::UNMAP,
+        spawn = const syscall::SPAWN,
     );
 
     unsafe extern "C" {
@@ -1116,6 +1132,8 @@ pub mod probe {
         static meridian_run_stack_start: u8;
         static meridian_set_ac_start: u8;
         static meridian_stale_start: u8;
+        static meridian_spawn_longest_start: u8;
+        static meridian_spawn_too_long_start: u8;
         static meridian_probes_end: u8;
     }
 
@@ -1228,6 +1246,26 @@ pub mod probe {
     }
 
     pub static STALE: Program = Program { code: stale };
+
+    fn spawn_longest() -> &'static [u8] {
+        bytes(
+            &raw const meridian_spawn_longest_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn spawn_too_long() -> &'static [u8] {
+        bytes(
+            &raw const meridian_spawn_too_long_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static SPAWN_LONGEST: Program = Program {
+        code: spawn_longest,
+    };
+    pub static SPAWN_TOO_LONG: Program = Program {
+        code: spawn_too_long,
+    };
 
     fn pair() -> &'static [u8] {
         bytes(

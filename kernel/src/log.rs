@@ -22,9 +22,61 @@ pub fn shown(byte: u8) -> char {
     }
 }
 
+/// Writes the line the kernel logs when a program ended: under its name,
+/// shown as [`shown`] shows bytes, or as "the program" when it has none,
+/// and then `how`.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn ended(
+    out: &mut impl core::fmt::Write,
+    name: &[u8],
+    how: core::fmt::Arguments<'_>,
+) -> core::fmt::Result {
+    out.write_str("user: ")?;
+    if name.is_empty() {
+        out.write_str("the program")?;
+    }
+    for &byte in name {
+        out.write_char(shown(byte))?;
+    }
+    writeln!(out, " {how}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writer that takes nothing.
+    struct Full;
+
+    impl core::fmt::Write for Full {
+        fn write_str(&mut self, _: &str) -> core::fmt::Result {
+            Err(core::fmt::Error)
+        }
+    }
+
+    #[test]
+    fn an_ended_program_is_logged_under_its_name() {
+        let line = |name: &[u8]| {
+            let mut out = String::new();
+            ended(&mut out, name, format_args!("ended with {}", 42)).unwrap();
+            out
+        };
+        assert_eq!(line(b"hello"), "user: hello ended with 42\n");
+        assert_eq!(
+            line(b""),
+            "user: the program ended with 42\n",
+            "a program without a name"
+        );
+        assert_eq!(
+            line(b"bad\x1bname"),
+            "user: bad?name ended with 42\n",
+            "its name shown as lines are"
+        );
+        assert!(ended(&mut Full, b"x", format_args!("")).is_err());
+    }
 
     #[test]
     fn a_line_may_be_as_long_as_the_log_takes_and_no_longer() {

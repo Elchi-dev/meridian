@@ -106,6 +106,10 @@ name = "meri"
 version = "0.0.0"
 
 [[package]]
+name = "nvme"
+version = "0.0.0"
+
+[[package]]
 name = "paging"
 version = "0.0.0"
 

@@ -1,0 +1,12 @@
+[package]
+name = "nvme"
+description = "NVMe without the hardware: registers, commands, completions and what a controller says about itself"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

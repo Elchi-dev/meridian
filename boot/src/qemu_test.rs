@@ -68,6 +68,17 @@ pub fn checks(system: &System, serial: &mut impl Write) {
         "sextant should put the kernel next to the loader",
     );
 
+    let hello = system
+        .boot_volume()
+        .and_then(|root| root.open("/meridian/programs/hello"))
+        .and_then(|file| file.info());
+    uefi::qemu_test::Report::check(
+        &mut report,
+        "boot.programs.file",
+        hello.is_ok_and(|i| !i.directory && i.size > 4096),
+        "sextant should put the programs into meridian/programs",
+    );
+
     prepare(system, &mut report);
     chain(system, &mut report);
 
@@ -148,6 +159,13 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         info.framebuffer == boot::handover::framebuffer(system.framebuffer().ok())
             && info.framebuffer.base != 0,
         "the framebuffer the firmware set up should be passed on",
+    );
+    report.check(
+        "boot.prepare.programs",
+        info.modules.count == 1
+            && info.modules.list >= bootinfo::HHDM_BASE
+            && info.modules.list % PAGE_SIZE == 0,
+        "the one program on test images should be listed for the kernel",
     );
     report.check(
         "boot.prepare.info",

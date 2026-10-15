@@ -9,6 +9,7 @@ pub mod handover;
 pub mod log;
 pub mod memory;
 pub mod menu;
+pub mod programs;
 pub mod screen;
 pub mod settings;
 pub mod systems;
@@ -19,6 +20,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Where the kernel is on the EFI system partition.
 pub const KERNEL_PATH: &str = "/meridian/kernel";
+
+/// The folder of the programs the loader reads for the kernel to start.
+pub const PROGRAMS_PATH: &str = "/meridian/programs";
 
 /// Where the firmware starts from when no boot entry names a file: the
 /// shim, which starts this loader (decision record 0013).

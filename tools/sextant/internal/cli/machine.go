@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -53,16 +55,33 @@ func (s *session) build(part cargo.Part, v variant) cargo.Build {
 	return cargo.Build{Part: part, Root: s.root, BuildDir: s.settings.BuildDir, Release: v.release, QEMUTest: v.testMode}
 }
 
-// buildBoot builds the loader and the kernel and returns their paths.
-// Cargo's progress goes to stderr, so stdout keeps only what the command
-// reports.
-func (s *session) buildBoot(ctx context.Context, v variant) (loader, kernel string, err error) {
-	loader, err = s.build(cargo.Loader, v).Run(ctx, s.env.Stderr, s.env.Stderr)
+// built are the paths of what a build made: the loader, the kernel and
+// the programs, these by their names on the image.
+type built struct {
+	loader, kernel string
+	programs       map[string]string
+}
+
+// buildBoot builds the loader, the kernel and the programs. Cargo's
+// progress goes to stderr, so stdout keeps only what the command reports.
+func (s *session) buildBoot(ctx context.Context, v variant) (built, error) {
+	loader, err := s.build(cargo.Loader, v).Run(ctx, s.env.Stderr, s.env.Stderr)
 	if err != nil {
-		return "", "", err
+		return built{}, err
 	}
-	kernel, err = s.build(cargo.Kernel, v).Run(ctx, s.env.Stderr, s.env.Stderr)
-	return loader, kernel, err
+	kernel, err := s.build(cargo.Kernel, v).Run(ctx, s.env.Stderr, s.env.Stderr)
+	if err != nil {
+		return built{}, err
+	}
+	b := built{loader: loader, kernel: kernel, programs: map[string]string{}}
+	for _, part := range cargo.Programs {
+		path, err := s.build(part, v).Run(ctx, s.env.Stderr, s.env.Stderr)
+		if err != nil {
+			return built{}, err
+		}
+		b.programs[part.File] = path
+	}
+	return b, nil
 }
 
 // imagePath is where an image of this variant is written by default.
@@ -158,7 +177,7 @@ func (s *session) makeDevelopmentKey(path string) (authenticode.Signer, error) {
 
 // bootFiles are the files of an image of this variant: the shim, the
 // loader signed, and the certificate to enroll for it.
-func (s *session) bootFiles(v variant, loader, kernel []byte) (map[string][]byte, error) {
+func (s *session) bootFiles(v variant, loader, kernel []byte, programs map[string][]byte) (map[string][]byte, error) {
 	shim, err := image.ReadShim(s.root)
 	if err != nil {
 		return nil, err
@@ -171,23 +190,29 @@ func (s *session) bootFiles(v variant, loader, kernel []byte) (map[string][]byte
 	if err != nil {
 		return nil, fmt.Errorf("sign the loader: %w", err)
 	}
-	b := image.Boot{Loader: signed, Certificate: signer.Cert.Raw, Kernel: kernel, Shim: shim}
+	b := image.Boot{Loader: signed, Certificate: signer.Cert.Raw, Kernel: kernel, Shim: shim, Programs: programs}
 	if v.testMode {
 		return image.TestFiles(b), nil
 	}
 	return image.BootFiles(b), nil
 }
 
-func (s *session) writeImage(ctx context.Context, v variant, loader, kernel, out string) error {
-	loaderData, err := os.ReadFile(loader)
+func (s *session) writeImage(ctx context.Context, v variant, b built, out string) error {
+	loaderData, err := os.ReadFile(b.loader)
 	if err != nil {
 		return err
 	}
-	kernelData, err := os.ReadFile(kernel)
+	kernelData, err := os.ReadFile(b.kernel)
 	if err != nil {
 		return err
 	}
-	files, err := s.bootFiles(v, loaderData, kernelData)
+	programs := map[string][]byte{}
+	for name, path := range b.programs {
+		if programs[name], err = os.ReadFile(path); err != nil {
+			return err
+		}
+	}
+	files, err := s.bootFiles(v, loaderData, kernelData, programs)
 	if err != nil {
 		return err
 	}
@@ -260,12 +285,15 @@ func runBuild(env Env, args []string) error {
 	if err != nil {
 		return err
 	}
-	loader, kernel, err := s.buildBoot(context.Background(), *v)
+	b, err := s.buildBoot(context.Background(), *v)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(env.Stdout, loader)
-	fmt.Fprintln(env.Stdout, kernel)
+	fmt.Fprintln(env.Stdout, b.loader)
+	fmt.Fprintln(env.Stdout, b.kernel)
+	for _, name := range slices.Sorted(maps.Keys(b.programs)) {
+		fmt.Fprintln(env.Stdout, b.programs[name])
+	}
 	return nil
 }
 
@@ -281,7 +309,7 @@ func runImage(env Env, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	loader, kernel, err := s.buildBoot(ctx, *v)
+	b, err := s.buildBoot(ctx, *v)
 	if err != nil {
 		return err
 	}
@@ -289,7 +317,7 @@ func runImage(env Env, args []string) error {
 	if path == "" {
 		path = s.imagePath(*v)
 	}
-	if err := s.writeImage(ctx, *v, loader, kernel, path); err != nil {
+	if err := s.writeImage(ctx, *v, b, path); err != nil {
 		return err
 	}
 	fmt.Fprintln(env.Stdout, path)
@@ -331,12 +359,12 @@ func runRun(env Env, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	loader, kernel, err := s.buildBoot(ctx, r.v)
+	b, err := s.buildBoot(ctx, r.v)
 	if err != nil {
 		return err
 	}
 	path := s.imagePath(r.v)
-	if err := s.writeImage(ctx, r.v, loader, kernel, path); err != nil {
+	if err := s.writeImage(ctx, r.v, b, path); err != nil {
 		return err
 	}
 	m, err := s.machine(r.v, path)
@@ -467,12 +495,12 @@ func runSteps(ctx context.Context, steps []step, stdout, stderr io.Writer) error
 func (s *session) qemuTests(ctx context.Context) error {
 	v := variant{testMode: true}
 	fmt.Fprintln(s.env.Stdout, "== QEMU test image")
-	loader, kernel, err := s.buildBoot(ctx, v)
+	b, err := s.buildBoot(ctx, v)
 	if err != nil {
 		return err
 	}
 	path := s.imagePath(v)
-	if err := s.writeImage(ctx, v, loader, kernel, path); err != nil {
+	if err := s.writeImage(ctx, v, b, path); err != nil {
 		return err
 	}
 	m, err := s.machine(v, path)

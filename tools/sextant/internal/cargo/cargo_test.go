@@ -25,6 +25,8 @@ func TestArgsForEveryVariant(t *testing.T) {
 		{Loader, true, true, "build --locked -p boot --target x86_64-unknown-uefi --release --features qemu-test"},
 		{Kernel, false, false, "build --locked -p kernel --target x86_64-unknown-none"},
 		{Kernel, true, true, "build --locked -p kernel --target x86_64-unknown-none --release --features qemu-test"},
+		{Hello, false, false, "build --locked -p program --target x86_64-unknown-none --example hello"},
+		{Hello, true, true, "build --locked -p program --target x86_64-unknown-none --example hello --release --features qemu-test"},
 	}
 	for _, tt := range tests {
 		b := Build{Part: tt.part, Root: "/repo", BuildDir: "/build", Release: tt.release, QEMUTest: tt.qemuTest}
@@ -55,6 +57,8 @@ func TestOutputPaths(t *testing.T) {
 		{Build{Part: Loader, BuildDir: "/b", QEMUTest: true}, filepath.Join("/b", "qemu-test", "x86_64-unknown-uefi", "debug", "meridian.efi")},
 		{Build{Part: Kernel, BuildDir: "/b"}, filepath.Join("/b", "x86_64-unknown-none", "debug", "kernel")},
 		{Build{Part: Kernel, BuildDir: "/b", Release: true, QEMUTest: true}, filepath.Join("/b", "qemu-test", "x86_64-unknown-none", "release", "kernel")},
+		{Build{Part: Hello, BuildDir: "/b"}, filepath.Join("/b", "x86_64-unknown-none", "debug", "examples", "hello")},
+		{Build{Part: Hello, BuildDir: "/b", QEMUTest: true}, filepath.Join("/b", "qemu-test", "x86_64-unknown-none", "debug", "examples", "hello")},
 	}
 	for _, tt := range tests {
 		if got := tt.b.Output(); got != tt.want {
@@ -155,6 +159,45 @@ func TestBuildingTheKernel(t *testing.T) {
 	}
 	if loads != 3 {
 		t.Errorf("%d loadable segments, want code, read-only data and data", loads)
+	}
+}
+
+// Programs are position independent ELF files for x86_64 too, which the
+// kernel places in the lower half of an address space of their own.
+func TestBuildingAProgram(t *testing.T) {
+	needCargo(t)
+	for _, part := range Programs {
+		b := Build{Part: part, Root: repoRoot(t), BuildDir: filepath.Join(os.TempDir(), "sextant-test-build")}
+		path, err := b.Run(context.Background(), io.Discard, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := elf.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Class != elf.ELFCLASS64 || f.Machine != elf.EM_X86_64 || f.Type != elf.ET_DYN {
+			t.Errorf("%s: class %v, machine %v, type %v", part.File, f.Class, f.Machine, f.Type)
+		}
+		entryInCode := false
+		for _, p := range f.Progs {
+			if p.Type != elf.PT_LOAD {
+				continue
+			}
+			if p.Flags&elf.PF_W != 0 && p.Flags&elf.PF_X != 0 {
+				t.Errorf("%s: segment at %#x is writable and executable", part.File, p.Vaddr)
+			}
+			if p.Flags&elf.PF_X != 0 && f.Entry >= p.Vaddr && f.Entry < p.Vaddr+p.Memsz {
+				entryInCode = true
+			}
+			if p.Vaddr+p.Memsz > 0x40_0000 {
+				t.Errorf("%s: segment at %#x reaches past the 4 MiB a program has for its image", part.File, p.Vaddr)
+			}
+		}
+		if !entryInCode {
+			t.Errorf("%s: the entry %#x is in no executable segment", part.File, f.Entry)
+		}
+		f.Close()
 	}
 }
 

@@ -16,6 +16,8 @@ type Part struct {
 	Package string
 	Target  string
 	File    string
+	// Example is the package's example Cargo builds, when the part is one.
+	Example string
 }
 
 var (
@@ -23,6 +25,10 @@ var (
 	Loader = Part{Package: "boot", Target: "x86_64-unknown-uefi", File: "meridian.efi"}
 	// Kernel is the kernel, an ELF file the loader reads.
 	Kernel = Part{Package: "kernel", Target: "x86_64-unknown-none", File: "kernel"}
+	// Hello is the first program, written on the program runtime.
+	Hello = Part{Package: "program", Target: "x86_64-unknown-none", File: "hello", Example: "hello"}
+	// Programs are what every image carries for the kernel to start.
+	Programs = []Part{Hello}
 )
 
 // Build is one build of a part.
@@ -47,6 +53,9 @@ func (b Build) targetDir() string {
 // Args is the Cargo command line, without "cargo".
 func (b Build) Args() []string {
 	args := []string{"build", "--locked", "-p", b.Package, "--target", b.Target}
+	if b.Example != "" {
+		args = append(args, "--example", b.Example)
+	}
 	if b.Release {
 		args = append(args, "--release")
 	}
@@ -67,7 +76,11 @@ func (b Build) Output() string {
 	if b.Release {
 		profile = "release"
 	}
-	return filepath.Join(b.targetDir(), b.Target, profile, b.File)
+	dir := filepath.Join(b.targetDir(), b.Target, profile)
+	if b.Example != "" {
+		dir = filepath.Join(dir, "examples")
+	}
+	return filepath.Join(dir, b.File)
 }
 
 // Run runs Cargo and returns the path of the file it built.

@@ -60,7 +60,8 @@ func sum(t *testing.T, path string) [32]byte {
 func bootParts() Boot {
 	return Boot{
 		Loader: []byte("efi"), Certificate: []byte("cer"), Kernel: []byte("elf"),
-		Shim: Shim{Shim: []byte("shim"), Manager: []byte("mok"), Licences: []byte("bsd")},
+		Shim:     Shim{Shim: []byte("shim"), Manager: []byte("mok"), Licences: []byte("bsd")},
+		Programs: map[string][]byte{"hello": []byte("hi"), "init": []byte("first")},
 	}
 }
 
@@ -74,6 +75,8 @@ func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
 		"meridian/licences/shim.txt": "bsd",
 		"meridian/kernel":            "elf",
 		"meridian/boot.meri":         Settings,
+		"meridian/programs/hello":    "hi",
+		"meridian/programs/init":     "first",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d files, want %d", len(got), len(want))
@@ -162,6 +165,7 @@ func TestTheLoaderLooksWhereTheKernelGoes(t *testing.T) {
 		{"lib.rs", `pub const LOADER_PATH: &str = "/` + LoaderPath + `";`},
 		{"lib.rs", `pub const FIRMWARE_PATH: &str = "/` + FirmwarePath + `";`},
 		{"settings.rs", `pub const PATH: &str = "/` + SettingsPath + `";`},
+		{"lib.rs", `pub const PROGRAMS_PATH: &str = "/` + ProgramsPath + `";`},
 	} {
 		src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "boot", "src", c.file))
 		if err != nil {

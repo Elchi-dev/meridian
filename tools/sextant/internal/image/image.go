@@ -85,10 +85,16 @@ func ReadShim(root string) (Shim, error) {
 type Boot struct {
 	Loader, Certificate, Kernel []byte
 	Shim                        Shim
+	// Programs are the programs for the kernel to start, by file name.
+	Programs map[string][]byte
 }
 
 // KernelPath is where the loader looks for the kernel.
 const KernelPath = "meridian/kernel"
+
+// ProgramsPath is the folder the loader reads programs from, for the
+// kernel to start.
+const ProgramsPath = "meridian/programs"
 
 // SettingsPath is where the loader reads its settings.
 const SettingsPath = "meridian/boot.meri"
@@ -118,10 +124,11 @@ const testSettings = `boot {
 }
 `
 
-// BootFiles places the shim, the loader, the kernel and the settings on
-// the EFI system partition, with what enrolling the loader's key needs.
+// BootFiles places the shim, the loader, the kernel, its programs and the
+// settings on the EFI system partition, with what enrolling the loader's
+// key needs.
 func BootFiles(b Boot) map[string][]byte {
-	return map[string][]byte{
+	files := map[string][]byte{
 		FirmwarePath:     b.Shim.Shim,
 		LoaderPath:       b.Loader,
 		ManagerPath:      b.Shim.Manager,
@@ -130,6 +137,10 @@ func BootFiles(b Boot) map[string][]byte {
 		KernelPath:       b.Kernel,
 		SettingsPath:     []byte(Settings),
 	}
+	for name, data := range b.Programs {
+		files[ProgramsPath+"/"+name] = data
+	}
+	return files
 }
 
 // ExamplePath is where test images put a second copy of the loader, for

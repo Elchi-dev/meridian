@@ -145,12 +145,16 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 	s, _ := signingSession(t)
 	s.root = realRoot(t)
 	s.settings.BuildDir = filepath.Join(os.TempDir(), "sextant-test-build")
-	loader, kernel, err := s.buildBoot(t.Context(), variant{})
+	b, err := s.buildBoot(t.Context(), variant{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaderData, _ := os.ReadFile(loader)
-	kernelData, _ := os.ReadFile(kernel)
+	loaderData, _ := os.ReadFile(b.loader)
+	kernelData, _ := os.ReadFile(b.kernel)
+	hello, _ := os.ReadFile(b.programs["hello"])
+	if !bytes.HasPrefix(hello, []byte("\x7fELF")) {
+		t.Fatalf("hello was not built: %d bytes from %q", len(hello), b.programs["hello"])
+	}
 	if certificateTableSize(t, loaderData) != 0 {
 		t.Fatal("Cargo's loader should not be signed yet")
 	}
@@ -163,7 +167,7 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, v := range []variant{{}, {testMode: true}} {
-		files, err := s.bootFiles(v, loaderData, kernelData)
+		files, err := s.bootFiles(v, loaderData, kernelData, map[string][]byte{"hello": hello})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,6 +190,9 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 		if !bytes.Equal(files[image.KernelPath], kernelData) {
 			t.Errorf("test mode %v: the kernel should be on the image as built", v.testMode)
 		}
+		if !bytes.Equal(files[image.ProgramsPath+"/hello"], hello) {
+			t.Errorf("test mode %v: hello should be on the image as built", v.testMode)
+		}
 	}
 }
 
@@ -203,7 +210,7 @@ func TestTheSignedLoaderCarriesItsSBAT(t *testing.T) {
 			t.Fatal(err)
 		}
 		loaderData, _ := os.ReadFile(loader)
-		files, err := s.bootFiles(v, loaderData, nil)
+		files, err := s.bootFiles(v, loaderData, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,7 +247,7 @@ func checkSBAT(t *testing.T, loader []byte, release bool) {
 
 func TestImagesNeedTheShim(t *testing.T) {
 	s, out := signingSession(t)
-	_, err := s.bootFiles(variant{}, []byte("MZ"), nil)
+	_, err := s.bootFiles(variant{}, []byte("MZ"), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "decision record 0013") {
 		t.Fatalf("an image without the shim: %v", err)
 	}

@@ -18,9 +18,10 @@ use boot::log::Log;
 use boot::menu::{Action, Key, Menu};
 use boot::screen::{Card, Cards, Kind, SYSTEM_LIMIT};
 use boot::settings::{self, Settings, Start};
-use boot::{KERNEL_PATH, Out, banner, firmware, memory, systems};
+use boot::{KERNEL_PATH, Out, PROGRAMS_PATH, banner, firmware, memory, programs, systems};
 use bootinfo::{
-    BootInfo, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, STACK_PAGES, STACK_TOP, Stack,
+    BootInfo, HHDM_BASE, KERNEL_MEMORY_TYPE, KernelImage, MemoryRegion, Module, Modules,
+    STACK_PAGES, STACK_TOP, Stack,
 };
 use canvas::Text;
 use canvas::{Canvas, Format, Scratch};
@@ -684,6 +685,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         .map_err(firmware("finding memory for the kernel"))?;
     elf.load(image.bytes(), first).map_err(Problem::Kernel)?;
     let _ = buf.free();
+    let modules = read_programs(system);
 
     let stack = system
         .allocate_pages(KERNEL_TYPE, pages_for(STACK_PAGES * PAGE_SIZE))
@@ -744,6 +746,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         uefi_system_table: system.table_address(),
         framebuffer: handover::framebuffer(screen),
         back_buffer,
+        modules,
         ..BootInfo::new()
     };
     Ok(Ready {
@@ -754,6 +757,71 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         page_at,
         map,
     })
+}
+
+/// Reads the programs in [`PROGRAMS_PATH`] into memory the kernel keeps,
+/// at most [`Modules::MAX`] of them, and lists them for it on a page of
+/// their own. Without the folder there are none, and a file that cannot be
+/// read is left out.
+fn read_programs(system: &System) -> Modules {
+    let Ok(root) = system.boot_volume() else {
+        return Modules::default();
+    };
+    let Ok(mut folder) = root.open(PROGRAMS_PATH) else {
+        return Modules::default();
+    };
+    let Ok(mut list) = system.allocate_pages(KERNEL_TYPE, 1) else {
+        return Modules::default();
+    };
+    let mut count = 0;
+    let mut buf: EntryBuffer = [0; size_of::<EntryBuffer>()];
+    while count < Modules::MAX {
+        let Ok(Some(entry)) = folder.next_entry(&mut buf) else {
+            break;
+        };
+        let Some(name) = programs::name_of(entry.name(), entry.info.directory) else {
+            continue;
+        };
+        let Some(module) = read_program(system, &root, name.as_str(), entry.info.size) else {
+            continue;
+        };
+        let at = count * size_of::<Module>();
+        list.bytes()[at..at + size_of::<Module>()].copy_from_slice(&module.to_bytes());
+        count += 1;
+    }
+    if count == 0 {
+        let _ = list.free();
+        return Modules::default();
+    }
+    let start = list.start();
+    let _ = list.keep();
+    Modules {
+        list: HHDM_BASE + start,
+        count: count as u64,
+    }
+}
+
+/// Reads the program `name`, `size` bytes long, into pages the kernel
+/// keeps.
+fn read_program(
+    system: &System,
+    root: &uefi::raw::file::File<'_>,
+    name: &str,
+    size: u64,
+) -> Option<Module> {
+    let mut path = Text::<64>::new();
+    write!(path, "{PROGRAMS_PATH}/{name}").ok()?;
+    let mut file = root.open(path.as_str()).ok()?;
+    let mut pages = system
+        .allocate_pages(KERNEL_TYPE, pages_for(size.max(1)))
+        .ok()?;
+    let Ok(got) = file.read_all(pages.bytes()) else {
+        let _ = pages.free();
+        return None;
+    };
+    let start = pages.start();
+    let _ = pages.keep();
+    Module::new(start, got as u64, name.as_bytes())
 }
 
 #[cfg(feature = "qemu-test")]

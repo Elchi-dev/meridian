@@ -272,6 +272,7 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
 fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
     pci_checks(report);
     ahci_checks(report);
+    nvme_checks(report);
     fat_checks(report, info, regions);
 }
 
@@ -388,6 +389,67 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
                     && p.name().eq("EFI system partition".chars())
             }),
         "the boot disk's partition table should list sextant's one EFI system partition of 64 MiB from 1 MiB on",
+    );
+}
+
+/// The NVM Express controller a test machine with a disk has next to
+/// AHCI, with the same image behind it: it says it is QEMU's, its
+/// namespace is as big as the AHCI disk, and it reads what AHCI reads,
+/// whether in one go over several frames or a block at a time, more often
+/// than its queues have room, and nothing past the end. A machine booted
+/// from a CD has none.
+fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::nvme::{Error, read};
+    let drives = raw::ahci::drives();
+    let disk = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk);
+    let drive = raw::nvme::drive();
+    let Some(disk) = disk else {
+        report.check(
+            "kernel.nvme.found",
+            drive.is_none(),
+            "booted from a CD, the machine should have no NVMe controller",
+        );
+        return;
+    };
+    let sectors = disk.identity.map_or(0, |i| i.sectors);
+    report.check(
+        "kernel.nvme.found",
+        drive.is_some_and(|d| {
+            (d.controller.model(), d.controller.serial()) == ("QEMU NVMe Ctrl", "meridian")
+                && (d.namespace.blocks, d.namespace.block_size) == (sectors, 512)
+        }),
+        "the NVMe controller should say it is QEMU's, with the serial sextant gave it, and hold as many blocks as the AHCI disk",
+    );
+    let ahci_read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
+    let mut by_nvme = alloc::vec![0u8; 25 * 512];
+    let mut by_ahci = by_nvme.clone();
+    let spanning = read(2040, &mut by_nvme).is_ok()
+        && ahci_read(2040, &mut by_ahci)
+        && by_nvme == by_ahci
+        && by_nvme[8 * 512 + 510..8 * 512 + 512] == [0x55, 0xaa];
+    let mut one_by_one = alloc::vec![0u8; 130 * 512];
+    let mut whole = one_by_one.clone();
+    let each = (0..130)
+        .zip(one_by_one.chunks_mut(512))
+        .all(|(lba, block)| read(lba, block).is_ok())
+        && ahci_read(0, &mut whole)
+        && one_by_one == whole
+        && whole[512..520] == *b"EFI PART";
+    let mut last = [0u8; 512];
+    let end = read(sectors.saturating_sub(1), &mut last).is_ok() && last[..8] == *b"EFI PART";
+    let mut room = [0u8; 1024];
+    let refused = read(sectors, &mut room[..512]) == Err(Error::OutOfRange)
+        && read(sectors.saturating_sub(1), &mut room) == Err(Error::OutOfRange)
+        && read(u64::MAX, &mut room[..512]) == Err(Error::OutOfRange)
+        && read(0, &mut room[..100]) == Err(Error::OutOfRange)
+        && read(0, &mut []) == Err(Error::OutOfRange);
+    report.check(
+        "kernel.nvme.read",
+        spanning && each && end && refused,
+        "NVMe should read the same sectors as AHCI, up to the disk's last and no further",
     );
 }
 

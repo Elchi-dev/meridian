@@ -32,6 +32,7 @@ gpt = { path = "../lib/gpt" }
 frames = { path = "../lib/frames" }
 handles = { path = "../lib/handles" }
 heap = { path = "../lib/heap" }
+nvme = { path = "../lib/nvme" }
 paging = { path = "../lib/paging" }
 pci = { path = "../lib/pci" }
 sched = { path = "../lib/sched" }

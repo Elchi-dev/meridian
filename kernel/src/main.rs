@@ -81,8 +81,8 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     )
 }
 
-/// Finds every PCI function, logs it, and starts the first AHCI
-/// controller, logging each drive and what it holds.
+/// Finds every PCI function, logs it, and starts the first AHCI and the
+/// first NVM Express controller, logging each drive and what it holds.
 fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Com1) {
     raw::pci::start(ecam);
     let mut found = kernel::disk::Controllers::default();
@@ -91,6 +91,17 @@ fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Com1) {
         let _ = kernel::pci_function(serial, at, &h);
         found.saw(at, &h);
     });
+    if let Some((at, pci::Bar::Memory { address, .. })) = found.nvme {
+        raw::pci::enable(at);
+        if raw::nvme::start(address)
+            && let Some(drive) = raw::nvme::drive()
+        {
+            let _ = serial.write_str("kernel: ");
+            let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
+            let mut read = |lba, into: &mut [u8]| raw::nvme::read(lba, into).is_ok();
+            let _ = kernel::disk::describe(serial, &"NVMe", &mut read);
+        }
+    }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
         raw::pci::enable(at);
         raw::ahci::start(address);

@@ -9,11 +9,12 @@ use core::fmt::{self, Display, Write};
 use gpt::{Header, Partition};
 
 /// The storage controllers the kernel drives, as the walk over PCI meets
-/// them: the first AHCI controller, with where it is and where its
-/// registers lie.
+/// them: the first AHCI controller and the first NVM Express one, each
+/// with where it is and where its registers lie.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Controllers {
     pub ahci: Option<(pci::Address, pci::Bar)>,
+    pub nvme: Option<(pci::Address, pci::Bar)>,
 }
 
 impl Controllers {
@@ -21,6 +22,7 @@ impl Controllers {
     pub fn saw(&mut self, at: pci::Address, h: &pci::Header) {
         let (first, registers) = match (h.class, h.subclass, h.interface) {
             (0x01, 0x06, 0x01) => (&mut self.ahci, 5),
+            (0x01, 0x08, 0x02) => (&mut self.nvme, 0),
             _ => return,
         };
         first.get_or_insert((at, h.bar(registers)));
@@ -239,6 +241,7 @@ mod tests {
     #[test]
     fn the_first_controller_of_each_kind_is_driven() {
         let ahci = function((0x01, 0x06, 0x01), [0, 0, 0, 0, 0x10, 0xfebd_5000]);
+        let nvme = function((0x01, 0x08, 0x02), [0xfebd_0004, 0x1, 0, 0, 0, 0]);
         let bridge = function((0x06, 0x04, 0x00), [0; 6]);
         let ide = function((0x01, 0x01, 0x80), [0xc001, 0, 0, 0, 0, 0xfebd_6000]);
         let mut found = Controllers::default();
@@ -249,8 +252,10 @@ mod tests {
             Controllers::default(),
             "neither is a controller the kernel drives"
         );
+        found.saw(at(0, 3, 0), &nvme);
         found.saw(at(0, 0x1f, 2), &ahci);
         let first = found;
+        found.saw(at(1, 0, 0), &nvme);
         found.saw(at(2, 0, 0), &ahci);
         assert_eq!(found, first, "later ones are left alone");
         let memory = |address| pci::Bar::Memory {
@@ -258,6 +263,7 @@ mod tests {
             prefetchable: false,
         };
         assert_eq!(found.ahci, Some((at(0, 0x1f, 2), memory(0xfebd_5000))));
+        assert_eq!(found.nvme, Some((at(0, 3, 0), memory(0x1_febd_0000))));
     }
 
     /// A FAT32 boot sector for a volume of `total` sectors of 512 bytes,

@@ -361,6 +361,27 @@ pub fn partition_line(
     )
 }
 
+/// Writes the line the kernel logs for an NVM Express controller and its
+/// first namespace.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn nvme_line(
+    out: &mut impl Write,
+    controller: &nvme::Controller,
+    namespace: &nvme::Namespace,
+) -> fmt::Result {
+    writeln!(
+        out,
+        "NVMe: {}, serial {}, {} blocks of {} bytes",
+        controller.model(),
+        controller.serial(),
+        namespace.blocks,
+        namespace.block_size
+    )
+}
+
 /// The most cores that get a task state, and so are started.
 pub const CORES: usize = 64;
 
@@ -375,6 +396,11 @@ pub const CORE_STACK_PAGES: u64 = 4;
 /// Where an AHCI controller's registers are mapped, uncached: the two
 /// pages 2 MiB into the slot for devices' registers, room for 32 ports.
 pub const AHCI_REGISTERS: u64 = APIC_PAGE + (2 << 20);
+
+/// Where an NVM Express controller's registers are mapped, uncached: the
+/// two pages 4 MiB into the slot for devices' registers, room for the
+/// doorbells of the queues Meridian makes.
+pub const NVME_REGISTERS: u64 = APIC_PAGE + (4 << 20);
 
 /// Where the configuration space of PCI's segment 0 is mapped, uncached,
 /// page by page as the kernel reads it: in the slot for devices'
@@ -879,6 +905,17 @@ mod tests {
             "AHCI port 2: nothing\n"
         );
         assert!(drive_line(&mut Full, 0, ahci::Attached::Optical, None).is_err());
+    }
+
+    #[test]
+    fn nvme_registers_lie_past_ahcis() {
+        assert_eq!(NVME_REGISTERS >> 39 & 0x1ff, 506);
+        const {
+            assert!(
+                NVME_REGISTERS >= AHCI_REGISTERS + 0x2000 && NVME_REGISTERS + 0x2000 <= PCI_CONFIG
+            );
+        };
+        assert_eq!(NVME_REGISTERS % 4096, 0);
     }
 
     #[test]

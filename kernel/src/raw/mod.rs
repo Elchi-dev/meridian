@@ -8,6 +8,7 @@ pub mod hpet;
 pub mod interrupts;
 pub mod ipc;
 pub mod memory;
+pub mod nvme;
 pub mod pci;
 pub mod smp;
 pub mod thread;

@@ -57,26 +57,65 @@ func sum(t *testing.T, path string) [32]byte {
 	return sha256.Sum256(data)
 }
 
-func TestBootFilesGoWhereFirmwareAndLoaderLook(t *testing.T) {
-	got := BootFiles([]byte("efi"), []byte("elf"))
-	if len(got) != 3 || string(got["EFI/BOOT/BOOTX64.EFI"]) != "efi" || string(got["meridian/kernel"]) != "elf" ||
-		string(got["meridian/boot.meri"]) != Settings {
-		t.Fatalf("got %v", got)
+func bootParts() Boot {
+	return Boot{
+		Loader: []byte("efi"), Certificate: []byte("cer"), Kernel: []byte("elf"),
+		Shim: Shim{Shim: []byte("shim"), Manager: []byte("mok"), Licences: []byte("bsd")},
+	}
+}
+
+func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
+	got := BootFiles(bootParts())
+	want := map[string]string{
+		"EFI/BOOT/BOOTX64.EFI":       "shim",
+		"EFI/BOOT/grubx64.efi":       "efi",
+		"EFI/BOOT/mmx64.efi":         "mok",
+		"meridian.cer":               "cer",
+		"meridian/licences/shim.txt": "bsd",
+		"meridian/kernel":            "elf",
+		"meridian/boot.meri":         Settings,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d files, want %d", len(got), len(want))
+	}
+	for path, w := range want {
+		if string(got[path]) != w {
+			t.Errorf("%s holds %q, want %q", path, got[path], w)
+		}
 	}
 }
 
 func TestTestImagesCarryAnExampleSystem(t *testing.T) {
-	got := TestFiles([]byte("efi"), []byte("elf"))
-	if len(got) != 6 || len(LongName) != 254 || string(got[LongName]) != "long name\n" ||
+	got := TestFiles(bootParts())
+	if len(got) != len(BootFiles(bootParts()))+3 || len(LongName) != 254 || string(got[LongName]) != "long name\n" ||
 		string(got["EFI/example/grubx64.efi"]) != "efi" || string(got["EFI/other/tool.efi"]) != "efi" ||
-		string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" {
+		string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" || string(got[FirmwarePath]) != "shim" {
 		t.Fatalf("got %v", got)
 	}
 	if string(got[SettingsPath]) != testSettings {
 		t.Fatal("test images carry settings of their own")
 	}
-	if len(BootFiles([]byte("efi"), []byte("elf"))) != 3 {
-		t.Fatal("plain images carry no example")
+}
+
+func TestTheShimComesFromTheRepository(t *testing.T) {
+	s, err := ReadShim(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string][]byte{"the shim": s.Shim, "MokManager": s.Manager} {
+		if len(b) < 64<<10 || string(b[:2]) != "MZ" {
+			t.Errorf("%s is no EFI application: %d bytes", name, len(b))
+		}
+	}
+	if bytes.Equal(s.Shim, s.Manager) {
+		t.Error("the shim and MokManager are different files")
+	}
+	if !bytes.Contains(s.Licences, []byte("License: OpenSSL")) || !bytes.Contains(s.Licences, []byte("BSD-2-Clause")) {
+		t.Error("the licences should be the source package's copyright file")
+	}
+	_, err = ReadShim(t.TempDir())
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "decision record 0013") {
+		t.Errorf("a repository without the shim: %v", err)
 	}
 }
 
@@ -115,18 +154,21 @@ func TestTheSettingsFilesSayWhatTheyShould(t *testing.T) {
 }
 
 // The loader is written in Rust, so this reads its source to make sure it
-// looks for the kernel and the settings where BootFiles puts them.
+// looks for the kernel and the settings where BootFiles puts them, and
+// knows where it and the shim are.
 func TestTheLoaderLooksWhereTheKernelGoes(t *testing.T) {
-	for file, want := range map[string]string{
-		"lib.rs":      `pub const KERNEL_PATH: &str = "/` + KernelPath + `";`,
-		"settings.rs": `pub const PATH: &str = "/` + SettingsPath + `";`,
+	for _, c := range []struct{ file, want string }{
+		{"lib.rs", `pub const KERNEL_PATH: &str = "/` + KernelPath + `";`},
+		{"lib.rs", `pub const LOADER_PATH: &str = "/` + LoaderPath + `";`},
+		{"lib.rs", `pub const FIRMWARE_PATH: &str = "/` + FirmwarePath + `";`},
+		{"settings.rs", `pub const PATH: &str = "/` + SettingsPath + `";`},
 	} {
-		src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "boot", "src", file))
+		src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "boot", "src", c.file))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(src), want) {
-			t.Errorf("boot/src/%s should say %s", file, want)
+		if !strings.Contains(string(src), c.want) {
+			t.Errorf("boot/src/%s should say %s", c.file, c.want)
 		}
 	}
 }
@@ -266,7 +308,7 @@ func TestISOAsXorrisoSeesIt(t *testing.T) {
 }
 
 func TestATestImageMakesAnISO(t *testing.T) {
-	files := TestFiles([]byte("efi"), []byte("elf"))
+	files := TestFiles(bootParts())
 	cd := onCD(files)
 	if _, ok := cd[LongName]; ok || len(cd) != len(files)-1 {
 		t.Fatalf("on the CD: %d of %d files, the long name among them: %v", len(cd), len(files), ok)

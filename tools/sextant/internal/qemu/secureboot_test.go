@@ -51,12 +51,13 @@ func snakeoilSigner(t *testing.T) authenticode.Signer {
 	return s
 }
 
-// secureBoot boots a plain image whose loader is the given one on the
-// Secure Boot firmware with the snakeoil key enrolled, until want appears.
+// secureBoot boots a plain image on the Secure Boot firmware with the
+// snakeoil key enrolled, until want appears. The firmware starts the given
+// loader itself, where the shim would be, since that key signed no shim.
 func secureBoot(t *testing.T, r rig, loader []byte, want ...string) Result {
 	t.Helper()
 	files := bootFiles(t, false)
-	files[image.LoaderPath] = loader
+	files[image.FirmwarePath] = loader
 	m := r.machine(diskWithFiles(t, files))
 	m.DebugExit = false
 	m.SecureBoot = true
@@ -151,6 +152,10 @@ func TestMeridiansOwnKeyIsEnrolledAndEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only Meridian's key is enrolled, which signed no shim, so the firmware
+	// starts the loader itself; the test image starts it again by its own
+	// name.
+	files[image.FirmwarePath] = signed
 	files[image.LoaderPath] = signed
 	files["EFI/unsigned/tool.efi"] = unsigned
 	files["EFI/foreign/tool.efi"] = foreign

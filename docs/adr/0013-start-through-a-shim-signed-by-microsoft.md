@@ -32,7 +32,7 @@ On the EFI system partition the files go where the firmware and the shim look fo
 - `EFI/BOOT/BOOTX64.EFI` is the shim, the file the firmware starts from a removable disk.
 - `EFI/BOOT/grubx64.efi` is `meridian.efi`. The shim starts the file with that name next to itself, and the name is built into the binary.
 - `EFI/BOOT/mmx64.efi` is MokManager.
-- `meridian/meridian.cer` is the certificate of the key that signed the loader, for enrolling, next to the kernel and `boot.meri`.
+- `meridian.cer` is the certificate of the key that signed the loader, for enrolling. It lies at the top of the partition, so it is the first thing MokManager shows once the person picks the disk.
 - `meridian/licences/shim.txt` is `COPYRIGHT`, since the licences ask for their notices to go along with the binaries.
 
 On the first boot the shim cannot check `meridian.efi` yet and starts MokManager. The person picks "Enroll key from disk", chooses `meridian.cer` and confirms. After the restart every loader signed with that key starts without a question. Release images carry the release key's certificate, development images the key sextant makes for each machine.

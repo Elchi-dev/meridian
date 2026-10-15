@@ -154,10 +154,24 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 	if certificateTableSize(t, loaderData) != 0 {
 		t.Fatal("Cargo's loader should not be signed yet")
 	}
+	signer, err := s.signer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, err := image.ReadShim(s.root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, v := range []variant{{}, {testMode: true}} {
 		files, err := s.bootFiles(v, loaderData, kernelData)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !bytes.Equal(files[image.FirmwarePath], shim.Shim) || !bytes.Equal(files[image.ManagerPath], shim.Manager) {
+			t.Errorf("test mode %v: the shim and MokManager should be on the image as the repository has them", v.testMode)
+		}
+		if !bytes.Equal(files[image.CertificatePath], signer.Cert.Raw) {
+			t.Errorf("test mode %v: the certificate to enroll should be the one of the key that signed the loader", v.testMode)
 		}
 		signed := files[image.LoaderPath]
 		if certificateTableSize(t, signed) == 0 {
@@ -221,5 +235,16 @@ func checkSBAT(t *testing.T, loader []byte, release bool) {
 		!strings.HasPrefix(lines[1], "meridian,1,Meridian,meridian,") ||
 		!strings.HasSuffix(lines[1], ",https://github.com/Elchi-dev/meridian") {
 		t.Fatalf("release %v: the .sbat section says %q", release, text)
+	}
+}
+
+func TestImagesNeedTheShim(t *testing.T) {
+	s, out := signingSession(t)
+	_, err := s.bootFiles(variant{}, []byte("MZ"), nil)
+	if err == nil || !strings.Contains(err.Error(), "decision record 0013") {
+		t.Fatalf("an image without the shim: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("no key should be made for an image that cannot be written: %q", out.String())
 	}
 }

@@ -252,8 +252,9 @@ fn reuse(system: &System, report: &mut impl Report) {
     }
 }
 
-/// Where sextant puts the loader on every image it builds.
-const LOADER_PATH: &str = "/EFI/BOOT/BOOTX64.EFI";
+/// Where sextant puts the loader on every image it builds, next to the
+/// shim that starts it.
+const LOADER_PATH: &str = "/EFI/BOOT/grubx64.efi";
 
 fn files(system: &System, report: &mut impl Report) {
     let Ok(root) = system.boot_volume() else {
@@ -336,9 +337,9 @@ fn files(system: &System, report: &mut impl Report) {
     );
     report.check(
         "uefi.file.chunks",
-        root.open("efi/boot/bootx64.efi")
+        root.open("efi/boot/GRUBX64.EFI")
             .is_ok_and(|again| same_in_chunks(again, &bytes[..pages * PAGE_BYTES - PAGE_BYTES])),
-        "the file should read the same in small pieces through a relative, lower case path",
+        "the file should read the same in small pieces through a relative path in other case",
     );
     let _ = buf.free();
 }
@@ -380,7 +381,7 @@ fn listing(root: &File<'_>, report: &mut impl Report) {
     if let Ok(mut folder) = root.open("EFI/BOOT") {
         while let Ok(Some(entry)) = folder.next_entry(&mut buf) {
             loader |=
-                entry.is_named("bootx64.efi") && !entry.info.directory && entry.info.size > 4096;
+                entry.is_named("grubx64.efi") && !entry.info.directory && entry.info.size > 4096;
         }
         report.check(
             "uefi.file.list_end",
@@ -406,7 +407,7 @@ fn directories(root: &File<'_>, size: u64, report: &mut impl Report) {
     );
     let loader = efi
         .and_then(|efi| efi.open("BOOT"))
-        .and_then(|boot| boot.open("BOOTX64.EFI"));
+        .and_then(|boot| boot.open("grubx64.efi"));
     report.check(
         "uefi.file.relative",
         loader

@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +32,60 @@ type Contents struct {
 	Files map[string][]byte
 }
 
-// LoaderPath is where UEFI firmware looks for a loader on removable media
-// and on disks without boot entries.
-const LoaderPath = "EFI/BOOT/BOOTX64.EFI"
+// FirmwarePath is where UEFI firmware looks for a loader on removable
+// media and on disks without boot entries. Images put the shim there,
+// which starts Meridian's loader (decision record 0013).
+const FirmwarePath = "EFI/BOOT/BOOTX64.EFI"
+
+// LoaderPath is where the shim looks for what it starts next: Meridian's
+// loader. Every shim has that name built in.
+const LoaderPath = "EFI/BOOT/grubx64.efi"
+
+// ManagerPath is MokManager, which the shim starts when it cannot check
+// the loader, so the person can enroll the loader's key.
+const ManagerPath = "EFI/BOOT/mmx64.efi"
+
+// CertificatePath is the certificate of the key the loader is signed
+// with, in DER, for the person to pick in MokManager. At the top of the
+// partition it is there as soon as they pick the disk.
+const CertificatePath = "meridian.cer"
+
+// ShimLicencesPath carries the licences of the shim and MokManager along
+// with them, as those licences ask.
+const ShimLicencesPath = "meridian/licences/shim.txt"
+
+// ShimDir is where the repository keeps the shim, MokManager and their
+// licences.
+const ShimDir = "third-party/shim"
+
+// Shim is the first stage of every image and what comes with it.
+type Shim struct {
+	Shim, Manager, Licences []byte
+}
+
+// ReadShim reads the shim, MokManager and their licences from ShimDir in
+// the repository at root.
+func ReadShim(root string) (Shim, error) {
+	var s Shim
+	for _, f := range []struct {
+		name string
+		into *[]byte
+	}{{"shimx64.efi", &s.Shim}, {"mmx64.efi", &s.Manager}, {"COPYRIGHT", &s.Licences}} {
+		data, err := os.ReadFile(filepath.Join(root, ShimDir, f.name))
+		if err != nil {
+			return Shim{}, fmt.Errorf("the shim, as decision record 0013 lists it: %w", err)
+		}
+		*f.into = data
+	}
+	return s, nil
+}
+
+// Boot is what an image needs to start Meridian: the signed loader, the
+// certificate of the key that signed it, the kernel, and the shim.
+type Boot struct {
+	Loader, Certificate, Kernel []byte
+	Shim                        Shim
+}
 
 // KernelPath is where the loader looks for the kernel.
 const KernelPath = "meridian/kernel"
@@ -66,10 +118,18 @@ const testSettings = `boot {
 }
 `
 
-// BootFiles places the loader, the kernel and the settings on the EFI
-// system partition.
-func BootFiles(loader, kernel []byte) map[string][]byte {
-	return map[string][]byte{LoaderPath: loader, KernelPath: kernel, SettingsPath: []byte(Settings)}
+// BootFiles places the shim, the loader, the kernel and the settings on
+// the EFI system partition, with what enrolling the loader's key needs.
+func BootFiles(b Boot) map[string][]byte {
+	return map[string][]byte{
+		FirmwarePath:     b.Shim.Shim,
+		LoaderPath:       b.Loader,
+		ManagerPath:      b.Shim.Manager,
+		ShimLicencesPath: b.Shim.Licences,
+		CertificatePath:  b.Certificate,
+		KernelPath:       b.Kernel,
+		SettingsPath:     []byte(Settings),
+	}
 }
 
 // ExamplePath is where test images put a second copy of the loader, for
@@ -88,10 +148,10 @@ var LongName = "long-name-" + strings.Repeat("x", 244)
 // TestFiles are the files of a test image: the boot files with settings
 // of their own, the loader twice more as examples of other systems, and a
 // file with a name as long as a path may be.
-func TestFiles(loader, kernel []byte) map[string][]byte {
-	files := BootFiles(loader, kernel)
-	files[ExamplePath] = loader
-	files[FirmwareExamplePath] = loader
+func TestFiles(b Boot) map[string][]byte {
+	files := BootFiles(b)
+	files[ExamplePath] = b.Loader
+	files[FirmwareExamplePath] = b.Loader
 	files[SettingsPath] = []byte(testSettings)
 	files[LongName] = []byte("long name\n")
 	return files

@@ -83,7 +83,8 @@ func reliable(o Options) Options {
 }
 
 // bootFiles builds the real loader and kernel with Cargo and returns the
-// files of the EFI system partition.
+// files of the EFI system partition, with the shim in front of the loader,
+// which is not signed.
 func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 	t.Helper()
 	read := func(part cargo.Part) []byte {
@@ -98,10 +99,15 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 		}
 		return data
 	}
-	if qemuTest {
-		return image.TestFiles(read(cargo.Loader), read(cargo.Kernel))
+	shim, err := image.ReadShim(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return image.BootFiles(read(cargo.Loader), read(cargo.Kernel))
+	b := image.Boot{Loader: read(cargo.Loader), Kernel: read(cargo.Kernel), Shim: shim}
+	if qemuTest {
+		return image.TestFiles(b)
+	}
+	return image.BootFiles(b)
 }
 
 // diskWithLoader writes the real loader onto a disk image.

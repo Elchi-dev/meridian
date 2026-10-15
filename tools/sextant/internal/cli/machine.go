@@ -151,9 +151,13 @@ func (s *session) makeDevelopmentKey(path string) (authenticode.Signer, error) {
 	return signer, nil
 }
 
-// bootFiles are the files of an image of this variant, with the loader
-// signed.
+// bootFiles are the files of an image of this variant: the shim, the
+// loader signed, and the certificate to enroll for it.
 func (s *session) bootFiles(v variant, loader, kernel []byte) (map[string][]byte, error) {
+	shim, err := image.ReadShim(s.root)
+	if err != nil {
+		return nil, err
+	}
 	signer, err := s.signer()
 	if err != nil {
 		return nil, err
@@ -162,10 +166,11 @@ func (s *session) bootFiles(v variant, loader, kernel []byte) (map[string][]byte
 	if err != nil {
 		return nil, fmt.Errorf("sign the loader: %w", err)
 	}
+	b := image.Boot{Loader: signed, Certificate: signer.Cert.Raw, Kernel: kernel, Shim: shim}
 	if v.testMode {
-		return image.TestFiles(signed, kernel), nil
+		return image.TestFiles(b), nil
 	}
-	return image.BootFiles(signed, kernel), nil
+	return image.BootFiles(b), nil
 }
 
 func (s *session) writeImage(ctx context.Context, v variant, loader, kernel, out string) error {

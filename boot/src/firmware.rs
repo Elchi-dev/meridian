@@ -88,12 +88,12 @@ pub fn verdict(
 }
 
 /// Whether `file`, a [`Key`] on this partition, has a card already: it is
-/// this loader at the firmware's fallback path, or one of `scanned`, the
-/// loaders that have cards so far, written as they were found. Two boot
-/// options for the same file so make one card.
+/// the shim at the firmware's fallback path or this loader next to it, or
+/// one of `scanned`, the loaders that have cards so far, written as they
+/// were found. Two boot options for the same file so make one card.
 pub fn known_here<'s>(file: &str, mut scanned: impl Iterator<Item = &'s str>) -> bool {
     let is = |path: &str| key(path.chars()).is_some_and(|k| k.as_str() == file);
-    is(crate::LOADER_PATH) || scanned.any(is)
+    is(crate::FIRMWARE_PATH) || is(crate::LOADER_PATH) || scanned.any(is)
 }
 
 /// Whether a boot option the loader failed to load with `status` should be
@@ -311,6 +311,8 @@ mod tests {
         ));
         assert!(!known_here("/efi/other/tool.efi", scanned.into_iter()));
         assert!(known_here("/efi/boot/bootx64.efi", [].into_iter()));
+        assert!(known_here("/efi/boot/grubx64.efi", [].into_iter()));
+        assert!(!known_here("/efi/boot/mmx64.efi", [].into_iter()));
         assert!(!known_here("/efi/example/grubx64.efi", [].into_iter()));
     }
 

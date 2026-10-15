@@ -20,8 +20,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Where the kernel is on the EFI system partition.
 pub const KERNEL_PATH: &str = "/meridian/kernel";
 
-/// Where the firmware finds this loader when no boot entry names it.
-pub const LOADER_PATH: &str = "/EFI/BOOT/BOOTX64.EFI";
+/// Where the firmware starts from when no boot entry names a file: the
+/// shim, which starts this loader (decision record 0013).
+pub const FIRMWARE_PATH: &str = "/EFI/BOOT/BOOTX64.EFI";
+
+/// Where the shim finds this loader, under the name built into it.
+pub const LOADER_PATH: &str = "/EFI/BOOT/grubx64.efi";
 
 /// The loader's SBAT data, which the shim reads from its `.sbat` section
 /// before it starts it, so a generation of the loader with a security hole

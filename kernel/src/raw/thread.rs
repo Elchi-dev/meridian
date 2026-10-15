@@ -8,113 +8,24 @@
 
 use core::arch::naked_asm;
 
-use kernel::thread::{self, STACK_PAGES, THREADS};
-use sched::{LEVELS, RunQueue};
+use kernel::thread::{self, STACK_PAGES, State, Switch, Table};
+pub use kernel::thread::{Error, NORMAL};
 
 use super::interrupts::{CORES, this_core};
 use super::memory::Spin;
 
-/// The priority threads start at unless they ask for another.
-pub const NORMAL: u8 = 8;
-
-/// No thread, where a core has none.
-const NOBODY: usize = usize::MAX;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// Priorities go from 0 to 31.
-    NoSuchPriority(u8),
-    /// The core does not exist or runs no threads.
-    NoSuchCore(usize),
-    /// Every thread there can be exists.
-    Full,
-    /// No memory was left for the thread's stack.
-    NoStack,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum State {
-    Free,
-    Ready,
-    Running,
-    /// Waits until the timer has ticked this many times since it started.
-    Sleeping(u64),
-    /// Has ended, but its core is still switching away from its stack.
-    Ending,
-    Ended,
-}
-
-#[derive(Clone, Copy)]
-struct Thread {
-    state: State,
-    priority: u8,
-    core: usize,
-    /// Where its stack pointer was when it last gave way.
-    stack: u64,
-    /// Whether its stack is mapped, which it stays once it is.
-    mapped: bool,
-    /// The level 4 table of its address space, or 0 for the kernel's.
-    root: u64,
-}
-
-struct Core {
-    queue: RunQueue<THREADS>,
-    current: usize,
-    idle: usize,
-    /// A thread that ended and is switched away from, to be freed once
-    /// the switch is over.
-    retiring: usize,
-}
-
-struct Threads {
-    all: [Thread; THREADS],
-    cores: [Core; CORES],
-}
-
-/// Thread 0 is the one that started the kernel, running on the first core
-/// from the start.
-static THREADS_: Spin<Threads> = Spin::new(Threads {
-    all: {
-        let free = Thread {
-            state: State::Free,
-            priority: 0,
-            core: 0,
-            stack: 0,
-            mapped: false,
-            root: 0,
-        };
-        let mut all = [free; THREADS];
-        all[0] = Thread {
-            state: State::Running,
-            priority: NORMAL,
-            ..free
-        };
-        all
-    },
-    cores: {
-        let mut cores = [const {
-            Core {
-                queue: RunQueue::new(),
-                current: NOBODY,
-                idle: NOBODY,
-                retiring: NOBODY,
-            }
-        }; CORES];
-        cores[0].current = 0;
-        cores
-    },
-});
+static THREADS: Spin<Table<CORES>> = Spin::new(Table::new());
 
 /// Gives the first core its idle thread, once.
 pub fn start() {
     x86::raw::without_interrupts(|| {
-        let mut threads = THREADS_.lock();
-        if threads.cores[0].idle != NOBODY {
+        let mut threads = THREADS.lock();
+        if threads.has_idle(0) {
             return;
         }
         // The idle thread halts with interrupts on, waiting for the next.
-        if let Ok(slot) = make(&mut threads, 0, idle, 0, 0, 0x202) {
-            threads.cores[0].idle = slot;
+        if let Ok(slot) = make(&mut threads, 0, 0, idle, 0, 0, 0x202) {
+            threads.make_idle(slot);
         }
     });
 }
@@ -122,23 +33,7 @@ pub fn start() {
 /// Makes the running code on another core that core's idle thread, so
 /// threads can be started there. Returns false when no thread is left.
 pub fn join(core: usize) -> bool {
-    x86::raw::without_interrupts(|| {
-        let mut threads = THREADS_.lock();
-        let Some(slot) = free_slot(&threads) else {
-            return false;
-        };
-        threads.all[slot].state = State::Running;
-        threads.all[slot].priority = 0;
-        threads.all[slot].core = core;
-        threads.all[slot].root = 0;
-        let Some(c) = threads.cores.get_mut(core) else {
-            threads.all[slot].state = State::Free;
-            return false;
-        };
-        c.current = slot;
-        c.idle = slot;
-        true
-    })
+    x86::raw::without_interrupts(|| THREADS.lock().join(core).is_ok())
 }
 
 /// Starts `entry(argument)` as a thread of its own at `priority` on
@@ -172,9 +67,6 @@ pub fn spawn_in(
     argument: u64,
     priority: u8,
 ) -> Result<usize, Error> {
-    if usize::from(priority) >= LEVELS {
-        return Err(Error::NoSuchPriority(priority));
-    }
     // The new thread starts with interrupts as its maker has them.
     let flags = if x86::raw::interrupts_enabled() {
         0x202
@@ -182,13 +74,10 @@ pub fn spawn_in(
         0x2
     };
     let slot = x86::raw::without_interrupts(|| {
-        let mut threads = THREADS_.lock();
-        if threads.cores.get(core).is_none_or(|c| c.current == NOBODY) {
-            return Err(Error::NoSuchCore(core));
-        }
-        let slot = make(&mut threads, core, entry, argument, priority, flags)?;
-        threads.all[slot].root = root;
-        let _ = threads.cores[core].queue.push(slot, priority);
+        let mut threads = THREADS.lock();
+        threads.can_start(core, priority)?;
+        let slot = make(&mut threads, core, root, entry, argument, priority, flags)?;
+        threads.queue(slot);
         Ok(slot)
     })?;
     if core != this_core() {
@@ -198,21 +87,21 @@ pub fn spawn_in(
 }
 
 /// Takes a free thread, gives it a stack whose first switch lands in
-/// `entry(argument)` with `flags`, and makes it ready on `core` without
-/// queueing it.
+/// `entry(argument)` with `flags`, and makes it ready on `core` in the
+/// address space at `root` without queueing it.
 fn make(
-    threads: &mut Threads,
+    threads: &mut Table<CORES>,
     core: usize,
+    root: u64,
     entry: extern "C" fn(u64),
     argument: u64,
     priority: u8,
     flags: u64,
 ) -> Result<usize, Error> {
-    let slot = free_slot(threads).ok_or(Error::Full)?;
+    let slot = threads.free().ok_or(Error::Full)?;
     let top = thread::stack_top(slot);
-    if !threads.all[slot].mapped {
+    if !threads.has_stack(slot) {
         super::memory::map_stack(top, STACK_PAGES).map_err(|_| Error::NoStack)?;
-        threads.all[slot].mapped = true;
     }
     let at = thread::first_frame_at(top);
     let start = thread_start as *const () as usize as u64;
@@ -220,17 +109,8 @@ fn make(
     // SAFETY: the slot's stack is mapped and no thread runs on it: it is
     // free, or its thread ended and its core switched away for good.
     unsafe { (at as *mut [u64; 8]).write(frame) };
-    let t = &mut threads.all[slot];
-    t.state = State::Ready;
-    t.priority = priority;
-    t.core = core;
-    t.stack = at;
-    t.root = 0;
+    threads.prepare(slot, core, priority, root, at);
     Ok(slot)
-}
-
-fn free_slot(threads: &Threads) -> Option<usize> {
-    (1..THREADS).find(|&s| matches!(threads.all[s].state, State::Free | State::Ended))
 }
 
 /// Lets every thread of the same or a higher priority that is ready on
@@ -262,81 +142,43 @@ pub fn tick() {
 /// The level 4 table of the running thread's address space, or 0 for the
 /// kernel's.
 pub fn current_root() -> u64 {
-    let threads = THREADS_.lock();
-    threads.all[threads.cores[this_core()].current].root
+    let threads = THREADS.lock();
+    threads.root(threads.current(this_core()))
 }
 
 /// Whether thread `slot` has started and not ended. Only the test image
 /// asks.
 #[cfg(feature = "qemu-test")]
 pub fn alive(slot: usize) -> bool {
-    THREADS_
-        .lock()
-        .all
-        .get(slot)
-        .is_some_and(|t| matches!(t.state, State::Ready | State::Running | State::Sleeping(_)))
+    THREADS.lock().alive(slot)
 }
 
 /// The running thread's number.
 pub fn current() -> usize {
-    THREADS_.lock().cores[this_core()].current
+    THREADS.lock().current(this_core())
 }
 
-/// Puts the running thread into `becomes`, wakes this core's sleepers
-/// whose time has come, and switches to the first thread of the highest
-/// priority ready on this core, or to its idle thread when there is none
-/// and the running one cannot go on.
+/// Lets this core's table pick the next thread as [`Table::give_way`]
+/// says, with the running one put into `becomes`, and switches to it.
 fn give_way(becomes: State) {
     x86::raw::without_interrupts(|| {
         let core = this_core();
         let next = {
-            let mut threads = THREADS_.lock();
-            let current = threads.cores[core].current;
-            let idle = threads.cores[core].idle;
-            threads.all[current].state = becomes;
-            if becomes == State::Ready && current != idle {
-                let priority = threads.all[current].priority;
-                let _ = threads.cores[core].queue.push(current, priority);
-            }
-            // The running thread is among them, so a sleep that is over
-            // already only gives way.
+            let mut threads = THREADS.lock();
             let now = super::interrupts::ticks();
-            for slot in 0..THREADS {
-                if threads.all[slot].core == core
-                    && let State::Sleeping(until) = threads.all[slot].state
-                    && until <= now
-                {
-                    threads.all[slot].state = State::Ready;
-                    let priority = threads.all[slot].priority;
-                    let _ = threads.cores[core].queue.push(slot, priority);
-                }
-            }
-            let next = match threads.cores[core].queue.pop() {
-                Some((next, _)) => next,
-                None if threads.all[current].state == State::Ready || idle == NOBODY => current,
-                None => idle,
-            };
-            threads.all[next].state = State::Running;
-            if next == current {
-                None
-            } else {
-                threads.cores[core].current = next;
-                super::interrupts::set_kernel_stack(thread::stack_top(next));
-                let root = match threads.all[next].root {
-                    0 => super::memory::kernel_root(),
-                    root => root,
-                };
-                if x86::raw::read_cr3() & !0xfff != root {
-                    // SAFETY: every address space shares the kernel's half,
-                    // where this code and every thread's kernel stack are.
-                    unsafe { x86::raw::load_cr3(root) };
-                }
-                if becomes == State::Ending {
-                    threads.cores[core].retiring = current;
-                }
-                let from = &raw mut threads.all[current].stack;
-                Some((from, threads.all[next].stack))
-            }
+            threads
+                .give_way(core, becomes, now)
+                .map(|Switch { from, to }| {
+                    super::interrupts::set_kernel_stack(thread::stack_top(to));
+                    let kernel = super::memory::kernel_root();
+                    let cr3 = x86::raw::read_cr3();
+                    if let Some(root) = thread::root_to_load(cr3, threads.root(to), kernel) {
+                        // SAFETY: every address space shares the kernel's half,
+                        // where this code and every thread's kernel stack are.
+                        unsafe { x86::raw::load_cr3(root) };
+                    }
+                    (threads.stack_at(from), threads.stack(to))
+                })
         };
         if let Some((from, to)) = next {
             // SAFETY: interrupts are off and only this core switches the
@@ -353,12 +195,7 @@ fn give_way(becomes: State) {
 /// Frees the thread this core just switched away from for good, now that
 /// nothing runs on its stack any more.
 extern "C" fn arrived() {
-    let mut threads = THREADS_.lock();
-    let core = this_core();
-    let retiring = core::mem::replace(&mut threads.cores[core].retiring, NOBODY);
-    if let Some(t) = threads.all.get_mut(retiring) {
-        t.state = State::Ended;
-    }
+    THREADS.lock().arrived(this_core());
 }
 
 /// Keeps the running thread's flags and the registers a function has to
@@ -422,7 +259,7 @@ extern "C" fn idle(_: u64) {
 /// between the look and the halt then wakes it, since `sti` and `hlt` go
 /// together.
 pub fn halt_unless_ready() {
-    let ready = !THREADS_.lock().cores[this_core()].queue.is_empty();
+    let ready = THREADS.lock().ready_on(this_core());
     if !ready {
         // SAFETY: every core runs on the kernel's IDT, and its APIC only
         // delivers the timer, WAKE and spurious interrupts, which have

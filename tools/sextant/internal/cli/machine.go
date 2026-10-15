@@ -429,12 +429,12 @@ func runTest(env Env, args []string) error {
 	if err != nil {
 		return err
 	}
-	if scope.host && os.Getenv(insideChecks) != "" {
-		return errors.New("sextant test is running inside its own host tests, which would start them again without end")
-	}
 	s, err := openSession(env)
 	if err != nil {
 		return err
+	}
+	if scope.host && os.Getenv(insideChecks) != "" {
+		return errors.New("sextant test is running inside its own host tests, which would start them again without end")
 	}
 	ctx := context.Background()
 	if scope.host {

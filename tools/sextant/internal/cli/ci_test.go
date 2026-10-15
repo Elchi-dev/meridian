@@ -191,6 +191,8 @@ func TestCIRunsInTheRepositoryWithItsBuildFolder(t *testing.T) {
 		return out.String(), err
 	}
 	t.Setenv("GITHUB_ACTIONS", "")
+	// The one step it runs is Cargo's, so it cannot start the checks again.
+	t.Setenv(insideChecks, "")
 	got, err := ci()
 	if err != nil || !strings.HasPrefix(got, "== 1/1 where Cargo builds\n") {
 		t.Fatalf("got %v\n%s", err, got)

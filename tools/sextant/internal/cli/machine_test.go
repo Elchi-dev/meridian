@@ -393,6 +393,8 @@ func TestStepsRunInTheirFolderAndStopAtAFailure(t *testing.T) {
 
 func TestTestStopsWhenTheHostTestsFail(t *testing.T) {
 	dir := t.TempDir()
+	// An empty folder holds no tests that could start these again.
+	t.Setenv(insideChecks, "")
 	if err := os.WriteFile(filepath.Join(dir, "sextant.meri"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}

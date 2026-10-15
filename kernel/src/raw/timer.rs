@@ -6,13 +6,13 @@ use super::interrupts::{SPURIOUS, TIMER};
 /// How many times a second the timer interrupts.
 pub const HZ: u64 = 100;
 
-/// Turns the x2APIC on, measures its timer against the time stamp counter
-/// that runs at `tsc_hz` for a hundredth of a second, starts it at [`HZ`]
-/// and lets interrupts in. Returns the timer's period in its own counts,
-/// or `None` without an x2APIC or a known counter rate.
+/// Turns the local APIC on, measures its timer against the time stamp
+/// counter that runs at `tsc_hz` for a hundredth of a second, starts it at
+/// [`HZ`] and lets interrupts in. Returns the timer's period in its own
+/// counts, or `None` without an APIC or a known counter rate.
 pub fn start(tsc_hz: Option<u64>) -> Option<u32> {
     let tsc_hz = tsc_hz?;
-    if !x86::raw::enable_x2apic() {
+    if !super::apic::enable() {
         return None;
     }
     x86::raw::mask_legacy_pics();

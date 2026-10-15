@@ -279,6 +279,10 @@ pub const CORE_STACKS: u64 = 0xffff_fe00_0000_0000;
 /// The pages of each of those stacks.
 pub const CORE_STACK_PAGES: u64 = 4;
 
+/// Where the local APIC's registers are mapped, uncached, on processors
+/// without an x2APIC: one page, in a slot of the root table of its own.
+pub const APIC_PAGE: u64 = 0xffff_fd00_0000_0000;
+
 /// The top of the stack of processor `number`, or of the stack it takes
 /// faults on.
 #[must_use]
@@ -665,6 +669,14 @@ mod tests {
             "a slot of the root table nothing else uses"
         );
         assert_eq!((last - 1) >> 39 & 0x1ff, 508);
+    }
+
+    #[test]
+    fn the_apic_page_has_a_slot_of_its_own() {
+        assert_eq!(APIC_PAGE % 4096, 0);
+        assert_eq!(APIC_PAGE >> 39 & 0x1ff, 506);
+        assert_eq!(APIC_PAGE >> 47, 0x1_ffff, "in the kernel's half");
+        assert!(APIC_PAGE < CORE_STACKS && APIC_PAGE > bootinfo::HHDM_BASE);
     }
 
     #[test]

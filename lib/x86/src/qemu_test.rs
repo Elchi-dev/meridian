@@ -214,10 +214,11 @@ pub fn apic_is_off() -> bool {
         && !raw::interrupts_enabled()
 }
 
-/// The x2APIC and its timer, from the kernel's test image with interrupts
-/// off and before the kernel starts the timer itself: spinning, the APIC
-/// in x2APIC mode, its timer counting down without an interrupt, set up
-/// for one, and stopped, and the spurious vector.
+/// The local APIC and its timer, from the kernel's test image with
+/// interrupts off, once the kernel has turned the APIC on and before it
+/// starts the timer itself: spinning, the APIC's mode, version and id, its
+/// timer counting down without an interrupt, set up for one, and stopped,
+/// and the spurious vector.
 pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
     use crate::apic::{LVT_TIMER, MASKED, SPURIOUS, TIMER_INITIAL, periodic, spurious};
     use raw::{apic_timer_count, read_apic};
@@ -242,39 +243,45 @@ pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
         soon && polls.get() == 5 && !never && waited >= 1_000_000 && raw::wait_for(0, || true),
         "waiting should end when the condition holds, or give up once the time is up",
     );
-    if !crate::apic::supported(raw::cpuid(1)[2]) {
-        // QEMU's emulation without KVM has no x2APIC: nothing may turn
-        // on, and nothing may reach registers that are not there.
-        check(
-            "x86.apic.absent",
-            !raw::enable_x2apic()
-                && raw::apic_id().is_none()
-                && apic_timer_count() == 0
-                && read_apic(SPURIOUS) == 0,
-            "without an x2APIC nothing should turn on, and its registers should be left alone",
-        );
-        return;
-    }
+    // The kernel has turned the APIC on: in x2APIC mode where the
+    // processor has one, in xAPIC mode through a mapped page otherwise.
+    let x2apic = crate::apic::supported(raw::cpuid(1)[2]);
+    check(
+        "x86.apic.mode",
+        if x2apic {
+            raw::enable_x2apic() && raw::x2apic_enabled() && raw::xapic_registers().is_none()
+        } else {
+            !raw::enable_x2apic() && !raw::x2apic_enabled() && raw::xapic_registers().is_some()
+        },
+        "the APIC should be in x2APIC mode where the processor has one, and in xAPIC mode otherwise",
+    );
+    let version = read_apic(crate::apic::VERSION);
+    check(
+        "x86.apic.version",
+        (0x10..=0x15).contains(&(version & 0xff)) && version >> 16 & 0xff >= 3,
+        "an integrated APIC should give its version and at least four timer and interrupt entries",
+    );
     // CPUID leaf 0xB gives the x2APIC id in EDX, leaf 1 the low 8 bits
-    // of it in the top byte of EBX.
+    // of it, the whole xAPIC id, in the top byte of EBX.
     let leaf_b = (raw::cpuid(0)[0] >= 0xb).then(|| raw::cpuid(0xb)[3]);
     let low = raw::cpuid(1)[1] >> 24;
     let id = raw::apic_id();
     check(
         "x86.apic.id",
-        id.is_some_and(|id| id & 0xff == low && leaf_b.is_none_or(|b| b == id)),
-        "the x2APIC id should be the one CPUID reports for this processor",
+        id.is_some_and(|id| {
+            if x2apic {
+                id & 0xff == low && leaf_b.is_none_or(|b| b == id)
+            } else {
+                id == low
+            }
+        }),
+        "the APIC id should be the one CPUID reports for this processor",
     );
     let cr3 = raw::read_cr3();
     check(
         "x86.cr3",
         cr3 != 0 && cr3.is_multiple_of(4096) && cr3 >> 52 == 0,
         "the page table root should be a page address, with no flags and no context id",
-    );
-    check(
-        "x86.apic.x2apic",
-        raw::enable_x2apic() && raw::x2apic_enabled() && raw::enable_x2apic(),
-        "the x2APIC should come on, and turning it on again should keep it on",
     );
     raw::start_apic_count();
     let first = apic_timer_count();

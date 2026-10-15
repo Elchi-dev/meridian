@@ -29,11 +29,17 @@ is what exists today; everything after it is still to come.
   counter against the timer for 10 ms, and gives up after two million
   reads of a timer that does not move. The uptime is the counter divided by
   its rate: the time since the machine was switched on. The local APIC runs in x2APIC mode, through model specific registers
-  rather than memory: its timer is measured against the time stamp counter
+  rather than memory, where the processor has one; otherwise in xAPIC
+  mode, through its page of registers, which the kernel maps uncached at
+  `APIC_PAGE` in a slot of the root table of its own. In xAPIC mode an
+  interrupt command goes in two halves, after the last one was delivered.
+  Its timer is measured against the time stamp counter
   for a hundredth of a second and then interrupts a hundred times a
   second, the legacy 8259s are masked, and the processor sleeps with `hlt`
   between ticks, drawing the uptime again when the second changes. Without
-  an x2APIC or a known counter rate it spins as before. The test image
+  a local APIC or a known counter rate it spins as before. `sextant test
+  --qemu` boots the test image twice, the second time on a processor
+  without an x2APIC, so both modes are checked on every run. The test image
   checks the APIC was off before, sees about ten ticks in a tenth of a
   second, a halted processor wake at the next one, and the timer stop.
 - **The status screen.** In the boot screens' dark look, drawn with
@@ -89,7 +95,7 @@ is what exists today; everything after it is still to come.
 Every core starts. The first one reads the MADT for the others' APIC
 ids, copies a trampoline to the first free memory below 640 KiB with
 page tables of its own after it, and sends each core INIT and two
-startup interrupts through the x2APIC. The trampoline runs from real
+startup interrupts through the local APIC. The trampoline runs from real
 mode through protected mode into long mode on its tables, which map the
 trampoline where it is and the kernel's half as the kernel has it, and
 jumps into the kernel, which switches the core to the kernel's page

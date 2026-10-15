@@ -208,6 +208,18 @@ pub fn unmap_page(virt: u64) -> Result<u64, paging::Error> {
     Ok(frame)
 }
 
+/// Where `virt` leads in the kernel's address space, and with which flags.
+/// Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn translate(virt: u64) -> Option<(u64, Flags)> {
+    let mut frames = FRAMES.lock();
+    let frames = frames.as_mut()?;
+    let space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+    space
+        .translate(&mut KernelTables(frames), virt)
+        .map(|(physical, flags, _)| (physical, flags))
+}
+
 /// The 8 bytes at `virt`. Only the test image reads memory this way, and
 /// only pages it mapped itself or frames in the direct map.
 #[cfg(feature = "qemu-test")]

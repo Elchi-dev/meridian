@@ -345,14 +345,27 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
 /// The other cores: all running on their own task states when there is an
 /// x2APIC to start them with, and none otherwise.
 fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
-    if !x86::apic::supported(x86::raw::cpuid(1)[2]) {
+    if x86::raw::apic_base().is_none() {
         report.check(
             "kernel.smp.alone",
             raw::smp::running() == (0, 0, 0) && x86::raw::gdt_entries().get(5) == Some(&0),
-            "without an x2APIC no other core should be started or given a task state",
+            "without a local APIC no other core should be started or given a task state",
         );
         return;
     }
+    let page = raw::memory::translate(kernel::APIC_PAGE);
+    report.check(
+        "kernel.apic.page",
+        if x86::apic::supported(x86::raw::cpuid(1)[2]) {
+            page.is_none()
+        } else {
+            use paging::Flags;
+            let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
+            page.is_some_and(|(at, f)| Some(at) == x86::raw::apic_base() && f.contains(flags))
+                && x86::raw::xapic_registers() == Some(kernel::APIC_PAGE)
+        },
+        "without an x2APIC the APIC's page should be mapped uncached for its registers, and with one not at all",
+    );
     report.check(
         "kernel.smp.running",
         machine
@@ -516,27 +529,27 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
     report.check(
         "x86.apic.off_before",
         APIC_OFF_BEFORE.load(Ordering::Acquire),
-        "OVMF leaves the APIC in xAPIC mode, and nothing reaches its x2APIC registers before",
+        "OVMF leaves the APIC in xAPIC mode, and nothing reaches its registers before the kernel turns it on",
     );
     x86::qemu_test::apic(&mut |name, ok, why| report.check(name, ok, why));
-    if !x86::apic::supported(x86::raw::cpuid(1)[2]) {
+    if x86::raw::apic_base().is_none() {
         report.check(
             "kernel.timer.none",
             timer::start(tsc_hz).is_none() && !x86::raw::interrupts_enabled(),
-            "without an x2APIC the kernel should keep spinning, with interrupts off",
+            "without a local APIC the kernel should keep spinning, with interrupts off",
         );
         return;
     }
     let tenth = tsc_hz.unwrap_or(0) / 10;
     let period = timer::start(tsc_hz);
     report.check(
-        "kernel.timer.x2apic",
+        "kernel.timer.apic",
         period.is_some()
-            && x86::raw::x2apic_enabled()
+            && (x86::raw::x2apic_enabled() || x86::raw::xapic_registers().is_some())
             && x86::raw::interrupts_enabled()
             && read_apic(apic::SPURIOUS) & 0x1ff == apic::spurious(crate::raw::interrupts::SPURIOUS)
             && read_apic(apic::LVT_TIMER) & 0x3_00ff == apic::periodic(crate::raw::interrupts::TIMER),
-        "the x2APIC should be on with its spurious vector, its timer periodic on its vector, and interrupts let in",
+        "the APIC should be on with its spurious vector, its timer periodic on its vector, and interrupts let in",
     );
     let first = ticks();
     x86::raw::spin(tenth);

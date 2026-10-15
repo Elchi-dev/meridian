@@ -234,14 +234,14 @@ pub fn took() -> u64 {
 /// Starts every usable processor the MADT lists but this one, one after
 /// the other, and returns how many came into the kernel and answered a
 /// first job with their own APIC id. Starts none
-/// without the MADT, an x2APIC, a known counter rate `tsc_hz`, room for
+/// without the MADT, a local APIC, a known counter rate `tsc_hz`, room for
 /// the trampoline below 640 KiB, or frames for their stacks.
 pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Option<u64>) -> u32 {
     let (Some(madt), Some(tsc_hz), Some(home)) = (madt, tsc_hz, kernel::trampoline_home(regions))
     else {
         return 0;
     };
-    if !x86::raw::enable_x2apic() {
+    if !super::apic::enable() {
         return 0;
     }
     let Some(own) = x86::raw::apic_id() else {
@@ -374,7 +374,7 @@ unsafe extern "C" fn ap_entry() -> ! {
 extern "sysv64" fn ap_main(number: u64) -> ! {
     let number = usize::try_from(number).unwrap_or(0);
     super::interrupts::load_on_another_core(number);
-    let _ = x86::raw::enable_x2apic();
+    let _ = super::apic::enable();
     x86::raw::set_spurious_vector(SPURIOUS);
     #[cfg(feature = "qemu-test")]
     settled(number);

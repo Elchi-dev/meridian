@@ -146,9 +146,12 @@ impl<const N: usize> Table<N> {
     ///
     /// When there is no such handle.
     pub fn close(&mut self, handle: Handle) -> Result<u64, Error> {
-        let object = self.get(handle, Rights(0))?;
-        let entry = self.entry_mut(handle)?;
-        entry.object = None;
+        let entry = handle
+            .slot()
+            .and_then(|s| self.entries.get_mut(s))
+            .filter(|e| e.generation == handle.generation())
+            .ok_or(Error::NoSuchHandle(handle))?;
+        let object = entry.object.take().ok_or(Error::NoSuchHandle(handle))?;
         entry.rights = Rights(0);
         entry.generation = entry.generation.wrapping_add(1);
         Ok(object)
@@ -199,14 +202,6 @@ impl<const N: usize> Table<N> {
         handle
             .slot()
             .and_then(|s| self.entries.get(s))
-            .filter(|e| e.object.is_some() && e.generation == handle.generation())
-            .ok_or(Error::NoSuchHandle(handle))
-    }
-
-    fn entry_mut(&mut self, handle: Handle) -> Result<&mut Entry, Error> {
-        handle
-            .slot()
-            .and_then(|s| self.entries.get_mut(s))
             .filter(|e| e.object.is_some() && e.generation == handle.generation())
             .ok_or(Error::NoSuchHandle(handle))
     }
@@ -268,8 +263,10 @@ mod tests {
                 Err(Error::NoSuchHandle(bad)),
                 "{bad:?}"
             );
+            assert_eq!(t.close(bad), Err(Error::NoSuchHandle(bad)), "{bad:?}");
         }
         assert_eq!(t.get(h, Rights(0)), Ok(7));
+        assert_eq!(t.len(), 1, "closing made up handles closed nothing");
     }
 
     #[test]

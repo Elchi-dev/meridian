@@ -360,11 +360,26 @@ extern "C" fn ended() -> ! {
     exit()
 }
 
-/// The first core's idle thread: it halts until the next interrupt, then
-/// lets whatever became ready run.
+/// The first core's idle thread: it halts until the next interrupt unless
+/// a thread is ready, then lets whatever became ready run.
 extern "C" fn idle(_: u64) {
     loop {
-        x86::raw::wait_for_interrupt();
+        x86::raw::disable_interrupts();
+        halt_unless_ready();
         yield_now();
+    }
+}
+
+/// Halts this core until the next interrupt, unless a thread is ready on
+/// it. Interrupts have to be off when it is called: a thread made ready
+/// between the look and the halt then wakes it, since `sti` and `hlt` go
+/// together.
+pub fn halt_unless_ready() {
+    let ready = !THREADS_.lock().cores[this_core()].queue.is_empty();
+    if !ready {
+        // SAFETY: every core runs on the kernel's IDT, and its APIC only
+        // delivers the timer, WAKE and spurious interrupts, which have
+        // handlers.
+        unsafe { x86::raw::enable_interrupts_and_wait() };
     }
 }

@@ -192,10 +192,7 @@ fn work(mailbox: &Mailbox) -> ! {
         x86::raw::disable_interrupts();
         let job = mailbox.job.swap(0, Ordering::AcqRel);
         if job == 0 {
-            // SAFETY: this core runs on the kernel's IDT, and its APIC only
-            // delivers its timer, WAKE and spurious interrupts, which have
-            // handlers.
-            unsafe { x86::raw::enable_interrupts_and_wait() };
+            super::thread::halt_unless_ready();
         } else {
             // SAFETY: only send stores a job, and only a fn(u64) -> u64.
             let work = unsafe { core::mem::transmute::<usize, fn(u64) -> u64>(job) };

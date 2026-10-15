@@ -835,6 +835,19 @@ extern "C" fn which_core(slot: u64) {
     }
 }
 
+/// Stops the timer of the core it runs on.
+extern "C" fn timer_off(_: u64) {
+    x86::raw::stop_apic_timer();
+}
+
+/// Starts the timer of the core it runs on again, every `period` counts.
+extern "C" fn timer_on(period: u64) {
+    x86::raw::start_apic_ticks(
+        raw::interrupts::TIMER,
+        u32::try_from(period).unwrap_or(u32::MAX),
+    );
+}
+
 /// Sleeps three ticks and keeps how many passed.
 extern "C" fn sleeper(_: u64) {
     let at = raw::interrupts::ticks();
@@ -865,19 +878,24 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     let Some(first) = first else {
         return;
     };
-    // A thread started there wakes the halted core with an interrupt at
-    // once, not at its next tick up to 10 ms later.
+    // With its timer stopped, the halted core can only wake for a thread
+    // started there through the interrupt that comes with it.
+    let period = x86::raw::read_apic(x86::apic::TIMER_INITIAL);
+    let stopped = thread::spawn_on(first, timer_off, 0, 31).is_ok();
+    thread::sleep(2);
     let woken = (0..3).all(|_| {
         SEEN[first].store(u64::MAX, Ordering::Release);
         thread::spawn_on(first, which_core, first as u64, NORMAL).is_ok()
-            && x86::raw::wait_for(tsc_hz / 1000, || {
+            && x86::raw::wait_for(tsc_hz / 10, || {
                 SEEN[first].load(Ordering::Acquire) == first as u64
             })
     });
+    let restarted = thread::spawn_on(first, timer_on, period, 31).is_ok();
+    thread::sleep(2);
     report.check(
         "kernel.thread.woken_elsewhere",
-        woken,
-        "another core should run a thread started there within a millisecond, woken by an interrupt",
+        stopped && woken && restarted,
+        "another core whose timer is stopped should still run a thread started there, woken by an interrupt",
     );
     // Threads that end there free their numbers once that core switched
     // away from them, so more than there are can start one after another.

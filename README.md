@@ -228,7 +228,7 @@ On 15 October 2026:
 | Component | Code | Tests | Ratio |
 | --- | --- | --- | --- |
 | `boot` | 1882 | 3220 | 1.71 |
-| `kernel` | 1468 | 2372 | 1.61 |
+| `kernel` | 1643 | 2593 | 1.57 |
 | `lib/acpi` | 147 | 369 | 2.51 |
 | `lib/bootinfo` | 167 | 262 | 1.56 |
 | `lib/canvas` | 292 | 506 | 1.73 |
@@ -237,12 +237,12 @@ On 15 October 2026:
 | `lib/frames` | 159 | 256 | 1.61 |
 | `lib/heap` | 49 | 120 | 2.44 |
 | `lib/meri` | 1240 | 1962 | 1.58 |
-| `lib/paging` | 182 | 509 | 2.79 |
+| `lib/paging` | 213 | 602 | 2.82 |
 | `lib/qr` | 496 | 830 | 1.67 |
 | `lib/uefi` | 1666 | 2666 | 1.60 |
-| `lib/x86` | 634 | 955 | 1.50 |
+| `lib/x86` | 659 | 994 | 1.50 |
 | `tools/sextant` | 7712 | 13743 | 1.78 |
-| total | 17257 | 30909 | 1.79 |
+| total | 17488 | 31262 | 1.78 |
 
 `sextant stats` prints the current numbers.
 

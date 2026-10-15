@@ -57,7 +57,9 @@ at 0.x until the native API is stable.
   - Cores from the ACPI MADT, and the time stamp counter measured against the ACPI timer.
   - A physical frame allocator built from the memory map, and a 4 MiB heap from its frames, so `Box`, `Vec` and `String` work in the kernel. Both sit behind spin locks.
   - The local APIC in x2APIC mode, its timer measured against the time stamp counter and interrupting a hundred times a second, so the processor sleeps with `hlt` between ticks instead of spinning.
-  - Every core starts: each one listed in the MADT gets INIT and two startup interrupts, runs a trampoline below 640 KiB from real mode through protected mode into long mode, and comes into the kernel on its own stack and the kernel's descriptor tables. The other cores only halt so far.
+  - Every core starts: each one listed in the MADT gets INIT and two startup interrupts, runs a trampoline below 640 KiB from real mode through protected mode into long mode, and comes into the kernel on its own stack and the kernel's descriptor tables. Each core has a task state and a fault stack of its own, and its stacks are mapped with nothing below them, so one that runs over faults instead of writing into the next.
+  - The other cores take jobs: each has a mailbox for a function and what it works on, is woken by an interrupt when a job comes, and sleeps in between. A core only counts as running once it answered its first job with its own APIC id.
+  - Pages of its own: the kernel maps and unmaps 4 KiB pages in the address space it runs in, with new page tables from the frame allocator, and makes the processor forget an unmapped page at once.
 - **Libraries**
   - `lib/font`: TrueType fonts parsed and rasterized without allocating, with Inter and JetBrains Mono under the SIL Open Font License (decision record 0012).
   - `lib/canvas`: rectangles and text on a framebuffer in either pixel order.
@@ -74,11 +76,11 @@ at 0.x until the native API is stable.
 
 ### Verified
 
-- **Test lines.** 28131 lines of tests for 15523 lines of code, a ratio of 1.81, and every component at 1.5 or more.
-- **sextant.** All tests pass with the race detector, at 6944 lines of code and 12558 lines of tests, a ratio of 1.80, on Linux, macOS and Windows.
+- **Test lines.** 31262 lines of tests for 17488 lines of code, a ratio of 1.78, and every component at 1.5 or more.
+- **sextant.** All tests pass with the race detector, at 7712 lines of code and 13743 lines of tests, a ratio of 1.78, on Linux, macOS and Windows.
 - **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest. OVMF in Setup Mode takes Meridian's own key through the authenticated variable writes sextant makes, refuses a write whose signature was changed, and afterwards starts only what that key signed.
-- **`lib/uefi`.** 108 host tests pass at a ratio of 1.60. Every field offset of the firmware tables is checked against the specification.
-- **Mutation testing.** A run over every Rust crate, 1957 mutants with the QEMU checks for `boot`, `kernel`, `lib/uefi` and `lib/x86`, leaves none surviving. Each survivor along the way got a test, or simpler code with nothing equivalent left to change. sextant has no surviving mutant either; a full run of it takes about an hour and a half. Ten equivalent mutants, eight in Rust and two in Go, are listed in `mutants.meri` with the reason each cannot change behaviour.
+- **`lib/uefi`.** 111 host tests pass at a ratio of 1.60. Every field offset of the firmware tables is checked against the specification.
+- **Mutation testing.** A run over every Rust crate, 2183 mutants with the QEMU checks for `boot`, `kernel`, `lib/uefi` and `lib/x86`, leaves none surviving, and each file changed after that run was mutated again on its own with the same result. Each survivor along the way got a test, or simpler code with nothing equivalent left to change. sextant has no surviving mutant either; a full run of it takes about an hour and a half. Sixteen equivalent mutants, fourteen in Rust and two in Go, are listed in `mutants.meri` with the reason each cannot change behaviour.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
   - the FAT size calculation overflowed near 2 TiB
@@ -98,7 +100,7 @@ at 0.x until the native API is stable.
 
   - Enter and the down arrow, pressed by sextant through the QEMU monitor
 - **Images boot.** A GPT disk and an ISO written by sextant both boot the loader on OVMF.
-- **On real firmware.** `sextant test --qemu` runs 216 checks in QEMU with KVM: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its frames and heap, its timer, the other cores starting, its screens, five exceptions caused on purpose, a panic and a stack overflow.
+- **On real firmware.** `sextant test --qemu` runs 224 checks in QEMU with KVM: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its frames and heap, pages it maps and unmaps, its timer, the other cores starting, their guarded stacks and the jobs they take, its screens, five exceptions caused on purpose, a panic and a stack overflow. Without KVM, where QEMU's processor has no x2APIC and the kernel stays on one core, 209 checks run.
 - **Boot options on another disk.** A Go test gives the test image a second disk: an option with the whole path to a loader there starts and comes back, and one with the short path Windows uses goes through `BootNext` and a restart, after which the firmware starts it from the second disk.
 - **The keys and settings on a real machine.** Go tests press F on OVMF and see its setup after the restart, and boot the plain image with `verbose` and `default = example` and see the log, the countdown and the example starting.
 - **What a person sees.** The boot, log, status, panic and double fault screens are kept as PNG files. A Go test checks their colours and reads the QR codes with `zbarimg`, and on the plain image checks that only the uptime changes in 2.5 seconds.
@@ -107,6 +109,6 @@ at 0.x until the native API is stable.
 
 ### Not built yet
 
-Memory management, interrupts, scheduling, drivers, the file system, the
-desktop and the Win32 personality: everything that makes the kernel more
-than a status screen. See [TODO.md](TODO.md).
+Scheduling, user mode, drivers, the file system, the desktop and the
+Win32 personality: everything that makes the kernel more than a status
+screen. See [TODO.md](TODO.md).

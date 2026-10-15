@@ -85,16 +85,15 @@ pub const SYSCALL: u8 = 0x2e;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// Sets the stack the processor of `core` switches to when ring 3 calls the
-/// kernel or is interrupted: the running thread's kernel stack.
-pub fn set_kernel_stack(core: usize, top: u64) {
-    if core >= CORES {
-        return;
-    }
+/// Sets the stack this processor switches to when ring 3 calls the kernel
+/// or is interrupted: the running thread's kernel stack.
+pub fn set_kernel_stack(top: u64) {
+    let core = this_core();
     let t = TABLES.0.get();
     // SAFETY: each core writes only its own task state's ring 0 stack, while
     // its kernel switches threads and no ring 3 code runs on it; the
-    // processor reads it only on the way in from ring 3.
+    // processor reads it only on the way in from ring 3. A core's number
+    // comes from the task state it loaded, one of CORES.
     unsafe { (*t).task_states[core].privilege_stacks[0] = top };
 }
 

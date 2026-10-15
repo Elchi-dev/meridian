@@ -322,7 +322,7 @@ fn give_way(becomes: State) {
                 None
             } else {
                 threads.cores[core].current = next;
-                super::interrupts::set_kernel_stack(core, thread::stack_top(next));
+                super::interrupts::set_kernel_stack(thread::stack_top(next));
                 let root = match threads.all[next].root {
                     0 => super::memory::kernel_root(),
                     root => root,

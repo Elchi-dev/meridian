@@ -101,7 +101,7 @@ Loader and UEFI:
 - [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
 - [ ] Threads move between cores when one is busier than another
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
-- [ ] An address space of its own for every process, so programs no longer share their addresses
+- [x] An address space of its own for every program, given back whole when it ends; the kernel's half shared by all
 - [ ] Objects, handles with access masks, security tokens
 - [ ] `.mexec` loader (ELF with Meridian note sections)
 - [ ] IPC channels that carry handles

@@ -128,9 +128,14 @@ the time a core that never starts gets.
 
 What exists: programs run in ring 3. The GDT has code and data segments
 for ring 3, user data right before user code as `sysret` will want it.
-A program's machine code and a page of stack are mapped for ring 3 at
-4 MiB and 8 MiB in the kernel's address space, and a thread of its own
-enters it with `iretq`, every general register cleared. On every switch
+Every program gets an address space of its own: a level 4 table whose
+kernel half is a copy of the kernel's, and whose lower half holds the
+program's machine code at 4 MiB, read only, and a page of stack below
+8 MiB that nothing runs from. Every slot of the kernel's half has a table
+from boot on, so whatever the kernel maps later shows in every address
+space. A thread of its own enters the program with `iretq`, its argument
+in rdi and every other general register cleared, and every switch loads
+the next thread's address space. On every switch
 the task state gets the next thread's kernel stack, so an interrupt or
 system call from ring 3 lands on the right one. System calls go through
 `int 0x2e`, a gate ring 3 may use, a nod to Windows NT's first system
@@ -138,16 +143,17 @@ call gate: the number in rax, arguments in rdi and rsi, the answer back
 in rax, errors from the top of the range. There are five so far: exit,
 log a line, give way, sleep and ask for the ticks. The log only reads
 bytes that lie in the lower half and are mapped for ring 3, at most 256
-of them. A fault in ring 3 ends only the program's thread and unmaps its
-pages; the kernel writes what happened to its log and goes on. The
+of them. A fault in ring 3 ends only the program; the kernel writes the
+exception, its error code and where it happened to its log, and goes on.
+When a program ends, its whole address space goes back to the frame
+allocator, every table and page of its lower half once. The
 kernel's first program says hello from ring 3 through a system call. The
 test image runs probes that read the kernel's memory, halt, hand the log
 a kernel address, an unmapped one or a line too long, ask for a call that
-does not exist, sleep, give way, use their stack, and keep the processor
-for 20 ticks without giving way, and checks one program runs at a time
-and leaves no pages behind. Programs still share their addresses, so only
-one runs at a time; an address space of its own for every process comes
-next.
+does not exist, write over their code, run their stack, sleep, give way,
+use their stack, and keep the processor for 20 ticks without giving way.
+It runs three programs at once, two on one core, that each keep their own
+number at the same address, and checks a program leaves no frame behind.
 
 ## Objects and handles (M3)
 

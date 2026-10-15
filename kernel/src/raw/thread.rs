@@ -53,6 +53,8 @@ struct Thread {
     stack: u64,
     /// Whether its stack is mapped, which it stays once it is.
     mapped: bool,
+    /// The level 4 table of its address space, or 0 for the kernel's.
+    root: u64,
 }
 
 struct Core {
@@ -79,14 +81,13 @@ static THREADS_: Spin<Threads> = Spin::new(Threads {
             core: 0,
             stack: 0,
             mapped: false,
+            root: 0,
         };
         let mut all = [free; THREADS];
         all[0] = Thread {
             state: State::Running,
             priority: NORMAL,
-            core: 0,
-            stack: 0,
-            mapped: true,
+            ..free
         };
         all
     },
@@ -129,6 +130,7 @@ pub fn join(core: usize) -> bool {
         threads.all[slot].state = State::Running;
         threads.all[slot].priority = 0;
         threads.all[slot].core = core;
+        threads.all[slot].root = 0;
         let Some(c) = threads.cores.get_mut(core) else {
             threads.all[slot].state = State::Free;
             return false;
@@ -154,6 +156,22 @@ pub fn spawn_on(
     argument: u64,
     priority: u8,
 ) -> Result<usize, Error> {
+    spawn_in(core, 0, entry, argument, priority)
+}
+
+/// Starts a thread as [`spawn_on`] does, in the address space whose level
+/// 4 table is at `root`, or the kernel's for 0.
+///
+/// # Errors
+///
+/// As for [`spawn_on`].
+pub fn spawn_in(
+    core: usize,
+    root: u64,
+    entry: extern "C" fn(u64),
+    argument: u64,
+    priority: u8,
+) -> Result<usize, Error> {
     if usize::from(priority) >= LEVELS {
         return Err(Error::NoSuchPriority(priority));
     }
@@ -169,6 +187,7 @@ pub fn spawn_on(
             return Err(Error::NoSuchCore(core));
         }
         let slot = make(&mut threads, core, entry, argument, priority, flags)?;
+        threads.all[slot].root = root;
         let _ = threads.cores[core].queue.push(slot, priority);
         Ok(slot)
     })?;
@@ -206,6 +225,7 @@ fn make(
     t.priority = priority;
     t.core = core;
     t.stack = at;
+    t.root = 0;
     Ok(slot)
 }
 
@@ -237,6 +257,24 @@ pub fn exit() -> ! {
 /// inside this call, and returns from the interrupt to where it was.
 pub fn tick() {
     give_way(State::Ready);
+}
+
+/// The level 4 table of the running thread's address space, or 0 for the
+/// kernel's.
+pub fn current_root() -> u64 {
+    let threads = THREADS_.lock();
+    threads.all[threads.cores[this_core()].current].root
+}
+
+/// Whether thread `slot` has started and not ended. Only the test image
+/// asks.
+#[cfg(feature = "qemu-test")]
+pub fn alive(slot: usize) -> bool {
+    THREADS_
+        .lock()
+        .all
+        .get(slot)
+        .is_some_and(|t| matches!(t.state, State::Ready | State::Running | State::Sleeping(_)))
 }
 
 /// The running thread's number. Only the test image asks.
@@ -285,6 +323,15 @@ fn give_way(becomes: State) {
             } else {
                 threads.cores[core].current = next;
                 super::interrupts::set_kernel_stack(core, thread::stack_top(next));
+                let root = match threads.all[next].root {
+                    0 => super::memory::kernel_root(),
+                    root => root,
+                };
+                if x86::raw::read_cr3() & !0xfff != root {
+                    // SAFETY: every address space shares the kernel's half,
+                    // where this code and every thread's kernel stack are.
+                    unsafe { x86::raw::load_cr3(root) };
+                }
                 if becomes == State::Ending {
                     threads.cores[core].retiring = current;
                 }

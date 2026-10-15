@@ -826,102 +826,149 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     other_core_checks(report, tsc_hz);
 }
 
-/// Runs `program` in ring 3 on the first core, and says whether it started
-/// and ended within a second.
-fn ran(program: &'static raw::user::Program) -> bool {
-    raw::user::seen::forget();
-    let started = raw::user::start(0, program).is_ok();
-    started
-        && (0..100).any(|_| {
+/// Runs `program` in ring 3 on the first core with `argument`, waits up
+/// to a second for it to end, and returns its thread's number if it did.
+fn ran(program: &'static raw::user::Program, argument: u64) -> Option<usize> {
+    let slot = raw::user::start(0, program, argument).ok()?;
+    // It runs on this core once the first thread sleeps, so not before.
+    raw::user::seen::forget(slot);
+    (0..100)
+        .any(|_| {
             raw::thread::sleep(1);
-            !raw::user::busy()
+            !raw::thread::alive(slot)
         })
+        .then_some(slot)
 }
 
-/// Programs in ring 3: the first says hello through a system call from
-/// ring 3 and ends, a program's stack works, it can sleep and ask for the
-/// ticks, every way it can go wrong ends only its thread, and its pages
-/// are gone once it ended.
+/// Whether thread `slot` ended by a fault of `vector` rather than exiting.
+fn ended_by(slot: Option<usize>, vector: u64) -> bool {
+    use raw::user::seen;
+    slot.is_some_and(|s| seen::fault_of(s) == vector && seen::exit_of(s) == u64::MAX)
+}
+
+/// Programs that do what ring 3 must not: each ends by the fault it
+/// should, and only it.
+fn user_fault_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::user::{probe, seen};
+    let faults = ended_by;
+    report.check(
+        "kernel.user.faults",
+        faults(ran(&probe::READ_KERNEL, 0), 14) && faults(ran(&probe::HALT, 0), 13),
+        "reading the kernel's memory or halting in ring 3 should end only the program",
+    );
+    // A page fault's error code says the page was there (bit 0) and the
+    // access came from ring 3 (bit 2): a write (bit 1) to the code, which
+    // is read only, and fetching an instruction (bit 4) from the stack,
+    // which nothing runs from.
+    // A thread's number is used again once it ended, so each program is
+    // looked at before the next one runs.
+    let wrote = ran(&probe::WRITE_CODE, 0);
+    report.check(
+        "kernel.user.code_read_only",
+        faults(wrote, 14) && wrote.is_some_and(|s| seen::error_of(s) == 0b111),
+        "a program should not write over its own code",
+    );
+    let fetched = ran(&probe::RUN_STACK, 0);
+    report.check(
+        "kernel.user.stack_not_run",
+        faults(fetched, 14) && fetched.is_some_and(|s| seen::error_of(s) == 0b1_0101),
+        "a program should not run code from its stack",
+    );
+}
+
+/// Programs in ring 3, each in an address space of its own: the first
+/// says hello through a system call from ring 3, a program's stack works,
+/// it can sleep, give way and ask for the ticks, every way it can go wrong
+/// ends only it, three can run at once with their own data at the same
+/// address, and none leaves a frame behind.
 fn user_checks<W: Write>(report: &mut Report<'_, W>) {
     use kernel::syscall::{BAD_ADDRESS, NO_SUCH_CALL, TOO_LONG};
-    use raw::user::{self, CODE_AT, HELLO, STACK_TOP, probe, seen};
-    let exit = || seen::EXIT.load(Ordering::Acquire);
-    let fault = || seen::FAULT.load(Ordering::Acquire);
+    use raw::user::{self, CODE_AT, HELLO, probe, seen};
+    let exits = |slot: Option<usize>, code: u64| slot.is_some_and(|s| seen::exit_of(s) == code);
+    let hello = ran(&HELLO, 0);
     report.check(
         "kernel.user.hello",
-        ran(&HELLO)
+        exits(hello, 0)
             && seen::logged(b"Hello from ring 3, through a system call")
-            && seen::RING.load(Ordering::Acquire) == 3
-            && exit() == 0,
+            && seen::RING.load(Ordering::Acquire) == 3,
         "the first program should say hello from ring 3 through a system call, and end with 0",
     );
     report.check(
         "kernel.user.stack",
-        ran(&probe::STACK) && exit() == 42,
+        exits(ran(&probe::STACK, 0), 42),
         "a program's stack should work in ring 3",
     );
     let before = raw::interrupts::ticks();
     report.check(
         "kernel.user.sleep",
-        ran(&probe::NAP) && exit() >= before + 2,
+        ran(&probe::NAP, 0).is_some_and(|s| seen::exit_of(s) >= before + 2),
         "a program should sleep through a system call and ask for the ticks",
     );
-    let read = ran(&probe::READ_KERNEL) && fault() == 14 && exit() == u64::MAX;
-    let halted = ran(&probe::HALT) && fault() == 13;
-    report.check(
-        "kernel.user.faults",
-        read && halted,
-        "reading the kernel's memory or halting in ring 3 should end only the program",
-    );
+    user_fault_checks(report);
     report.check(
         "kernel.user.refused",
-        ran(&probe::BAD_LOG)
-            && exit() == BAD_ADDRESS
-            && ran(&probe::LONG_LOG)
-            && exit() == TOO_LONG
-            && ran(&probe::UNKNOWN)
-            && exit() == NO_SUCH_CALL,
+        exits(ran(&probe::BAD_LOG, 0), BAD_ADDRESS)
+            && exits(ran(&probe::LONG_LOG, 0), TOO_LONG)
+            && exits(ran(&probe::UNKNOWN, 0), NO_SUCH_CALL),
         "a system call should refuse the kernel's memory, a line too long and a number that is no call",
     );
     report.check(
         "kernel.user.yield",
-        ran(&probe::YIELDER) && exit() == 0,
+        exits(ran(&probe::YIELDER, 0), 0),
         "a program should give way through a system call and come back",
     );
     report.check(
         "kernel.user.unmapped",
-        ran(&probe::UNMAPPED_LOG) && exit() == BAD_ADDRESS,
+        exits(ran(&probe::UNMAPPED_LOG, 0), BAD_ADDRESS),
         "the log should refuse a user address where nothing is mapped",
     );
     // The spinner keeps the first core in ring 3 for 20 ticks without
     // giving way; the first thread still runs in between, so the timer
     // takes the processor from ring 3 and comes back on the right stack.
-    seen::forget();
-    let spinning = user::start(0, &probe::SPINNER);
+    let spinner = user::start(0, &probe::SPINNER, 0);
     let mut turns = 0;
-    while user::busy() && turns < 200 {
+    while spinner.is_ok_and(raw::thread::alive) && turns < 200 {
         raw::thread::sleep(1);
         turns += 1;
     }
     report.check(
         "kernel.user.preempted",
-        spinning.is_ok() && !user::busy() && (10..200).contains(&turns) && exit() == 0,
+        spinner.is_ok_and(|s| !raw::thread::alive(s) && seen::exit_of(s) == 0)
+            && (10..200).contains(&turns),
         "a program that never gives way should still lose the processor at every tick",
     );
-    let first = user::start(0, &probe::NAP);
-    let second = user::start(0, &probe::STACK);
-    let ended = (0..100).any(|_| {
+    // Three programs keep their argument at the same address at once, two
+    // on this core and one on another; each finds its own again.
+    let other = raw::smp::others().next().unwrap_or(0);
+    let keepers = [(0, 11), (0, 22), (other, 33)]
+        .map(|(core, argument)| user::start(core, &probe::KEEP, argument));
+    let all_ended = (0..100).any(|_| {
         raw::thread::sleep(1);
-        !user::busy()
+        keepers
+            .iter()
+            .all(|k| k.is_ok_and(|s| !raw::thread::alive(s)))
     });
     report.check(
+        "kernel.user.apart",
+        all_ended
+            && keepers
+                .iter()
+                .zip([11, 22, 33])
+                .all(|(k, code)| k.is_ok_and(|s| seen::exit_of(s) == code)),
+        "programs running at once should each have the same address to themselves",
+    );
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let before = free();
+    let ran_once = ran(&probe::STACK, 0);
+    report.check(
         "kernel.user.cleaned",
-        first.is_ok()
-            && second == Err(user::Error::Busy)
-            && ended
-            && raw::memory::translate(CODE_AT).is_none()
-            && raw::memory::translate(STACK_TOP - 4096).is_none(),
-        "one program should run at a time, and its pages should be gone once it ended",
+        exits(ran_once, 42) && free() == before && raw::memory::translate(CODE_AT).is_none(),
+        "a program's address space should go back whole once it ended, and the kernel's never hold it",
     );
 }
 
@@ -1097,6 +1144,11 @@ fn mapping_checks<W: Write>(report: &mut Report<'_, W>) {
     // The 512 GiB from here are free: the direct map lies below them and the
     // stacks above.
     const WINDOW: u64 = 0xffff_fd80_0000_0000;
+    report.check(
+        "kernel.paging.kernel_half",
+        raw::memory::kernel_half_complete() && raw::memory::kernel_root() == x86::raw::read_cr3() & !0xfff,
+        "every slot of the kernel's half should have a table, so every address space shares all of it",
+    );
     let flags = Flags::WRITABLE | Flags::NO_EXECUTE;
     let missing = |c: Option<Caught>| {
         c.is_some_and(|c| c.vector == 14 && c.error == 0 && c.address == WINDOW)

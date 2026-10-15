@@ -5,7 +5,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bootinfo::{HHDM_BASE, MemoryRegion};
 use frames::{FRAME, Frames};
@@ -130,6 +130,117 @@ pub fn take(regions: &[MemoryRegion]) -> Option<usize> {
     Some(free)
 }
 
+/// The kernel's level 4 table, which [`prepare_kernel_half`] finds in CR3
+/// at boot; 0 before.
+static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
+
+/// The kernel's level 4 table: the one CR3 held at boot, or before that
+/// the one it holds now.
+pub fn kernel_root() -> u64 {
+    match KERNEL_ROOT.load(Ordering::Acquire) {
+        0 => x86::raw::read_cr3() & !0xfff,
+        root => root,
+    }
+}
+
+/// Gives every slot of the kernel's half of its level 4 table a table, so
+/// an address space that copies that half sees whatever the kernel maps
+/// there later. Returns false when frames ran out first.
+pub fn prepare_kernel_half() -> bool {
+    let root = x86::raw::read_cr3() & !0xfff;
+    KERNEL_ROOT.store(root, Ordering::Release);
+    let mut frames = FRAMES.lock();
+    let Some(frames) = frames.as_mut() else {
+        return false;
+    };
+    let mut tables = KernelTables(frames);
+    for slot in 256..512 {
+        if paging::Frames::table(&mut tables, root)[slot] & Flags::PRESENT.0 != 0 {
+            continue;
+        }
+        let Some(table) = paging::Frames::allocate(&mut tables) else {
+            return false;
+        };
+        paging::Frames::table(&mut tables, root)[slot] =
+            table | (Flags::PRESENT | Flags::WRITABLE).0;
+    }
+    true
+}
+
+/// Whether every slot of the kernel's half of its level 4 table has a
+/// table. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn kernel_half_complete() -> bool {
+    let mut frames = FRAMES.lock();
+    let Some(frames) = frames.as_mut() else {
+        return false;
+    };
+    let root = *paging::Frames::table(&mut KernelTables(frames), kernel_root());
+    root[256..]
+        .iter()
+        .all(|&entry| entry & Flags::PRESENT.0 != 0)
+}
+
+/// A new address space whose kernel half is the kernel's, and whose lower
+/// half is empty: the physical address of its level 4 table.
+pub fn new_space() -> Option<u64> {
+    let mut frames = FRAMES.lock();
+    let mut tables = KernelTables(frames.as_mut()?);
+    let root = paging::Frames::allocate(&mut tables)?;
+    let kernel = *paging::Frames::table(&mut tables, kernel_root());
+    paging::Frames::table(&mut tables, root)[256..].copy_from_slice(&kernel[256..]);
+    Some(root)
+}
+
+/// Gives back every frame of the lower half of the address space at
+/// `root`, its tables, and `root` itself. Nothing may run on it any more.
+pub fn release_space(root: u64) {
+    let mut freed = alloc::vec::Vec::new();
+    let mut frames = FRAMES.lock();
+    let Some(frames) = frames.as_mut() else {
+        return;
+    };
+    AddressSpace::existing(root).release(&mut KernelTables(frames), 0..256, |f| freed.push(f));
+    freed.push(root);
+    for frame in freed {
+        let _ = frames.free(frame);
+    }
+}
+
+/// Maps a fresh frame at `virt` in the address space at `root` with
+/// `flags`, holding `contents` and zeros after them.
+///
+/// # Errors
+///
+/// When no frame is left or mapping fails; the frame goes back then.
+pub fn map_fresh_in(
+    root: u64,
+    virt: u64,
+    flags: Flags,
+    contents: &[u8],
+) -> Result<(), paging::Error> {
+    let mut frames = FRAMES.lock();
+    let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
+    let frame = frames.alloc().ok_or(paging::Error::OutOfFrames)?;
+    let len = contents.len().min(4096);
+    // SAFETY: a frame just taken from the allocator, so nothing else uses
+    // it, in the direct map, and a whole frame long.
+    let page = unsafe { core::slice::from_raw_parts_mut((HHDM_BASE + frame) as *mut u8, 4096) };
+    page[..len].copy_from_slice(&contents[..len]);
+    page[len..].fill(0);
+    let mapped = AddressSpace::existing(root).map(
+        &mut KernelTables(frames),
+        virt,
+        frame,
+        PageSize::Size4K,
+        flags,
+    );
+    if mapped.is_err() {
+        let _ = frames.free(frame);
+    }
+    mapped
+}
+
 /// The kernel's page tables, reached through the direct map, with new
 /// tables from the frame allocator.
 struct KernelTables<'f>(&'f mut Frames<'static>);
@@ -161,7 +272,7 @@ impl paging::Frames for KernelTables<'_> {
 pub fn map_page(virt: u64, phys: u64, flags: Flags) -> Result<(), paging::Error> {
     let mut frames = FRAMES.lock();
     let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
-    let mut space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+    let mut space = AddressSpace::existing(kernel_root());
     space.map(
         &mut KernelTables(frames),
         virt,
@@ -216,7 +327,7 @@ pub fn map_stack(top: u64, pages: u64) -> Result<(), paging::Error> {
 pub fn unmap_page(virt: u64) -> Result<u64, paging::Error> {
     let mut frames = FRAMES.lock();
     let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
-    let mut space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+    let mut space = AddressSpace::existing(kernel_root());
     let frame = space.unmap(&mut KernelTables(frames), virt)?;
     x86::raw::invalidate_page(virt);
     Ok(frame)
@@ -232,41 +343,6 @@ pub fn translate(virt: u64) -> Option<(u64, Flags)> {
     space
         .translate(&mut KernelTables(frames), virt)
         .map(|(physical, flags, _)| (physical, flags))
-}
-
-/// Maps a fresh frame at `virt` with `flags`, holding `contents` and zeros
-/// after them.
-///
-/// # Errors
-///
-/// When no frame is left or [`map_page`] fails; the frame goes back then.
-pub fn map_fresh(virt: u64, flags: Flags, contents: &[u8]) -> Result<(), paging::Error> {
-    let frame = FRAMES
-        .lock()
-        .as_mut()
-        .and_then(Frames::alloc)
-        .ok_or(paging::Error::OutOfFrames)?;
-    let len = contents.len().min(4096);
-    // SAFETY: a frame just taken from the allocator, so nothing else uses
-    // it, in the direct map, and a whole frame long.
-    let page = unsafe { core::slice::from_raw_parts_mut((HHDM_BASE + frame) as *mut u8, 4096) };
-    page[..len].copy_from_slice(&contents[..len]);
-    page[len..].fill(0);
-    map_page(virt, frame, flags).inspect_err(|_| {
-        if let Some(frames) = FRAMES.lock().as_mut() {
-            let _ = frames.free(frame);
-        }
-    })
-}
-
-/// Takes the page at `virt` out of the kernel's address space and gives
-/// its frame back; nothing happens where nothing is mapped.
-pub fn unmap_and_free(virt: u64) {
-    if let Ok(frame) = unmap_page(virt)
-        && let Some(frames) = FRAMES.lock().as_mut()
-    {
-        let _ = frames.free(frame);
-    }
 }
 
 /// Whether every one of the `len` bytes at `at` lies in the user half and

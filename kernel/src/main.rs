@@ -30,6 +30,7 @@ fn up(tsc_hz: Option<u64>) -> Option<u64> {
 fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     let _ = kernel::greet(serial, regions);
     let free = raw::memory::take(regions);
+    let _ = raw::memory::prepare_kernel_half();
     let _ = kernel::hand_out(serial, free);
     let machine = machine::read(&raw::DirectMap(regions), info.rsdp);
     let hpet = machine.hpet.and_then(raw::hpet::start);
@@ -116,7 +117,7 @@ fn finish(
     let timer = raw::timer::start(tsc_hz);
     let _ = kernel::waiting(serial, timer);
     raw::thread::start();
-    let _ = raw::user::start(0, &raw::user::HELLO);
+    let _ = raw::user::start(0, &raw::user::HELLO, 0);
     let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
         x86::raw::halt()
     };

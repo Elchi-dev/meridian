@@ -42,6 +42,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     });
     let tsc_hz = tsc.map(|t| t.hz);
     let _ = kernel::describe(serial, &machine, tsc);
+    raw::keep_modules(info, regions);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_cores();
     let memory = raw::DirectMap(regions);

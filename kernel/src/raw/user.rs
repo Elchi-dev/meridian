@@ -16,6 +16,8 @@ use core::fmt::Write;
 
 use channel::MESSAGE;
 use handles::{Handle, Rights, Table};
+use kernel::object::Object;
+use kernel::process::{Outcome, State};
 use kernel::program::{self, Refusal, STACK_PAGES};
 use kernel::syscall::{self, Call};
 use kernel::thread::THREADS;
@@ -35,7 +37,16 @@ struct Process {
     heap: program::Heap,
     /// The name its file gives it, up to [`NAME`] bytes, for the log.
     name: Vec<u8>,
+    /// The slot of the process object a handle of whoever spawned it
+    /// stands for, which learns how it ended.
+    object: Option<usize>,
 }
+
+/// The processes handles can stand for: those programs spawned.
+static OBJECTS: Spin<kernel::process::Table<THREADS>> = Spin::new(kernel::process::Table::new());
+
+/// The rights a program has to a process it spawned.
+const SPAWNED: Rights = Rights(Rights::READ.0 | Rights::TRANSFER.0);
 
 /// The most of a program's name the kernel keeps.
 const NAME: usize = 32;
@@ -46,6 +57,7 @@ impl Process {
             handles: Table::new(),
             heap: program::Heap::new(),
             name: Vec::new(),
+            object: None,
         })
     }
 }
@@ -106,6 +118,16 @@ pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<us
 /// When the file is no program Meridian runs, no memory is left for its
 /// address space, or its thread cannot start.
 pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Error> {
+    start_file_as(core, file, argument, Process::new())
+}
+
+/// Starts the program in `file` as [`start_file`] does, as `process`.
+fn start_file_as(
+    core: usize,
+    file: &[u8],
+    argument: u64,
+    mut process: Box<Process>,
+) -> Result<usize, Error> {
     let elf = elf::Elf::parse(file).map_err(Error::Elf)?;
     let (first, size) = elf.span().map_err(Error::Elf)?;
     let segments = elf.segments().map_err(Error::Elf)?;
@@ -123,7 +145,6 @@ pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Erro
             return Err(Error::NoMemory);
         }
     }
-    let mut process = Process::new();
     process.name = about.name.iter().copied().take(NAME).collect();
     spawn(core, root, entry, argument, process)
 }
@@ -225,13 +246,16 @@ extern "C" fn run(start: u64) {
 /// Ends the program: its handles are closed, and back on the kernel's
 /// address space, its own goes back to the frame allocator, and its thread
 /// ends.
-fn finish() -> ! {
+fn finish(outcome: Outcome) -> ! {
     let process = PROCESSES
         .lock()
         .get_mut(thread::current())
         .and_then(Option::take);
     if let Some(mut process) = process {
-        process.handles.close_all(ipc::close);
+        process.handles.close_all(close_object);
+        if let Some(slot) = process.object {
+            OBJECTS.lock().end(slot, outcome);
+        }
     }
     let root = thread::current_root();
     // SAFETY: the kernel's address space maps all the kernel does, this
@@ -253,7 +277,7 @@ pub fn system_call(frame: &mut Frame) {
             ended(format_args!("ended with {code}"));
             #[cfg(feature = "qemu-test")]
             seen::exited(code);
-            finish()
+            finish(Outcome::Exited(code))
         }
         Call::Log { len, at } => log(at, len),
         Call::Yield => {
@@ -287,6 +311,14 @@ pub fn system_call(frame: &mut Frame) {
         },
         Call::Close(handle) => close(handle).map_or_else(|e| e, |()| 0),
         Call::Map(pages) => map(pages).unwrap_or_else(|e| e),
+        Call::Spawn { len, at, carry } => spawn_program(len, at, carry).unwrap_or_else(|e| e),
+        Call::Wait(handle) => match wait(handle) {
+            Ok((value, faulted)) => {
+                frame.rdx = faulted;
+                value
+            }
+            Err(e) => e,
+        },
         Call::Unmap { at, pages } => unmap(at, pages).map_or_else(|e| e, |()| 0),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
@@ -306,6 +338,95 @@ fn ended(how: core::fmt::Arguments<'_>) {
         let _ = serial.write_str("the program");
     }
     let _ = writeln!(serial, " {how}");
+}
+
+/// Closes the object `object` stands for, whatever its kind.
+pub fn close_object(object: u64) {
+    match Object::from_number(object) {
+        Some(Object::ChannelEnd { .. }) => ipc::close(object),
+        Some(Object::Process { slot }) => OBJECTS.lock().close(slot),
+        None => {}
+    }
+}
+
+/// Starts the program whose file is named by the `len` bytes at `at`, as
+/// a process of its own the running program holds a handle to, handing it
+/// the handle `carry` unless that is 0, and answers the handle.
+fn spawn_program(len: u64, at: u64, carry: u64) -> Result<u64, u64> {
+    let count = usize::try_from(len)
+        .ok()
+        .filter(|&n| n > 0 && n <= bootinfo::Module::NAME)
+        .ok_or(syscall::NO_SUCH_PROGRAM)?;
+    if !memory::user_readable(at, len) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let mut name = [0u8; bootinfo::Module::NAME];
+    // SAFETY: user_readable found every byte mapped for ring 3 in this
+    // program's address space, which only this thread runs.
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(at as *const u8, name.as_mut_ptr(), count);
+    });
+    let file = super::module(&name[..count]).ok_or(syscall::NO_SUCH_PROGRAM)?;
+    let mut child = Process::new();
+    let mut argument = 0;
+    if carry != 0 {
+        let handle = handle_of(carry)?;
+        let rights = with_handles(|t| t.rights(handle).map_err(|_| syscall::BAD_HANDLE))?;
+        let object = object(carry, Rights::TRANSFER)?;
+        let given = child
+            .handles
+            .insert(object, rights)
+            .map_err(|_| syscall::NO_ROOM)?;
+        argument = u64::from(given.0);
+    }
+    let slot = OBJECTS.lock().create().ok_or(syscall::NO_ROOM)?;
+    child.object = Some(slot);
+    let handle = match with_handles(|t| {
+        t.insert(Object::Process { slot }.number(), SPAWNED)
+            .map_err(|_| syscall::NO_ROOM)
+    }) {
+        Ok(handle) => handle,
+        Err(e) => {
+            let mut objects = OBJECTS.lock();
+            objects.end(slot, Outcome::Exited(0));
+            objects.close(slot);
+            return Err(e);
+        }
+    };
+    let core = super::interrupts::this_core();
+    if let Err(e) = start_file_as(core, file, argument, child) {
+        let _ = with_handles(|t| t.close(handle).map_err(|_| syscall::BAD_HANDLE));
+        let mut objects = OBJECTS.lock();
+        objects.end(slot, Outcome::Exited(0));
+        objects.close(slot);
+        return Err(match e {
+            Error::Elf(_) | Error::Refused(_) => syscall::NOT_A_PROGRAM,
+            Error::NoMemory | Error::Thread(_) => syscall::NO_ROOM,
+        });
+    }
+    if carry != 0 {
+        // It went to the child, which holds it now.
+        with_handles(|t| t.close(handle_of(carry)?).map_err(|_| syscall::BAD_HANDLE))?;
+    }
+    Ok(u64::from(handle.0))
+}
+
+/// Waits until the process the handle `handle` stands for ended, and
+/// answers its exit code with 0, or the vector of the exception that ended
+/// it with 1.
+fn wait(handle: u64) -> Result<(u64, u64), u64> {
+    let Some(Object::Process { slot }) = Object::from_number(object(handle, Rights::READ)?) else {
+        return Err(syscall::DENIED);
+    };
+    loop {
+        let state = OBJECTS.lock().state(slot);
+        match state {
+            Some(State::Ended(Outcome::Exited(code))) => return Ok((code, 0)),
+            Some(State::Ended(Outcome::Faulted(vector))) => return Ok((vector, 1)),
+            Some(State::Running) => thread::sleep(1),
+            None => return Err(syscall::BAD_HANDLE),
+        }
+    }
 }
 
 /// Runs `with` on the running program's process.
@@ -459,7 +580,7 @@ fn receive(handle: u64, at: u64, room: u64) -> Result<(u64, u64), u64> {
         None => 0,
         Some(a) => with_handles(|t| Ok(t.insert(a.object, Rights(a.rights)).ok()))?.map_or_else(
             || {
-                ipc::close(a.object);
+                close_object(a.object);
                 0
             },
             |h| u64::from(h.0),
@@ -472,7 +593,7 @@ fn receive(handle: u64, at: u64, room: u64) -> Result<(u64, u64), u64> {
 fn close(handle: u64) -> Result<(), u64> {
     let handle = handle_of(handle)?;
     let object = with_handles(|t| t.close(handle).map_err(|_| syscall::BAD_HANDLE))?;
-    ipc::close(object);
+    close_object(object);
     Ok(())
 }
 
@@ -512,7 +633,7 @@ pub fn fault(frame: &Frame) -> ! {
     ));
     #[cfg(feature = "qemu-test")]
     seen::faulted(frame.vector, frame.error);
-    finish()
+    finish(Outcome::Faulted(frame.vector))
 }
 
 #[cfg(feature = "qemu-test")]

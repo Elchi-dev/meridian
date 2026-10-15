@@ -33,6 +33,12 @@ pub const CLOSE: u64 = 8;
 pub const MAP: u64 = 9;
 /// Gives back the rsi pages at rdi that [`MAP`] gave.
 pub const UNMAP: u64 = 10;
+/// Starts the program whose file is named by the rdi bytes at rsi, handing
+/// it handle rdx unless rdx is 0, and answers a handle to its process.
+pub const SPAWN: u64 = 11;
+/// Waits until the process of handle rdi ended, and answers its exit code,
+/// with rdx 0, or the vector of the exception that ended it, with rdx 1.
+pub const WAIT: u64 = 12;
 
 /// Why a call failed. Each error is an answer counting down from the top
 /// of the range, so no address, length or handle is mistaken for one.
@@ -63,9 +69,13 @@ pub enum Error {
     NoRoom,
     /// The count of pages is 0, or more than one call takes.
     BadSize,
+    /// No program file has this name.
+    NoSuchProgram,
+    /// The file is no `.mexec` file this kernel runs.
+    NotAProgram,
 }
 
-const ERRORS: [Error; 11] = [
+const ERRORS: [Error; 13] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -77,6 +87,8 @@ const ERRORS: [Error; 11] = [
     Error::TooSmall,
     Error::NoRoom,
     Error::BadSize,
+    Error::NoSuchProgram,
+    Error::NotAProgram,
 ];
 
 impl Error {
@@ -110,6 +122,8 @@ pub const CLOSED: u64 = Error::Closed.code();
 pub const TOO_SMALL: u64 = Error::TooSmall.code();
 pub const NO_ROOM: u64 = Error::NoRoom.code();
 pub const BAD_SIZE: u64 = Error::BadSize.code();
+pub const NO_SUCH_PROGRAM: u64 = Error::NoSuchProgram.code();
+pub const NOT_A_PROGRAM: u64 = Error::NotAProgram.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -159,6 +173,12 @@ pub enum Call {
         at: u64,
         pages: u64,
     },
+    Spawn {
+        len: u64,
+        at: u64,
+        carry: u64,
+    },
+    Wait(u64),
     Unknown(u64),
 }
 
@@ -185,6 +205,8 @@ impl Call {
             Call::Close(handle) => (CLOSE, [handle, 0, 0, 0]),
             Call::Map(pages) => (MAP, [pages, 0, 0, 0]),
             Call::Unmap { at, pages } => (UNMAP, [at, pages, 0, 0]),
+            Call::Spawn { len, at, carry } => (SPAWN, [len, at, carry, 0]),
+            Call::Wait(handle) => (WAIT, [handle, 0, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -221,6 +243,12 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             at: first,
             pages: second,
         },
+        SPAWN => Call::Spawn {
+            len: first,
+            at: second,
+            carry: third,
+        },
+        WAIT => Call::Wait(first),
         other => Call::Unknown(other),
     }
 }
@@ -276,13 +304,23 @@ mod tests {
                 pages: 4
             }
         );
-        assert_eq!(decode(11, [1, 2, 3, 0]), Call::Unknown(11));
+        assert_eq!(
+            decode(SPAWN, [11, 0x40_2000, 0x1_0003, 9]),
+            Call::Spawn {
+                len: 11,
+                at: 0x40_2000,
+                carry: 0x1_0003
+            }
+        );
+        assert_eq!(decode(WAIT, [0x2_0001, 2, 3, 0]), Call::Wait(0x2_0001));
+        assert_eq!(decode(13, [1, 2, 3, 0]), Call::Unknown(13));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
-                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP
+                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
+                WAIT
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
     }
 
@@ -300,6 +338,8 @@ mod tests {
             TOO_SMALL,
             NO_ROOM,
             BAD_SIZE,
+            NO_SUCH_PROGRAM,
+            NOT_A_PROGRAM,
         ];
         for (i, &e) in errors.iter().enumerate() {
             assert_eq!(
@@ -343,7 +383,13 @@ mod tests {
                 at: 0x10_0000_2000,
                 pages: 3,
             },
-            Call::Unknown(11),
+            Call::Spawn {
+                len: 5,
+                at: 0x40_3000,
+                carry: 0x3_0002,
+            },
+            Call::Wait(0x4_0001),
+            Call::Unknown(13),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -369,6 +415,8 @@ mod tests {
             (CLOSE, 1),
             (MAP, 1),
             (UNMAP, 2),
+            (SPAWN, 3),
+            (WAIT, 1),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -391,7 +439,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > UNMAP,
+                number > WAIT,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -421,6 +469,13 @@ mod tests {
             Call::Unmap { at: 6, pages: 7 }.encode(),
             (UNMAP, [6, 7, 0, 0])
         );
+        assert_eq!(Call::Wait(8).encode(), (WAIT, [8, 0, 0, 0]));
+        let spawn = Call::Spawn {
+            len: 9,
+            at: 10,
+            carry: 11,
+        };
+        assert_eq!(spawn.encode(), (SPAWN, [9, 10, 11, 0]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 
@@ -430,8 +485,12 @@ mod tests {
             assert_eq!(answer(u64::MAX - i as u64), Err(error));
         }
         assert_eq!(answer(u64::MAX), Err(Error::NoSuchCall));
-        assert_eq!(answer(BAD_SIZE), Err(Error::BadSize));
-        assert_eq!(answer(BAD_SIZE - 1), Ok(BAD_SIZE - 1), "just below them");
+        assert_eq!(answer(NOT_A_PROGRAM), Err(Error::NotAProgram));
+        assert_eq!(
+            answer(NOT_A_PROGRAM - 1),
+            Ok(NOT_A_PROGRAM - 1),
+            "just below them"
+        );
         assert_eq!(answer(0), Ok(0));
         assert_eq!(answer(0x4_0003), Ok(0x4_0003), "a handle");
         assert_eq!(answer(USER_END), Ok(USER_END));
@@ -461,6 +520,8 @@ mod tests {
             (Error::TooSmall, TOO_SMALL),
             (Error::NoRoom, NO_ROOM),
             (Error::BadSize, BAD_SIZE),
+            (Error::NoSuchProgram, NO_SUCH_PROGRAM),
+            (Error::NotAProgram, NOT_A_PROGRAM),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

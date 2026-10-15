@@ -70,6 +70,7 @@ pub fn close(object: u64) {
     let mut closing = Vec::from([object]);
     while let Some(object) = closing.pop() {
         let Some(Object::ChannelEnd { slot, end }) = Object::from_number(object) else {
+            super::user::close_object(object);
             continue;
         };
         let mut all = ALL.lock();

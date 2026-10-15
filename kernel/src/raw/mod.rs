@@ -188,6 +188,31 @@ pub fn back_buffer(info: &BootInfo, regions: &[MemoryRegion]) -> Option<Canvas<'
 
 static BACK_TAKEN: AtomicBool = AtomicBool::new(false);
 
+/// A file the loader read, with its bytes.
+type File = (Module, &'static [u8]);
+
+/// The files the loader read for the kernel, by name, kept for programs to
+/// spawn.
+static KEPT: memory::Spin<[Option<File>; bootinfo::Modules::MAX]> =
+    memory::Spin::new([None; bootinfo::Modules::MAX]);
+
+/// Keeps the files the loader read, for [`module`] to find.
+pub fn keep_modules(info: &BootInfo, regions: &[MemoryRegion]) {
+    let mut kept = KEPT.lock();
+    for (slot, module) in kept.iter_mut().zip(modules(info, regions)) {
+        *slot = Some(module);
+    }
+}
+
+/// The bytes of the file the loader read under `name`.
+pub fn module(name: &[u8]) -> Option<&'static [u8]> {
+    KEPT.lock()
+        .iter()
+        .flatten()
+        .find(|(m, _)| m.name() == name)
+        .map(|&(_, bytes)| bytes)
+}
+
 /// The files the loader read for the kernel, each with its bytes, leaving
 /// out any that do not lie in the kernel's own memory.
 pub fn modules<'a>(

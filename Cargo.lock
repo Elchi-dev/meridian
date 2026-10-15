@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "abi"
+version = "0.0.0"
+
+[[package]]
 name = "acpi"
 version = "0.0.0"
 
@@ -62,6 +66,7 @@ dependencies = [
 name = "kernel"
 version = "0.0.0"
 dependencies = [
+ "abi",
  "acpi",
  "bootinfo",
  "canvas",

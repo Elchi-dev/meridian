@@ -13,7 +13,7 @@ pub mod machine;
 pub mod object;
 pub mod panic;
 pub mod screen;
-pub mod syscall;
+pub use abi as syscall;
 pub mod thread;
 
 use core::fmt::{self, Write};

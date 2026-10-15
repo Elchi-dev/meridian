@@ -456,21 +456,22 @@ fn ahci_port_checks<W: Write>(report: &mut Report<'_, W>, port: usize) {
         refused && aborted && works,
         "NOP should fail with the disk saying it aborted it, and the port should read again afterwards",
     );
-    set_port_register(
-        port,
-        COMMAND,
-        port_register(port, COMMAND) & !(START | RECEIVE),
-    );
+    let settings = port_register(port, COMMAND);
+    set_port_register(port, COMMAND, settings & !(START | RECEIVE));
     let stopped = (0..1000).any(|_| port_register(port, COMMAND) & (RUNNING | RECEIVING) == 0);
-    set_port_register(port, COMMAND_LIST_HIGH, 1);
-    set_port_register(port, RECEIVED_HIGH, 1);
+    let highs = [COMMAND_LIST_HIGH, RECEIVED_HIGH];
+    for high in highs {
+        set_port_register(port, high, 1);
+    }
+    let above = highs.iter().all(|&high| port_register(port, high) == 1);
     let restarted = restart(port);
+    let below = highs.iter().all(|&high| port_register(port, high) == 0);
     again.fill(0);
     let works = read_sectors(port, 1, &mut again).is_ok() && again == header && answered(false);
     report.check(
         "kernel.ahci.restart",
-        stopped && restarted && works,
-        "a port left stopped with its addresses above 4 GiB should read again once started",
+        stopped && above && restarted && below && works && port_register(port, COMMAND) == settings,
+        "a port left stopped with its addresses above 4 GiB should get its own back, keep its other settings, and read again once started",
     );
 }
 

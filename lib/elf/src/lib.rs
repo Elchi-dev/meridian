@@ -330,6 +330,32 @@ impl SegmentList {
     pub fn as_slice(&self) -> &[Segment] {
         &self.items[..self.len]
     }
+
+    /// What the page holding address `at`, as linked, may be used for:
+    /// whatever any segment on it allows, since a page has one set of
+    /// rights. None where no segment lies.
+    #[must_use]
+    pub fn access(&self, at: u64) -> Option<Access> {
+        let page = page_down(at);
+        self.as_slice()
+            .iter()
+            .filter(|s| s.mem_size > 0 && s.vaddr < page.saturating_add(PAGE) && s.end() > page)
+            .map(|s| Access {
+                write: s.write,
+                execute: s.execute,
+            })
+            .reduce(|a, b| Access {
+                write: a.write || b.write,
+                execute: a.execute || b.execute,
+            })
+    }
+}
+
+/// What a page of an image may be used for besides being read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    pub write: bool,
+    pub execute: bool,
 }
 
 #[cfg(test)]
@@ -471,6 +497,80 @@ mod tests {
         );
         assert_eq!(s[2].end(), 0x3100);
         assert_eq!(s[0].file_offset, 64 + 56 * 4);
+    }
+
+    #[test]
+    fn each_page_allows_what_its_segments_do() {
+        let file = build(
+            ET_DYN,
+            0x2000,
+            &[
+                load_seg(4, 0, b"ro", 0x1200),
+                load_seg(5, 0x2000, b"text", 0x100),
+                load_seg(6, 0x2f00, b"data", 0x200),
+            ],
+        );
+        let segments = Elf::parse(&file).unwrap().segments().unwrap();
+        let read = Access::default();
+        let write = Access {
+            write: true,
+            execute: false,
+        };
+        assert_eq!(segments.access(0), Some(read));
+        assert_eq!(
+            segments.access(0x1fff),
+            Some(read),
+            "the second page of the first"
+        );
+        assert_eq!(
+            segments.access(0x2000),
+            Some(Access {
+                write: true,
+                execute: true
+            }),
+            "code and data share a page"
+        );
+        assert_eq!(segments.access(0x2abc), segments.access(0x2000));
+        assert_eq!(segments.access(0x3000), Some(write), "data alone");
+        assert_eq!(segments.access(0x30ff), Some(write));
+        assert_eq!(segments.access(0x4000), None, "past the end");
+        assert_eq!(segments.access(u64::MAX), None);
+    }
+
+    #[test]
+    fn a_page_between_segments_or_under_an_empty_one_has_none() {
+        let file = build(
+            ET_DYN,
+            0,
+            &[
+                load_seg(5, 0, b"text", 0x1000),
+                load_seg(6, 0x3000, b"", 0),
+                load_seg(6, 0x3800, b"", 0),
+                load_seg(6, 0x5000, b"", 0x10),
+            ],
+        );
+        let segments = Elf::parse(&file).unwrap().segments().unwrap();
+        assert_eq!(
+            segments.access(0),
+            Some(Access {
+                write: false,
+                execute: true
+            })
+        );
+        assert_eq!(segments.access(0x1000), None, "the text ends with its page");
+        assert_eq!(segments.access(0x2000), None);
+        assert_eq!(
+            segments.access(0x3000),
+            None,
+            "an empty segment covers nothing"
+        );
+        assert_eq!(segments.access(0x3800), None, "not even inside a page");
+        assert_eq!(segments.access(0x4fff), None);
+        assert!(
+            segments
+                .access(0x5000)
+                .is_some_and(|a| a.write && !a.execute)
+        );
     }
 
     #[test]

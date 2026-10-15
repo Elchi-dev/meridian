@@ -1377,8 +1377,10 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
     report.check(
         "kernel.programs.hello",
-        ended_with(started, 0) && seen::logged(b"Hello from ring 3, in Rust"),
-        "hello should run from its file, find every call working and greet",
+        ended_with(started, 0)
+            && seen::logged(b"Hello from ring 3, in Rust")
+            && seen::ended(b"user: hello ended with 0\n"),
+        "hello should run from its file, find every call working, greet, and have its end logged",
     );
     let every = [
         abi::LOG,

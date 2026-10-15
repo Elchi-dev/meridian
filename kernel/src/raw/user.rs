@@ -329,7 +329,15 @@ pub fn system_call(frame: &mut Frame) {
 /// Writes to the log how the running program ended, under its name.
 fn ended(how: core::fmt::Arguments<'_>) {
     let name = with_process(|p| Ok(p.name.clone())).unwrap_or_default();
-    let _ = kernel::log::ended(&mut x86::raw::Com1::already_open(), &name, how);
+    let serial = x86::raw::Com1::already_open();
+    #[cfg(not(feature = "qemu-test"))]
+    let _ = kernel::log::ended(&mut { serial }, &name, how);
+    #[cfg(feature = "qemu-test")]
+    {
+        let mut through = seen::Through::new(serial);
+        let _ = kernel::log::ended(&mut through, &name, how);
+        seen::keep_ended(&through);
+    }
 }
 
 /// Closes the object `object` stands for, whatever its kind.
@@ -1370,8 +1378,10 @@ pub mod seen {
     static EXIT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static FAULT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static ERROR: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
-    static LOG: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-    static LOG_LEN: AtomicUsize = AtomicUsize::new(0);
+    /// The last line a program logged, and the last line the kernel logged
+    /// for a program's end, each up to 64 bytes of it and its length.
+    static LOG: Kept = Kept::new();
+    static ENDED: Kept = Kept::new();
 
     /// How often each call was made since the last program started.
     static CALLS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
@@ -1426,26 +1436,87 @@ pub mod seen {
             .map_or(u64::MAX, |f| f.load(Ordering::Acquire))
     }
 
+    struct Kept {
+        words: [AtomicU64; 8],
+        len: AtomicUsize,
+    }
+
+    impl Kept {
+        const fn new() -> Kept {
+            Kept {
+                words: [const { AtomicU64::new(0) }; 8],
+                len: AtomicUsize::new(0),
+            }
+        }
+
+        fn keep(&self, text: &[u8], len: usize) {
+            let mut words = [0u64; 8];
+            for (i, &b) in text.iter().take(64).enumerate() {
+                words[i / 8] |= u64::from(b) << (i % 8 * 8);
+            }
+            for (slot, word) in self.words.iter().zip(words) {
+                slot.store(word, Ordering::Release);
+            }
+            self.len.store(len, Ordering::Release);
+        }
+
+        fn holds(&self, text: &[u8]) -> bool {
+            self.len.load(Ordering::Acquire) == text.len()
+                && text.iter().take(64).enumerate().all(|(i, &b)| {
+                    self.words[i / 8].load(Ordering::Acquire) >> (i % 8 * 8) & 0xff == u64::from(b)
+                })
+        }
+    }
+
     pub(super) fn keep_log(text: &[u8]) {
-        let mut words = [0u64; 8];
-        for (i, &b) in text.iter().take(64).enumerate() {
-            words[i / 8] |= u64::from(b) << (i % 8 * 8);
-        }
-        for (slot, word) in LOG.iter().zip(words) {
-            slot.store(word, Ordering::Release);
-        }
-        LOG_LEN.store(text.len(), Ordering::Release);
+        LOG.keep(text, text.len());
     }
 
     /// Whether the last line logged is `text`, up to 64 bytes of it.
     pub fn logged(text: &[u8]) -> bool {
-        LOG_LEN.load(Ordering::Acquire) == text.len()
-            && text.iter().take(64).enumerate().all(|(i, &b)| {
-                LOG[i / 8].load(Ordering::Acquire) >> (i % 8 * 8) & 0xff == u64::from(b)
-            })
+        LOG.holds(text)
     }
 
-    /// Forgets what thread `slot` and the last program left.
+    /// A writer that passes everything on to `out` and keeps the first 64
+    /// bytes, counting the rest.
+    pub(super) struct Through<W> {
+        out: W,
+        kept: [u8; 64],
+        len: usize,
+    }
+
+    impl<W: core::fmt::Write> Through<W> {
+        pub(super) fn new(out: W) -> Through<W> {
+            Through {
+                out,
+                kept: [0; 64],
+                len: 0,
+            }
+        }
+    }
+
+    impl<W: core::fmt::Write> core::fmt::Write for Through<W> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for &b in s.as_bytes() {
+                if let Some(room) = self.kept.get_mut(self.len) {
+                    *room = b;
+                }
+                self.len += 1;
+            }
+            self.out.write_str(s)
+        }
+    }
+
+    pub(super) fn keep_ended<W>(line: &Through<W>) {
+        ENDED.keep(&line.kept, line.len);
+    }
+
+    /// Whether the last line the kernel logged for a program's end is
+    /// `line`, up to 64 bytes of it.
+    pub fn ended(line: &[u8]) -> bool {
+        ENDED.holds(line)
+    }
+
     /// How often the call `number` was made since the last program
     /// started.
     pub fn calls(number: u64) -> u64 {
@@ -1455,9 +1526,10 @@ pub mod seen {
             .map_or(0, |c| c.load(Ordering::Acquire))
     }
 
-    /// Forgets what the programs before left: the calls they made and the
-    /// last line they logged. A check does this before it starts the
-    /// program it looks at, which may run at once on another tick.
+    /// Forgets what the programs before left: the calls they made, the
+    /// last line they logged and the last end logged. A check does this
+    /// before it starts the program it looks at, which may run at once on
+    /// another tick.
     pub fn forget() {
         for count in &CALLS {
             count.store(0, Ordering::Release);
@@ -1465,7 +1537,8 @@ pub mod seen {
         RING.store(0, Ordering::Release);
         STACK_SEGMENT.store(0, Ordering::Release);
         USER_ACCESS.store(false, Ordering::Release);
-        LOG_LEN.store(0, Ordering::Release);
+        LOG.len.store(0, Ordering::Release);
+        ENDED.len.store(0, Ordering::Release);
     }
 
     /// Forgets how the program before ended on thread `slot`, as the

@@ -50,6 +50,19 @@ pub mod port {
     pub const TASK_FILE_ERROR: u32 = 1 << 30;
 }
 
+/// The ports a controller has, in order, from its register of them.
+pub fn ports(implemented: u32) -> impl Iterator<Item = usize> {
+    (0..32).filter(move |&n| implemented >> n & 1 == 1)
+}
+
+/// The low and the high half of `address`, for the two registers that
+/// hold a 64-bit address.
+#[must_use]
+pub fn halves(address: u64) -> (u32, u32) {
+    let half = |bits: u64| u32::try_from(bits & 0xffff_ffff).unwrap_or(0);
+    (half(address), half(address >> 32))
+}
+
 /// The size of a sector, unless a disk says otherwise.
 pub const SECTOR: u32 = 512;
 
@@ -85,6 +98,8 @@ pub fn attached(status: u32, signature: u32) -> Attached {
 
 /// The ATA commands Meridian sends.
 pub mod ata {
+    /// Does nothing and fails, as ATA says it always does.
+    pub const NOP: u8 = 0x00;
     pub const IDENTIFY: u8 = 0xec;
     pub const READ_DMA_EXT: u8 = 0x25;
     pub const WRITE_DMA_EXT: u8 = 0x35;
@@ -220,6 +235,22 @@ mod tests {
         assert_eq!(port::base(1), 0x180);
         assert_eq!(port::base(31), 0x1080, "the last of 32");
         assert_eq!(port::base(31) + port::ISSUE + 4, 0x10bc, "all within 8 KiB");
+    }
+
+    #[test]
+    fn only_the_ports_a_controller_has_are_looked_at() {
+        let qemu: Vec<usize> = ports(0x3f).collect();
+        assert_eq!(qemu, [0, 1, 2, 3, 4, 5], "the six of q35's controller");
+        assert_eq!(ports(0x8000_0002).collect::<Vec<_>>(), [1, 31]);
+        assert_eq!(ports(u32::MAX).count(), 32);
+        assert_eq!(ports(0).count(), 0);
+    }
+
+    #[test]
+    fn an_address_is_split_in_halves() {
+        assert_eq!(halves(0x1234_5678_9abc_def0), (0x9abc_def0, 0x1234_5678));
+        assert_eq!(halves(0x7ffd_f000), (0x7ffd_f000, 0), "a frame below 4 GiB");
+        assert_eq!(halves(u64::MAX), (u32::MAX, u32::MAX));
     }
 
     #[test]

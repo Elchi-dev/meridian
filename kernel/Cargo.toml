@@ -27,6 +27,7 @@ canvas = { path = "../lib/canvas" }
 channel = { path = "../lib/channel" }
 elf = { path = "../lib/elf" }
 font = { path = "../lib/font" }
+gpt = { path = "../lib/gpt" }
 frames = { path = "../lib/frames" }
 handles = { path = "../lib/handles" }
 heap = { path = "../lib/heap" }

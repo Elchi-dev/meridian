@@ -3,9 +3,12 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub use canvas::Text;
 
 pub mod clock;
+pub mod disk;
 pub mod display;
 pub mod exceptions;
 pub mod hpet;
@@ -330,6 +333,31 @@ pub fn drive_line(
         }
         (ahci::Attached::Nothing, _) => writeln!(out, "nothing"),
     }
+}
+
+/// Writes the line the kernel logs for partition `number` of the disk on
+/// AHCI port `port`: its name, size, where it starts and its type.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn partition_line(
+    out: &mut impl Write,
+    port: usize,
+    number: usize,
+    p: &gpt::Partition,
+) -> fmt::Result {
+    write!(out, "AHCI port {port}, partition {number}: ")?;
+    for c in p.name() {
+        out.write_char(c)?;
+    }
+    writeln!(
+        out,
+        ", {} MiB from sector {}, type {}",
+        (p.sectors() * 512) >> 20,
+        p.first,
+        p.kind
+    )
 }
 
 /// The most cores that get a task state, and so are started.

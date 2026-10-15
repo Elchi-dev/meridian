@@ -86,6 +86,7 @@ dependencies = [
  "elf",
  "font",
  "frames",
+ "gpt",
  "handles",
  "heap",
  "paging",

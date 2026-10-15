@@ -47,14 +47,14 @@ pub enum Error {
 
 static DRIVES: Spin<[Option<Drive>; 32]> = Spin::new([None; 32]);
 
-fn read(offset: usize) -> u32 {
+fn register(offset: usize) -> u32 {
     // SAFETY: start mapped the controller's two pages of registers at
     // AHCI_REGISTERS, uncached, and every offset used lies within them.
     unsafe { core::ptr::read_volatile((kernel::AHCI_REGISTERS + offset as u64) as *const u32) }
 }
 
-fn write(offset: usize, value: u32) {
-    // SAFETY: as for read; the registers written are those the
+fn set_register(offset: usize, value: u32) {
+    // SAFETY: as for register; the registers written are those the
     // specification lets software write.
     unsafe {
         core::ptr::write_volatile((kernel::AHCI_REGISTERS + offset as u64) as *mut u32, value);
@@ -81,12 +81,15 @@ pub fn start(registers: u64) -> usize {
     if !mapped {
         return 0;
     }
-    write(hba::CONTROL, read(hba::CONTROL) | hba::AHCI_ENABLE);
-    let implemented = read(hba::PORTS);
+    set_register(hba::CONTROL, register(hba::CONTROL) | hba::AHCI_ENABLE);
+    let implemented = register(hba::PORTS);
     let mut found = 0;
     for n in (0..32).filter(|n| implemented & 1 << n != 0) {
         let base = port::base(n);
-        let attached = ahci::attached(read(base + port::STATUS), read(base + port::SIGNATURE));
+        let attached = ahci::attached(
+            register(base + port::STATUS),
+            register(base + port::SIGNATURE),
+        );
         if attached == Attached::Nothing {
             continue;
         }
@@ -112,12 +115,12 @@ pub fn start(registers: u64) -> usize {
 /// what the device sends, and starts it again.
 fn prepare(n: usize) -> Option<u64> {
     let base = port::base(n);
-    let command = read(base + port::COMMAND);
-    write(
+    let command = register(base + port::COMMAND);
+    set_register(
         base + port::COMMAND,
         command & !(port::START | port::RECEIVE),
     );
-    let idle = wait(|| read(base + port::COMMAND) & (port::RUNNING | port::RECEIVING) == 0);
+    let idle = wait(|| register(base + port::COMMAND) & (port::RUNNING | port::RECEIVING) == 0);
     if !idle {
         return None;
     }
@@ -128,24 +131,24 @@ fn prepare(n: usize) -> Option<u64> {
     };
     let (list, list_high) = split(frame + COMMAND_LIST);
     let (received, received_high) = split(frame + RECEIVED);
-    write(base + port::COMMAND_LIST, list);
-    write(base + port::COMMAND_LIST_HIGH, list_high);
-    write(base + port::RECEIVED, received);
-    write(base + port::RECEIVED_HIGH, received_high);
-    write(base + port::ERRORS, u32::MAX);
-    write(base + port::INTERRUPTS, u32::MAX);
-    write(
+    set_register(base + port::COMMAND_LIST, list);
+    set_register(base + port::COMMAND_LIST_HIGH, list_high);
+    set_register(base + port::RECEIVED, received);
+    set_register(base + port::RECEIVED_HIGH, received_high);
+    set_register(base + port::ERRORS, u32::MAX);
+    set_register(base + port::INTERRUPTS, u32::MAX);
+    set_register(
         base + port::COMMAND,
-        read(base + port::COMMAND) | port::RECEIVE,
+        register(base + port::COMMAND) | port::RECEIVE,
     );
-    let ready = wait(|| read(base + port::TASK_FILE) & (port::BUSY | port::DATA_REQUEST) == 0);
+    let ready = wait(|| register(base + port::TASK_FILE) & (port::BUSY | port::DATA_REQUEST) == 0);
     if !ready {
         memory::give_back(frame);
         return None;
     }
-    write(
+    set_register(
         base + port::COMMAND,
-        read(base + port::COMMAND) | port::START,
+        register(base + port::COMMAND) | port::START,
     );
     Some(frame)
 }
@@ -172,18 +175,18 @@ fn issue(
     }
     fence(Ordering::SeqCst);
     let base = port::base(drive.port);
-    write(base + port::INTERRUPTS, u32::MAX);
-    write(base + port::ISSUE, 1);
+    set_register(base + port::INTERRUPTS, u32::MAX);
+    set_register(base + port::ISSUE, 1);
     let answered = wait(|| {
-        read(base + port::ISSUE) & 1 == 0
-            || read(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0
+        register(base + port::ISSUE) & 1 == 0
+            || register(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0
     });
     fence(Ordering::SeqCst);
     if !answered {
         return Err(Error::Timeout);
     }
-    let failed = read(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0
-        || read(base + port::TASK_FILE) & port::FAILED != 0;
+    let failed = register(base + port::INTERRUPTS) & port::TASK_FILE_ERROR != 0
+        || register(base + port::TASK_FILE) & port::FAILED != 0;
     if failed { Err(Error::Failed) } else { Ok(()) }
 }
 
@@ -205,6 +208,28 @@ fn identify(drive: &Drive) -> Option<Identity> {
 /// The drives found, by port.
 pub fn drives() -> [Option<Drive>; 32] {
     *DRIVES.lock()
+}
+
+/// Reads the sectors from `lba` on into `into`, which takes any whole
+/// number of them, a frame's worth at a time, from the disk on port `n`.
+///
+/// # Errors
+///
+/// As for [`read_sectors`].
+pub fn read(n: usize, lba: u64, into: &mut [u8]) -> Result<(), Error> {
+    let size = DRIVES
+        .lock()
+        .get(n)
+        .copied()
+        .flatten()
+        .and_then(|d| d.identity)
+        .ok_or(Error::NoDisk)?
+        .sector_size;
+    let per_chunk = 4096 / u64::from(size).max(1);
+    for (i, chunk) in (0..).zip(into.chunks_mut(4096)) {
+        read_sectors(n, lba + i * per_chunk, chunk)?;
+    }
+    Ok(())
 }
 
 /// Reads the sectors from `lba` on into `into`, which takes a whole number

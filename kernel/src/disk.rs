@@ -1,0 +1,164 @@
+//! Disks, the parts that need no driver: their partition tables, read
+//! through whatever reads their sectors.
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use gpt::{Header, Partition};
+
+/// A disk's GUID partition table: the header in sector 1 and its entry
+/// array, once both passed their checks.
+pub struct Table {
+    pub header: Header,
+    entries: Vec<u8>,
+}
+
+impl Table {
+    /// The table of the disk whose 512-byte sectors `read` reads into the
+    /// room it is given, starting at the sector it is given, saying whether
+    /// it could; none when the disk has no table that passes its checks.
+    pub fn read(read: &mut impl FnMut(u64, &mut [u8]) -> bool) -> Option<Table> {
+        let mut sector = [0u8; 512];
+        if !read(1, &mut sector) {
+            return None;
+        }
+        let header = Header::read(&sector).ok()?;
+        let len = usize::try_from(header.entries_bytes().div_ceil(512) * 512).ok()?;
+        let mut entries = vec![0u8; len];
+        if !read(header.entries_at, &mut entries) {
+            return None;
+        }
+        header.partitions(&entries).map(|_| ())?;
+        Some(Table { header, entries })
+    }
+
+    /// The partitions the table lists, each with its number, counted from
+    /// 1 as entries are, unused ones left out.
+    pub fn partitions(&self) -> impl Iterator<Item = (usize, Partition)> + '_ {
+        self.header.partitions(&self.entries).into_iter().flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A disk of `sectors` sectors with a GPT whose array holds `entries`,
+    /// each a type, a first and a last sector, in the entries given.
+    fn disk(sectors: u64, entries: &[(usize, [u8; 16], u64, u64)]) -> Vec<u8> {
+        let mut image = vec![0u8; usize::try_from(sectors * 512).unwrap()];
+        let array = &mut image[1024..1024 + 128 * 128];
+        for &(slot, kind, first, last) in entries {
+            let e = &mut array[slot * 128..(slot + 1) * 128];
+            e[..16].copy_from_slice(&kind);
+            e[32..40].copy_from_slice(&first.to_le_bytes());
+            e[40..48].copy_from_slice(&last.to_le_bytes());
+            e[56..58].copy_from_slice(&[b'P', 0]);
+        }
+        let crc = gpt::crc32(&image[1024..1024 + 128 * 128]);
+        let h = &mut image[512..604];
+        h[..8].copy_from_slice(b"EFI PART");
+        h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        h[12..16].copy_from_slice(&92u32.to_le_bytes());
+        h[24..32].copy_from_slice(&1u64.to_le_bytes());
+        h[32..40].copy_from_slice(&(sectors - 1).to_le_bytes());
+        h[40..48].copy_from_slice(&34u64.to_le_bytes());
+        h[48..56].copy_from_slice(&(sectors - 34).to_le_bytes());
+        h[72..80].copy_from_slice(&2u64.to_le_bytes());
+        h[80..84].copy_from_slice(&128u32.to_le_bytes());
+        h[84..88].copy_from_slice(&128u32.to_le_bytes());
+        h[88..92].copy_from_slice(&crc.to_le_bytes());
+        let crc = gpt::crc32(&image[512..604]);
+        image[528..532].copy_from_slice(&crc.to_le_bytes());
+        image
+    }
+
+    fn reader(image: &[u8]) -> impl FnMut(u64, &mut [u8]) -> bool + '_ {
+        |lba, into| {
+            let at = usize::try_from(lba * 512).unwrap();
+            image.get(at..at + into.len()).is_some_and(|bytes| {
+                into.copy_from_slice(bytes);
+                true
+            })
+        }
+    }
+
+    #[test]
+    fn a_disk_lists_its_partitions_by_number() {
+        let image = disk(
+            4096,
+            &[
+                (0, gpt::EFI_SYSTEM.0, 2048, 3071),
+                (2, gpt::MERIDIAN_SYSTEM.0, 3072, 4000),
+            ],
+        );
+        let table = Table::read(&mut reader(&image)).unwrap();
+        assert_eq!((table.header.current, table.header.backup), (1, 4095));
+        let parts: Vec<(usize, Partition)> = table.partitions().collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            (parts[0].0, parts[0].1.kind, parts[0].1.first),
+            (1, gpt::EFI_SYSTEM, 2048)
+        );
+        assert_eq!(
+            (parts[1].0, parts[1].1.kind, parts[1].1.last),
+            (3, gpt::MERIDIAN_SYSTEM, 4000)
+        );
+        assert_eq!(parts[1].1.name().collect::<String>(), "P");
+    }
+
+    #[test]
+    fn each_partition_is_logged_by_its_name_size_and_type() {
+        let image = disk(
+            300_000,
+            &[
+                (0, gpt::EFI_SYSTEM.0, 2048, 133_119),
+                (4, [0x11; 16], 133_120, 133_120),
+            ],
+        );
+        let table = Table::read(&mut reader(&image)).unwrap();
+        let lines: Vec<String> = table
+            .partitions()
+            .map(|(number, p)| {
+                let mut out = String::new();
+                crate::partition_line(&mut out, 3, number, &p).unwrap();
+                out
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "AHCI port 3, partition 1: P, 64 MiB from sector 2048, type C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n",
+                "AHCI port 3, partition 5: P, 0 MiB from sector 133120, type 11111111-1111-1111-1111-111111111111\n",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_disk_without_a_table_that_holds_has_none() {
+        let image = disk(4096, &[(0, gpt::EFI_SYSTEM.0, 2048, 3071)]);
+        assert!(
+            Table::read(&mut |_, _| false).is_none(),
+            "nothing could be read"
+        );
+        let mut no_entries = reader(&image);
+        let mut header_only = |lba, into: &mut [u8]| lba == 1 && no_entries(lba, into);
+        assert!(
+            Table::read(&mut header_only).is_none(),
+            "the entries could not be read"
+        );
+        let mut broken = image.clone();
+        broken[1024 + 40] ^= 1;
+        assert!(
+            Table::read(&mut reader(&broken)).is_none(),
+            "an entry changed behind its CRC"
+        );
+        let mut blank = image.clone();
+        blank[512..520].fill(0);
+        assert!(Table::read(&mut reader(&blank)).is_none(), "no header");
+        assert!(
+            Table::read(&mut reader(&image[..1024])).is_none(),
+            "a disk too small for its array"
+        );
+    }
+}

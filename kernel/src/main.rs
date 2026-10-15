@@ -57,11 +57,12 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
         for drive in raw::ahci::drives().iter().flatten() {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
-            let mut sector = [0u8; 512];
-            if raw::ahci::read_sectors(drive.port, 1, &mut sector).is_ok()
-                && sector.starts_with(b"EFI PART")
-            {
-                let _ = writeln!(serial, "kernel: AHCI port {}: a GPT disk", drive.port);
+            let mut read = |lba, into: &mut [u8]| raw::ahci::read(drive.port, lba, into).is_ok();
+            if let Some(table) = kernel::disk::Table::read(&mut read) {
+                for (number, partition) in table.partitions() {
+                    let _ = serial.write_str("kernel: ");
+                    let _ = kernel::partition_line(serial, drive.port, number, &partition);
+                }
             }
         }
     }

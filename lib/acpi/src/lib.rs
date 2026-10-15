@@ -1,7 +1,7 @@
 //! Reads the ACPI tables the firmware leaves in memory (ACPI 6.5): the
 //! root pointer, the extended system description table that lists the
-//! others, the MADT with the processors, and the FADT with the power
-//! management timer. Memory is reached through a [`Memory`] the caller
+//! others, the MADT with the processors, the FADT with the power
+//! management timer, and the HPET table. Memory is reached through a [`Memory`] the caller
 //! provides, so the same code reads the real tables in the kernel and
 //! tables built byte by byte in the tests. Every table's checksum is
 //! checked before anything in it is believed.
@@ -222,6 +222,18 @@ pub fn pm_timer_bits(fadt: &[u8]) -> u32 {
 
 /// The frequency of the power management timer, in ticks per second.
 pub const PM_TIMER_HZ: u64 = 3_579_545;
+
+/// Where the High Precision Event Timer's registers are, from the HPET
+/// table: its base address, a generic address structure at 40, whose
+/// address space 0 is memory. `None` for a table that puts them anywhere
+/// else, which the HPET specification does not allow, or is too short.
+#[must_use]
+pub fn hpet_address(hpet: &[u8]) -> Option<u64> {
+    if hpet.get(40) != Some(&0) {
+        return None;
+    }
+    u64_at(hpet, 44).filter(|&address| address != 0)
+}
 
 #[cfg(test)]
 mod tests {
@@ -603,6 +615,31 @@ mod tests {
         assert!(!checksum_ok(&[1]));
         let t = sdt(*b"TEST", b"body");
         assert!(checksum_ok(&t));
+    }
+
+    fn hpet(space: u8, address: u64) -> Vec<u8> {
+        let mut body = vec![0u8; 20];
+        body[0..4].copy_from_slice(&0x8086_a201u32.to_le_bytes());
+        body[4] = space;
+        body[5] = 64;
+        body[8..16].copy_from_slice(&address.to_le_bytes());
+        sdt(*b"HPET", &body)
+    }
+
+    #[test]
+    fn the_hpet_is_found_in_memory() {
+        assert_eq!(hpet_address(&hpet(0, 0xfed0_0000)), Some(0xfed0_0000));
+        assert_eq!(hpet_address(&hpet(0, 0x1_0000_0000)), Some(0x1_0000_0000));
+        assert_eq!(hpet_address(&hpet(1, 0xfed0_0000)), None, "I/O space");
+        assert_eq!(hpet_address(&hpet(0, 0)), None, "no address");
+        let t = hpet(0, 0xfed0_0000);
+        assert_eq!(hpet_address(&t[..51]), None, "cut short");
+        assert_eq!(hpet_address(&t[..40]), None, "cut before the address");
+        assert_eq!(
+            hpet_address(&t[..52]),
+            Some(0xfed0_0000),
+            "the address is all it needs"
+        );
     }
 
     #[test]

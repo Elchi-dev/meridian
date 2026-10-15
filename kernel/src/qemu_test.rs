@@ -642,6 +642,7 @@ fn timer_checks<W: Write>(
     thread_checks(report, tsc_hz.unwrap_or(0));
     user_checks(report);
     entry_checks(report);
+    given_back_checks(report);
     ipc_checks(report);
     program_checks(report, info, regions);
     timer::stop();
@@ -1031,6 +1032,13 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         hello.is_some_and(|(m, file)| file.starts_with(b"\x7fELF") && m.size == file.len() as u64),
         "the loader should hand over hello from meridian/programs",
     );
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let before = free();
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
     if let Some(slot) = started {
         seen::forget(slot);
@@ -1040,6 +1048,11 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         ended_with(started, 0) && seen::logged(b"Hello from ring 3, in Rust"),
         "hello should run from its file, find every call working and greet",
     );
+    report.check(
+        "kernel.programs.cleaned",
+        before.is_some() && free() == before,
+        "hello's image, stack and heap should all go back once it ended",
+    );
     let mut text = [b' '; 64];
     text[..9].copy_from_slice(b"#!/bin/sh");
     report.check(
@@ -1047,6 +1060,20 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         user::start_file(0, &text, 0) == Err(user::Error::Elf(elf::Error::NotElf))
             && user::start_file(0, b"\x7fELF", 0) == Err(user::Error::Elf(elf::Error::Truncated)),
         "a file that is no ELF file should not start",
+    );
+}
+
+/// Memory a program gives back is gone at once: reading it right after
+/// faults, even where the processor still remembered the page.
+fn given_back_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::user::{probe, seen};
+    let stale = ran(&probe::STALE, 0);
+    report.check(
+        "kernel.user.given_back",
+        ended_by(stale, 14)
+            && stale.is_some_and(|s| seen::error_of(s) == 0b100)
+            && seen::fault_address() == kernel::program::HEAP_START,
+        "a page given back should be gone for the program at once",
     );
 }
 

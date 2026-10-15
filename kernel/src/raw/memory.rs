@@ -339,6 +339,21 @@ pub fn map_stack(top: u64, pages: u64) -> Result<(), paging::Error> {
     Ok(())
 }
 
+/// Takes the 4 KiB page at `virt` out of the address space at `root`,
+/// which runs on this processor, and gives its frame back.
+///
+/// # Errors
+///
+/// Those of [`AddressSpace::unmap`], such as nothing mapped there.
+pub fn unmap_fresh_in(root: u64, virt: u64) -> Result<(), paging::Error> {
+    let mut frames = FRAMES.lock();
+    let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
+    let frame = AddressSpace::existing(root).unmap(&mut KernelTables(frames), virt)?;
+    x86::raw::invalidate_page(virt);
+    let _ = frames.free(frame);
+    Ok(())
+}
+
 /// Takes the 4 KiB page at `virt` out of the kernel's address space,
 /// drops what this processor remembers of it, and returns its frame.
 ///

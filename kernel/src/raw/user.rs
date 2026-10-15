@@ -30,6 +30,17 @@ const HANDLES: usize = 64;
 /// What the kernel keeps for a program besides its address space.
 struct Process {
     handles: Table<HANDLES>,
+    /// How much of its heap region its MAP calls took.
+    heap: program::Heap,
+}
+
+impl Process {
+    fn new() -> Box<Process> {
+        Box::new(Process {
+            handles: Table::new(),
+            heap: program::Heap::new(),
+        })
+    }
 }
 
 /// Each program's process, by the number of its thread.
@@ -75,14 +86,7 @@ pub enum Error {
 /// start.
 #[cfg(feature = "qemu-test")]
 pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<usize, Error> {
-    launch(
-        core,
-        program,
-        argument,
-        Box::new(Process {
-            handles: Table::new(),
-        }),
-    )
+    launch(core, program, argument, Process::new())
 }
 
 /// Starts the program in the ELF file `file` in ring 3 with `argument` in
@@ -109,9 +113,7 @@ pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Erro
             mapped &= memory::map_fresh_in(root, CODE_AT + offset, flags, page).is_ok();
         }
     }
-    let process = Box::new(Process {
-        handles: Table::new(),
-    });
+    let process = Process::new();
     spawn(core, root, mapped, entry, argument, process)
 }
 
@@ -130,9 +132,7 @@ pub fn start_holding(
     objects: &[u64],
     rights: Rights,
 ) -> Result<usize, Error> {
-    let mut process = Box::new(Process {
-        handles: Table::new(),
-    });
+    let mut process = Process::new();
     let mut first = 0;
     for (i, &object) in objects.iter().enumerate() {
         let handle = process
@@ -277,17 +277,55 @@ pub fn system_call(frame: &mut Frame) {
             Err(e) => e,
         },
         Call::Close(handle) => close(handle).map_or_else(|e| e, |()| 0),
+        Call::Map(pages) => map(pages).unwrap_or_else(|e| e),
+        Call::Unmap { at, pages } => unmap(at, pages).map_or_else(|e| e, |()| 0),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
 }
 
-/// Runs `with` on the running program's handle table.
-fn with_handles<R>(with: impl FnOnce(&mut Table<HANDLES>) -> Result<R, u64>) -> Result<R, u64> {
+/// Runs `with` on the running program's process.
+fn with_process<R>(with: impl FnOnce(&mut Process) -> Result<R, u64>) -> Result<R, u64> {
     let mut processes = PROCESSES.lock();
     let process = processes
         .get_mut(thread::current())
         .and_then(Option::as_mut);
-    with(&mut process.ok_or(syscall::BAD_HANDLE)?.handles)
+    with(process.ok_or(syscall::BAD_HANDLE)?)
+}
+
+/// Runs `with` on the running program's handle table.
+fn with_handles<R>(with: impl FnOnce(&mut Table<HANDLES>) -> Result<R, u64>) -> Result<R, u64> {
+    with_process(|p| with(&mut p.handles))
+}
+
+/// Maps `pages` fresh pages into the running program's heap region,
+/// zeroed, writable and not executable, and answers where they start.
+fn map(pages: u64) -> Result<u64, u64> {
+    let at = with_process(|p| p.heap.take(pages).map_err(syscall::Error::code))?;
+    let root = thread::current_root();
+    let flags = Flags::USER | Flags::WRITABLE | Flags::NO_EXECUTE;
+    for i in 0..pages {
+        if memory::map_fresh_in(root, at + i * 4096, flags, &[]).is_err() {
+            for mapped in 0..i {
+                let _ = memory::unmap_fresh_in(root, at + mapped * 4096);
+            }
+            return Err(syscall::NO_ROOM);
+        }
+    }
+    Ok(at)
+}
+
+/// Gives back the `pages` pages at `at`, which MAP gave the running
+/// program and which are all still there.
+fn unmap(at: u64, pages: u64) -> Result<(), u64> {
+    let given = with_process(|p| Ok(p.heap.holds(at, pages)))?;
+    if !given || !memory::user_writable(at, pages * 4096) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let root = thread::current_root();
+    for i in 0..pages {
+        let _ = memory::unmap_fresh_in(root, at + i * 4096);
+    }
+    Ok(())
 }
 
 /// The object a handle of the running program stands for, when it allows
@@ -612,6 +650,23 @@ pub mod probe {
         "meridian_write_code_start:",
         "mov byte ptr [rip], 0x90",
         "ud2",
+        // Maps a page, writes to it, gives it back and reads it again,
+        // which has to fault at once.
+        ".global meridian_stale_start",
+        "meridian_stale_start:",
+        "mov edi, 1",
+        "mov eax, {map}",
+        "int 0x2e",
+        "mov rbx, rax",
+        "mov qword ptr [rbx], 42",
+        "mov rdi, rbx",
+        "mov esi, 1",
+        "mov eax, {unmap}",
+        "int 0x2e",
+        "mov rdi, qword ptr [rbx]",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
         // Sets the AC flag and ends through a system call.
         ".global meridian_set_ac_start",
         "meridian_set_ac_start:",
@@ -897,6 +952,8 @@ pub mod probe {
         empty = const syscall::EMPTY,
         bad_address = const syscall::BAD_ADDRESS,
         close = const syscall::CLOSE,
+        map = const syscall::MAP,
+        unmap = const syscall::UNMAP,
     );
 
     unsafe extern "C" {
@@ -924,6 +981,7 @@ pub mod probe {
         static meridian_small_room_start: u8;
         static meridian_run_stack_start: u8;
         static meridian_set_ac_start: u8;
+        static meridian_stale_start: u8;
         static meridian_probes_end: u8;
     }
 
@@ -1028,6 +1086,15 @@ pub mod probe {
 
     pub static SET_AC: Program = Program { code: set_ac };
 
+    fn stale() -> &'static [u8] {
+        bytes(
+            &raw const meridian_stale_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static STALE: Program = Program { code: stale };
+
     fn pair() -> &'static [u8] {
         bytes(
             &raw const meridian_pair_start,
@@ -1125,6 +1192,8 @@ pub mod seen {
     pub static RING: AtomicU64 = AtomicU64::new(0);
     pub static STACK_SEGMENT: AtomicU64 = AtomicU64::new(0);
     pub static USER_ACCESS: AtomicBool = AtomicBool::new(false);
+    /// Where the last fault of a program was, as CR2 had it.
+    static ADDRESS: AtomicU64 = AtomicU64::new(u64::MAX);
     /// Each thread's exit code, and the vector of the fault that ended it.
     static EXIT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static FAULT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
@@ -1146,11 +1215,17 @@ pub mod seen {
     }
 
     pub(super) fn faulted(vector: u64, error: u64) {
+        ADDRESS.store(x86::raw::cr2(), Ordering::Release);
         let slot = super::thread::current();
         if let (Some(f), Some(e)) = (FAULT.get(slot), ERROR.get(slot)) {
             f.store(vector, Ordering::Release);
             e.store(error, Ordering::Release);
         }
+    }
+
+    /// Where the last fault that ended a program was.
+    pub fn fault_address() -> u64 {
+        ADDRESS.load(Ordering::Acquire)
     }
 
     /// The error code of the fault that ended thread `slot`, or `u64::MAX`.

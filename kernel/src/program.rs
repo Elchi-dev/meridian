@@ -20,6 +20,65 @@ pub const STACK_PAGES: u64 = 16;
 /// under the stack, which stays unmapped so a stack that runs over faults.
 pub const IMAGE_MAX: u64 = STACK_TOP - (STACK_PAGES + 1) * PAGE - CODE_AT;
 
+/// Where the memory a program asks for lies: from [`HEAP_START`] up to
+/// [`HEAP_END`], 64 GiB of room. What was given back is never given
+/// again, so a stale pointer faults instead of reaching new data.
+pub const HEAP_START: u64 = 0x10_0000_0000;
+pub const HEAP_END: u64 = 0x20_0000_0000;
+
+/// The most pages one call gives, 64 MiB.
+pub const MAP_MAX: u64 = 16384;
+
+/// How much of a program's heap region was given out so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heap {
+    next: u64,
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Heap {
+    #[must_use]
+    pub const fn new() -> Heap {
+        Heap { next: HEAP_START }
+    }
+
+    /// Where `pages` more pages go, now given out.
+    ///
+    /// # Errors
+    ///
+    /// [`abi::Error::BadSize`] for 0 pages or more than [`MAP_MAX`], and
+    /// [`abi::Error::NoRoom`] once the region is used up.
+    pub fn take(&mut self, pages: u64) -> Result<u64, abi::Error> {
+        if pages == 0 || pages > MAP_MAX {
+            return Err(abi::Error::BadSize);
+        }
+        let at = self.next;
+        let end = at + pages * PAGE;
+        if end > HEAP_END {
+            return Err(abi::Error::NoRoom);
+        }
+        self.next = end;
+        Ok(at)
+    }
+
+    /// Whether the `pages` pages from `at` lie in what was given out.
+    #[must_use]
+    pub fn holds(&self, at: u64, pages: u64) -> bool {
+        let end = pages
+            .checked_mul(PAGE)
+            .and_then(|bytes| at.checked_add(bytes));
+        at.is_multiple_of(PAGE)
+            && pages > 0
+            && at >= HEAP_START
+            && end.is_some_and(|e| e <= self.next)
+    }
+}
+
 /// Why a program does not get to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -205,6 +264,60 @@ mod tests {
             segment(0x26e0, 0x37a8, false, true),
             segment(0x6e88, 0x210, true, false),
         ]
+    }
+
+    #[test]
+    fn memory_is_given_out_one_piece_after_another() {
+        let mut heap = Heap::new();
+        assert_eq!(heap.take(1), Ok(HEAP_START));
+        assert_eq!(heap.take(3), Ok(HEAP_START + PAGE));
+        assert_eq!(heap.take(1), Ok(HEAP_START + 4 * PAGE));
+        assert_eq!(
+            heap.take(MAP_MAX),
+            Ok(HEAP_START + 5 * PAGE),
+            "as much as one call gives"
+        );
+        assert_eq!(Heap::default(), Heap::new());
+    }
+
+    #[test]
+    fn memory_is_given_only_in_sizes_there_are() {
+        let mut heap = Heap::new();
+        assert_eq!(heap.take(0), Err(abi::Error::BadSize));
+        assert_eq!(heap.take(MAP_MAX + 1), Err(abi::Error::BadSize));
+        assert_eq!(heap.take(u64::MAX), Err(abi::Error::BadSize));
+        assert_eq!(heap.take(1), Ok(HEAP_START), "refusals give nothing out");
+    }
+
+    #[test]
+    fn the_region_ends_where_it_ends() {
+        let mut heap = Heap::new();
+        let calls = (HEAP_END - HEAP_START) / (MAP_MAX * PAGE);
+        for _ in 0..calls - 1 {
+            heap.take(MAP_MAX).unwrap();
+        }
+        assert_eq!(heap.take(MAP_MAX - 1), Ok(HEAP_END - MAP_MAX * PAGE));
+        assert_eq!(heap.take(1), Ok(HEAP_END - PAGE), "the last page");
+        assert_eq!(heap.take(1), Err(abi::Error::NoRoom));
+        assert!(heap.holds(HEAP_END - PAGE, 1));
+        assert!(!heap.holds(HEAP_END - PAGE, 2));
+    }
+
+    #[test]
+    fn only_what_was_given_can_come_back() {
+        let mut heap = Heap::new();
+        assert!(!heap.holds(HEAP_START, 1), "nothing given yet");
+        heap.take(4).unwrap();
+        assert!(heap.holds(HEAP_START, 4));
+        assert!(heap.holds(HEAP_START + PAGE, 2), "a part of it");
+        assert!(heap.holds(HEAP_START + 3 * PAGE, 1), "its last page");
+        assert!(!heap.holds(HEAP_START + 3 * PAGE, 2), "past what was given");
+        assert!(!heap.holds(HEAP_START + 1, 1), "not on a page");
+        assert!(!heap.holds(HEAP_START, 0));
+        assert!(!heap.holds(HEAP_START - PAGE, 1), "below the region");
+        assert!(!heap.holds(CODE_AT, 1), "the image");
+        assert!(!heap.holds(HEAP_START, u64::MAX));
+        assert!(!heap.holds(!(PAGE - 1), 1), "the last page of all");
     }
 
     #[test]

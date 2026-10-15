@@ -28,6 +28,11 @@ pub const SEND: u64 = 6;
 pub const RECEIVE: u64 = 7;
 /// Closes handle rdi.
 pub const CLOSE: u64 = 8;
+/// Gives the program rdi fresh pages of memory, zeroed, writable and not
+/// executable, and answers where they start.
+pub const MAP: u64 = 9;
+/// Gives back the rsi pages at rdi that [`MAP`] gave.
+pub const UNMAP: u64 = 10;
 
 /// Why a call failed. Each error is an answer counting down from the top
 /// of the range, so no address, length or handle is mistaken for one.
@@ -53,11 +58,14 @@ pub enum Error {
     Closed,
     /// The message waiting is longer than the room given for it; it stays.
     TooSmall,
-    /// No room is left for another channel or handle.
+    /// No room is left for another channel or handle, or no memory for
+    /// more pages.
     NoRoom,
+    /// The count of pages is 0, or more than one call takes.
+    BadSize,
 }
 
-const ERRORS: [Error; 10] = [
+const ERRORS: [Error; 11] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -68,6 +76,7 @@ const ERRORS: [Error; 10] = [
     Error::Closed,
     Error::TooSmall,
     Error::NoRoom,
+    Error::BadSize,
 ];
 
 impl Error {
@@ -100,6 +109,7 @@ pub const EMPTY: u64 = Error::Empty.code();
 pub const CLOSED: u64 = Error::Closed.code();
 pub const TOO_SMALL: u64 = Error::TooSmall.code();
 pub const NO_ROOM: u64 = Error::NoRoom.code();
+pub const BAD_SIZE: u64 = Error::BadSize.code();
 
 /// The longest line the log takes, in bytes.
 pub const LOG_BYTES: usize = 256;
@@ -132,6 +142,11 @@ pub enum Call {
         room: u64,
     },
     Close(u64),
+    Map(u64),
+    Unmap {
+        at: u64,
+        pages: u64,
+    },
     Unknown(u64),
 }
 
@@ -156,6 +171,8 @@ impl Call {
             } => (SEND, [handle, at, len, carry]),
             Call::Receive { handle, at, room } => (RECEIVE, [handle, at, room, 0]),
             Call::Close(handle) => (CLOSE, [handle, 0, 0, 0]),
+            Call::Map(pages) => (MAP, [pages, 0, 0, 0]),
+            Call::Unmap { at, pages } => (UNMAP, [at, pages, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -187,6 +204,11 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             room: third,
         },
         CLOSE => Call::Close(first),
+        MAP => Call::Map(first),
+        UNMAP => Call::Unmap {
+            at: first,
+            pages: second,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -234,13 +256,21 @@ mod tests {
             }
         );
         assert_eq!(decode(CLOSE, [7, 2, 3, 0]), Call::Close(7));
-        assert_eq!(decode(9, [1, 2, 3, 0]), Call::Unknown(9));
+        assert_eq!(decode(MAP, [16, 2, 3, 0]), Call::Map(16));
+        assert_eq!(
+            decode(UNMAP, [0x10_0000_0000, 4, 3, 0]),
+            Call::Unmap {
+                at: 0x10_0000_0000,
+                pages: 4
+            }
+        );
+        assert_eq!(decode(11, [1, 2, 3, 0]), Call::Unknown(11));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
-                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE
+                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         );
     }
 
@@ -257,6 +287,7 @@ mod tests {
             CLOSED,
             TOO_SMALL,
             NO_ROOM,
+            BAD_SIZE,
         ];
         for (i, &e) in errors.iter().enumerate() {
             assert_eq!(
@@ -295,7 +326,12 @@ mod tests {
                 room: 128,
             },
             Call::Close(7),
-            Call::Unknown(9),
+            Call::Map(32),
+            Call::Unmap {
+                at: 0x10_0000_2000,
+                pages: 3,
+            },
+            Call::Unknown(11),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -319,6 +355,8 @@ mod tests {
             (SEND, 4),
             (RECEIVE, 3),
             (CLOSE, 1),
+            (MAP, 1),
+            (UNMAP, 2),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -341,7 +379,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > CLOSE,
+                number > UNMAP,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -366,6 +404,11 @@ mod tests {
         };
         assert_eq!(receive.encode(), (RECEIVE, [1, 2, 3, 0]));
         assert_eq!(Call::Close(4).encode(), (CLOSE, [4, 0, 0, 0]));
+        assert_eq!(Call::Map(5).encode(), (MAP, [5, 0, 0, 0]));
+        assert_eq!(
+            Call::Unmap { at: 6, pages: 7 }.encode(),
+            (UNMAP, [6, 7, 0, 0])
+        );
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 
@@ -375,11 +418,21 @@ mod tests {
             assert_eq!(answer(u64::MAX - i as u64), Err(error));
         }
         assert_eq!(answer(u64::MAX), Err(Error::NoSuchCall));
-        assert_eq!(answer(NO_ROOM), Err(Error::NoRoom));
-        assert_eq!(answer(NO_ROOM - 1), Ok(NO_ROOM - 1), "just below them");
+        assert_eq!(answer(BAD_SIZE), Err(Error::BadSize));
+        assert_eq!(answer(BAD_SIZE - 1), Ok(BAD_SIZE - 1), "just below them");
         assert_eq!(answer(0), Ok(0));
         assert_eq!(answer(0x4_0003), Ok(0x4_0003), "a handle");
         assert_eq!(answer(USER_END), Ok(USER_END));
+        assert_eq!(
+            answer(0x10_0000_0000),
+            Ok(0x10_0000_0000),
+            "where MAP puts memory"
+        );
+        assert_eq!(
+            answer(USER_END - 4096),
+            Ok(USER_END - 4096),
+            "the last page there is"
+        );
     }
 
     #[test]
@@ -395,6 +448,7 @@ mod tests {
             (Error::Closed, CLOSED),
             (Error::TooSmall, TOO_SMALL),
             (Error::NoRoom, NO_ROOM),
+            (Error::BadSize, BAD_SIZE),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

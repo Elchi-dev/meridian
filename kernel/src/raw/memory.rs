@@ -12,7 +12,9 @@ use frames::{FRAME, Frames};
 use heap::{Heap, MAX_ALIGN};
 use paging::{AddressSpace, Flags, PageSize};
 
-/// A value one holder at a time may use, waited for by spinning.
+/// A value one holder at a time may use, waited for by spinning. While it
+/// is held, interrupts are off, so the timer cannot hand the processor to
+/// a thread that would then spin for the lock its holder cannot let go.
 pub struct Spin<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
@@ -31,6 +33,8 @@ impl<T> Spin<T> {
     }
 
     pub fn lock(&self) -> Held<'_, T> {
+        let interrupts = x86::raw::interrupts_enabled();
+        x86::raw::disable_interrupts();
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -38,7 +42,10 @@ impl<T> Spin<T> {
         {
             core::hint::spin_loop();
         }
-        Held { spin: self }
+        Held {
+            spin: self,
+            interrupts,
+        }
     }
 
     /// Whether someone holds the lock. Only the test image asks.
@@ -48,9 +55,11 @@ impl<T> Spin<T> {
     }
 }
 
-/// The value of a [`Spin`] while it is held; dropping it lets go.
+/// The value of a [`Spin`] while it is held; dropping it lets go, and
+/// turns interrupts back on if they were on before.
 pub struct Held<'a, T> {
     spin: &'a Spin<T>,
+    interrupts: bool,
 }
 
 impl<T> Deref for Held<'_, T> {
@@ -72,6 +81,11 @@ impl<T> DerefMut for Held<'_, T> {
 impl<T> Drop for Held<'_, T> {
     fn drop(&mut self) {
         self.spin.locked.store(false, Ordering::Release);
+        if self.interrupts {
+            // SAFETY: interrupts were on before the lock was taken, so
+            // whoever handles them was ready then and still is.
+            unsafe { x86::raw::enable_interrupts() };
+        }
     }
 }
 

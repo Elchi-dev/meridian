@@ -656,6 +656,52 @@ extern "C" fn counting(_: u64) {
     RAN.fetch_add(1, Ordering::AcqRel);
 }
 
+static STOP: AtomicBool = AtomicBool::new(false);
+static SPINS: AtomicU64 = AtomicU64::new(0);
+
+/// Spins without ever giving way until told to stop, then counts that it
+/// ran.
+extern "C" fn spinning(_: u64) {
+    while !STOP.load(Ordering::Acquire) {
+        SPINS.fetch_add(1, Ordering::AcqRel);
+        core::hint::spin_loop();
+    }
+    RAN.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Threads that never give way: the timer has to take the processor from
+/// one of the first thread's priority, and from one of a lower priority as
+/// soon as the first thread's sleep is over.
+fn preemption_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::interrupts::ticks;
+    use raw::thread::{self, NORMAL};
+    STOP.store(false, Ordering::Release);
+    SPINS.store(0, Ordering::Release);
+    RAN.store(0, Ordering::Release);
+    let spinner = thread::spawn(spinning, 0, NORMAL);
+    thread::yield_now();
+    let spun = SPINS.load(Ordering::Acquire);
+    STOP.store(true, Ordering::Release);
+    thread::sleep(2);
+    report.check(
+        "kernel.thread.preempted",
+        spinner.is_ok() && spun > 0 && RAN.load(Ordering::Acquire) == 1,
+        "a thread that never gives way should still lose the processor at the next tick to one of its priority",
+    );
+    STOP.store(false, Ordering::Release);
+    let low = thread::spawn(spinning, 0, 1);
+    let at = ticks();
+    thread::sleep(3);
+    let slept = ticks() - at;
+    STOP.store(true, Ordering::Release);
+    thread::sleep(2);
+    report.check(
+        "kernel.thread.woken_on_time",
+        low.is_ok() && (3..=5).contains(&slept) && RAN.load(Ordering::Acquire) == 2,
+        "a sleeper should wake on time even while a lower thread keeps the processor busy",
+    );
+}
+
 /// Keeps where its stack is.
 extern "C" fn where_am_i(_: u64) {
     let here = 0u8;
@@ -671,12 +717,18 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::thread::{self, Error, NORMAL};
     thread::start();
 
+    // With interrupts off no tick takes the processor in between, and the
+    // threads started now keep them off, so the order is the one giving
+    // way makes.
     forget_the_trail();
-    let a = thread::spawn(taking_turns, 1, NORMAL);
-    let b = thread::spawn(taking_turns, 2, NORMAL);
-    for _ in 0..20 {
-        thread::yield_now();
-    }
+    let (a, b) = x86::raw::without_interrupts(|| {
+        let a = thread::spawn(taking_turns, 1, NORMAL);
+        let b = thread::spawn(taking_turns, 2, NORMAL);
+        for _ in 0..20 {
+            thread::yield_now();
+        }
+        (a, b)
+    });
     let (noted, count) = trail();
     report.check(
         "kernel.thread.turns",
@@ -690,9 +742,12 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
     );
 
     forget_the_trail();
-    let spawned =
-        [(10, 2), (20, 20), (30, 9)].map(|(me, priority)| thread::spawn(noting, me, priority));
-    thread::yield_now();
+    let spawned = x86::raw::without_interrupts(|| {
+        let spawned =
+            [(10, 2), (20, 20), (30, 9)].map(|(me, priority)| thread::spawn(noting, me, priority));
+        thread::yield_now();
+        spawned
+    });
     let (before_sleep, early) = trail();
     let ticks_then = ticks();
     thread::sleep(3);
@@ -719,6 +774,8 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
         (3..=30).contains(&slept) && thread::current() == 0 && back == at,
         "a sleeping thread should wake once the timer has ticked as often as it asked, and not before",
     );
+
+    preemption_checks(report);
 
     let slot = thread::spawn(where_am_i, 0, NORMAL);
     thread::yield_now();

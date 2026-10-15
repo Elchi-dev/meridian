@@ -150,14 +150,19 @@ take turns. Each thread has a 32 KiB stack at `kernel::thread::STACKS`
 with an unmapped page below it. A switch keeps the six registers a
 function has to keep and the flags on the thread's stack, so every thread
 has its own interrupt flag. A thread runs until it gives way, sleeps for a
-number of timer ticks or ends; an idle thread at priority 0 halts the
-processor until the next interrupt and then wakes the sleepers whose time
-has come. The status screen's uptime now sleeps a tenth of a second between
+number of timer ticks or ends, or until the next timer tick finds a thread
+of the same or a higher priority ready: the tick wakes the sleepers whose
+time has come and switches from inside the interrupt, and the thread that
+lost the processor returns from that interrupt when it gets it back. Spin
+locks keep interrupts off while they are held, so no thread loses the
+processor holding one. An idle thread at priority 0 halts the processor
+when nothing else is ready. The status screen's uptime now sleeps a tenth of a second between
 looks. The test image checks threads taking turns, the order of
-priorities, a sleep that ends on time and not a tick late, the guard below
-a thread's stack, and that all 62 threads that can be started at once
-start, end and free their numbers. Preemption and threads on the other
-cores come next.
+priorities, a sleep that ends on time and not a tick late, a thread that
+never gives way losing the processor at the next tick, a sleeper waking on
+time while a lower thread keeps the processor busy, the guard below a
+thread's stack, and that all 62 threads that can be started at once start,
+end and free their numbers. Threads on the other cores come next.
 
 ## IPC (M3)
 

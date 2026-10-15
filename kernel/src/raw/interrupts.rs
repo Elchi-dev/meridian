@@ -207,6 +207,7 @@ extern "sysv64" fn exception(frame: &mut Frame) {
     if frame.vector == u64::from(TIMER) {
         TICKS.fetch_add(1, Ordering::AcqRel);
         x86::raw::end_of_interrupt();
+        super::thread::tick();
         return;
     }
     if frame.vector == u64::from(WAKE) {

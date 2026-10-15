@@ -97,7 +97,7 @@ Loader and UEFI:
 ## M3: Processes
 
 - [x] Kernel threads on the first core: 32 priority levels (`lib/sched`), a switch when one gives way, sleeping on the timer, an idle thread
-- [ ] Preemption: the timer takes the processor from a thread whose time is up
+- [x] Preemption: at every tick the timer hands the processor to a ready thread of the same or a higher priority, and wakes the sleepers; spin locks keep interrupts off while held
 - [ ] Threads on every core, instead of the jobs the other cores take now
 - [ ] User mode and system calls
 - [ ] Objects, handles with access masks, security tokens

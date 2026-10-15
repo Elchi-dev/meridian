@@ -1,8 +1,8 @@
 //! Kernel threads on the first core: each with a stack of its own and a
-//! priority, switched when one gives way, sleeps or ends. An idle thread
-//! at the lowest priority halts the processor until the next interrupt and
-//! then wakes the sleepers whose time has come. There is no preemption
-//! yet: a thread runs until it gives way.
+//! priority, switched when one gives way, sleeps or ends, and at every
+//! timer tick, when a thread of the same or a higher priority is ready. The
+//! tick also wakes the sleepers whose time has come. An idle thread at the
+//! lowest priority halts the processor when nothing else is ready.
 
 use core::arch::naked_asm;
 
@@ -140,6 +140,15 @@ pub fn sleep(ticks: u64) {
 pub fn exit() -> ! {
     give_way(State::Ended);
     x86::raw::halt()
+}
+
+/// Called at every timer tick, from the interrupt: wakes the sleepers whose
+/// time has come, and lets the first ready thread of the same or a higher
+/// priority run in place of the running one, which goes to the end of its
+/// queue. The interrupted thread goes on later from inside this call, and
+/// returns from the interrupt to where it was.
+pub fn tick() {
+    give_way(State::Ready);
 }
 
 /// The running thread's number. Only the test image asks.

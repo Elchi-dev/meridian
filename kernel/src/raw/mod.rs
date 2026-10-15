@@ -53,6 +53,7 @@ extern "sysv64" fn kernel_start(info: *const BootInfo) -> ! {
     };
     save_screen(&info.framebuffer);
     interrupts::install();
+    x86::raw::protect(x86::Protections::detect());
     crate::run(info, regions, &mut serial)
 }
 

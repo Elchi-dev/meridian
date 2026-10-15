@@ -287,6 +287,12 @@ unsafe extern "C" fn common() {
         "mov ax, {kernel_data}",
         "mov ss, ax",
         "2:",
+        // A program can set AC, which would let the kernel touch its pages
+        // past SMAP; it goes off on every way in, and iretq puts back
+        // what was interrupted.
+        "pushfq",
+        "and dword ptr [rsp], 0xfffbffff",
+        "popfq",
         "mov rdi, rsp",
         "cld",
         "call {handler}",
@@ -453,6 +459,21 @@ pub mod expected {
         // mapped the read faults and the handler resumes at label 2.
         unsafe {
             asm!("lea {r}, [rip + 2f]", "mov [{resume}], {r}", "mov {r}, qword ptr [{a}]", "2:",
+                r = out(reg) _, a = in(reg) address, resume = in(reg) RESUME.as_ptr());
+        }
+        caught(14)
+    }
+
+    /// Calls `address`, where only a return or nothing may be, and says
+    /// whether that faulted.
+    pub fn call_at(address: u64) -> Option<Caught> {
+        expect(14);
+        // SAFETY: the page holds only a return, which comes straight back
+        // and touches no register; a fault resumes at label 3, which drops
+        // the return address the call pushed before the fetch faulted.
+        unsafe {
+            asm!("lea {r}, [rip + 3f]", "mov [{resume}], {r}", "call {a}", "jmp 2f", "3:",
+                "add rsp, 8", "2:",
                 r = out(reg) _, a = in(reg) address, resume = in(reg) RESUME.as_ptr());
         }
         caught(14)

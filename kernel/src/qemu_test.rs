@@ -146,6 +146,7 @@ pub fn run(
 
     timer_checks(&mut report, tsc_hz, info, regions);
     exception_checks(&mut report);
+    protection_checks(&mut report);
 
     // The last check is the panic screen: the panic handler takes over,
     // checks what it drew and ends the run.
@@ -258,6 +259,34 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
             "sextant should answer SCREEN with a carriage return on the serial port",
         );
     }
+}
+
+/// The kernel stays off the pages of ring 3: SMEP and SMAP are on, so
+/// running code from such a page faults, and so does reading one, except
+/// where the kernel copies from a program on purpose.
+fn protection_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::interrupts::expected;
+    x86::qemu_test::protections(&mut |name, ok, why| report.check(name, ok, why));
+    let tried = raw::memory::with_user_page(|page| {
+        let fetched = expected::call_at(page);
+        let read = expected::read_at(page);
+        let copied = x86::raw::with_user_access(|| expected::read_at(page));
+        (page, fetched, read, copied, x86::raw::user_access())
+    });
+    report.check(
+        "kernel.protect.smep",
+        tried.is_some_and(|(page, fetched, ..)| {
+            fetched.is_some_and(|c| c.error == 0x11 && c.address == page)
+        }),
+        "running code from a page of ring 3 should fault in the kernel",
+    );
+    report.check(
+        "kernel.protect.smap",
+        tried.is_some_and(|(page, _, read, copied, after)| {
+            read.is_some_and(|c| c.error == 0x1 && c.address == page) && copied.is_none() && !after
+        }),
+        "reading a page of ring 3 should fault, except inside with_user_access, which clears AC again",
+    );
 }
 
 /// The kernel's own tables are loaded, and each exception a check asks for
@@ -612,6 +641,7 @@ fn timer_checks<W: Write>(
     );
     thread_checks(report, tsc_hz.unwrap_or(0));
     user_checks(report);
+    entry_checks(report);
     ipc_checks(report);
     program_checks(report, info, regions);
     timer::stop();
@@ -1020,6 +1050,25 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     );
 }
 
+/// What a program leaves behind when it calls the kernel is put right: the
+/// null stack segment the processor loads, and the AC flag, which would
+/// switch SMAP off.
+fn entry_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::user::{probe, seen};
+    let flagged = ran(&probe::SET_AC, 0);
+    let exited = flagged.is_some_and(|s| seen::exit_of(s) == 0);
+    report.check(
+        "kernel.user.stack_segment",
+        exited && seen::STACK_SEGMENT.load(Ordering::Acquire) == u64::from(x86::tables::KERNEL_DATA),
+        "a system call from ring 3 should run on the kernel's own stack segment, not the null one the processor leaves",
+    );
+    report.check(
+        "kernel.user.access_flag",
+        exited && !seen::USER_ACCESS.load(Ordering::Acquire),
+        "a program that sets AC should not take it into the kernel, where it would switch SMAP off",
+    );
+}
+
 /// Programs in ring 3, each in an address space of its own: the first
 /// says hello through a system call from ring 3, a program's stack works,
 /// it can sleep, give way and ask for the ticks, every way it can go wrong
@@ -1036,11 +1085,6 @@ fn user_checks<W: Write>(report: &mut Report<'_, W>) {
             && seen::logged(b"Hello from ring 3, through a system call")
             && seen::RING.load(Ordering::Acquire) == 3,
         "the first program should say hello from ring 3 through a system call, and end with 0",
-    );
-    report.check(
-        "kernel.user.stack_segment",
-        seen::STACK_SEGMENT.load(Ordering::Acquire) == u64::from(x86::tables::KERNEL_DATA),
-        "a system call from ring 3 should run on the kernel's own stack segment, not the null one the processor leaves",
     );
     report.check(
         "kernel.user.stack",
@@ -1134,6 +1178,15 @@ fn user_checks<W: Write>(report: &mut Report<'_, W>) {
 static SEEN: [AtomicU64; 8] = [const { AtomicU64::new(u64::MAX) }; 8];
 static SLEPT: AtomicU64 = AtomicU64::new(0);
 
+static CR4: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// Keeps the CR4 of the core it runs on under its argument.
+extern "C" fn note_cr4(slot: u64) {
+    if let Some(cr4) = usize::try_from(slot).ok().and_then(|s| CR4.get(s)) {
+        cr4.store(x86::raw::read_cr4(), Ordering::Release);
+    }
+}
+
 /// Keeps the number of the core it runs on under its argument.
 extern "C" fn which_core(slot: u64) {
     if let Some(seen) = usize::try_from(slot).ok().and_then(|s| SEEN.get(s)) {
@@ -1180,6 +1233,21 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
                     .is_some_and(|s| s.load(Ordering::Acquire) == core as u64)
             }),
         "a thread started on another core should run on that core",
+    );
+    let bits = x86::Protections::detect().cr4_bits();
+    let asked = raw::smp::others()
+        .all(|core| thread::spawn_on(core, note_cr4, core as u64, NORMAL).is_ok());
+    thread::sleep(3);
+    report.check(
+        "kernel.protect.everywhere",
+        first.is_some()
+            && asked
+            && bits != 0
+            && raw::smp::others().all(|core| {
+                CR4.get(core)
+                    .is_some_and(|c| c.load(Ordering::Acquire) & bits == bits)
+            }),
+        "every other core should turn SMEP and SMAP on as well",
     );
     let Some(first) = first else {
         return;

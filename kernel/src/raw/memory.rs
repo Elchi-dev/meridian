@@ -203,6 +203,32 @@ pub fn release_space(root: u64) {
     }
 }
 
+/// Runs `f` with the address of a page of ring 3 that holds a return, in
+/// an address space of its own that is gone afterwards; none when no
+/// memory is left for one. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn with_user_page<R>(f: impl FnOnce(u64) -> R) -> Option<R> {
+    let root = new_space()?;
+    let at = kernel::program::CODE_AT;
+    if map_fresh_in(root, at, Flags::USER, &[0xc3]).is_err() {
+        release_space(root);
+        return None;
+    }
+    // A switch to another thread would load that thread's space.
+    let result = x86::raw::without_interrupts(|| {
+        let before = x86::raw::read_cr3();
+        // SAFETY: the new space shares the kernel's half, where this
+        // code, its stack and everything it reaches are.
+        unsafe { x86::raw::load_cr3(root) };
+        let result = f(at);
+        // SAFETY: the space that was loaded before, which maps the same.
+        unsafe { x86::raw::load_cr3(before) };
+        result
+    });
+    release_space(root);
+    Some(result)
+}
+
 /// Maps a fresh frame at `virt` in the address space at `root` with
 /// `flags`, holding `contents` and zeros after them.
 ///

@@ -358,7 +358,9 @@ fn send(handle: u64, at: u64, len: u64, carry: u64) -> Result<(), u64> {
     let mut message = [0u8; MESSAGE];
     // SAFETY: user_readable found every byte mapped for ring 3 in this
     // program's address space, which only this thread runs.
-    unsafe { core::ptr::copy_nonoverlapping(at as *const u8, message.as_mut_ptr(), count) };
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(at as *const u8, message.as_mut_ptr(), count);
+    });
     ipc::send(end, &message[..count], carried).map_err(answer)?;
     if carried.is_some() {
         with_handles(|t| t.close(handle_of(carry)?).map_err(|_| syscall::BAD_HANDLE))?;
@@ -387,7 +389,9 @@ fn receive(handle: u64, at: u64, room: u64) -> Result<(u64, u64), u64> {
     let (len, brought) = ipc::receive(end, &mut message[..room]).map_err(answer)?;
     // SAFETY: user_writable found every byte of the room mapped writable
     // for ring 3 in this program's address space, and len fits in it.
-    unsafe { core::ptr::copy_nonoverlapping(message.as_ptr(), at as *mut u8, len) };
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(message.as_ptr(), at as *mut u8, len);
+    });
     let handle = match brought {
         None => 0,
         Some(a) => with_handles(|t| Ok(t.insert(a.object, Rights(a.rights)).ok()))?.map_or_else(
@@ -423,7 +427,9 @@ fn log(at: u64, len: u64) -> u64 {
     // SAFETY: user_readable found every byte mapped for ring 3 in the
     // address space this thread runs on, and only this thread runs the
     // program, so nothing unmaps them while they are copied.
-    unsafe { core::ptr::copy_nonoverlapping(at as *const u8, text.as_mut_ptr(), text.len()) };
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(at as *const u8, text.as_mut_ptr(), text.len());
+    });
     let mut serial = x86::raw::Com1::already_open();
     let _ = serial.write_str("user: ");
     for &byte in text.iter() {
@@ -605,6 +611,16 @@ pub mod probe {
         ".global meridian_write_code_start",
         "meridian_write_code_start:",
         "mov byte ptr [rip], 0x90",
+        "ud2",
+        // Sets the AC flag and ends through a system call.
+        ".global meridian_set_ac_start",
+        "meridian_set_ac_start:",
+        "pushfq",
+        "or dword ptr [rsp], 0x40000",
+        "popfq",
+        "xor edi, edi",
+        "mov eax, {exit}",
+        "int 0x2e",
         "ud2",
         // Writes a return onto its stack and jumps there.
         ".global meridian_run_stack_start",
@@ -907,6 +923,7 @@ pub mod probe {
         static meridian_fill_start: u8;
         static meridian_small_room_start: u8;
         static meridian_run_stack_start: u8;
+        static meridian_set_ac_start: u8;
         static meridian_probes_end: u8;
     }
 
@@ -1002,6 +1019,15 @@ pub mod probe {
 
     pub static WRITE_CODE: Program = Program { code: write_code };
 
+    fn set_ac() -> &'static [u8] {
+        bytes(
+            &raw const meridian_set_ac_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static SET_AC: Program = Program { code: set_ac };
+
     fn pair() -> &'static [u8] {
         bytes(
             &raw const meridian_pair_start,
@@ -1090,14 +1116,15 @@ pub mod probe {
 /// What the test image looks at once a program ended.
 #[cfg(feature = "qemu-test")]
 pub mod seen {
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     use kernel::thread::THREADS;
 
-    /// The privilege level the last system call came from, and the stack
-    /// segment the kernel ran it on.
+    /// The privilege level the last system call came from, the stack
+    /// segment the kernel ran it on, and whether the AC flag was set then.
     pub static RING: AtomicU64 = AtomicU64::new(0);
     pub static STACK_SEGMENT: AtomicU64 = AtomicU64::new(0);
+    pub static USER_ACCESS: AtomicBool = AtomicBool::new(false);
     /// Each thread's exit code, and the vector of the fault that ended it.
     static EXIT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
     static FAULT: [AtomicU64; THREADS] = [const { AtomicU64::new(u64::MAX) }; THREADS];
@@ -1109,6 +1136,7 @@ pub mod seen {
         RING.store(cs & 3, Ordering::Release);
         let (_, ss) = x86::raw::segments();
         STACK_SEGMENT.store(u64::from(ss), Ordering::Release);
+        USER_ACCESS.store(x86::raw::user_access(), Ordering::Release);
     }
 
     pub(super) fn exited(code: u64) {
@@ -1168,6 +1196,7 @@ pub mod seen {
     pub fn forget(slot: usize) {
         RING.store(0, Ordering::Release);
         STACK_SEGMENT.store(0, Ordering::Release);
+        USER_ACCESS.store(false, Ordering::Release);
         LOG_LEN.store(0, Ordering::Release);
         if let (Some(e), Some(f)) = (EXIT.get(slot), FAULT.get(slot)) {
             e.store(u64::MAX, Ordering::Release);

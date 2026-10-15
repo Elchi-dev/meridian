@@ -22,12 +22,18 @@ is what exists today; everything after it is still to come.
   the uptime on it current.
 - **ACPI and time.** `lib/acpi` follows the root pointer the loader passed
   to the XSDT, counts the processor cores in the MADT that are enabled or
-  can be brought online, and finds the power management timer in the FADT,
-  with its port and whether it counts in 24 or 32 bits. The kernel reads
+  can be brought online, finds the power management timer in the FADT,
+  with its port and whether it counts in 24 or 32 bits, and the HPET in its
+  own table. The kernel maps the HPET's registers uncached at `HPET_PAGE`,
+  next to the APIC's, and lets its main counter run. The kernel reads
   tables only where the memory map has a region and below the end of the
   direct map, so a broken pointer cannot fault. It measures the time stamp
-  counter against the timer for 10 ms, and gives up after two million
-  reads of a timer that does not move. The uptime is the counter divided by
+  counter against the ACPI timer for 10 ms, or against the HPET where the
+  ACPI timer is missing or does not move, and gives up after two million
+  reads of a clock that does not move. The log says which clock it used.
+  The test image checks the HPET is found, mapped uncached and counting,
+  and that the counter measured against it agrees with the ACPI timer to
+  within 2%. The uptime is the counter divided by
   its rate: the time since the machine was switched on. The local APIC runs in x2APIC mode, through model specific registers
   rather than memory, where the processor has one; otherwise in xAPIC
   mode, through its page of registers, which the kernel maps uncached at

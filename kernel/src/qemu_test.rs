@@ -322,9 +322,9 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
     // A second measurement, ten times as long, should agree with the
     // first to within a tenth.
     let agrees = pm_timer.zip(tsc_hz).is_some_and(|((port, bits), hz)| {
-        let tenth = u32::try_from(acpi::PM_TIMER_HZ / 10).unwrap_or(u32::MAX);
-        let (pm_start, tsc_start) = (raw::pm_timer(port), x86::raw::tsc());
-        while kernel::clock::ticks_between(pm_start, raw::pm_timer(port), bits) < tenth {
+        let tenth = acpi::PM_TIMER_HZ / 10;
+        let (pm_start, tsc_start) = (u64::from(raw::pm_timer(port)), x86::raw::tsc());
+        while kernel::clock::ticks_between(pm_start, u64::from(raw::pm_timer(port)), bits) < tenth {
             core::hint::spin_loop();
         }
         let ms = (x86::raw::tsc() - tsc_start) / (hz / 1000);
@@ -339,6 +339,38 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
         "kernel.uptime",
         crate::up(tsc_hz).is_some_and(|s| s < 600),
         "the test machine was switched on less than ten minutes ago",
+    );
+    hpet_checks(report, machine, tsc_hz);
+}
+
+/// The HPET: found in its table, mapped uncached, counting at a rate the
+/// specification allows, and measuring the counter as the ACPI timer did.
+fn hpet_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
+    use paging::Flags;
+    let uncached = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
+    let page = raw::memory::translate(kernel::HPET_PAGE);
+    report.check(
+        "kernel.hpet.found",
+        machine.hpet == Some(0xfed0_0000)
+            && page.is_some_and(|(at, flags)| Some(at) == machine.hpet && flags.contains(uncached)),
+        "the HPET should be where QEMU puts it, as its ACPI table says, and mapped uncached",
+    );
+    let reference = raw::hpet::reference();
+    let first = raw::hpet::count();
+    x86::raw::spin(1_000_000);
+    let later = raw::hpet::count();
+    report.check(
+        "kernel.hpet.counts",
+        reference.is_some_and(|r| r.bits == 64 && (1_000_000..=1_000_000_000).contains(&r.hz))
+            && later > first,
+        "the HPET's main counter should run, 64 bits wide, at a rate the specification allows",
+    );
+    let measured = reference
+        .and_then(|r| kernel::machine::calibrate_against(r, raw::hpet::count, x86::raw::tsc));
+    report.check(
+        "kernel.tsc.hpet_agrees",
+        measured.zip(tsc_hz).is_some_and(|(hpet, acpi)| hpet.abs_diff(acpi) < acpi / 50),
+        "the counter measured against the HPET should run within 2% of its rate against the ACPI timer",
     );
 }
 

@@ -3,6 +3,7 @@
 //! what happens when the kernel has to stop.
 
 pub mod apic;
+pub mod hpet;
 pub mod interrupts;
 pub mod memory;
 pub mod smp;

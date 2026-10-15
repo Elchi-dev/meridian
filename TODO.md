@@ -86,7 +86,7 @@ Loader and UEFI:
 - [x] Virtual memory: the kernel maps and unmaps pages of its own, on the tables CR3 holds, with `invlpg` after an unmap
 - [x] The local APIC in x2APIC mode, its timer measured against the TSC, interrupts a hundred times a second and `hlt` in between
 - [x] The local APIC in xAPIC mode, for processors without x2APIC, through its page mapped uncached; the test image runs a second time on a processor without x2APIC
-- [ ] HPET
+- [x] HPET: found in its ACPI table, mapped uncached, its main counter running; the time stamp counter is measured against it where the ACPI timer is missing
 - [ ] Under QEMU without KVM the time stamp counter and the ACPI timer drift apart, so `kernel.tsc.agrees` fails there
 - [x] All cores started: INIT and startup through the local APIC, a trampoline below 640 KiB, each core on its own stack and the kernel's tables
 - [x] The other cores get task states of their own, with fault stacks

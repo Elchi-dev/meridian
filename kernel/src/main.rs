@@ -32,10 +32,15 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     let free = raw::memory::take(regions);
     let _ = kernel::hand_out(serial, free);
     let machine = machine::read(&raw::DirectMap(regions), info.rsdp);
-    let tsc_hz = machine
+    let hpet = machine.hpet.and_then(raw::hpet::start);
+    let acpi_timer = machine
         .pm_timer
         .and_then(|(port, bits)| machine::calibrate(|| raw::pm_timer(port), bits, x86::raw::tsc));
-    let _ = kernel::describe(serial, &machine, tsc_hz);
+    let tsc = machine::measure(acpi_timer, || {
+        machine::calibrate_against(hpet?, raw::hpet::count, x86::raw::tsc)
+    });
+    let tsc_hz = tsc.map(|t| t.hz);
+    let _ = kernel::describe(serial, &machine, tsc);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_cores();
     let memory = raw::DirectMap(regions);

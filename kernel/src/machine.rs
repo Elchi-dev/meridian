@@ -2,6 +2,7 @@
 //! speed of its time stamp counter.
 
 use acpi::{Memory, PM_TIMER_HZ};
+use core::fmt;
 
 use crate::clock::{ticks_between, tsc_hz};
 
@@ -12,6 +13,39 @@ pub struct Machine {
     pub cores: Option<u32>,
     /// The power management timer's port and how many bits it counts in.
     pub pm_timer: Option<(u16, u32)>,
+    /// The physical address of the HPET's registers.
+    pub hpet: Option<u64>,
+}
+
+/// A clock the time stamp counter is measured against: how often it ticks
+/// a second, and how many bits it counts in before it wraps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reference {
+    pub hz: u64,
+    pub bits: u32,
+}
+
+/// The clocks the time stamp counter can be measured against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    AcpiTimer,
+    Hpet,
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Source::AcpiTimer => "the ACPI timer",
+            Source::Hpet => "the HPET",
+        })
+    }
+}
+
+/// The time stamp counter's rate, and the clock it was measured against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Measured {
+    pub hz: u64,
+    pub against: Source,
 }
 
 /// Reads the MADT and the FADT through the root pointer at `rsdp`. What
@@ -27,7 +61,15 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
         .and_then(|at| acpi::table(memory, at, b"FACP"))
         .ok()
         .and_then(|fadt| Some((acpi::pm_timer_port(fadt)?, acpi::pm_timer_bits(fadt))));
-    Machine { cores, pm_timer }
+    let hpet = acpi::find(memory, xsdt, b"HPET")
+        .and_then(|at| acpi::table(memory, at, b"HPET"))
+        .ok()
+        .and_then(acpi::hpet_address);
+    Machine {
+        cores,
+        pm_timer,
+        hpet,
+    }
 }
 
 /// The MADT, which lists the processors, when the ACPI tables have one.
@@ -44,17 +86,43 @@ pub const PATIENCE: u32 = 2_000_000;
 /// Measures the time stamp counter against the power management timer
 /// for 10 ms, and returns its frequency. `pm` reads the timer, which
 /// counts in `bits`, and `tsc` reads the counter.
-pub fn calibrate(
-    mut pm: impl FnMut() -> u32,
-    bits: u32,
+pub fn calibrate(mut pm: impl FnMut() -> u32, bits: u32, tsc: impl FnMut() -> u64) -> Option<u64> {
+    let reference = Reference {
+        hz: PM_TIMER_HZ,
+        bits,
+    };
+    calibrate_against(reference, || u64::from(pm()), tsc)
+}
+
+/// The time stamp counter's rate measured against the ACPI timer, when that
+/// gave `acpi_timer`, or else against the HPET, which `hpet` measures.
+pub fn measure(acpi_timer: Option<u64>, hpet: impl FnOnce() -> Option<u64>) -> Option<Measured> {
+    match acpi_timer {
+        Some(hz) => Some(Measured {
+            hz,
+            against: Source::AcpiTimer,
+        }),
+        None => hpet().map(|hz| Measured {
+            hz,
+            against: Source::Hpet,
+        }),
+    }
+}
+
+/// Measures the time stamp counter against `reference` for 10 ms, and
+/// returns its frequency. `read` reads the reference clock and `tsc` the
+/// counter.
+pub fn calibrate_against(
+    reference: Reference,
+    mut read: impl FnMut() -> u64,
     mut tsc: impl FnMut() -> u64,
 ) -> Option<u64> {
-    let wanted = u32::try_from(PM_TIMER_HZ / 100).unwrap_or(u32::MAX);
-    let (pm_start, tsc_start) = (pm(), tsc());
+    let wanted = reference.hz / 100;
+    let (start, tsc_start) = (read(), tsc());
     for _ in 0..PATIENCE {
-        let elapsed = ticks_between(pm_start, pm(), bits);
+        let elapsed = ticks_between(start, read(), reference.bits);
         if elapsed >= wanted {
-            return tsc_hz(tsc().wrapping_sub(tsc_start), elapsed);
+            return tsc_hz(tsc().wrapping_sub(tsc_start), elapsed, reference.hz);
         }
         core::hint::spin_loop();
     }
@@ -142,6 +210,7 @@ mod tests {
             Machine {
                 cores: Some(4),
                 pm_timer: Some((0x608, 32)),
+                hpet: None,
             }
         );
     }
@@ -153,7 +222,8 @@ mod tests {
             read(&ram, 0x1000),
             Machine {
                 cores: Some(2),
-                pm_timer: None
+                pm_timer: None,
+                hpet: None,
             }
         );
         let ram = tables(&[fadt(0x408, 0)]);
@@ -161,11 +231,94 @@ mod tests {
             read(&ram, 0x1000),
             Machine {
                 cores: None,
-                pm_timer: Some((0x408, 24))
+                pm_timer: Some((0x408, 24)),
+                hpet: None,
             }
         );
         let ram = tables(&[fadt(0, 0)]);
         assert_eq!(read(&ram, 0x1000).pm_timer, None, "an FADT without a timer");
+    }
+
+    fn hpet(address: u64) -> Vec<u8> {
+        let mut body = vec![0u8; 20];
+        body[8..16].copy_from_slice(&address.to_le_bytes());
+        sdt(*b"HPET", &body)
+    }
+
+    #[test]
+    fn the_hpet_comes_from_its_table() {
+        let ram = tables(&[madt(2), hpet(0xfed0_0000)]);
+        assert_eq!(read(&ram, 0x1000).hpet, Some(0xfed0_0000));
+        assert_eq!(read(&ram, 0x1000).cores, Some(2));
+        let ram = tables(&[hpet(0)]);
+        assert_eq!(
+            read(&ram, 0x1000).hpet,
+            None,
+            "an HPET table without an address"
+        );
+        let mut broken = tables(&[hpet(0xfed0_0000)]);
+        let at = broken.bytes.len() - 20;
+        broken.bytes[at] ^= 1;
+        assert_eq!(
+            read(&broken, 0x1000).hpet,
+            None,
+            "a table whose checksum is wrong"
+        );
+    }
+
+    #[test]
+    fn the_acpi_timer_comes_first_and_the_hpet_after() {
+        let unasked = || -> Option<u64> { panic!("the HPET is only asked without the ACPI timer") };
+        assert_eq!(
+            measure(Some(3_000_000_000), unasked),
+            Some(Measured {
+                hz: 3_000_000_000,
+                against: Source::AcpiTimer
+            })
+        );
+        assert_eq!(
+            measure(None, || Some(3_549_000_000)),
+            Some(Measured {
+                hz: 3_549_000_000,
+                against: Source::Hpet
+            })
+        );
+        assert_eq!(measure(None, || None), None);
+    }
+
+    #[test]
+    fn the_clocks_name_themselves() {
+        assert_eq!(Source::AcpiTimer.to_string(), "the ACPI timer");
+        assert_eq!(Source::Hpet.to_string(), "the HPET");
+    }
+
+    #[test]
+    fn calibration_works_against_a_wide_fast_clock() {
+        // A 100 MHz HPET that counts in 64 bits, read every microsecond,
+        // near the top of its range, while the counter runs at 3.2 GHz.
+        let now = Cell::new(0u64);
+        let hpet = || {
+            now.set(now.get() + 1_000);
+            (u64::MAX - 50_000).wrapping_add(now.get() / 10)
+        };
+        let tsc = || now.get() * 32 / 10;
+        let reference = Reference {
+            hz: 100_000_000,
+            bits: 64,
+        };
+        let hz = calibrate_against(reference, hpet, tsc).unwrap();
+        assert!((3_199_000_000..3_201_000_000).contains(&hz), "{hz}");
+        assert!(
+            (10_000_000..10_002_000).contains(&now.get()),
+            "took {} ns",
+            now.get()
+        );
+        let still = Reference { hz: 100, bits: 64 };
+        assert_eq!(
+            calibrate_against(still, || 7, || 1),
+            None,
+            "a clock too slow to measure 10 ms with"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub use canvas::Text;
 pub mod clock;
 pub mod display;
 pub mod exceptions;
+pub mod hpet;
 pub mod machine;
 pub mod panic;
 pub mod screen;
@@ -256,17 +257,22 @@ pub fn running(out: &mut impl Write, cores: Option<u32>, others: u32) -> fmt::Re
 pub fn describe(
     out: &mut impl Write,
     machine: &machine::Machine,
-    tsc_hz: Option<u64>,
+    tsc: Option<machine::Measured>,
 ) -> fmt::Result {
     match machine.cores {
         Some(n) => writeln!(out, "Cores: {n}")?,
         None => writeln!(out, "Cores: not listed in the ACPI tables")?,
     }
-    match tsc_hz {
-        Some(hz) => writeln!(out, "Time stamp counter: {} MHz", hz / 1_000_000),
+    match tsc {
+        Some(t) => writeln!(
+            out,
+            "Time stamp counter: {} MHz, measured against {}",
+            t.hz / 1_000_000,
+            t.against
+        ),
         None => writeln!(
             out,
-            "Time stamp counter: not measured, the ACPI timer is missing"
+            "Time stamp counter: not measured, neither the ACPI timer nor the HPET could be used"
         ),
     }
 }
@@ -280,8 +286,13 @@ pub const CORE_STACKS: u64 = 0xffff_fe00_0000_0000;
 pub const CORE_STACK_PAGES: u64 = 4;
 
 /// Where the local APIC's registers are mapped, uncached, on processors
-/// without an x2APIC: one page, in a slot of the root table of its own.
+/// without an x2APIC: the first page of a slot of the root table for
+/// devices' registers.
 pub const APIC_PAGE: u64 = 0xffff_fd00_0000_0000;
+
+/// Where the HPET's registers are mapped, uncached: the page after the
+/// APIC's.
+pub const HPET_PAGE: u64 = APIC_PAGE + 0x1000;
 
 /// The top of the stack of processor `number`, or of the stack it takes
 /// faults on.
@@ -617,14 +628,35 @@ mod tests {
         let found = machine::Machine {
             cores: Some(12),
             pm_timer: Some((0x408, 24)),
+            hpet: None,
         };
-        describe(&mut out, &found, Some(2_994_999_999)).unwrap();
-        assert_eq!(out, "Cores: 12\nTime stamp counter: 2994 MHz\n");
+        let measured = |hz, against| Some(machine::Measured { hz, against });
+        describe(
+            &mut out,
+            &found,
+            measured(2_994_999_999, machine::Source::AcpiTimer),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "Cores: 12\nTime stamp counter: 2994 MHz, measured against the ACPI timer\n"
+        );
+        out.clear();
+        describe(
+            &mut out,
+            &found,
+            measured(3_549_000_000, machine::Source::Hpet),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "Cores: 12\nTime stamp counter: 3549 MHz, measured against the HPET\n"
+        );
         out.clear();
         describe(&mut out, &machine::Machine::default(), None).unwrap();
         assert_eq!(
             out,
-            "Cores: not listed in the ACPI tables\nTime stamp counter: not measured, the ACPI timer is missing\n"
+            "Cores: not listed in the ACPI tables\nTime stamp counter: not measured, neither the ACPI timer nor the HPET could be used\n"
         );
     }
 
@@ -637,10 +669,15 @@ mod tests {
             }
         }
         assert!(greet(&mut Broken, &sample()).is_err());
-        assert!(describe(&mut Broken, &machine::Machine::default(), Some(1)).is_err());
+        let measured = machine::Measured {
+            hz: 1,
+            against: machine::Source::Hpet,
+        };
+        assert!(describe(&mut Broken, &machine::Machine::default(), Some(measured)).is_err());
         let known = machine::Machine {
             cores: Some(1),
             pm_timer: None,
+            hpet: None,
         };
         assert!(describe(&mut Broken, &known, None).is_err());
     }
@@ -673,6 +710,8 @@ mod tests {
 
     #[test]
     fn the_apic_page_has_a_slot_of_its_own() {
+        assert_eq!(HPET_PAGE, APIC_PAGE + 4096);
+        assert_eq!(HPET_PAGE >> 39 & 0x1ff, 506);
         assert_eq!(APIC_PAGE % 4096, 0);
         assert_eq!(APIC_PAGE >> 39 & 0x1ff, 506);
         assert_eq!(APIC_PAGE >> 47, 0x1_ffff, "in the kernel's half");

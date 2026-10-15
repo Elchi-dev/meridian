@@ -1,16 +1,15 @@
 //! Time without interrupts: the processor's time stamp counter, measured
-//! against the ACPI power management timer, which ticks at a known rate.
+//! against a clock that ticks at a known rate, the ACPI power management
+//! timer or the HPET.
 
 use core::fmt::{self, Write};
-
-use acpi::PM_TIMER_HZ;
 
 /// Ticks of a counter `bits` wide from `earlier` to `later`, across at
 /// most one wraparound.
 #[must_use]
-pub fn ticks_between(earlier: u32, later: u32, bits: u32) -> u32 {
-    let mask = if bits >= 32 {
-        u32::MAX
+pub fn ticks_between(earlier: u64, later: u64, bits: u32) -> u64 {
+    let mask = if bits >= 64 {
+        u64::MAX
     } else {
         (1 << bits) - 1
     };
@@ -18,13 +17,13 @@ pub fn ticks_between(earlier: u32, later: u32, bits: u32) -> u32 {
 }
 
 /// The time stamp counter's frequency, from `tsc` of its ticks counted
-/// while the power management timer counted `pm` of its own.
+/// while a clock of `hz` counted `ticks` of its own.
 #[must_use]
-pub fn tsc_hz(tsc: u64, pm: u32) -> Option<u64> {
-    if pm == 0 {
+pub fn tsc_hz(tsc: u64, ticks: u64, hz: u64) -> Option<u64> {
+    if ticks == 0 {
         return None;
     }
-    u64::try_from(u128::from(tsc) * u128::from(PM_TIMER_HZ) / u128::from(pm)).ok()
+    u64::try_from(u128::from(tsc) * u128::from(hz) / u128::from(ticks)).ok()
 }
 
 /// The uptime to draw again, when the second it shows has passed.
@@ -57,6 +56,7 @@ pub fn span(seconds: u64, out: &mut impl Write) -> fmt::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acpi::PM_TIMER_HZ;
 
     #[test]
     fn ticks_wrap_around_their_width() {
@@ -77,18 +77,37 @@ mod tests {
             "bits above the width are ignored"
         );
         assert_eq!(ticks_between(5, 5, 24), 0);
+        assert_eq!(
+            ticks_between(u64::MAX - 0xf, 0x10, 64),
+            0x20,
+            "across the 64 bit wrap"
+        );
+        assert_eq!(
+            ticks_between(0xffff_fff0, 0x1_0000_0010, 64),
+            0x20,
+            "a 64 bit counter keeps its upper half"
+        );
     }
 
     #[test]
     fn the_counter_frequency_scales_by_the_timer() {
         // 10 ms of the timer while the counter ran 30 million ticks: 3 GHz.
-        assert_eq!(tsc_hz(30_000_000, 35_795), Some(3_000_037_714));
+        assert_eq!(tsc_hz(30_000_000, 35_795, PM_TIMER_HZ), Some(3_000_037_714));
         assert_eq!(
-            tsc_hz(PM_TIMER_HZ, u32::try_from(PM_TIMER_HZ).unwrap()),
+            tsc_hz(PM_TIMER_HZ, PM_TIMER_HZ, PM_TIMER_HZ),
             Some(PM_TIMER_HZ)
         );
-        assert_eq!(tsc_hz(1_000, 0), None, "no time passed");
-        assert_eq!(tsc_hz(u64::MAX, 1), None, "too fast to be true");
+        // 10 ms of a 100 MHz HPET while the counter ran 35.49 million ticks.
+        assert_eq!(
+            tsc_hz(35_490_000, 1_000_000, 100_000_000),
+            Some(3_549_000_000)
+        );
+        assert_eq!(tsc_hz(1_000, 0, PM_TIMER_HZ), None, "no time passed");
+        assert_eq!(
+            tsc_hz(u64::MAX, 1, PM_TIMER_HZ),
+            None,
+            "too fast to be true"
+        );
     }
 
     fn text(seconds: u64) -> String {

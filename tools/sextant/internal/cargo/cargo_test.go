@@ -197,8 +197,40 @@ func TestBuildingAProgram(t *testing.T) {
 		if !entryInCode {
 			t.Errorf("%s: the entry %#x is in no executable segment", part.File, f.Entry)
 		}
+		if got := meridianNotes(t, f); got[1] != "\x01\x00\x00\x00" || got[2] != part.File {
+			t.Errorf("%s: Meridian notes %v, want version 1 and its name", part.File, got)
+		}
 		f.Close()
 	}
+}
+
+// meridianNotes reads the notes whose owner is Meridian from the file's
+// note segments, by kind.
+func meridianNotes(t *testing.T, f *elf.File) map[uint32]string {
+	t.Helper()
+	notes := map[uint32]string{}
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_NOTE {
+			continue
+		}
+		data, err := io.ReadAll(p.Open())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for len(data) >= 12 {
+			owner, size, kind := binary.LittleEndian.Uint32(data), binary.LittleEndian.Uint32(data[4:]), binary.LittleEndian.Uint32(data[8:])
+			descAt := (12 + int(owner) + 3) &^ 3
+			end := (descAt + int(size) + 3) &^ 3
+			if descAt+int(size) > len(data) {
+				break
+			}
+			if string(data[12:12+owner]) == "Meridian\x00" {
+				notes[kind] = string(data[descAt : descAt+int(size)])
+			}
+			data = data[min(end, len(data)):]
+		}
+	}
+	return notes
 }
 
 func TestCargoFailuresAreReported(t *testing.T) {

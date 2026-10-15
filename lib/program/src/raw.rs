@@ -110,7 +110,8 @@ unsafe impl GlobalAlloc for Allocator {
 
 /// Makes `main`, a `fn(Handle) -> u64`, the program's main function: the
 /// kernel starts the program with a handle, and it ends with the code main
-/// returns. Also gives the program its panic handler and its heap.
+/// returns. Also gives the program its panic handler, its heap, and the
+/// notes that make its file a `.mexec` file.
 #[macro_export]
 macro_rules! main {
     ($main:path) => {
@@ -143,5 +144,31 @@ macro_rules! main {
         #[cfg(not(test))]
         #[global_allocator]
         static __PROGRAM_HEAP: $crate::Allocator = $crate::Allocator::new();
+
+        // The notes that make the program a .mexec file: the version of
+        // the format, and the program's name, which is its crate's.
+        core::arch::global_asm!(
+            ".pushsection .note.meridian, \"a\", @note",
+            ".balign 4",
+            ".long 9",
+            ".long 4",
+            ".long {version_kind}",
+            ".asciz \"Meridian\"",
+            ".balign 4",
+            ".long {version}",
+            ".long 9",
+            ".long 3f - 2f",
+            ".long {name_kind}",
+            ".asciz \"Meridian\"",
+            ".balign 4",
+            "2:",
+            concat!(".ascii \"", env!("CARGO_CRATE_NAME"), "\""),
+            "3:",
+            ".balign 4",
+            ".popsection",
+            version_kind = const $crate::abi::NOTE_VERSION,
+            version = const $crate::abi::MEXEC_VERSION,
+            name_kind = const $crate::abi::NOTE_NAME,
+        );
     };
 }

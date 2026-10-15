@@ -111,6 +111,15 @@ pub const TOO_SMALL: u64 = Error::TooSmall.code();
 pub const NO_ROOM: u64 = Error::NoRoom.code();
 pub const BAD_SIZE: u64 = Error::BadSize.code();
 
+/// What makes an ELF file a Meridian program, a `.mexec` file: a note
+/// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
+/// bytes hold [`MEXEC_VERSION`]. A note of the kind [`NOTE_NAME`] holds the
+/// program's name, in UTF-8.
+pub const NOTE_OWNER: &[u8] = b"Meridian";
+pub const NOTE_VERSION: u32 = 1;
+pub const NOTE_NAME: u32 = 2;
+pub const MEXEC_VERSION: u32 = 1;
+
 /// The longest message a channel takes, in bytes.
 pub const MESSAGE_BYTES: usize = 128;
 

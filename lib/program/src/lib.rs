@@ -11,6 +11,7 @@ extern crate alloc;
 use core::alloc::Layout;
 use core::fmt;
 
+pub use abi;
 pub use abi::Error;
 use abi::{Call, LOG_BYTES, answer};
 

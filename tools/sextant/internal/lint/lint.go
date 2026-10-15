@@ -5,6 +5,8 @@ package lint
 import (
 	"bytes"
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path"
@@ -52,16 +54,15 @@ func Check(fsys fs.FS) ([]Finding, error) {
 			}
 			return nil
 		}
-		if strings.HasPrefix(p, "third-party/") && !allowed[p] {
-			out = append(out, Finding{Path: p, Line: 1, Col: 1, Rule: "dependency",
-				Msg: "outside file without a decision record; add one in docs/adr with \"- Allows: " + p + "\""})
-		}
-		if binaryExts[strings.ToLower(path.Ext(p))] {
-			return nil
-		}
 		data, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return err
+		}
+		if strings.HasPrefix(p, "third-party/") {
+			out = append(out, recorded(p, data, allowed)...)
+		}
+		if binaryExts[strings.ToLower(path.Ext(p))] {
+			return nil
 		}
 		if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 			return nil
@@ -193,10 +194,15 @@ func isRawModule(p string) bool {
 	return false
 }
 
+// allowance is the decision record that lets something in.
+type allowance struct {
+	record, text string
+}
+
 // allowances reads every accepted decision record and collects what its
 // "- Allows:" lines name: crates, Go modules, CI actions or third-party files.
-func allowances(fsys fs.FS) (map[string]bool, error) {
-	allowed := map[string]bool{}
+func allowances(fsys fs.FS) (map[string]allowance, error) {
+	allowed := map[string]allowance{}
 	records, err := fs.Glob(fsys, "docs/adr/[0-9][0-9][0-9][0-9]-*.md")
 	if err != nil {
 		return nil, err
@@ -223,22 +229,39 @@ func allowances(fsys fs.FS) (map[string]bool, error) {
 		}
 		if accepted {
 			for _, a := range allows {
-				allowed[a] = true
+				allowed[a] = allowance{record: rec, text: string(data)}
 			}
 		}
 	}
 	return allowed, nil
 }
 
+// recorded checks that the third-party file p, holding data, has a record
+// that allows it and names its SHA-256, so a file that changes without its
+// record is caught.
+func recorded(p string, data []byte, allowed map[string]allowance) []Finding {
+	a, ok := allowed[p]
+	if !ok {
+		return []Finding{{Path: p, Line: 1, Col: 1, Rule: "dependency",
+			Msg: "outside file without a decision record; add one in docs/adr with \"- Allows: " + p + "\""}}
+	}
+	sum := sha256.Sum256(data)
+	if digest := hex.EncodeToString(sum[:]); !strings.Contains(a.text, digest) {
+		return []Finding{{Path: p, Line: 1, Col: 1, Rule: "dependency",
+			Msg: "its SHA-256 " + digest + " is not in " + a.record + ", which allows it; a file that changes needs its record changed with it"}}
+	}
+	return nil
+}
+
 // dependencies finds outside code: registry or git packages in Cargo.lock,
 // required modules in go.mod, and actions used by workflows and composite
 // actions under .github.
-func dependencies(p string, data []byte, allowed map[string]bool) []Finding {
+func dependencies(p string, data []byte, allowed map[string]allowance) []Finding {
 	base := path.Base(p)
 	lines := strings.Split(string(data), "\n")
 	var out []Finding
 	report := func(i int, name, kind string) {
-		if allowed[name] {
+		if _, ok := allowed[name]; ok {
 			return
 		}
 		out = append(out, Finding{Path: p, Line: i + 1, Col: 1, Rule: "dependency",

@@ -1,6 +1,8 @@
 package lint
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -65,8 +67,13 @@ func TestBinaryFilesAreSkipped(t *testing.T) {
 		"boot/BOOTX64.EFI":   emDash,
 		"data/blob":          "\x00" + emDash,
 		"third-party/x.ttf":  emDash,
-		"docs/adr/0001-a.md": "# a\n\n- Status: accepted\n- Allows: third-party/x.ttf\n",
+		"docs/adr/0001-a.md": "# a\n\n- Status: accepted\n- Allows: third-party/x.ttf\n\n" + digest(emDash) + "\n",
 	}))
+}
+
+func digest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 func TestNulAfterTheFirst8000BytesStillChecks(t *testing.T) {
@@ -250,9 +257,22 @@ func TestThirdPartyFilesNeedARecord(t *testing.T) {
 		"third-party/fonts/Inter.ttf":  "binary",
 		"third-party/shim/shimx64.efi": "binary",
 		"third-party/README.txt":       "where these come from\n",
-		"docs/adr/0012-fonts.md":       "- Status: accepted\n- Allows: third-party/fonts/Inter.ttf, third-party/README.txt\n",
+		"docs/adr/0012-fonts.md": "- Status: accepted\n- Allows: third-party/fonts/Inter.ttf, third-party/README.txt\n\n" +
+			"| Inter.ttf | " + digest("binary") + " |\n| README.txt | " + digest("where these come from\n") + " |\n",
 	})
 	expect(t, got, "third-party/shim/shimx64.efi:1:1: dependency: outside file without a decision record; add one in docs/adr with \"- Allows: third-party/shim/shimx64.efi\"")
+}
+
+func TestAThirdPartyFileThatChangedNeedsItsRecordChanged(t *testing.T) {
+	got := check(t, map[string]string{
+		"third-party/shim/shimx64.efi": "a newer shim",
+		"third-party/shim/mmx64.efi":   "manager",
+		"docs/adr/0013-shim.md": "- Status: accepted\n- Allows: third-party/shim/shimx64.efi, third-party/shim/mmx64.efi\n\n" +
+			"| shimx64.efi | " + digest("the shim") + " |\n| mmx64.efi | " + digest("manager") + " |\n",
+		"docs/adr/0014-other.md": "- Status: accepted\n\n" + digest("a newer shim") + "\n",
+	})
+	expect(t, got, "third-party/shim/shimx64.efi:1:1: dependency: its SHA-256 "+digest("a newer shim")+
+		" is not in docs/adr/0013-shim.md, which allows it; a file that changes needs its record changed with it")
 }
 
 func TestFindingsAreSorted(t *testing.T) {

@@ -312,3 +312,30 @@ Rust drivers in the kernel, in this order:
 Driver code from elsewhere may only be translated into Rust from MIT, BSD
 or ISC licensed sources, never GPL (ADR 0002, 0003). Vendor firmware files
 are allowed as data, each with its own record.
+
+What exists:
+
+- **PCI.** The MCFG names where configuration space lies (`lib/acpi`);
+  the kernel maps it uncached a page at a time in the slot for devices'
+  registers and walks bus 0 and every bus behind a bridge, following a
+  bridge only to a bus above its own. `lib/pci` reads each function's
+  header and base address registers. Every function found goes to the
+  log. Test machines have a PCIe root port with a random number generator
+  behind it, which the test image wants found on bus 1.
+- **AHCI.** The kernel takes the first SATA controller, turns on its
+  memory and bus master bits, switches it to AHCI, and gives every port
+  with a device a frame of its own for its command list, what the device
+  sends back and one command table. It asks each disk who it is and reads
+  sectors with READ DMA EXT, waiting for each answer; there are no
+  interrupts yet. `lib/ahci` builds the commands and reads the answers,
+  refusing sectors past what 48 bits address. The test image reads back
+  the protective MBR and the GPT headers sextant wrote, and refuses a
+  sector past the disk's end; booted from a CD, it finds the CD.
+- **Partitions and FAT32.** `lib/gpt` reads a GPT header with every check
+  UEFI asks for, and its entries once their CRC-32 matches; `lib/fat`
+  reads FAT32 volumes, long names checked against their short entry,
+  chains that may not leave the volume, loop or run past a file. The
+  kernel reads every disk's partitions and each FAT32 volume on them, and
+  the test image reads the EFI system partition's settings, the
+  firmware's file and hello through them, hello byte for byte as the
+  loader read it.

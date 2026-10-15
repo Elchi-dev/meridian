@@ -117,8 +117,13 @@ Loader and UEFI:
 
 ## M4: Storage and Strata
 
-- [ ] virtio-blk, AHCI, NVMe
-- [ ] GPT and FAT32 in the kernel
+- [x] PCI through ECAM: every function on every bus, behind bridges too (`lib/pci`)
+- [x] AHCI: SATA disks read with READ DMA EXT, by polling (`lib/ahci`)
+- [ ] virtio-blk, NVMe
+- [ ] Interrupts for disks instead of polling
+- [x] GPT in the kernel (`lib/gpt`)
+- [x] FAT32 read in the kernel (`lib/fat`)
+- [ ] FAT32 written, for the installer
 - [ ] Strata: copy-on-write, checksums, snapshots, case-preserving names, instant locate index, reserved room for transactions, deduplication and expiry
 - [ ] VFS
 - [ ] No writes to partitions Meridian did not create

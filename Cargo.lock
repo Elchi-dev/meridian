@@ -38,6 +38,9 @@ dependencies = [
 [[package]]
 name = "channel"
 version = "0.0.0"
+dependencies = [
+ "abi",
+]
 
 [[package]]
 name = "elf"

@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use abi::LOG_BYTES;
+use abi::{LOG_BYTES, MESSAGE_BYTES};
 
 use crate::{Error, Handle, channel, close, log, map, receive, send, unmap};
 
@@ -15,13 +15,14 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 14] = [
+const CHECKS: [(&str, Check); 15] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
     ("channel", round_trip),
     ("channel.empty", nothing_waits),
     ("channel.room", room_too_small),
+    ("channel.longest", longest_message),
     ("channel.carry", handle_carried),
     ("channel.closed", other_end_closed),
     ("channel.full", full),
@@ -143,6 +144,28 @@ fn room_too_small() -> Outcome {
     expect(
         receive(b, &mut room) == Ok((8, None)) && room == *b"12345678",
         "the message should wait until there is room",
+    )?;
+    expect(
+        close(a) == Ok(()) && close(b) == Ok(()),
+        "both ends should close",
+    )
+}
+
+fn longest_message() -> Outcome {
+    let (a, b) = pair()?;
+    let longest = [b'm'; MESSAGE_BYTES + 1];
+    expect(
+        send(a, &longest, None) == Err(Error::TooLong),
+        "a message longer than a channel takes should be refused",
+    )?;
+    expect(
+        send(a, &longest[..MESSAGE_BYTES], None) == Ok(()),
+        "the longest message should go",
+    )?;
+    let mut room = [0u8; MESSAGE_BYTES];
+    expect(
+        receive(b, &mut room) == Ok((MESSAGE_BYTES, None)) && room == longest[..MESSAGE_BYTES],
+        "and arrive whole",
     )?;
     expect(
         close(a) == Ok(()) && close(b) == Ok(()),

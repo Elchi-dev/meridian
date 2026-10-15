@@ -7,8 +7,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
-/// The longest message, in bytes.
-pub const MESSAGE: usize = 128;
+/// The longest message, in bytes: what programs are told.
+pub const MESSAGE: usize = abi::MESSAGE_BYTES;
 /// How many messages wait in each direction at most.
 pub const QUEUED: usize = 8;
 

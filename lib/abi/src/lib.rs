@@ -111,6 +111,9 @@ pub const TOO_SMALL: u64 = Error::TooSmall.code();
 pub const NO_ROOM: u64 = Error::NoRoom.code();
 pub const BAD_SIZE: u64 = Error::BadSize.code();
 
+/// The longest message a channel takes, in bytes.
+pub const MESSAGE_BYTES: usize = 128;
+
 /// The longest line the log takes, in bytes.
 pub const LOG_BYTES: usize = 256;
 pub const LOG_MAX: u64 = LOG_BYTES as u64;

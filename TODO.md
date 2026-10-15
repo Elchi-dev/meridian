@@ -119,7 +119,9 @@ Loader and UEFI:
 
 - [x] PCI through ECAM: every function on every bus, behind bridges too (`lib/pci`)
 - [x] AHCI: SATA disks read with READ DMA EXT, by polling (`lib/ahci`)
-- [ ] virtio-blk, NVMe
+- [x] NVMe: the first namespace read through one pair of queues, by polling (`lib/nvme`)
+- [x] AHCI ports started again after a command fails
+- [ ] virtio-blk
 - [ ] Interrupts for disks instead of polling
 - [x] GPT in the kernel (`lib/gpt`)
 - [x] FAT32 read in the kernel (`lib/fat`)

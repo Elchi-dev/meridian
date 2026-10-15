@@ -321,21 +321,37 @@ What exists:
   bridge only to a bus above its own. `lib/pci` reads each function's
   header and base address registers. Every function found goes to the
   log. Test machines have a PCIe root port with a random number generator
-  behind it, which the test image wants found on bus 1.
+  behind it, which the test image wants found on bus 1; with the root
+  port's bus set to 0, as a bridge has it before anyone numbers it, the
+  walk has to stay on bus 0.
 - **AHCI.** The kernel takes the first SATA controller, turns on its
   memory and bus master bits, switches it to AHCI, and gives every port
   with a device a frame of its own for its command list, what the device
   sends back and one command table. It asks each disk who it is and reads
   sectors with READ DMA EXT, waiting for each answer; there are no
-  interrupts yet. `lib/ahci` builds the commands and reads the answers,
-  refusing sectors past what 48 bits address. The test image reads back
-  the protective MBR and the GPT headers sextant wrote, and refuses a
-  sector past the disk's end; booted from a CD, it finds the CD.
+  interrupts yet. A port stops taking commands after one fails, so a
+  command that fails or goes unanswered starts the port again on its
+  frame, and a port that will not start any more drops its drive.
+  `lib/ahci` builds the commands and reads the answers, refusing sectors
+  past what 48 bits address. The test image reads back the protective
+  MBR and the GPT headers sextant wrote, refuses a sector past the disk's
+  end, sees the disk's answers land in the drive's frame, NOP fail and
+  the port read again, and a port left stopped with its addresses above
+  4 GiB come back; booted from a CD, it finds the CD.
+- **NVMe.** The kernel takes the first NVM Express controller, turns it
+  off and on again with admin queues of its own, asks it and its first
+  namespace who they are, and makes one pair of queues for reading, a
+  frame's worth of blocks per command, each waited for. `lib/nvme` builds
+  the commands and reads the completions and IDENTIFY's answers. Test
+  machines with a disk see the same disk once more as NVMe, read only,
+  and OVMF boots from that one; the test image reads the same sectors
+  through both and compares them, a block at a time until the queues
+  have wrapped twice, and at either end.
 - **Partitions and FAT32.** `lib/gpt` reads a GPT header with every check
   UEFI asks for, and its entries once their CRC-32 matches; `lib/fat`
   reads FAT32 volumes, long names checked against their short entry,
   chains that may not leave the volume, loop or run past a file. The
-  kernel reads every disk's partitions and each FAT32 volume on them, and
+  kernel logs every disk's partitions and each FAT32 volume on them, and
   the test image reads the EFI system partition's settings, the
   firmware's file and hello through them, hello byte for byte as the
   loader read it.

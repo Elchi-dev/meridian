@@ -78,6 +78,10 @@ name = "qr"
 version = "0.0.0"
 
 [[package]]
+name = "sched"
+version = "0.0.0"
+
+[[package]]
 name = "uefi"
 version = "0.0.0"
 

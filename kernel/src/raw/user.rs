@@ -233,6 +233,8 @@ extern "C" fn run(start: u64) {
         argument,
         process,
     } = *unsafe { Box::from_raw(start as *mut Start) };
+    #[cfg(feature = "qemu-test")]
+    seen::starting(thread::current());
     if let Some(slot) = PROCESSES.lock().get_mut(thread::current()) {
         *slot = Some(process);
     }
@@ -1415,7 +1417,10 @@ pub mod seen {
             .map_or(0, |c| c.load(Ordering::Acquire))
     }
 
-    pub fn forget(slot: usize) {
+    /// Forgets what the programs before left: the calls they made and the
+    /// last line they logged. A check does this before it starts the
+    /// program it looks at, which may run at once on another tick.
+    pub fn forget() {
         for count in &CALLS {
             count.store(0, Ordering::Release);
         }
@@ -1423,6 +1428,11 @@ pub mod seen {
         STACK_SEGMENT.store(0, Ordering::Release);
         USER_ACCESS.store(false, Ordering::Release);
         LOG_LEN.store(0, Ordering::Release);
+    }
+
+    /// Forgets how the program before ended on thread `slot`, as the
+    /// thread enters a new one.
+    pub(super) fn starting(slot: usize) {
         if let (Some(e), Some(f)) = (EXIT.get(slot), FAULT.get(slot)) {
             e.store(u64::MAX, Ordering::Release);
             f.store(u64::MAX, Ordering::Release);

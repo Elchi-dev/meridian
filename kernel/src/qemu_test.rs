@@ -996,9 +996,8 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
 /// Runs `program` in ring 3 on the first core with `argument`, waits up
 /// to a second for it to end, and returns its thread's number if it did.
 fn ran(program: &'static raw::user::Program, argument: u64) -> Option<usize> {
+    raw::user::seen::forget();
     let slot = raw::user::start(0, program, argument).ok()?;
-    // It runs on this core once the first thread sleeps, so not before.
-    raw::user::seen::forget(slot);
     (0..100)
         .any(|_| {
             raw::thread::sleep(1);
@@ -1176,10 +1175,8 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
             .map(frames::Frames::free_frames)
     };
     let before = free();
+    seen::forget();
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
-    if let Some(slot) = started {
-        seen::forget(slot);
-    }
     report.check(
         "kernel.programs.hello",
         ended_with(started, 0) && seen::logged(b"Hello from ring 3, in Rust"),
@@ -1311,8 +1308,7 @@ fn low_memory_checks<W: Write>(report: &mut Report<'_, W>, file: Option<&[u8]>) 
             _ => tidy = false,
         }
     }
-    if let Some(slot) = started {
-        raw::user::seen::forget(slot);
+    if started.is_some() {
         let _ = ended_with(started, 0);
     }
     while held != 0 {

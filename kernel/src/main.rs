@@ -129,7 +129,7 @@ fn finish(
             shown = now;
         }
         if timer.is_some() {
-            raw::thread::sleep(raw::timer::HZ / 10);
+            raw::thread::sleep(kernel::clock::between_looks(raw::timer::HZ));
         } else {
             core::hint::spin_loop();
         }

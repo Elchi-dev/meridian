@@ -13,6 +13,13 @@ pub const COUNTER: u64 = 0x0f0;
 /// The configuration bit that lets the main counter run.
 pub const ENABLE: u64 = 1;
 
+/// Where the registers of an HPET at physical `address` are reached once its
+/// page is mapped at `page`: the HPET's place in its page counts too.
+#[must_use]
+pub fn registers_at(page: u64, address: u64) -> u64 {
+    page + (address & 0xfff)
+}
+
 /// The longest period between two ticks the specification allows: 100 ns,
 /// in femtoseconds.
 const LONGEST_PERIOD: u64 = 100_000_000;
@@ -85,6 +92,19 @@ mod tests {
         );
         assert_eq!(counter(0), None);
         assert_eq!(counter(u64::MAX), None);
+    }
+
+    #[test]
+    fn an_hpet_inside_its_page_is_found_there() {
+        assert_eq!(
+            registers_at(0xffff_fd00_0000_1000, 0xfed0_0000),
+            0xffff_fd00_0000_1000
+        );
+        assert_eq!(
+            registers_at(0xffff_fd00_0000_1000, 0xfed0_0400),
+            0xffff_fd00_0000_1400
+        );
+        assert_eq!(registers_at(0x1000, 0xfff), 0x1fff);
     }
 
     #[test]

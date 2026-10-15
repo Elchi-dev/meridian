@@ -26,6 +26,14 @@ pub fn tsc_hz(tsc: u64, ticks: u64, hz: u64) -> Option<u64> {
     u64::try_from(u128::from(tsc) * u128::from(hz) / u128::from(ticks)).ok()
 }
 
+/// How many ticks of a timer that ticks `hz` times a second the status
+/// screen sleeps between looks at the uptime: a tenth of a second, so a new
+/// second shows at most that late, and at least one tick.
+#[must_use]
+pub fn between_looks(hz: u64) -> u64 {
+    (hz / 10).max(1)
+}
+
 /// The uptime to draw again, when the second it shows has passed.
 #[must_use]
 pub fn to_redraw(shown: u64, now: u64) -> Option<u64> {
@@ -131,6 +139,14 @@ mod tests {
             text(u64::MAX),
             format!("{} d {} h", u64::MAX / 86_400, u64::MAX / 3_600 % 24)
         );
+    }
+
+    #[test]
+    fn the_uptime_is_looked_at_ten_times_a_second() {
+        assert_eq!(between_looks(100), 10);
+        assert_eq!(between_looks(1000), 100);
+        assert_eq!(between_looks(10), 1);
+        assert_eq!(between_looks(5), 1, "never no sleep at all");
     }
 
     #[test]

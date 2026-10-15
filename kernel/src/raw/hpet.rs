@@ -18,7 +18,10 @@ static REGISTERS: AtomicU64 = AtomicU64::new(0);
 pub fn start(address: u64) -> Option<Reference> {
     let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
     super::memory::map_page(kernel::HPET_PAGE, address & !0xfff, flags).ok()?;
-    REGISTERS.store(kernel::HPET_PAGE + (address & 0xfff), Ordering::Release);
+    REGISTERS.store(
+        hpet::registers_at(kernel::HPET_PAGE, address),
+        Ordering::Release,
+    );
     let reference = hpet::counter(read(hpet::CAPABILITIES))?;
     write(
         hpet::CONFIGURATION,

@@ -64,7 +64,7 @@ Loader and UEFI:
 - [x] Shim and MokManager under `third-party/shim/`, `sextant image` writing them, and a QEMU test on OVMF with Microsoft's keys that enrolls the key through MokManager
 - [x] `.sbat` section in `meridian.efi`
 - [x] Authenticode signer in sextant; development keys per machine
-- [ ] The release key as a CI secret, which Samuel adds
+- [x] The release key as a CI secret, which Samuel added (`keys/release.cer`)
 - [x] Secure Boot test in QEMU with OVMF's Secure Boot build and enrolled keys (Ubuntu's snakeoil test key)
 - [x] Enroll Meridian's own development key into a test variable store, so the Secure Boot test needs no distribution's template
 - [x] Memory regions for the handover (`lib/bootinfo`)
@@ -92,7 +92,7 @@ Loader and UEFI:
 - [x] The other cores get task states of their own, with fault stacks
 - [x] The other cores' stacks are mapped on their own with an unmapped page below, so one that runs over faults
 - [x] The other cores get work to do: a mailbox each, woken by an interrupt, asleep in between
-- [ ] ACPI tables parsed
+- [x] ACPI tables parsed: the root pointer, the XSDT, the MADT, the FADT's power management timer and the HPET table (`lib/acpi`), no AML yet
 
 ## M3: Processes
 
@@ -107,7 +107,11 @@ Loader and UEFI:
 - [ ] `.mexec` loader (ELF with Meridian note sections)
 - [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)
 - [x] Channels that carry handles: a handle handed over leaves its sender, needs the right to, and one nobody takes is closed with its channel
-- [ ] KASLR
+- [x] KASLR: the kernel at a random 2 MiB boundary of the top 2 GiB, from RDRAND
+- [x] SMEP and SMAP on every core; the kernel touches a program's pages only inside `with_user_access`, and every way in from ring 3 clears AC and puts the kernel's stack segment back
+- [x] Programs from files: the loader reads `meridian/programs` (`lib/bootinfo` version 3), the kernel maps each page of the ELF file with the rights its segments give it (`kernel::program`)
+- [x] Memory for programs: MAP and UNMAP, from a heap region that hands each address out once
+- [x] `lib/program`, the runtime for programs in Rust: the calls as functions, `main!`, a heap, `log!`; `hello` built by sextant and checking every call from ring 3
 
 ## M4: Storage and Strata
 

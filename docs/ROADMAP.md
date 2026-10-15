@@ -11,8 +11,8 @@ and never build something that cannot be tested yet.
 | --- | --- | --- |
 | M0 | Foundation | in progress |
 | M1 | Boot | in progress |
-| M2 | Memory and CPUs | planned |
-| M3 | Processes | planned |
+| M2 | Memory and CPUs | done |
+| M3 | Processes | in progress |
 | M4 | Storage and Strata | planned |
 | M5 | Userland | planned |
 | M6 | Windows programs, step 1: the console | planned |

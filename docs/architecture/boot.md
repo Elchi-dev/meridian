@@ -21,8 +21,14 @@
   twice.
 - **Loading the kernel.** It reads `\meridian\kernel` from the partition
   it was started from, checks the ELF file (`lib/elf`), makes sure the entry
-  point lies in code, and loads the segments into kernel memory, applying
-  relocations.
+  point lies in code, picks a random 2 MiB boundary in the top 2 GiB for it
+  from RDRAND, or the time stamp counter without it, and loads the segments
+  there into kernel memory, applying relocations. The test image prepares
+  the kernel three times and wants another place at least once.
+- **Programs.** It reads every file in `\meridian\programs` into kernel
+  memory, leaving out folders and hidden files such as the ones macOS
+  leaves on FAT disks, and lists up to 16 of them in the boot information
+  for the kernel to start.
 - **The kernel's address space** (`handover.rs`, built with `lib/paging`):
   - each kernel segment with the rights it asks for, never writable and
     executable at once

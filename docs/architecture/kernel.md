@@ -122,7 +122,8 @@ the time a core that never starts gets.
 - the kernel heap. Exists: 4 MiB of frames on a 2 MiB boundary, in blocks of 16 bytes kept in the same kind of bitmap (`lib/heap`), behind Rust's global allocator, so `Box`, `Vec` and `String` work in the kernel. Both sit behind spin locks, ready for more cores
 - the test image hands out frames and checks they are free memory above 1 MiB, each once, and keep what is written to them; takes a 2 MiB run; gives all back; uses the heap and sees every byte come back
 - page tables with NX on everything that is not code, W^X everywhere, and guard pages below every stack
-- SMEP and SMAP on from the start; KASLR from M3
+- SMEP and SMAP on every core where the processor has them, so the kernel neither runs a program's code nor touches its pages by mistake; the test image calls into a page of ring 3 and reads one, and checks both fault
+- KASLR: the loader starts the kernel at one of about a thousand 2 MiB boundaries in the top 2 GiB, picked by RDRAND
 
 ## Ring 3 (M3)
 
@@ -130,30 +131,66 @@ What exists: programs run in ring 3. The GDT has code and data segments
 for ring 3, user data right before user code as `sysret` will want it.
 Every program gets an address space of its own: a level 4 table whose
 kernel half is a copy of the kernel's, and whose lower half holds the
-program's machine code at 4 MiB, read only, and a page of stack below
-8 MiB that nothing runs from. Every slot of the kernel's half has a table
-from boot on, so whatever the kernel maps later shows in every address
-space. A thread of its own enters the program with `iretq`, its argument
-in rdi and every other general register cleared, and every switch loads
-the next thread's address space. On every switch
-the task state gets the next thread's kernel stack, so an interrupt or
-system call from ring 3 lands on the right one. System calls go through
-`int 0x2e`, a gate ring 3 may use, a nod to Windows NT's first system
-call gate: the number in rax, arguments in rdi and rsi, the answer back
-in rax, errors from the top of the range. There are five so far: exit,
-log a line, give way, sleep and ask for the ticks. The log only reads
-bytes that lie in the lower half and are mapped for ring 3, at most 256
-of them. A fault in ring 3 ends only the program; the kernel writes the
+program's image from 4 MiB on and 64 KiB of stack below 8 MiB, with an
+unmapped page under it. Every slot of the kernel's half has a table from
+boot on, so whatever the kernel maps later shows in every address space.
+A thread of its own enters the program with `iretq`, its argument in rdi
+and every other general register cleared, and every switch loads the
+next thread's address space. On every switch the task state gets the
+next thread's kernel stack, so an interrupt or system call from ring 3
+lands on the right one. Coming in from ring 3 the kernel puts its own
+stack segment back, since the processor leaves a null one that the next
+thread on the core would keep, and clears the AC flag, which a program
+can set to switch SMAP off for the kernel.
+
+System calls go through `int 0x2e`, a gate ring 3 may use, a nod to
+Windows NT's first system call gate: the number in rax, arguments in rdi,
+rsi, rdx and r10, the answer back in rax, errors counting down from the
+top of the range. `lib/abi` holds the numbers, the errors and how a call
+is written into registers, for the kernel and for programs alike. There
+are eleven: exit, log a line, give way, sleep, ask for the ticks, the
+four of channels (see IPC), and map and unmap memory. The kernel only
+reads and writes what lies in the lower half and is mapped for ring 3,
+and only inside `with_user_access`, the one place it lets itself past
+SMAP. A fault in ring 3 ends only the program; the kernel writes the
 exception, its error code and where it happened to its log, and goes on.
-When a program ends, its whole address space goes back to the frame
-allocator, every table and page of its lower half once. The
-kernel's first program says hello from ring 3 through a system call. The
-test image runs probes that read the kernel's memory, halt, hand the log
-a kernel address, an unmapped one or a line too long, ask for a call that
-does not exist, write over their code, run their stack, sleep, give way,
-use their stack, and keep the processor for 20 ticks without giving way.
-It runs three programs at once, two on one core, that each keep their own
-number at the same address, and checks a program leaves no frame behind.
+When a program ends, its handles are closed and its whole address space
+goes back to the frame allocator, every table and page of its lower half
+once.
+
+**Programs from files.** The loader reads every file in
+`\meridian\programs` into kernel memory and lists them in the boot
+information, and the kernel starts each one. `kernel::program` decides
+where each page of the ELF file goes and with which rights: read only,
+writable or executable as its segments say, never writable and executable
+at once, refused when the image does not fit above the stack or its entry
+is not in its code. A program that cannot get the memory it needs does
+not start, and gives back every frame it took.
+
+**Memory for programs.** MAP gives a program fresh pages, zeroed,
+writable and never executable, from 64 GiB on; UNMAP gives them back, and
+a page given back faults at once. Each address is handed out once, so a
+stale pointer faults instead of reaching new data.
+
+**The runtime.** `lib/program` is what a program written in Rust starts
+from: each system call as a function that answers with a `Result`, a
+`main!` that gives a program its start, its panic handler and a heap of
+1 MiB from MAP behind `alloc`, and `log!`, which formats a line without
+the heap. Its first program is `hello`, an example of the crate, which
+sextant builds into `meridian/programs`; test images carry it twice, as
+`hello` and `hello_again`.
+
+The test image runs probes in machine code that read the kernel's
+memory, halt, hand the log a kernel address, an unmapped one or a line
+too long, ask for a call that does not exist, write over their code, run
+their stack, sleep, give way, use their stack, keep the processor for 20
+ticks without giving way, set AC before a call, and read a page right
+after they gave it back. It runs three programs at once, two on one core,
+that each keep their own number at the same address, and checks a program
+leaves no frame behind. Then it runs hello from its file, whose test build
+checks every call through the runtime before it greets, makes sure hello
+reached the kernel with every call, and starts it with no free frame at
+all, then one more after each refusal, until it starts.
 
 ## Objects and handles (M3)
 

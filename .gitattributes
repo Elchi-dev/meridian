@@ -1,5 +1,6 @@
 * text=auto eol=lf
 *.efi binary
+*.cer binary
 *.ttf binary
 *.otf binary
 *.png binary

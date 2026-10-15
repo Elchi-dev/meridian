@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,5 +95,30 @@ func TestKeyNewRefusesWhatItCannotDo(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Errorf("nothing should be written when a file is in the way, found %d files", len(entries))
+	}
+}
+
+// The release certificate in the repository is the one SECURITY.md tells
+// people to check, so it cannot be swapped without the document noticing.
+func TestTheReleaseCertificateIsTheOneSecurityNames(t *testing.T) {
+	root := realRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "keys", "release.cer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.Subject.CommonName != "Meridian release key" || len(cert.ExtKeyUsage) != 1 ||
+		cert.ExtKeyUsage[0] != x509.ExtKeyUsageCodeSigning {
+		t.Errorf("the release certificate is for %q, %v", cert.Subject.CommonName, cert.ExtKeyUsage)
+	}
+	security, err := os.ReadFile(filepath.Join(root, "SECURITY.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := fmt.Sprintf("%x", sha256.Sum256(raw)); !strings.Contains(string(security), "`"+sum+"`") {
+		t.Errorf("SECURITY.md should name the release certificate's SHA-256 %s", sum)
 	}
 }

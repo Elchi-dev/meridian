@@ -40,6 +40,7 @@ pub enum Error {
 
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
+const PT_NOTE: u32 = 4;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
@@ -160,6 +161,21 @@ impl<'a> Elf<'a> {
             .0
             .iter()
             .map(|h| (u32::from_le_bytes([h[0], h[1], h[2], h[3]]), h.as_slice()))
+    }
+
+    /// The notes in the file's `PT_NOTE` segments, in order. Those of a
+    /// segment end where they stop making sense or would run past it.
+    pub fn notes(&self) -> impl Iterator<Item = Note<'a>> + '_ {
+        self.program_headers()
+            .filter(|(kind, _)| *kind == PT_NOTE)
+            .filter_map(|(_, h)| {
+                let offset = usize::try_from(u64_at(h, 8)?).ok()?;
+                let size = usize::try_from(u64_at(h, 32)?).ok()?;
+                let align = if u64_at(h, 48)? == 8 { 8 } else { 4 };
+                let bytes = self.data.get(offset..offset.checked_add(size)?)?;
+                Some(Notes { bytes, align })
+            })
+            .flatten()
     }
 
     /// The loadable segments, checked against the file.
@@ -309,6 +325,45 @@ impl<'a> Elf<'a> {
     }
 }
 
+/// A note from a `PT_NOTE` segment: who wrote it, of which of its kinds
+/// it is, and what it says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Note<'a> {
+    /// The owner's name, without the zero byte that ends it.
+    pub owner: &'a [u8],
+    pub kind: u32,
+    pub desc: &'a [u8],
+}
+
+/// The notes of one segment, each padded to `align` bytes.
+struct Notes<'a> {
+    bytes: &'a [u8],
+    align: usize,
+}
+
+impl<'a> Iterator for Notes<'a> {
+    type Item = Note<'a>;
+
+    /// The next note, or none once the bytes end or stop making sense.
+    fn next(&mut self) -> Option<Note<'a>> {
+        let owner_len = u32_at(self.bytes, 0)? as usize;
+        let desc_len = u32_at(self.bytes, 4)? as usize;
+        let kind = u32_at(self.bytes, 8)?;
+        let owner_end = owner_len.checked_add(12)?;
+        let desc_at = owner_end.checked_next_multiple_of(self.align)?;
+        let desc_end = desc_at.checked_add(desc_len)?;
+        let owner = self.bytes.get(12..owner_end)?;
+        let desc = self.bytes.get(desc_at..desc_end)?;
+        let next = desc_end.checked_next_multiple_of(self.align)?;
+        self.bytes = self.bytes.get(next..).unwrap_or_default();
+        Some(Note {
+            owner: owner.strip_suffix(&[0]).unwrap_or(owner),
+            kind,
+            desc,
+        })
+    }
+}
+
 /// Up to [`SegmentList::CAPACITY`] segments without allocating. Executables
 /// Meridian builds have three or four.
 #[derive(Clone, Copy, Debug, Default)]
@@ -424,6 +479,145 @@ mod tests {
                 load_seg(6, 0x3000, b"data", 0x2000),
             ],
         )
+    }
+
+    /// Writes one note as ELF lays it out, padded to `align`.
+    fn note(owner: &[u8], kind: u32, desc: &[u8], align: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(owner.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(owner);
+        out.resize((12 + owner.len()).next_multiple_of(align), 0);
+        out.extend_from_slice(desc);
+        out.resize(out.len().next_multiple_of(align), 0);
+        out
+    }
+
+    fn note_seg(bytes: Vec<u8>) -> Seg {
+        Seg {
+            kind: PT_NOTE,
+            flags: 4,
+            vaddr: 0x8000,
+            mem_size: bytes.len() as u64,
+            file: bytes,
+        }
+    }
+
+    #[test]
+    fn notes_are_read_in_order() {
+        let mut notes = note(b"Meridian\0", 1, &1u32.to_le_bytes(), 4);
+        notes.extend(note(b"Meridian\0", 2, b"hello\0", 4));
+        notes.extend(note(b"GNU\0", 3, &[0xab; 20], 4));
+        let file = build(
+            ET_DYN,
+            0x1000,
+            &[load_seg(5, 0x1000, b"code", 4), note_seg(notes)],
+        );
+        let elf = Elf::parse(&file).unwrap();
+        let read: Vec<Note> = elf.notes().collect();
+        assert_eq!(read.len(), 3);
+        assert_eq!(
+            read[0],
+            Note {
+                owner: b"Meridian",
+                kind: 1,
+                desc: &[1, 0, 0, 0]
+            }
+        );
+        assert_eq!(
+            (read[1].owner, read[1].kind, read[1].desc),
+            (&b"Meridian"[..], 2, &b"hello\0"[..])
+        );
+        assert_eq!(
+            (read[2].owner, read[2].kind, read[2].desc.len()),
+            (&b"GNU"[..], 3, 20)
+        );
+        assert_eq!(
+            Elf::parse(&simple()).unwrap().notes().count(),
+            0,
+            "no note segment, no notes"
+        );
+    }
+
+    #[test]
+    fn notes_padded_to_8_bytes_are_read_as_well() {
+        let mut notes = note(b"GNU\0", 5, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 8);
+        notes.extend(note(b"Meridian\0", 1, &[7], 8));
+        let mut file = build(
+            ET_DYN,
+            0x1000,
+            &[load_seg(5, 0x1000, b"code", 4), note_seg(notes)],
+        );
+        let header = 64 + 56;
+        file[header + 48..header + 56].copy_from_slice(&8u64.to_le_bytes());
+        let read: Vec<Note> = Elf::parse(&file).unwrap().notes().collect();
+        assert_eq!(read.len(), 2);
+        assert_eq!(
+            read[1],
+            Note {
+                owner: b"Meridian",
+                kind: 1,
+                desc: &[7]
+            }
+        );
+    }
+
+    #[test]
+    fn broken_notes_end_the_list_and_nothing_else() {
+        let good = note(b"Meridian\0", 1, &[1, 0, 0, 0], 4);
+        let mut long = note(b"Meridian\0", 2, &[9; 8], 4);
+        long[4..8].copy_from_slice(&64u32.to_le_bytes());
+        let mut notes = good.clone();
+        notes.extend(long);
+        let file = build(
+            ET_DYN,
+            0x1000,
+            &[load_seg(5, 0x1000, b"code", 4), note_seg(notes)],
+        );
+        let elf = Elf::parse(&file).unwrap();
+        assert_eq!(
+            elf.notes().count(),
+            1,
+            "the one running past its segment is not read"
+        );
+        let mut huge = good.clone();
+        huge[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let file = build(
+            ET_DYN,
+            0x1000,
+            &[load_seg(5, 0x1000, b"code", 4), note_seg(huge)],
+        );
+        assert_eq!(Elf::parse(&file).unwrap().notes().count(), 0);
+        let file = build(
+            ET_DYN,
+            0x1000,
+            &[
+                load_seg(5, 0x1000, b"code", 4),
+                note_seg(good[..11].to_vec()),
+            ],
+        );
+        assert_eq!(
+            Elf::parse(&file).unwrap().notes().count(),
+            0,
+            "cut inside the header"
+        );
+        let mut outside = build(
+            ET_DYN,
+            0x1000,
+            &[load_seg(5, 0x1000, b"code", 4), note_seg(good.clone())],
+        );
+        let header = 64 + 56;
+        outside[header + 32..header + 40].copy_from_slice(&0x10_0000u64.to_le_bytes());
+        assert_eq!(
+            Elf::parse(&outside).unwrap().notes().count(),
+            0,
+            "a segment past the file"
+        );
+        assert!(
+            Elf::parse(&outside).unwrap().segments().is_ok(),
+            "which stops nothing else"
+        );
     }
 
     #[test]

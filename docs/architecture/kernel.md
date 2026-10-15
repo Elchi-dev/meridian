@@ -160,7 +160,9 @@ once.
 
 **Programs from files.** The loader reads every file in
 `\meridian\programs` into kernel memory and lists them in the boot
-information, and the kernel starts each one. `kernel::program` decides
+information, and the kernel starts each one that is a `.mexec` file: an
+ELF file whose Meridian note says so ([the format](../formats/mexec.md)).
+It keeps the name the file's other note gives, for its log. `kernel::program` decides
 where each page of the ELF file goes and with which rights: read only,
 writable or executable as its segments say, never writable and executable
 at once, refused when the image does not fit above the stack or its entry

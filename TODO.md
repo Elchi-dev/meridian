@@ -104,7 +104,7 @@ Loader and UEFI:
 - [x] An address space of its own for every program, given back whole when it ends; the kernel's half shared by all
 - [x] Handles with access masks, in a table per program, with generations so a closed handle reaches nothing (`lib/handles`)
 - [ ] Security tokens
-- [ ] `.mexec` loader (ELF with Meridian note sections)
+- [x] `.mexec` loader: ELF files carrying Meridian's version note, named in their name note ([format](docs/formats/mexec.md)); `main!` writes both
 - [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)
 - [x] Channels that carry handles: a handle handed over leaves its sender, needs the right to, and one nobody takes is closed with its channel
 - [x] KASLR: the kernel at a random 2 MiB boundary of the top 2 GiB, from RDRAND

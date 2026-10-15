@@ -47,7 +47,6 @@ impl<const N: usize> RunQueue<N> {
     /// A queue with nobody waiting.
     #[must_use]
     pub const fn new() -> Self {
-        const { assert!(N < NONE as usize, "threads are numbered in 16 bits") };
         RunQueue {
             next: [NONE; N],
             level: [NONE; N],
@@ -158,11 +157,13 @@ impl<const N: usize> RunQueue<N> {
         self.len -= 1;
     }
 
+    /// The thread's number as the queues keep it: below the capacity, in
+    /// 16 bits, and not the one that marks an end.
     fn number(thread: usize) -> Result<u16, Error> {
-        if thread >= N {
-            return Err(Error::NoSuchThread(thread));
-        }
-        u16::try_from(thread).map_err(|_| Error::NoSuchThread(thread))
+        u16::try_from(thread)
+            .ok()
+            .filter(|&n| thread < N && n != NONE)
+            .ok_or(Error::NoSuchThread(thread))
     }
 }
 
@@ -190,6 +191,8 @@ mod tests {
         let order: Vec<_> = std::iter::from_fn(|| q.pop()).collect();
         assert_eq!(order, [(5, 31), (1, 10), (4, 10), (0, 5), (2, 5), (3, 0)]);
         assert!(q.is_empty());
+        q.push(3, 0).unwrap();
+        assert!(!q.is_empty(), "one thread is enough to wait");
     }
 
     #[test]
@@ -239,6 +242,21 @@ mod tests {
             Err(Error::NotWaiting(1)),
             "a thread that ran waits no more"
         );
+    }
+
+    #[test]
+    fn a_queue_as_wide_as_its_numbers_keeps_the_end_free() {
+        let mut q = Box::new(RunQueue::<{ NONE as usize + 1 }>::new());
+        assert_eq!(
+            q.push(usize::from(NONE), 1),
+            Err(Error::NoSuchThread(usize::from(NONE)))
+        );
+        assert_eq!(q.push(usize::from(NONE) - 1, 1), Ok(()));
+        assert_eq!(
+            q.push(usize::from(NONE) + 1, 1),
+            Err(Error::NoSuchThread(usize::from(NONE) + 1))
+        );
+        assert_eq!(q.pop(), Some((usize::from(NONE) - 1, 1)));
     }
 
     #[test]

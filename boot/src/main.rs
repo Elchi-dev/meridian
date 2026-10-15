@@ -770,34 +770,32 @@ fn read_programs(system: &System) -> Modules {
     let Ok(mut folder) = root.open(PROGRAMS_PATH) else {
         return Modules::default();
     };
-    let Ok(mut list) = system.allocate_pages(KERNEL_TYPE, 1) else {
+    let Ok(mut page) = system.allocate_pages(KERNEL_TYPE, 1) else {
         return Modules::default();
     };
-    let mut count = 0;
+    let mut list = programs::List::new(page.bytes());
     let mut buf: EntryBuffer = [0; size_of::<EntryBuffer>()];
-    while count < Modules::MAX {
+    while !list.full() {
         let Ok(Some(entry)) = folder.next_entry(&mut buf) else {
             break;
         };
         let Some(name) = programs::name_of(entry.name(), entry.info.directory) else {
             continue;
         };
-        let Some(module) = read_program(system, &root, name.as_str(), entry.info.size) else {
-            continue;
-        };
-        let at = count * size_of::<Module>();
-        list.bytes()[at..at + size_of::<Module>()].copy_from_slice(&module.to_bytes());
-        count += 1;
+        if let Some(module) = read_program(system, &root, name.as_str(), entry.info.size) {
+            list.push(&module);
+        }
     }
+    let count = list.len() as u64;
     if count == 0 {
-        let _ = list.free();
+        let _ = page.free();
         return Modules::default();
     }
-    let start = list.start();
-    let _ = list.keep();
+    let start = page.start();
+    let _ = page.keep();
     Modules {
         list: HHDM_BASE + start,
-        count: count as u64,
+        count,
     }
 }
 

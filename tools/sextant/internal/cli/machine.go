@@ -401,6 +401,9 @@ func runTest(env Env, args []string) error {
 	if err != nil {
 		return err
 	}
+	if scope.host && os.Getenv(insideHostTests) != "" {
+		return errors.New("sextant test is running inside its own host tests, which would start them again without end")
+	}
 	s, err := openSession(env)
 	if err != nil {
 		return err
@@ -426,12 +429,18 @@ type step struct {
 	env  []string
 }
 
+// insideHostTests is set for the host tests sextant runs. Some of
+// sextant's own tests run sextant test, so without it a mistake there
+// would start the host tests inside themselves without end.
+const insideHostTests = "SEXTANT_INSIDE_HOST_TESTS"
+
 // hostSteps are the tests that run on this machine: Cargo's for every
 // crate, then Go's for sextant.
 func (s *session) hostSteps() []step {
+	inside := insideHostTests + "=1"
 	return []step{
-		{s.root, "cargo", []string{"test", "--workspace", "--locked"}, []string{"CARGO_TARGET_DIR=" + s.settings.BuildDir}},
-		{filepath.Join(s.root, "tools", "sextant"), "go", []string{"test", "./..."}, nil},
+		{s.root, "cargo", []string{"test", "--workspace", "--locked"}, []string{"CARGO_TARGET_DIR=" + s.settings.BuildDir, inside}},
+		{filepath.Join(s.root, "tools", "sextant"), "go", []string{"test", "./..."}, []string{inside}},
 	}
 }
 

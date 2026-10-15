@@ -330,25 +330,25 @@ impl SegmentList {
     pub fn as_slice(&self) -> &[Segment] {
         &self.items[..self.len]
     }
+}
 
-    /// What the page holding address `at`, as linked, may be used for:
-    /// whatever any segment on it allows, since a page has one set of
-    /// rights. None where no segment lies.
-    #[must_use]
-    pub fn access(&self, at: u64) -> Option<Access> {
-        let page = page_down(at);
-        self.as_slice()
-            .iter()
-            .filter(|s| s.mem_size > 0 && s.vaddr < page.saturating_add(PAGE) && s.end() > page)
-            .map(|s| Access {
-                write: s.write,
-                execute: s.execute,
-            })
-            .reduce(|a, b| Access {
-                write: a.write || b.write,
-                execute: a.execute || b.execute,
-            })
-    }
+/// What the page holding address `at`, as linked, may be used for:
+/// whatever any of `segments` on it allows, since a page has one set of
+/// rights. None where no segment lies.
+#[must_use]
+pub fn access(segments: &[Segment], at: u64) -> Option<Access> {
+    let page = page_down(at);
+    segments
+        .iter()
+        .filter(|s| s.mem_size > 0 && s.vaddr < page.saturating_add(PAGE) && s.end() > page)
+        .map(|s| Access {
+            write: s.write,
+            execute: s.execute,
+        })
+        .reduce(|a, b| Access {
+            write: a.write || b.write,
+            execute: a.execute || b.execute,
+        })
 }
 
 /// What a page of an image may be used for besides being read.
@@ -516,25 +516,32 @@ mod tests {
             write: true,
             execute: false,
         };
-        assert_eq!(segments.access(0), Some(read));
+        assert_eq!(access(segments.as_slice(), 0), Some(read));
         assert_eq!(
-            segments.access(0x1fff),
+            access(segments.as_slice(), 0x1fff),
             Some(read),
             "the second page of the first"
         );
         assert_eq!(
-            segments.access(0x2000),
+            access(segments.as_slice(), 0x2000),
             Some(Access {
                 write: true,
                 execute: true
             }),
             "code and data share a page"
         );
-        assert_eq!(segments.access(0x2abc), segments.access(0x2000));
-        assert_eq!(segments.access(0x3000), Some(write), "data alone");
-        assert_eq!(segments.access(0x30ff), Some(write));
-        assert_eq!(segments.access(0x4000), None, "past the end");
-        assert_eq!(segments.access(u64::MAX), None);
+        assert_eq!(
+            access(segments.as_slice(), 0x2abc),
+            access(segments.as_slice(), 0x2000)
+        );
+        assert_eq!(
+            access(segments.as_slice(), 0x3000),
+            Some(write),
+            "data alone"
+        );
+        assert_eq!(access(segments.as_slice(), 0x30ff), Some(write));
+        assert_eq!(access(segments.as_slice(), 0x4000), None, "past the end");
+        assert_eq!(access(segments.as_slice(), u64::MAX), None);
     }
 
     #[test]
@@ -551,26 +558,30 @@ mod tests {
         );
         let segments = Elf::parse(&file).unwrap().segments().unwrap();
         assert_eq!(
-            segments.access(0),
+            access(segments.as_slice(), 0),
             Some(Access {
                 write: false,
                 execute: true
             })
         );
-        assert_eq!(segments.access(0x1000), None, "the text ends with its page");
-        assert_eq!(segments.access(0x2000), None);
         assert_eq!(
-            segments.access(0x3000),
+            access(segments.as_slice(), 0x1000),
+            None,
+            "the text ends with its page"
+        );
+        assert_eq!(access(segments.as_slice(), 0x2000), None);
+        assert_eq!(
+            access(segments.as_slice(), 0x3000),
             None,
             "an empty segment covers nothing"
         );
-        assert_eq!(segments.access(0x3800), None, "not even inside a page");
-        assert_eq!(segments.access(0x4fff), None);
-        assert!(
-            segments
-                .access(0x5000)
-                .is_some_and(|a| a.write && !a.execute)
+        assert_eq!(
+            access(segments.as_slice(), 0x3800),
+            None,
+            "not even inside a page"
         );
+        assert_eq!(access(segments.as_slice(), 0x4fff), None);
+        assert!(access(segments.as_slice(), 0x5000).is_some_and(|a| a.write && !a.execute));
     }
 
     #[test]

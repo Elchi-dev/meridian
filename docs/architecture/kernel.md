@@ -148,8 +148,9 @@ Windows NT's first system call gate: the number in rax, arguments in rdi,
 rsi, rdx and r10, the answer back in rax, errors counting down from the
 top of the range. `lib/abi` holds the numbers, the errors and how a call
 is written into registers, for the kernel and for programs alike. There
-are eleven: exit, log a line, give way, sleep, ask for the ticks, the
-four of channels (see IPC), and map and unmap memory. The kernel only
+are thirteen: exit, log a line, give way, sleep, ask for the ticks, the
+four of channels (see IPC), map and unmap memory, and spawn a program and
+wait for it. The kernel only
 reads and writes what lies in the lower half and is mapped for ring 3,
 and only inside `with_user_access`, the one place it lets itself past
 SMAP. A fault in ring 3 ends only the program; the kernel writes the
@@ -168,6 +169,16 @@ writable or executable as its segments say, never writable and executable
 at once, refused when the image does not fit above the stack or its entry
 is not in its code. A program that cannot get the memory it needs does
 not start, and gives back every frame it took.
+
+**Processes.** SPAWN starts the program a file of the loader's is named
+after, such as `hello.mexec`, as a process of its own, hands it a handle
+the parent gives up, which becomes its argument, and answers a handle to
+the process. WAIT answers how the process ended: its exit code, or the
+vector of the exception that ended it. `kernel::process` keeps every
+process a handle can stand for and frees it only once it ended and the
+last handle to it is closed, so its parent can ask for as long as it
+likes. Closing a handle closes whatever kind of object it stands for,
+also when a channel closes the handles that waited in it.
 
 **Memory for programs.** MAP gives a program fresh pages, zeroed,
 writable and never executable, from 64 GiB on; UNMAP gives them back, and
@@ -192,7 +203,9 @@ that each keep their own number at the same address, and checks a program
 leaves no frame behind. Then it runs hello from its file, whose test build
 checks every call through the runtime before it greets, makes sure hello
 reached the kernel with every call, and starts it with no free frame at
-all, then one more after each refusal, until it starts.
+all, then one more after each refusal, until it starts. Test images also
+carry `exitwith`, which exits with the number it is sent, or runs out of
+stack when sent anything else, for hello's checks of SPAWN and WAIT.
 
 ## Objects and handles (M3)
 

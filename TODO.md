@@ -103,7 +103,9 @@ Loader and UEFI:
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
 - [x] An address space of its own for every program, given back whole when it ends; the kernel's half shared by all
 - [x] Handles with access masks, in a table per program, with generations so a closed handle reaches nothing (`lib/handles`)
+- [x] Processes as objects: SPAWN by file name with a handle handed over, WAIT for the exit code or the exception (`kernel::process`)
 - [ ] Security tokens
+- [ ] One lock for the serial port, so lines from threads on different cores or a preempted thread cannot run into each other
 - [x] `.mexec` loader: ELF files carrying Meridian's version note, named in their name note ([format](docs/formats/mexec.md)); `main!` writes both
 - [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)
 - [x] Channels that carry handles: a handle handed over leaves its sender, needs the right to, and one nobody takes is closed with its channel

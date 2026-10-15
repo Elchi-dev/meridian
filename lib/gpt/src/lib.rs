@@ -168,15 +168,25 @@ impl Header {
     }
 
     /// The partitions in `array`, the entry array the header names, when
-    /// its CRC-32 matches; the unused entries are left out.
-    pub fn partitions<'a>(&self, array: &'a [u8]) -> Option<impl Iterator<Item = Partition> + 'a> {
+    /// its CRC-32 matches, each with its number, counted from 1 as the
+    /// entries are; the unused entries are left out.
+    #[must_use]
+    pub fn partitions<'a>(
+        &self,
+        array: &'a [u8],
+    ) -> Option<impl Iterator<Item = (usize, Partition)> + 'a> {
         let len = usize::try_from(self.entries_bytes()).ok()?;
         let bytes = array.get(..len)?;
         if crc32(bytes) != self.entries_crc {
             return None;
         }
         let size = usize::try_from(self.entry_size).ok()?;
-        Some(bytes.chunks_exact(size).filter_map(Partition::read))
+        Some(
+            bytes
+                .chunks_exact(size)
+                .enumerate()
+                .filter_map(|(i, entry)| Some((i + 1, Partition::read(entry)?))),
+        )
     }
 }
 
@@ -367,9 +377,10 @@ mod tests {
     #[test]
     fn its_partition_is_the_efi_system_partition() {
         let h = Header::read(&sextant_header()).unwrap();
-        let parts: Vec<Partition> = h.partitions(&sextant_entries()).unwrap().collect();
+        let parts: Vec<(usize, Partition)> = h.partitions(&sextant_entries()).unwrap().collect();
         assert_eq!(parts.len(), 1, "the unused entries are left out");
-        let esp = parts[0];
+        let (number, esp) = parts[0];
+        assert_eq!(number, 1);
         assert_eq!(esp.kind, EFI_SYSTEM);
         assert_eq!(
             (esp.first, esp.last, esp.sectors()),
@@ -517,9 +528,14 @@ mod tests {
             s[88..92].copy_from_slice(&crc32(&array).to_le_bytes());
         });
         let h = Header::read(&header).unwrap();
-        let parts: Vec<Partition> = h.partitions(&array).unwrap().collect();
+        let parts: Vec<(usize, Partition)> = h.partitions(&array).unwrap().collect();
         assert_eq!(parts.len(), 2);
-        assert_eq!((parts[0].first, parts[1].first), (2048, 2064));
+        assert_eq!(
+            (parts[0].0, parts[0].1.first),
+            (2, 2048),
+            "numbered as entries, gaps and all"
+        );
+        assert_eq!((parts[1].0, parts[1].1.first), (4, 2064));
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use core::mem::size_of;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"MERIDIAN");
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Where the direct map of all physical memory starts: the first address of
 /// the higher half. Physical address `p` is at virtual `HHDM_BASE + p`.
@@ -50,6 +50,91 @@ pub struct BootInfo {
     /// the frame to the screen; 0 without a framebuffer. Its pages are the
     /// kernel's in the memory map.
     pub back_buffer: u64,
+    pub modules: Modules,
+}
+
+/// The files the loader read for the kernel from `meridian/programs/` on
+/// the EFI partition, at most [`Modules::MAX`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Modules {
+    /// Virtual address of the first [`Module`], inside the direct map.
+    pub list: u64,
+    pub count: u64,
+}
+
+impl Modules {
+    pub const MAX: usize = 16;
+}
+
+/// One file the loader read. Its pages are the kernel's in the memory map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Module {
+    pub start: u64,
+    /// Its length in bytes.
+    pub size: u64,
+    /// Its file name, padded with zero bytes.
+    pub name: [u8; Module::NAME],
+}
+
+impl Module {
+    /// The longest file name a module keeps.
+    pub const NAME: usize = 32;
+
+    /// A module for the file `name`, unless the name is empty, longer than
+    /// [`Module::NAME`] or holds a zero byte.
+    #[must_use]
+    pub fn new(start: u64, size: u64, name: &[u8]) -> Option<Module> {
+        if name.is_empty() || name.len() > Module::NAME || name.contains(&0) {
+            return None;
+        }
+        let mut padded = [0; Module::NAME];
+        padded[..name.len()].copy_from_slice(name);
+        Some(Module {
+            start,
+            size,
+            name: padded,
+        })
+    }
+
+    /// Its file name without the padding.
+    #[must_use]
+    pub fn name(&self) -> &[u8] {
+        let len = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(Module::NAME);
+        &self.name[..len]
+    }
+
+    /// The module the loader wrote as `bytes`.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8; size_of::<Module>()]) -> Module {
+        let word = |at: usize| {
+            let mut w = [0; 8];
+            w.copy_from_slice(&bytes[at..at + 8]);
+            u64::from_le_bytes(w)
+        };
+        let mut name = [0; Module::NAME];
+        name.copy_from_slice(&bytes[16..]);
+        Module {
+            start: word(0),
+            size: word(8),
+            name,
+        }
+    }
+
+    /// The module as it lies in memory.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; size_of::<Module>()] {
+        let mut out = [0u8; size_of::<Module>()];
+        out[0..8].copy_from_slice(&self.start.to_le_bytes());
+        out[8..16].copy_from_slice(&self.size.to_le_bytes());
+        out[16..].copy_from_slice(&self.name);
+        out
+    }
 }
 
 /// The screen as the firmware left it, still showing what the loader drew.
@@ -177,6 +262,7 @@ impl BootInfo {
             uefi_system_table: 0,
             framebuffer: Framebuffer::default(),
             back_buffer: 0,
+            modules: Modules::default(),
         }
     }
 
@@ -211,6 +297,8 @@ impl BootInfo {
             chunk.copy_from_slice(&field.to_le_bytes());
         }
         out[128..136].copy_from_slice(&self.back_buffer.to_le_bytes());
+        out[136..144].copy_from_slice(&self.modules.list.to_le_bytes());
+        out[144..152].copy_from_slice(&self.modules.count.to_le_bytes());
         out
     }
 
@@ -257,9 +345,10 @@ mod tests {
                 b.kernel.size,
                 b.stack.top,
                 b.uefi_system_table,
-                b.back_buffer
+                b.back_buffer,
+                b.modules.count
             ),
-            (0, 0, 0, 0, 0, 0)
+            (0, 0, 0, 0, 0, 0, 0)
         );
     }
 
@@ -289,6 +378,13 @@ mod tests {
             "a loader from before the back buffer"
         );
         let mut b = BootInfo::new();
+        b.version = 2;
+        assert_eq!(
+            b.check(),
+            Err(Mismatch::Version(2)),
+            "a loader from before modules"
+        );
+        let mut b = BootInfo::new();
         b.size -= 8;
         assert_eq!(b.check(), Err(Mismatch::Size(b.size)));
         b.size += 16;
@@ -298,7 +394,7 @@ mod tests {
     #[test]
     fn the_magic_spells_meridian() {
         assert_eq!(&MAGIC.to_le_bytes(), b"MERIDIAN");
-        assert_eq!(VERSION, 2);
+        assert_eq!(VERSION, 3);
     }
 
     #[test]
@@ -315,11 +411,20 @@ mod tests {
             (offset_of!(BootInfo, uefi_system_table), 88),
             (offset_of!(BootInfo, framebuffer), 96),
             (offset_of!(BootInfo, back_buffer), 128),
+            (offset_of!(BootInfo, modules), 136),
         ];
         for (got, want) in offsets {
             assert_eq!(got, want);
         }
-        assert_eq!(size_of::<BootInfo>(), 136);
+        assert_eq!(size_of::<BootInfo>(), 152);
+        assert_eq!(offset_of!(Modules, count), 8);
+        assert_eq!(size_of::<Module>(), 48);
+        assert_eq!(offset_of!(Module, size), 8);
+        assert_eq!(offset_of!(Module, name), 16);
+        assert!(
+            Modules::MAX * size_of::<Module>() <= 4096,
+            "the list fits a page"
+        );
         assert_eq!(size_of::<Framebuffer>(), 32);
         assert_eq!(offset_of!(Framebuffer, width), 16);
         assert_eq!(offset_of!(Framebuffer, stride), 24);
@@ -362,12 +467,16 @@ mod tests {
                 format: PixelFormat::BGR,
             },
             back_buffer: 0x1234_5000,
+            modules: Modules {
+                list: 0xffff_8000_0012_3000,
+                count: 3,
+            },
             ..BootInfo::new()
         };
         let b = info.to_bytes();
         assert_eq!(&b[0..8], b"MERIDIAN");
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), VERSION);
-        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 136);
+        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 152);
         let fields = [
             (
                 offset_of!(BootInfo, memory) + offset_of!(MemoryMap, regions),
@@ -410,6 +519,82 @@ mod tests {
         assert_eq!(u32_at(fb + offset_of!(Framebuffer, stride)), 0xff);
         assert_eq!(u32_at(fb + offset_of!(Framebuffer, format)), 2);
         assert_eq!(u64_at(&b, offset_of!(BootInfo, back_buffer)), 0x1234_5000);
+        let modules = offset_of!(BootInfo, modules);
+        assert_eq!(
+            u64_at(&b, modules + offset_of!(Modules, list)),
+            0xffff_8000_0012_3000
+        );
+        assert_eq!(u64_at(&b, modules + offset_of!(Modules, count)), 3);
+    }
+
+    #[test]
+    fn a_module_keeps_its_name_padded() {
+        let m = Module::new(0x20_0000, 0x1234, b"hello").unwrap();
+        assert_eq!(m.name(), b"hello");
+        assert_eq!(&m.name[..6], b"hello\0");
+        assert!(m.name[5..].iter().all(|&b| b == 0));
+        let longest = [b'a'; Module::NAME];
+        let full = Module::new(0, 1, &longest).unwrap();
+        assert_eq!(full.name(), &longest, "no room left for a zero");
+        assert_eq!(Module::new(0, 1, &[b'a'; Module::NAME + 1]), None);
+        assert_eq!(Module::new(0, 1, b""), None);
+        assert_eq!(
+            Module::new(0, 1, b"he\0llo"),
+            None,
+            "the name would end early"
+        );
+    }
+
+    #[test]
+    fn modules_read_back_as_the_loader_wrote_them() {
+        let modules = [
+            Module::new(0x20_0000, 0x1234, b"hello").unwrap(),
+            Module::new(0x0123_4567_89ab_c000, 1, &[b'z'; Module::NAME]).unwrap(),
+            Module::new(0x30_0000, 0x10_0000, b"init").unwrap(),
+        ];
+        let size = size_of::<Module>();
+        let mut page = vec![0u8; 4096];
+        for (i, m) in modules.iter().enumerate() {
+            page[i * size..(i + 1) * size].copy_from_slice(&m.to_bytes());
+        }
+        for (i, m) in modules.iter().enumerate() {
+            let back = Module::from_bytes(page[i * size..(i + 1) * size].try_into().unwrap());
+            assert_eq!(back, *m, "module {i}");
+            assert_eq!(back.name(), m.name());
+        }
+        let mut garbled = modules[0].to_bytes();
+        garbled[16 + 6] = b'x';
+        assert_eq!(
+            Module::from_bytes(&garbled).name(),
+            b"hello",
+            "the name ends at its first zero"
+        );
+    }
+
+    #[test]
+    fn names_of_every_length_and_byte_come_back_whole() {
+        for len in 1..=Module::NAME {
+            let name: Vec<u8> = (1..=255u8).cycle().skip(len * 7).take(len).collect();
+            let m = Module::new(0x1000 * len as u64, len as u64, &name).unwrap();
+            let back = Module::from_bytes(&m.to_bytes());
+            assert_eq!(back.name(), name.as_slice(), "{len} bytes");
+            assert_eq!((back.start, back.size), (0x1000 * len as u64, len as u64));
+        }
+        for byte in 1..=255u8 {
+            let m = Module::new(0, 0, &[byte; 3]).unwrap();
+            assert_eq!(Module::from_bytes(&m.to_bytes()).name(), &[byte; 3]);
+        }
+    }
+
+    #[test]
+    fn module_bytes_follow_the_layout() {
+        let m = Module::new(0x0123_4567_89ab_c000, 0x4_2000, b"init").unwrap();
+        let b = m.to_bytes();
+        assert_eq!(u64_at(&b, offset_of!(Module, start)), 0x0123_4567_89ab_c000);
+        assert_eq!(u64_at(&b, offset_of!(Module, size)), 0x4_2000);
+        assert_eq!(&b[16..20], b"init");
+        assert!(b[20..].iter().all(|&b| b == 0));
+        assert_eq!(b.len(), size_of::<Module>());
     }
 
     #[test]

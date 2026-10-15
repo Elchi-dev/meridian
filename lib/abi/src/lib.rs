@@ -7,7 +7,8 @@
 
 /// Ends the calling thread; rdi is its exit code.
 pub const EXIT: u64 = 0;
-/// Writes a line to the kernel's log: rdi bytes at rsi are its text.
+/// Writes a line to the kernel's log: rdi bytes at rsi are its text, and
+/// any byte but printable ASCII shows as a question mark.
 pub const LOG: u64 = 1;
 /// Lets other threads of the same or a higher priority run first.
 pub const YIELD: u64 = 2;

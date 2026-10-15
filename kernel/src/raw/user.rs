@@ -347,10 +347,7 @@ fn close(handle: u64) -> Result<(), u64> {
 /// Writes the program's line to the log, once it is sure every byte is
 /// the program's to give.
 fn log(at: u64, len: u64) -> u64 {
-    let Some(count) = usize::try_from(len)
-        .ok()
-        .filter(|&n| n <= syscall::LOG_BYTES)
-    else {
+    let Some(count) = kernel::log::line_len(len) else {
         return syscall::TOO_LONG;
     };
     if !memory::user_readable(at, len) {
@@ -365,12 +362,7 @@ fn log(at: u64, len: u64) -> u64 {
     let mut serial = x86::raw::Com1::already_open();
     let _ = serial.write_str("user: ");
     for &byte in text.iter() {
-        let shown = if byte.is_ascii_graphic() || byte == b' ' {
-            byte
-        } else {
-            b'?'
-        };
-        let _ = serial.write_char(char::from(shown));
+        let _ = serial.write_char(kernel::log::shown(byte));
     }
     let _ = serial.write_char('\n');
     #[cfg(feature = "qemu-test")]

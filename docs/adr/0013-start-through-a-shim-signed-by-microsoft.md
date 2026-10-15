@@ -23,16 +23,17 @@ Meridian starts through Ubuntu's signed shim, shipped unchanged under `third-par
 | --- | --- | --- | --- |
 | `shimx64.efi` | `usr/lib/shim/shimx64.efi.signed.latest` | `6fe6e1bcbe6cf6baec8e056d40361ca1aa715cc04ddcc2855351de060b84350b` | Microsoft Corporation UEFI CA 2011 |
 | `mmx64.efi` | `usr/lib/shim/mmx64.efi` | `d2fa8e52fddc99dad94a0009fee23cb2478c28373b777d50b2f784eb4e96f88e` | Canonical Ltd. Secure Boot Signing (2022 v1), which the shim trusts through the certificate built into it |
-| `COPYRIGHT` | `usr/share/doc/shim-signed/copyright` | `c9a00de7751e3eb61680e95b5bf776721901e993445d584a9051561613f8bed9` | |
+| `COPYRIGHT` | `debian/copyright` of the source package `shim` 15.8-0ubuntu1 (`shim_15.8-0ubuntu1.debian.tar.xz`, SHA-256 `15ed98489d54aa882aab5977dfc654e62c14c6bd5f72c785d4a34e2cbb1099b4`) | `278ea11f13eb4623b8d0d574262fc77dd53d77fdcdb6c30030fe049ed260d43d` | |
 
-The package's copyright file gives BSD-2-Clause for shim. The shim also has OpenSSL and parts of edk2 built in, under their own permissive licences; their texts, taken from shim 15.8's source, land together with the binaries and are added to the table then.
+The signed package's own copyright file only names shim's BSD-2-Clause, so `COPYRIGHT` is the one of the source package the binaries were built from. It lists every licence in them: BSD-2-Clause for shim, the OpenSSL and original SSLeay licences for the OpenSSL inside, BSD-2-Clause-Patent for edk2's parts, and a few files under BSD-3-Clause or in the public domain. That source package's tarball is byte for byte upstream's `shim-15.8.tar.bz2` (SHA-256 `a79f0a9b89f3681ab384865b1a46ab3f79d88b11b4ca59aa040ab03fffae80a9`).
 
 On the EFI system partition the files go where the firmware and the shim look for them:
 
 - `EFI/BOOT/BOOTX64.EFI` is the shim, the file the firmware starts from a removable disk.
 - `EFI/BOOT/grubx64.efi` is `meridian.efi`. The shim starts the file with that name next to itself, and the name is built into the binary.
 - `EFI/BOOT/mmx64.efi` is MokManager.
-- `EFI/meridian/meridian.cer` is the certificate of the key that signed the loader, for enrolling.
+- `meridian/meridian.cer` is the certificate of the key that signed the loader, for enrolling, next to the kernel and `boot.meri`.
+- `meridian/licences/shim.txt` is `COPYRIGHT`, since the licences ask for their notices to go along with the binaries.
 
 On the first boot the shim cannot check `meridian.efi` yet and starts MokManager. The person picks "Enroll key from disk", chooses `meridian.cer` and confirms. After the restart every loader signed with that key starts without a question. Release images carry the release key's certificate, development images the key sextant makes for each machine.
 

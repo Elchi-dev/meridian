@@ -121,3 +121,10 @@ allow {
     mutation = "true to false"
     reason = "a program has one thread, so nothing else ever holds the heap's lock while it allocates; once programs get threads of their own, a check of two of them allocating at once takes this entry's place"
 }
+
+allow {
+    file = "lib/program/examples/exitwith.rs"
+    line = "deeper(depth + 1) + frame[7]"
+    mutation = "+ to -"
+    reason = "deeper calls itself until the stack runs out, so the sum after the call is never taken"
+}

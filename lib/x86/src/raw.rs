@@ -516,14 +516,14 @@ pub fn apic_base() -> Option<u64> {
 /// `registers` must be where the page [`apic_base`] names is mapped,
 /// writable and uncached, for as long as the system runs.
 pub unsafe fn enable_xapic(registers: u64) -> bool {
-    if !apic::on_chip(cpuid(1)[3]) {
-        return false;
+    let present = apic::on_chip(cpuid(1)[3]);
+    if present {
+        // SAFETY: the register exists wherever an APIC does; setting its
+        // enable bit keeps the base address, so no memory changes meaning.
+        unsafe { write_msr(apic::BASE_MSR, read_msr(apic::BASE_MSR) | apic::ENABLE) };
+        XAPIC_AT.store(registers, Ordering::Release);
     }
-    // SAFETY: the register exists wherever an APIC does; setting its
-    // enable bit keeps the base address, so no memory changes meaning.
-    unsafe { write_msr(apic::BASE_MSR, read_msr(apic::BASE_MSR) | apic::ENABLE) };
-    XAPIC_AT.store(registers, Ordering::Release);
-    true
+    present
 }
 
 /// Where the xAPIC's registers are reached, once it is on.

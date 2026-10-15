@@ -11,16 +11,11 @@ pub fn enable() -> bool {
     if x86::raw::enable_x2apic() {
         return true;
     }
-    let Some(base) = x86::raw::apic_base() else {
-        return false;
-    };
-    if x86::raw::xapic_registers().is_none() {
-        let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
-        if super::memory::map_page(kernel::APIC_PAGE, base, flags).is_err() {
-            return false;
-        }
-    }
+    let flags = Flags::WRITABLE | Flags::NO_CACHE | Flags::WRITE_THROUGH | Flags::NO_EXECUTE;
+    let mapped = x86::raw::xapic_registers().is_some()
+        || x86::raw::apic_base()
+            .is_some_and(|base| super::memory::map_page(kernel::APIC_PAGE, base, flags).is_ok());
     // SAFETY: APIC_PAGE maps the page apic_base names, writable and
     // uncached, and nothing unmaps it.
-    unsafe { x86::raw::enable_xapic(kernel::APIC_PAGE) }
+    mapped && unsafe { x86::raw::enable_xapic(kernel::APIC_PAGE) }
 }

@@ -88,6 +88,7 @@ dependencies = [
  "canvas",
  "channel",
  "elf",
+ "fat",
  "font",
  "frames",
  "gpt",

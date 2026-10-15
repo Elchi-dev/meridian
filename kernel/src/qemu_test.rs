@@ -146,7 +146,7 @@ pub fn run(
         );
     }
 
-    device_checks(&mut report);
+    device_checks(&mut report, info, regions);
     timer_checks(&mut report, tsc_hz, info, regions);
     exception_checks(&mut report);
     protection_checks(&mut report);
@@ -268,10 +268,11 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
     }
 }
 
-/// The devices the kernel finds and drives.
-fn device_checks<W: Write>(report: &mut Report<'_, W>) {
+/// The devices the kernel finds and drives, and what it reads from them.
+fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
     pci_checks(report);
     ahci_checks(report);
+    fat_checks(report, info, regions);
 }
 
 /// PCI through the MCFG's ECAM region: q35's host bridge at 00:00.0 and its
@@ -387,6 +388,59 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
                     && p.name().eq("EFI system partition".chars())
             }),
         "the boot disk's partition table should list sextant's one EFI system partition of 64 MiB from 1 MiB on",
+    );
+}
+
+/// The EFI system partition, read by the kernel itself through AHCI, the
+/// GPT and FAT32: the settings and the long name of test images are what
+/// sextant wrote, the firmware's file is a PE file, and hello is byte for
+/// byte what the loader read through the firmware.
+fn fat_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
+    let drives = raw::ahci::drives();
+    let Some(disk) = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk)
+    else {
+        return;
+    };
+    let port = disk.port;
+    let mut read = |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
+    let Some(esp) = kernel::disk::Table::read(&mut read).and_then(|t| t.partitions().next()) else {
+        report.check(
+            "kernel.fat.read",
+            false,
+            "the boot disk should have a partition table",
+        );
+        return;
+    };
+    let read = |lba, into: &mut [u8]| raw::ahci::read(port, esp.1.first + lba, into).is_ok();
+    let Ok(mut volume) = fat::Fat::open(read) else {
+        report.check(
+            "kernel.fat.read",
+            false,
+            "the EFI system partition should hold FAT32",
+        );
+        return;
+    };
+    let mut file = |path: &str, room: usize| {
+        let entry = volume.find(path).ok()?;
+        let mut bytes = alloc::vec![0u8; room.min(entry.size as usize)];
+        volume.read_file(&entry, &mut bytes).ok()?;
+        Some((entry, bytes))
+    };
+    let settings = file("meridian/boot.meri", 4096);
+    let firmware = file("EFI/BOOT/BOOTX64.EFI", 2);
+    let long = file(&alloc::format!("long-name-{}", "x".repeat(244)), 64);
+    let hello = file("meridian/programs/hello.mexec", usize::MAX);
+    let loaded = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello.mexec");
+    report.check(
+        "kernel.fat.read",
+        settings.is_some_and(|(_, s)| s == b"boot {\n    timeout = 2500ms\n    default = example\n    verbose = true\n}\n")
+            && firmware.is_some_and(|(_, f)| f == b"MZ")
+            && long.is_some_and(|(_, l)| l == b"long name\n")
+            && hello.zip(loaded).is_some_and(|((e, h), (_, l))| e.size as usize == l.len() && h == l),
+        "the kernel should read the EFI system partition's files as sextant wrote them and the loader read them",
     );
 }
 

@@ -62,6 +62,18 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
                 for (number, partition) in table.partitions() {
                     let _ = serial.write_str("kernel: ");
                     let _ = kernel::partition_line(serial, drive.port, number, &partition);
+                    let start = partition.first;
+                    let read = |lba, into: &mut [u8]| {
+                        raw::ahci::read(drive.port, start + lba, into).is_ok()
+                    };
+                    if let Ok(volume) = fat::Fat::open(read) {
+                        let _ = writeln!(
+                            serial,
+                            "kernel: partition {number} holds FAT32, {} clusters of {} bytes",
+                            volume.volume.clusters,
+                            volume.volume.cluster_bytes()
+                        );
+                    }
                 }
             }
         }

@@ -128,6 +128,56 @@ pub fn unmap(at: u64, pages: u64) -> Result<(), Error> {
     done(raw::call(Call::Unmap { at, pages }).0)
 }
 
+/// How a process ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// It exited with this code.
+    Exited(u64),
+    /// The exception with this vector ended it.
+    Faulted(u64),
+}
+
+/// Starts the program whose file is called `name`, such as
+/// `hello.mexec`, as a process of its own, handing it `carry` if there is
+/// one: the program no longer holds that handle, and the new one gets it
+/// as its argument. Returns a handle to the process.
+///
+/// # Errors
+///
+/// When no file has the name, it is no program the kernel runs, `carry` is
+/// not the program's or may not be handed over, or there is no room for
+/// the process.
+pub fn spawn(name: &str, carry: Option<Handle>) -> Result<Handle, Error> {
+    answer(raw::call(spawn_call(name, carry)).0).map(Handle)
+}
+
+/// Waits until the process `process` ended, and says how.
+///
+/// # Errors
+///
+/// When the handle is not the program's or stands for something else.
+pub fn wait(process: Handle) -> Result<Ended, Error> {
+    let (rax, rdx) = raw::call(Call::Wait(process.0));
+    ended(rax, rdx)
+}
+
+fn spawn_call(name: &str, carry: Option<Handle>) -> Call {
+    Call::Spawn {
+        len: name.len() as u64,
+        at: name.as_ptr() as u64,
+        carry: carry.map_or(0, |h| h.0),
+    }
+}
+
+fn ended(rax: u64, rdx: u64) -> Result<Ended, Error> {
+    let value = answer(rax)?;
+    Ok(if rdx == 0 {
+        Ended::Exited(value)
+    } else {
+        Ended::Faulted(value)
+    })
+}
+
 /// The largest alignment the heap gives: that of the pages it lies on.
 pub const ALIGN_MAX: usize = 4096;
 
@@ -336,6 +386,40 @@ mod tests {
                 at: at + 60,
                 room: 4
             }
+        );
+    }
+
+    #[test]
+    fn a_program_is_spawned_by_its_name() {
+        let name = "hello.mexec";
+        assert_eq!(
+            spawn_call(name, None),
+            Call::Spawn {
+                len: 11,
+                at: name.as_ptr() as u64,
+                carry: 0
+            }
+        );
+        assert_eq!(
+            spawn_call(&name[..5], Some(Handle(0x2_0003))),
+            Call::Spawn {
+                len: 5,
+                at: name.as_ptr() as u64,
+                carry: 0x2_0003
+            }
+        );
+    }
+
+    #[test]
+    fn how_a_process_ended_reads_back() {
+        assert_eq!(ended(0, 0), Ok(Ended::Exited(0)));
+        assert_eq!(ended(42, 0), Ok(Ended::Exited(42)));
+        assert_eq!(ended(14, 1), Ok(Ended::Faulted(14)));
+        assert_eq!(ended(abi::BAD_HANDLE, 0), Err(Error::BadHandle));
+        assert_eq!(
+            ended(abi::DENIED, 1),
+            Err(Error::Denied),
+            "an error wins over rdx"
         );
     }
 

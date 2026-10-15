@@ -1036,7 +1036,8 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     let again = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello_again.mexec");
     report.check(
         "kernel.programs.read",
-        raw::modules(info, regions).count() == 2
+        raw::modules(info, regions).count() == usize::try_from(info.modules.count).unwrap_or(0)
+            && info.modules.count >= 2
             && hello.is_some_and(|(m, file)| {
                 file.starts_with(b"\x7fELF") && m.size == file.len() as u64
             })
@@ -1072,12 +1073,14 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::CLOSE,
         abi::MAP,
         abi::UNMAP,
+        abi::SPAWN,
+        abi::WAIT,
         abi::EXIT,
     ];
     report.check(
         "kernel.programs.every_call",
-        every.iter().all(|&number| seen::calls(number) > 0) && seen::calls(abi::EXIT) == 1,
-        "hello's checks should reach the kernel with every call the runtime makes",
+        every.iter().all(|&number| seen::calls(number) > 0),
+        "hello's checks and the children they spawn should reach the kernel with every call the runtime makes",
     );
     report.check(
         "kernel.programs.cleaned",

@@ -9,13 +9,13 @@ use alloc::vec::Vec;
 
 use abi::{LOG_BYTES, MESSAGE_BYTES};
 
-use crate::{Error, Handle, channel, close, log, map, receive, send, unmap};
+use crate::{Ended, Error, Handle, channel, close, log, map, receive, send, spawn, unmap, wait};
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 15] = [
+const CHECKS: [(&str, Check); 19] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -31,6 +31,10 @@ const CHECKS: [(&str, Check); 15] = [
     ("memory", pages_come_and_go),
     ("memory.sizes", sizes_there_are),
     ("alloc", heap_in_use),
+    ("spawn", child_exits_with_what_it_was_sent),
+    ("spawn.fault", child_runs_out_of_stack),
+    ("spawn.missing", no_such_program),
+    ("wait.other", wait_for_no_process),
 ];
 
 /// Runs every check and answers how many failed.
@@ -317,6 +321,86 @@ fn heap_in_use() -> Outcome {
         grown.push_str("room ");
     }
     expect(grown.len() == 5000, "a string should grow")
+}
+
+/// Starts exitwith with one end of a fresh channel, and returns the
+/// process and the other end.
+fn exitwith() -> Result<(Handle, Handle), &'static str> {
+    let (mine, theirs) = pair()?;
+    let child = spawn("exitwith.mexec", Some(theirs)).map_err(|_| "exitwith should start")?;
+    expect(
+        close(theirs) == Err(Error::BadHandle),
+        "the end handed over should be gone from the parent",
+    )?;
+    Ok((child, mine))
+}
+
+fn child_exits_with_what_it_was_sent() -> Outcome {
+    let (child, end) = exitwith()?;
+    expect(
+        send(end, &42u64.to_le_bytes(), None) == Ok(()),
+        "the number should go to the child",
+    )?;
+    expect(
+        wait(child) == Ok(Ended::Exited(42)),
+        "the child should exit with the number it was sent",
+    )?;
+    expect(
+        wait(child) == Ok(Ended::Exited(42)),
+        "and say so again while the handle is held",
+    )?;
+    expect(
+        close(child) == Ok(()) && close(end) == Ok(()),
+        "the handles should close",
+    )
+}
+
+fn child_runs_out_of_stack() -> Outcome {
+    let (child, end) = exitwith()?;
+    expect(send(end, b"!", None) == Ok(()), "the message should go")?;
+    expect(
+        wait(child) == Ok(Ended::Faulted(14)),
+        "a child that runs out of stack should end by a page fault",
+    )?;
+    expect(
+        close(child) == Ok(()) && close(end) == Ok(()),
+        "the handles should close",
+    )
+}
+
+fn no_such_program() -> Outcome {
+    expect(
+        spawn("nothing.mexec", None) == Err(Error::NoSuchProgram),
+        "a name no file has should start nothing",
+    )?;
+    expect(
+        spawn("", None) == Err(Error::NoSuchProgram),
+        "neither should no name",
+    )?;
+    expect(
+        spawn("a-name-much-longer-than-a-module-keeps.mexec", None) == Err(Error::NoSuchProgram),
+        "nor one longer than any file's",
+    )?;
+    expect(
+        spawn("exitwith.mexec", Some(Handle(0x7777_0042))) == Err(Error::BadHandle),
+        "a handle the parent does not hold cannot be handed over",
+    )
+}
+
+fn wait_for_no_process() -> Outcome {
+    let (a, b) = pair()?;
+    expect(
+        wait(a) == Err(Error::Denied),
+        "a channel end is no process to wait for",
+    )?;
+    expect(
+        wait(Handle(0x7777_0042)) == Err(Error::BadHandle),
+        "nor is a made up handle",
+    )?;
+    expect(
+        close(a) == Ok(()) && close(b) == Ok(()),
+        "both ends should close",
+    )
 }
 
 fn not_a_handle() -> Outcome {

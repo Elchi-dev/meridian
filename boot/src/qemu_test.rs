@@ -176,16 +176,35 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
     );
     report.check(
         "boot.prepare.programs",
-        info.modules.count == 2
+        info.modules.count >= 2
+            && info.modules.count == programs_on_disk(system)
             && info.modules.list >= bootinfo::HHDM_BASE
             && info.modules.list % PAGE_SIZE == 0,
-        "hello and its copy on test images should be listed for the kernel",
+        "every program on test images should be listed for the kernel, hello and its copy among them",
     );
     report.check(
         "boot.prepare.info",
         info.check().is_ok() && info.memory.count == 0,
         "the boot information should pass its check and wait for the final map",
     );
+}
+
+/// How many files in the programs folder the loader should hand over.
+fn programs_on_disk(system: &System) -> u64 {
+    let mut buf: uefi::raw::file::EntryBuffer = [0; size_of::<uefi::raw::file::EntryBuffer>()];
+    let Ok(mut folder) = system
+        .boot_volume()
+        .and_then(|root| root.open(boot::PROGRAMS_PATH))
+    else {
+        return 0;
+    };
+    let mut count = 0;
+    while let Ok(Some(entry)) = folder.next_entry(&mut buf) {
+        if boot::programs::name_of(entry.name(), entry.info.directory).is_some() {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// The options the loader's copy is started with.

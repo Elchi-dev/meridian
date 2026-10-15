@@ -27,8 +27,13 @@ var (
 	Kernel = Part{Package: "kernel", Target: "x86_64-unknown-none", File: "kernel"}
 	// Hello is the first program, written on the program runtime.
 	Hello = Part{Package: "program", Target: "x86_64-unknown-none", File: "hello", Example: "hello"}
+	// ExitWith exits with the number it is sent, for the test image's
+	// checks of processes.
+	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
 	// Programs are what every image carries for the kernel to start.
 	Programs = []Part{Hello}
+	// TestPrograms are what test images carry on top.
+	TestPrograms = []Part{ExitWith}
 )
 
 // Build is one build of a part.

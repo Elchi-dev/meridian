@@ -74,7 +74,11 @@ func (s *session) buildBoot(ctx context.Context, v variant) (built, error) {
 		return built{}, err
 	}
 	b := built{loader: loader, kernel: kernel, programs: map[string]string{}}
-	for _, part := range cargo.Programs {
+	parts := cargo.Programs
+	if v.testMode {
+		parts = append(slices.Clone(parts), cargo.TestPrograms...)
+	}
+	for _, part := range parts {
 		path, err := s.build(part, v).Run(ctx, s.env.Stderr, s.env.Stderr)
 		if err != nil {
 			return built{}, err

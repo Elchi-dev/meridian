@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,6 +209,28 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 	}
 	if loader, err := os.ReadFile(lines[0]); err != nil || bytes.Contains(loader, []byte("TESTS DONE")) {
 		t.Errorf("build should make the loader without the test image's checks: %v", err)
+	}
+}
+
+func TestOnlyTestImagesCarryTheTestPrograms(t *testing.T) {
+	needTool(t, "cargo")
+	s := testSession(filepath.Join(os.TempDir(), "sextant-test-build"))
+	s.root = realRoot(t)
+	s.env = Env{Stdout: io.Discard, Stderr: io.Discard}
+	for _, v := range []variant{{}, {testMode: true}} {
+		b, err := s.buildBoot(t.Context(), v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := len(cargo.Programs)
+		if v.testMode {
+			want += len(cargo.TestPrograms)
+		}
+		_, hello := b.programs["hello.mexec"]
+		_, exitWith := b.programs["exitwith.mexec"]
+		if !hello || exitWith != v.testMode || len(b.programs) != want {
+			t.Errorf("test mode %v: %v", v.testMode, b.programs)
+		}
 	}
 }
 

@@ -25,6 +25,7 @@ func TestArgsForAFullMachine(t *testing.T) {
 		"-drive if=pflash,format=raw,readonly=on,file=/fw/code.fd -drive if=pflash,format=raw,file=/run/vars.fd " +
 		"-drive format=raw,file=/out/meridian.img -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04 " +
 		"-device pcie-root-port,id=meridian.port,chassis=1,slot=1 -device virtio-rng-pci,bus=meridian.port " +
+		"-drive if=none,id=meridian.nvme,format=raw,readonly=on,file.locking=off,file=/out/meridian.img -device nvme,serial=meridian,drive=meridian.nvme " +
 		"-monitor tcp:127.0.0.1:4444,server=on,wait=off -s -S"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
@@ -47,6 +48,15 @@ func TestArgsForAMinimalMachineWithAWindow(t *testing.T) {
 		"-drive media=cdrom,format=raw,readonly=on,file=/out/meridian.iso"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestATestMachineWithoutADiskHasNoNVMe(t *testing.T) {
+	m := fullMachine()
+	m.Disk, m.CDROM = "", "/out/meridian.iso"
+	got := strings.Join(m.Args(), " ")
+	if strings.Contains(got, "nvme") || !strings.Contains(got, "virtio-rng-pci") {
+		t.Fatalf("got %s", got)
 	}
 }
 

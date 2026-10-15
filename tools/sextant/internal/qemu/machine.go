@@ -33,9 +33,11 @@ type Machine struct {
 	// so the firmware offers a framebuffer, but nothing is shown.
 	Display bool
 	// DebugExit makes it a machine for test images: it adds isa-debug-exit
-	// on port 0xf4, which they end QEMU with to give their verdict, and a
-	// PCIe root port with a random number generator behind it, for their
-	// checks of devices on a bus of their own.
+	// on port 0xf4, which they end QEMU with to give their verdict, a PCIe
+	// root port with a random number generator behind it, for their checks
+	// of devices on a bus of their own, and with a disk the same disk once
+	// more as NVMe, read only, for their checks of NVMe. OVMF finds that
+	// one first and boots from it.
 	DebugExit bool
 	// Monitor is a QEMU character device for the human monitor, such as
 	// "tcp:127.0.0.1:4444,server=on,wait=off". Empty means no monitor.
@@ -141,6 +143,14 @@ func (m Machine) Args() []string {
 			"-device", "pcie-root-port,id=meridian.port,chassis=1,slot=1",
 			"-device", "virtio-rng-pci,bus=meridian.port",
 		)
+		if m.Disk != "" {
+			args = append(args,
+				// The disk is open for writing already; this second look at
+				// it only reads, so it does not ask for the lock.
+				"-drive", "if=none,id=meridian.nvme,format=raw,readonly=on,file.locking=off,file="+escape(m.Disk),
+				"-device", "nvme,serial=meridian,drive=meridian.nvme",
+			)
+		}
 	}
 	if m.Monitor != "" {
 		args = append(args, "-monitor", m.Monitor)

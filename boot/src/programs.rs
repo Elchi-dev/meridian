@@ -85,6 +85,7 @@ mod tests {
         assert!(list.is_empty() && !list.full());
         assert!(list.push(&module(0)) && list.push(&module(1)) && list.push(&module(2)));
         assert_eq!(list.len(), 3);
+        assert!(!list.is_empty());
         let size = size_of::<Module>();
         for i in 0..3 {
             let bytes = page[i * size..(i + 1) * size].try_into().unwrap();
@@ -125,6 +126,13 @@ mod tests {
         assert_eq!(list.len(), 2);
         let mut none = [0u8; 47];
         assert!(List::new(&mut none).full(), "not even one");
+        let mut exact = vec![0u8; 2 * size_of::<Module>()];
+        let mut list = List::new(&mut exact);
+        assert!(
+            list.push(&module(0)) && list.push(&module(1)),
+            "a page just big enough"
+        );
+        assert!(list.full());
     }
 
     #[test]

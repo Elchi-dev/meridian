@@ -122,14 +122,19 @@ func (s *session) signer() (authenticode.Signer, error) {
 	return signer, nil
 }
 
-// makeDevelopmentKey makes a key for this machine and keeps it where only
-// its owner can read it. It never replaces a key that is there.
-func (s *session) makeDevelopmentKey(path string) (authenticode.Signer, error) {
-	host, err := os.Hostname()
+// developmentKeyName names a machine's key after the machine, given what
+// os.Hostname says.
+func developmentKeyName(host string, err error) string {
 	if err != nil || host == "" {
 		host = "an unnamed machine"
 	}
-	signer, err := authenticode.NewSigner("Meridian development key, "+host, time.Now(), rand.Reader)
+	return "Meridian development key, " + host
+}
+
+// makeDevelopmentKey makes a key for this machine and keeps it where only
+// its owner can read it. It never replaces a key that is there.
+func (s *session) makeDevelopmentKey(path string) (authenticode.Signer, error) {
+	signer, err := authenticode.NewSigner(developmentKeyName(os.Hostname()), time.Now(), rand.Reader)
 	if err != nil {
 		return authenticode.Signer{}, err
 	}
@@ -291,11 +296,34 @@ func runImage(env Env, args []string) error {
 	return nil
 }
 
-func runRun(env Env, args []string) error {
+// runSettings are what sextant run is asked for.
+type runSettings struct {
+	v            variant
+	display, gdb bool
+	// limit ends the machine after this long, and until once this text
+	// has appeared on the serial port.
+	limit time.Duration
+	until string
+}
+
+func parseRun(args []string) (runSettings, error) {
 	flags, v := variantFlags("run")
 	headless := flags.Bool("headless", false, "no window; the serial port still goes to the terminal")
 	debug := flags.Bool("debug", false, "wait for a debugger on localhost:1234 before starting")
+	limit := flags.Duration("for", 24*time.Hour, "stop the machine after this long")
+	until := flags.String("until", "", "stop the machine once this text appears on the serial port")
 	if err := parseNoArgs(flags, args); err != nil {
+		return runSettings{}, err
+	}
+	if *limit <= 0 {
+		return runSettings{}, usageErrorf("--for takes a time to run, such as 30s, got %v", *limit)
+	}
+	return runSettings{v: *v, display: !*headless, gdb: *debug, limit: *limit, until: *until}, nil
+}
+
+func runRun(env Env, args []string) error {
+	r, err := parseRun(args)
+	if err != nil {
 		return err
 	}
 	s, err := openSession(env)
@@ -303,76 +331,121 @@ func runRun(env Env, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	loader, kernel, err := s.buildBoot(ctx, *v)
+	loader, kernel, err := s.buildBoot(ctx, r.v)
 	if err != nil {
 		return err
 	}
-	path := s.imagePath(*v)
-	if err := s.writeImage(ctx, *v, loader, kernel, path); err != nil {
+	path := s.imagePath(r.v)
+	if err := s.writeImage(ctx, r.v, loader, kernel, path); err != nil {
 		return err
 	}
-	m, err := s.machine(*v, path)
+	m, err := s.machine(r.v, path)
 	if err != nil {
 		return err
 	}
-	m.Display = !*headless
-	m.GDB = *debug
-	if *debug {
+	m.Display = r.display
+	m.GDB = r.gdb
+	if r.gdb {
 		fmt.Fprintln(env.Stderr, "Waiting for a debugger: gdb -ex 'target remote localhost:1234'")
 	}
-	res, err := qemu.Run(ctx, m, qemu.Options{Timeout: 24 * time.Hour, Live: env.Stdout})
-	if err != nil {
-		return err
+	opts := qemu.Options{Timeout: r.limit, Live: env.Stdout}
+	if r.until != "" {
+		// Nobody watches a run that waits for text, so a firmware that
+		// stalls before printing anything is restarted, as for the tests.
+		opts.Script = []qemu.Step{{Wait: r.until}}
+		opts.StopAfterScript = true
+		opts.FirmwareStall = s.settings.QEMU.Stall
+		opts.Attempts = 3
 	}
-	if res.ExitCode != 0 {
+	res, err := qemu.Run(ctx, m, opts)
+	return runOutcome(r, res, err)
+}
+
+// runOutcome is how a run ended for the person who started it: QEMU closed
+// with 0, the time asked for over, or the text waited for seen.
+func runOutcome(r runSettings, res qemu.Result, err error) error {
+	switch {
+	case err != nil:
+		return err
+	case r.until != "" && res.StepsDone == 0:
+		return fmt.Errorf("%q did not appear on the serial port", r.until)
+	case res.TimedOut || res.Stopped:
+		return nil
+	case res.ExitCode != 0:
 		return fmt.Errorf("QEMU exited with %d", res.ExitCode)
 	}
 	return nil
 }
 
-func runTest(env Env, args []string) error {
+// testScope says which tests sextant test runs.
+type testScope struct {
+	host, inQEMU bool
+}
+
+// parseTest says which tests sextant test runs: those on this machine,
+// those in QEMU, or both when neither is asked for.
+func parseTest(args []string) (testScope, error) {
 	flags := flag.NewFlagSet("test", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	host := flags.Bool("host", false, "only the tests that run on this machine")
-	inQEMU := flags.Bool("qemu", false, "only the tests that boot an image in QEMU")
+	hostOnly := flags.Bool("host", false, "only the tests that run on this machine")
+	qemuOnly := flags.Bool("qemu", false, "only the tests that boot an image in QEMU")
 	if err := parseNoArgs(flags, args); err != nil {
+		return testScope{}, err
+	}
+	both := !*hostOnly && !*qemuOnly
+	return testScope{host: *hostOnly || both, inQEMU: *qemuOnly || both}, nil
+}
+
+func runTest(env Env, args []string) error {
+	scope, err := parseTest(args)
+	if err != nil {
 		return err
 	}
-	all := !*host && !*inQEMU
 	s, err := openSession(env)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
-	if *host || all {
-		if err := s.hostTests(ctx); err != nil {
+	if scope.host {
+		if err := runSteps(ctx, s.hostSteps(), s.env.Stdout, s.env.Stderr); err != nil {
 			return err
 		}
 	}
-	if *inQEMU || all {
+	if scope.inQEMU {
 		return s.qemuTests(ctx)
 	}
 	return nil
 }
 
-func (s *session) hostTests(ctx context.Context) error {
-	steps := []struct {
-		dir  string
-		name string
-		args []string
-		env  []string
-	}{
+// step is one command and the folder it runs in, with additions to the
+// environment.
+type step struct {
+	dir  string
+	name string
+	args []string
+	env  []string
+}
+
+// hostSteps are the tests that run on this machine: Cargo's for every
+// crate, then Go's for sextant.
+func (s *session) hostSteps() []step {
+	return []step{
 		{s.root, "cargo", []string{"test", "--workspace", "--locked"}, []string{"CARGO_TARGET_DIR=" + s.settings.BuildDir}},
 		{filepath.Join(s.root, "tools", "sextant"), "go", []string{"test", "./..."}, nil},
 	}
-	for _, step := range steps {
-		fmt.Fprintf(s.env.Stdout, "== %s %s\n", step.name, strings.Join(step.args, " "))
-		cmd := exec.CommandContext(ctx, step.name, step.args...)
-		cmd.Dir = step.dir
-		cmd.Env = append(os.Environ(), step.env...)
-		cmd.Stdout, cmd.Stderr = s.env.Stdout, s.env.Stderr
+}
+
+// runSteps runs the steps one after the other, each named first, and stops
+// at the first that fails.
+func runSteps(ctx context.Context, steps []step, stdout, stderr io.Writer) error {
+	for _, st := range steps {
+		fmt.Fprintf(stdout, "== %s %s\n", st.name, strings.Join(st.args, " "))
+		cmd := exec.CommandContext(ctx, st.name, st.args...)
+		cmd.Dir = st.dir
+		cmd.Env = append(os.Environ(), st.env...)
+		cmd.Stdout, cmd.Stderr = stdout, stderr
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s %s failed: %w", step.name, strings.Join(step.args, " "), err)
+			return fmt.Errorf("%s %s failed: %w", st.name, strings.Join(st.args, " "), err)
 		}
 	}
 	return nil

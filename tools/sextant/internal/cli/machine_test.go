@@ -1,16 +1,21 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/cargo"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/config"
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/image"
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/qemu"
 )
 
 func needTool(t *testing.T, name string) {
@@ -189,12 +194,19 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 	if info, err := os.Stat(out); err != nil || info.Size() < 64<<20 {
 		t.Fatalf("image: %v, %v", info, err)
 	}
+	disk, err := os.ReadFile(out)
+	if err != nil || !bytes.Contains(disk, []byte(image.Settings)) || bytes.Contains(disk, []byte("default = example")) {
+		t.Errorf("a plain image should carry the default settings, not the test image's: %v", err)
+	}
 	r = runIn(realRoot(t), "build")
 	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
 	if r.code != ExitOK || len(lines) != 2 ||
 		!strings.HasSuffix(lines[0], filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi")) ||
 		!strings.HasSuffix(lines[1], filepath.Join("x86_64-unknown-none", "debug", "kernel")) {
 		t.Fatalf("exit %d, stdout %q", r.code, r.stdout)
+	}
+	if loader, err := os.ReadFile(lines[0]); err != nil || bytes.Contains(loader, []byte("TESTS DONE")) {
+		t.Errorf("build should make the loader without the test image's checks: %v", err)
 	}
 }
 
@@ -245,5 +257,139 @@ func TestQEMUTestsReportARunThatNeverFinishes(t *testing.T) {
 	err := s.qemuTests(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "the image never reported a test before the timeout") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDevelopmentKeysAreNamedAfterTheMachine(t *testing.T) {
+	for _, c := range []struct {
+		host string
+		err  error
+		want string
+	}{
+		{"workshop", nil, "Meridian development key, workshop"},
+		{"", nil, "Meridian development key, an unnamed machine"},
+		{"workshop", errors.New("no name to be had"), "Meridian development key, an unnamed machine"},
+	} {
+		if got := developmentKeyName(c.host, c.err); got != c.want {
+			t.Errorf("%q, %v: %q, want %q", c.host, c.err, got, c.want)
+		}
+	}
+}
+
+func TestRunSettingsFromTheCommandLine(t *testing.T) {
+	r, err := parseRun(nil)
+	if err != nil || !r.display || r.gdb || r.limit != 24*time.Hour || r.until != "" || r.v != (variant{}) {
+		t.Fatalf("defaults: %+v, %v", r, err)
+	}
+	r, err = parseRun([]string{"--headless", "--debug", "--for", "30s", "--until", "Meridian kernel", "--release"})
+	if err != nil || r.display || !r.gdb || r.limit != 30*time.Second || r.until != "Meridian kernel" || !r.v.release {
+		t.Fatalf("all set: %+v, %v", r, err)
+	}
+	for _, bad := range []string{"0s", "-1s"} {
+		var usage *UsageError
+		if _, err := parseRun([]string{"--for", bad}); !errors.As(err, &usage) || !strings.Contains(err.Error(), "--for takes a time") {
+			t.Errorf("--for %s: %v", bad, err)
+		}
+	}
+}
+
+func TestHowARunEnds(t *testing.T) {
+	broken := errors.New("QEMU would not start")
+	waiting := runSettings{until: "Meridian kernel"}
+	for _, c := range []struct {
+		name string
+		r    runSettings
+		res  qemu.Result
+		err  error
+		want string
+	}{
+		{"QEMU failed", runSettings{}, qemu.Result{}, broken, "QEMU would not start"},
+		{"closed", runSettings{}, qemu.Result{}, nil, ""},
+		{"crashed", runSettings{}, qemu.Result{ExitCode: 1}, nil, "QEMU exited with 1"},
+		{"time over", runSettings{}, qemu.Result{TimedOut: true, ExitCode: -1}, nil, ""},
+		{"text seen", waiting, qemu.Result{StepsDone: 1, Stopped: true, ExitCode: -1}, nil, ""},
+		{"text never seen", waiting, qemu.Result{TimedOut: true, ExitCode: -1}, nil, `"Meridian kernel" did not appear on the serial port`},
+		{"ended before the text", waiting, qemu.Result{}, nil, `"Meridian kernel" did not appear on the serial port`},
+	} {
+		err := runOutcome(c.r, c.res, c.err)
+		if (c.want == "") != (err == nil) || (err != nil && err.Error() != c.want) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestWhichTestsRun(t *testing.T) {
+	for _, c := range []struct {
+		args         []string
+		host, inQEMU bool
+	}{
+		{nil, true, true},
+		{[]string{"--host"}, true, false},
+		{[]string{"--qemu"}, false, true},
+		{[]string{"--host", "--qemu"}, true, true},
+	} {
+		scope, err := parseTest(c.args)
+		if err != nil || scope != (testScope{c.host, c.inQEMU}) {
+			t.Errorf("%q: %+v, %v", c.args, scope, err)
+		}
+	}
+}
+
+func TestTheHostTestsAreCargosThenGos(t *testing.T) {
+	s := testSession(filepath.Join("b", "uild"))
+	s.root = filepath.Join("r", "oot")
+	want := []step{
+		{s.root, "cargo", []string{"test", "--workspace", "--locked"}, []string{"CARGO_TARGET_DIR=" + filepath.Join("b", "uild")}},
+		{filepath.Join(s.root, "tools", "sextant"), "go", []string{"test", "./..."}, nil},
+	}
+	if got := s.hostSteps(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestStepsRunInTheirFolderAndStopAtAFailure(t *testing.T) {
+	needTool(t, "go")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module stepcheck\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	err := runSteps(t.Context(), []step{
+		{dir, "go", []string{"list", "-m"}, nil},
+		{dir, "go", []string{"env", "GOOS"}, []string{"GOOS=plan9"}},
+	}, &out, &errOut)
+	if err != nil || out.String() != "== go list -m\nstepcheck\n== go env GOOS\nplan9\n" {
+		t.Fatalf("%v\nstdout %q\nstderr %q", err, out.String(), errOut.String())
+	}
+	out.Reset()
+	err = runSteps(t.Context(), []step{
+		{dir, "go", []string{"no-such-command"}, nil},
+		{dir, "go", []string{"env", "GOOS"}, nil},
+	}, &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "go no-such-command failed") || out.String() != "== go no-such-command\n" {
+		t.Fatalf("%v\nstdout %q", err, out.String())
+	}
+}
+
+func TestTestStopsWhenTheHostTestsFail(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sextant.meri"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"test", "--host"}, {"test"}} {
+		r := runIn(dir, args...)
+		if r.code != ExitFailure || !strings.Contains(r.stderr, "cargo test --workspace --locked failed") ||
+			strings.Contains(r.stdout, "== go") || strings.Contains(r.stdout, "QEMU") {
+			t.Errorf("%q: exit %d\nstdout %s\nstderr %s", args, r.code, r.stdout, r.stderr)
+		}
+	}
+}
+
+func TestRunBootsTheRealImageUntilTheKernel(t *testing.T) {
+	needTool(t, "cargo")
+	needTool(t, "qemu-system-x86_64")
+	r := runIn(realRoot(t), "run", "--headless", "--until", "Meridian kernel", "--for", "3m")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Meridian boot") || !strings.Contains(r.stdout, "Meridian kernel") {
+		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
 	}
 }

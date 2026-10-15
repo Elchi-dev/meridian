@@ -18,7 +18,7 @@ system will get its own name later.
 | `doctor [--yes]` | checks Go, rustup and the pinned toolchain, QEMU, OVMF, KVM and the tools the tests check with, prints how to fix each, and installs what is missing with pacman, apt, dnf, zypper, Homebrew or winget after one "y" | works |
 | `build [part] [--release]` | builds the loader, and later the kernel and everything else, through Cargo | being built |
 | `image` | writes a bootable GPT disk image, and an ISO | being built; the writers work |
-| `run` | boots the image in QEMU with KVM, HVF or WHPX when available, serial output in the terminal | being built |
+| `run [--headless] [--debug] [--for 30s] [--until "text"]` | boots the image in QEMU with KVM, HVF or WHPX when available, serial output in the terminal; `--for` stops the machine after that long, `--until` once the text appears on the serial port, restarting a firmware that stalls, so `run --headless --until "Meridian kernel"` is a quick check that the image boots | works |
 | `test [--host] [--qemu] [--win]` | host tests, QEMU test images, Windows behaviour tests | being built |
 | `mutate [paths]` | mutation testing for Rust and Go | being built |
 | `debug` | like `run`, paused, with GDB attached | planned |

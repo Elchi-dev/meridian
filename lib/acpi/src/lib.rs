@@ -1,7 +1,8 @@
 //! Reads the ACPI tables the firmware leaves in memory (ACPI 6.5): the
 //! root pointer, the extended system description table that lists the
 //! others, the MADT with the processors, the FADT with the power
-//! management timer, and the HPET table. Memory is reached through a [`Memory`] the caller
+//! management timer, the HPET table, and the MCFG with where PCI's
+//! configuration space lies. Memory is reached through a [`Memory`] the caller
 //! provides, so the same code reads the real tables in the kernel and
 //! tables built byte by byte in the tests. Every table's checksum is
 //! checked before anything in it is believed.
@@ -233,6 +234,36 @@ pub fn hpet_address(hpet: &[u8]) -> Option<u64> {
         return None;
     }
     u64_at(hpet, 44).filter(|&address| address != 0)
+}
+
+/// Where the configuration space of a range of PCI buses lies in memory,
+/// as the PCI Express enhanced configuration access mechanism (ECAM) has
+/// it: 4 KiB for each function, 1 MiB for each bus from `first_bus` on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ecam {
+    pub base: u64,
+    pub segment: u16,
+    pub first_bus: u8,
+    pub last_bus: u8,
+}
+
+/// The ECAM regions the MCFG lists: entries of 16 bytes from byte 44 on,
+/// as far as the table goes.
+pub fn ecam_regions(mcfg: &[u8]) -> impl Iterator<Item = Ecam> + '_ {
+    let len = u32_at(mcfg, 4).map_or(0, |l| l as usize).min(mcfg.len());
+    mcfg.get(44..len)
+        .unwrap_or_default()
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|entry| Ecam {
+            base: u64::from_le_bytes([
+                entry[0], entry[1], entry[2], entry[3], entry[4], entry[5], entry[6], entry[7],
+            ]),
+            segment: u16::from_le_bytes([entry[8], entry[9]]),
+            first_bus: entry[10],
+            last_bus: entry[11],
+        })
 }
 
 #[cfg(test)]
@@ -624,6 +655,67 @@ mod tests {
         body[5] = 64;
         body[8..16].copy_from_slice(&address.to_le_bytes());
         sdt(*b"HPET", &body)
+    }
+
+    fn mcfg(entries: &[(u64, u16, u8, u8)]) -> Vec<u8> {
+        let mut body = vec![0u8; 8];
+        for &(base, segment, first, last) in entries {
+            body.extend_from_slice(&base.to_le_bytes());
+            body.extend_from_slice(&segment.to_le_bytes());
+            body.extend_from_slice(&[first, last, 0, 0, 0, 0]);
+        }
+        sdt(*b"MCFG", &body)
+    }
+
+    #[test]
+    fn the_mcfg_lists_where_configuration_space_lies() {
+        let one = mcfg(&[(0xb000_0000, 0, 0, 0xff)]);
+        let regions: Vec<Ecam> = ecam_regions(&one).collect();
+        assert_eq!(
+            regions,
+            [Ecam {
+                base: 0xb000_0000,
+                segment: 0,
+                first_bus: 0,
+                last_bus: 0xff
+            }]
+        );
+        let two = mcfg(&[(0xe000_0000, 0, 0, 0x7f), (0x1_0000_0000, 1, 0x80, 0xff)]);
+        let regions: Vec<Ecam> = ecam_regions(&two).collect();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(
+            (
+                regions[1].base,
+                regions[1].segment,
+                regions[1].first_bus,
+                regions[1].last_bus
+            ),
+            (0x1_0000_0000, 1, 0x80, 0xff)
+        );
+        assert_eq!(
+            ecam_regions(&mcfg(&[])).count(),
+            0,
+            "a table without entries"
+        );
+    }
+
+    #[test]
+    fn mcfg_entries_end_where_the_table_does() {
+        let mut t = mcfg(&[(0xb000_0000, 0, 0, 0xff), (0xc000_0000, 0, 0, 0xff)]);
+        assert_eq!(
+            ecam_regions(&t[..t.len() - 1]).count(),
+            1,
+            "a half entry is none"
+        );
+        t[4..8].copy_from_slice(&60u32.to_le_bytes());
+        assert_eq!(ecam_regions(&t).count(), 1, "its length says one entry");
+        t[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            ecam_regions(&t).count(),
+            2,
+            "a length past the bytes there are"
+        );
+        assert_eq!(ecam_regions(&t[..40]).count(), 0, "cut inside the header");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use core::arch::asm;
 use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::tables::{self, Gate, Pointer};
 use crate::{Features, apic, cr0, efer, serial};
@@ -491,14 +491,100 @@ pub fn x2apic_enabled() -> bool {
     apic::supported(cpuid(1)[2]) && unsafe { read_msr(apic::BASE_MSR) } & both == both
 }
 
-/// Writes an x2APIC register once the x2APIC is on, and does nothing
-/// before.
+/// Where the xAPIC's registers are reached, once [`enable_xapic`] was told;
+/// 0 before.
+static XAPIC_AT: AtomicU64 = AtomicU64::new(0);
+
+/// The physical page of this processor's APIC registers in xAPIC mode, or
+/// `None` on a processor without a local APIC.
+#[must_use]
+pub fn apic_base() -> Option<u64> {
+    if !apic::on_chip(cpuid(1)[3]) {
+        return None;
+    }
+    // SAFETY: IA32_APIC_BASE exists wherever a local APIC does, and reading
+    // it changes nothing.
+    Some(apic::base_address(unsafe { read_msr(apic::BASE_MSR) }))
+}
+
+/// Turns this processor's local APIC on in xAPIC mode, its registers
+/// reached at `registers`, and returns whether it is on. Every processor's
+/// APIC answers at the same address, so the other cores use the same page.
+///
+/// # Safety
+///
+/// `registers` must be where the page [`apic_base`] names is mapped,
+/// writable and uncached, for as long as the system runs.
+pub unsafe fn enable_xapic(registers: u64) -> bool {
+    if !apic::on_chip(cpuid(1)[3]) {
+        return false;
+    }
+    // SAFETY: the register exists wherever an APIC does; setting its
+    // enable bit keeps the base address, so no memory changes meaning.
+    unsafe { write_msr(apic::BASE_MSR, read_msr(apic::BASE_MSR) | apic::ENABLE) };
+    XAPIC_AT.store(registers, Ordering::Release);
+    true
+}
+
+/// Where the xAPIC's registers are reached, once it is on.
+#[must_use]
+pub fn xapic_registers() -> Option<u64> {
+    let at = XAPIC_AT.load(Ordering::Acquire);
+    (at != 0).then_some(at)
+}
+
+/// The register `register`, named by its x2APIC number, in the xAPIC's
+/// page at `at`.
+fn xapic_register(at: u64, register: u32) -> *mut u32 {
+    (at + apic::offset(register)) as *mut u32
+}
+
+/// Writes the APIC register `register`, named by its x2APIC number, in
+/// whichever mode the APIC is on, and does nothing before it is. In xAPIC
+/// mode a command waits for the last one to be delivered, then goes in
+/// two halves.
 fn write_apic(register: u32, value: u64) {
     if X2APIC_ON.load(Ordering::Acquire) {
         // SAFETY: the x2APIC is on, so its registers exist; callers here
         // only set up this processor's own timer and interrupts.
         unsafe { write_msr(register, value) };
+    } else if let Some(at) = xapic_registers() {
+        // SAFETY: the page at `at` holds this processor's APIC registers,
+        // mapped uncached, as enable_xapic was promised, and they take
+        // aligned 32-bit accesses.
+        unsafe {
+            if register == apic::COMMAND {
+                let (high, low) = apic::split_command(value);
+                while core::ptr::read_volatile(xapic_register(at, apic::COMMAND)) & apic::PENDING
+                    != 0
+                {
+                    core::hint::spin_loop();
+                }
+                core::ptr::write_volatile(xapic_register(at, apic::COMMAND + 1), high);
+                core::ptr::write_volatile(xapic_register(at, apic::COMMAND), low);
+            } else {
+                core::ptr::write_volatile(
+                    xapic_register(at, register),
+                    u32::try_from(value & 0xffff_ffff).unwrap_or(0),
+                );
+            }
+        }
     }
+}
+
+/// Reads the APIC register `register` in whichever mode the APIC is on, or
+/// `None` before it is.
+fn read_register(register: u32) -> Option<u64> {
+    if X2APIC_ON.load(Ordering::Acquire) {
+        // SAFETY: the x2APIC is on, so its registers exist; the registers
+        // read here change nothing by being read.
+        return Some(unsafe { read_msr(register) });
+    }
+    let at = xapic_registers()?;
+    // SAFETY: as in write_apic, and reading changes nothing.
+    Some(u64::from(unsafe {
+        core::ptr::read_volatile(xapic_register(at, register))
+    }))
 }
 
 /// Lets the APIC deliver interrupts, sending those it gives up on to
@@ -528,17 +614,12 @@ pub fn stop_apic_timer() {
     write_apic(apic::TIMER_INITIAL, 0);
 }
 
-/// The x2APIC register `register`, or 0 before the x2APIC is on. Only the
+/// The APIC register `register`, or 0 before the APIC is on. Only the
 /// QEMU checks read the timer's entry and the spurious register back.
 #[cfg(feature = "qemu-test")]
 #[must_use]
 pub fn read_apic(register: u32) -> u64 {
-    if !X2APIC_ON.load(Ordering::Acquire) {
-        return 0;
-    }
-    // SAFETY: the x2APIC is on, so its registers exist, and the checks
-    // only read ones whose reading changes nothing.
-    unsafe { read_msr(register) }
+    read_register(register).unwrap_or(0)
 }
 
 /// Waits until `done` says so or the time stamp counter has moved on by
@@ -564,27 +645,22 @@ pub fn spin(cycles: u64) {
     }
 }
 
-/// Where the APIC timer's count stands, or 0 before the x2APIC is on.
+/// Where the APIC timer's count stands, or 0 before the APIC is on.
 #[must_use]
 pub fn apic_timer_count() -> u32 {
-    if !X2APIC_ON.load(Ordering::Acquire) {
-        return 0;
-    }
-    // SAFETY: the x2APIC is on, so the register exists; reading it
-    // changes nothing.
-    let count = unsafe { read_msr(apic::TIMER_CURRENT) };
-    u32::try_from(count & 0xffff_ffff).unwrap_or(0)
+    read_register(apic::TIMER_CURRENT)
+        .map_or(0, |count| u32::try_from(count & 0xffff_ffff).unwrap_or(0))
 }
 
-/// This processor's APIC id, once the x2APIC is on.
+/// This processor's APIC id, once the APIC is on.
 #[must_use]
 pub fn apic_id() -> Option<u32> {
-    if !X2APIC_ON.load(Ordering::Acquire) {
-        return None;
-    }
-    // SAFETY: the x2APIC is on, so the register exists; reading it
-    // changes nothing.
-    u32::try_from(unsafe { read_msr(apic::ID) }).ok()
+    let id = u32::try_from(read_register(apic::ID)?).ok()?;
+    Some(if X2APIC_ON.load(Ordering::Acquire) {
+        id
+    } else {
+        apic::xapic_id(id)
+    })
 }
 
 /// Sends INIT to the processor whose APIC id is `id`, which stops it.

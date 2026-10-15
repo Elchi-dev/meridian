@@ -48,6 +48,7 @@ pub mod apic {
     pub const X2APIC: u64 = 1 << 10;
 
     pub const ID: u32 = 0x802;
+    pub const VERSION: u32 = 0x803;
     pub const END_OF_INTERRUPT: u32 = 0x80b;
     /// The interrupt command register, through which a processor sends
     /// interrupts to others.
@@ -111,6 +112,50 @@ pub mod apic {
     #[must_use]
     pub fn spurious(vector: u8) -> u64 {
         u64::from(vector) | 1 << 8
+    }
+
+    /// Whether the processor has a local APIC at all, given EDX of CPUID
+    /// leaf 1.
+    #[must_use]
+    pub fn on_chip(leaf_1_edx: u32) -> bool {
+        leaf_1_edx & 1 << 9 != 0
+    }
+
+    /// The physical address of the APIC's registers in xAPIC mode, from
+    /// `IA32_APIC_BASE`: the page in bits 12 to 51.
+    #[must_use]
+    pub fn base_address(base: u64) -> u64 {
+        base & 0x000f_ffff_ffff_f000
+    }
+
+    /// Where register `register`, named by its x2APIC number, lies in the
+    /// xAPIC's page: 16 bytes apart in the same order.
+    #[must_use]
+    pub fn offset(register: u32) -> u64 {
+        u64::from(register - 0x800) << 4
+    }
+
+    /// The two halves an xAPIC takes an interrupt command in, from the
+    /// command in x2APIC form: the high one with the destination in its top
+    /// byte, written first, and the low one, whose writing sends it.
+    #[must_use]
+    pub fn split_command(command: u64) -> (u32, u32) {
+        let destination = (command >> 32) as u32;
+        (
+            destination << 24,
+            u32::try_from(command & 0xffff_ffff).unwrap_or(0),
+        )
+    }
+
+    /// The bit of the low command half that is set while an xAPIC is still
+    /// delivering the last command.
+    pub const PENDING: u32 = 1 << 12;
+
+    /// The APIC id from an xAPIC's id register, which keeps it in the top
+    /// byte.
+    #[must_use]
+    pub fn xapic_id(register: u32) -> u32 {
+        register >> 24
     }
 
     /// The timer's count per period for `hz` interrupts a second, when it
@@ -290,6 +335,45 @@ mod tests {
                 assert_eq!(apic::init(id) ^ fixed, 0x500 | u64::from(vector));
             }
         }
+    }
+
+    #[test]
+    fn xapic_registers_lie_where_their_x2apic_numbers_say() {
+        assert!(apic::on_chip(1 << 9) && !apic::on_chip(!(1 << 9)));
+        assert_eq!(
+            apic::base_address(0xfee0_0900),
+            0xfee0_0000,
+            "flags and the BSP bit go"
+        );
+        assert_eq!(
+            apic::base_address(0xfff0_0000_0000_0000 | 0x1_2345_6000),
+            0x1_2345_6000
+        );
+        assert_eq!(apic::offset(apic::ID), 0x20);
+        assert_eq!(apic::offset(apic::VERSION), 0x30);
+        assert_eq!(apic::offset(apic::END_OF_INTERRUPT), 0xb0);
+        assert_eq!(apic::offset(apic::SPURIOUS), 0xf0);
+        assert_eq!(apic::offset(apic::COMMAND), 0x300);
+        assert_eq!(apic::offset(apic::LVT_TIMER), 0x320);
+        assert_eq!(apic::offset(apic::TIMER_INITIAL), 0x380);
+        assert_eq!(apic::offset(apic::TIMER_CURRENT), 0x390);
+        assert_eq!(apic::offset(apic::TIMER_DIVIDE), 0x3e0);
+    }
+
+    #[test]
+    fn an_xapic_takes_commands_in_two_halves() {
+        assert_eq!(apic::split_command(apic::init(3)), (0x0300_0000, 0x4500));
+        assert_eq!(
+            apic::split_command(apic::startup(0xff, 0x08)),
+            (0xff00_0000, 0x4608)
+        );
+        assert_eq!(
+            apic::split_command(apic::fixed(1, 0x21)),
+            (0x0100_0000, 0x4021)
+        );
+        assert_eq!(apic::PENDING, 0x1000);
+        assert_eq!(apic::xapic_id(0x0300_0000), 3);
+        assert_eq!(apic::xapic_id(0xff12_3456), 0xff);
     }
 
     #[test]

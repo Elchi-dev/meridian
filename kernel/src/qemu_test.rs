@@ -1055,6 +1055,24 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         ended_with(started, 0) && seen::logged(b"Hello from ring 3, in Rust"),
         "hello should run from its file, find every call working and greet",
     );
+    let every = [
+        abi::LOG,
+        abi::YIELD,
+        abi::SLEEP,
+        abi::TICKS,
+        abi::CHANNEL,
+        abi::SEND,
+        abi::RECEIVE,
+        abi::CLOSE,
+        abi::MAP,
+        abi::UNMAP,
+        abi::EXIT,
+    ];
+    report.check(
+        "kernel.programs.every_call",
+        every.iter().all(|&number| seen::calls(number) > 0) && seen::calls(abi::EXIT) == 1,
+        "hello's checks should reach the kernel with every call the runtime makes",
+    );
     report.check(
         "kernel.programs.cleaned",
         before.is_some() && free() == before,

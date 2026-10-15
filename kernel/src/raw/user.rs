@@ -235,7 +235,7 @@ fn finish() -> ! {
 /// answer goes back in rax.
 pub fn system_call(frame: &mut Frame) {
     #[cfg(feature = "qemu-test")]
-    seen::called_from(frame.cs);
+    seen::called_from(frame.cs, frame.rax);
     frame.rax = match syscall::decode(frame.rax, [frame.rdi, frame.rsi, frame.rdx, frame.r10]) {
         Call::Exit(code) => {
             let _ = writeln!(
@@ -1201,7 +1201,13 @@ pub mod seen {
     static LOG: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
     static LOG_LEN: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) fn called_from(cs: u64) {
+    /// How often each call was made since the last program started.
+    static CALLS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+
+    pub(super) fn called_from(cs: u64, number: u64) {
+        if let Some(count) = usize::try_from(number).ok().and_then(|n| CALLS.get(n)) {
+            count.fetch_add(1, Ordering::AcqRel);
+        }
         RING.store(cs & 3, Ordering::Release);
         let (_, ss) = x86::raw::segments();
         STACK_SEGMENT.store(u64::from(ss), Ordering::Release);
@@ -1268,7 +1274,19 @@ pub mod seen {
     }
 
     /// Forgets what thread `slot` and the last program left.
+    /// How often the call `number` was made since the last program
+    /// started.
+    pub fn calls(number: u64) -> u64 {
+        usize::try_from(number)
+            .ok()
+            .and_then(|n| CALLS.get(n))
+            .map_or(0, |c| c.load(Ordering::Acquire))
+    }
+
     pub fn forget(slot: usize) {
+        for count in &CALLS {
+            count.store(0, Ordering::Release);
+        }
         RING.store(0, Ordering::Release);
         STACK_SEGMENT.store(0, Ordering::Release);
         USER_ACCESS.store(false, Ordering::Release);

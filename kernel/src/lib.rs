@@ -335,19 +335,20 @@ pub fn drive_line(
     }
 }
 
-/// Writes the line the kernel logs for partition `number` of the disk on
-/// AHCI port `port`: its name, size, where it starts and its type.
+/// Writes the line the kernel logs for partition `number` of the disk
+/// `disk`, such as "AHCI port 0": its name, size, where it starts and its
+/// type.
 ///
 /// # Errors
 ///
 /// When `out` fails.
 pub fn partition_line(
     out: &mut impl Write,
-    port: usize,
+    disk: &dyn fmt::Display,
     number: usize,
     p: &gpt::Partition,
 ) -> fmt::Result {
-    write!(out, "AHCI port {port}, partition {number}: ")?;
+    write!(out, "{disk}, partition {number}: ")?;
     for c in p.name() {
         out.write_char(c)?;
     }

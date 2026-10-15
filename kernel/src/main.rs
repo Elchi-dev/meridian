@@ -42,42 +42,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     });
     let tsc_hz = tsc.map(|t| t.hz);
     let _ = kernel::describe(serial, &machine, tsc);
-    raw::pci::start(machine.ecam);
-    let mut controller = None;
-    raw::pci::each(|at, h| {
-        let _ = serial.write_str("kernel: ");
-        let _ = kernel::pci_function(serial, at, &h);
-        if (h.class, h.subclass, h.interface) == (0x01, 0x06, 0x01) && controller.is_none() {
-            controller = Some((at, h.bar(5)));
-        }
-    });
-    if let Some((at, pci::Bar::Memory { address, .. })) = controller {
-        raw::pci::enable(at);
-        raw::ahci::start(address);
-        for drive in raw::ahci::drives().iter().flatten() {
-            let _ = serial.write_str("kernel: ");
-            let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
-            let mut read = |lba, into: &mut [u8]| raw::ahci::read(drive.port, lba, into).is_ok();
-            if let Some(table) = kernel::disk::Table::read(&mut read) {
-                for (number, partition) in table.partitions() {
-                    let _ = serial.write_str("kernel: ");
-                    let _ = kernel::partition_line(serial, drive.port, number, &partition);
-                    let start = partition.first;
-                    let read = |lba, into: &mut [u8]| {
-                        raw::ahci::read(drive.port, start + lba, into).is_ok()
-                    };
-                    if let Ok(volume) = fat::Fat::open(read) {
-                        let _ = writeln!(
-                            serial,
-                            "kernel: partition {number} holds FAT32, {} clusters of {} bytes",
-                            volume.volume.clusters,
-                            volume.volume.cluster_bytes()
-                        );
-                    }
-                }
-            }
-        }
-    }
+    start_storage(machine.ecam, serial);
     raw::keep_modules(info, regions);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_cores();
@@ -114,6 +79,29 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
         free,
         serial,
     )
+}
+
+/// Finds every PCI function, logs it, and starts the first AHCI
+/// controller, logging each drive and what it holds.
+fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Com1) {
+    raw::pci::start(ecam);
+    let mut found = kernel::disk::Controllers::default();
+    raw::pci::each(|at, h| {
+        let _ = serial.write_str("kernel: ");
+        let _ = kernel::pci_function(serial, at, &h);
+        found.saw(at, &h);
+    });
+    if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
+        raw::pci::enable(at);
+        raw::ahci::start(address);
+        for drive in raw::ahci::drives().iter().flatten() {
+            let _ = serial.write_str("kernel: ");
+            let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
+            let mut read = |lba, into: &mut [u8]| raw::ahci::read(drive.port, lba, into).is_ok();
+            let name = format_args!("AHCI port {}", drive.port);
+            let _ = kernel::disk::describe(serial, &name, &mut read);
+        }
+    }
 }
 
 #[cfg(feature = "qemu-test")]

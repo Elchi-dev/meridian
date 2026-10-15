@@ -494,7 +494,6 @@ func runSteps(ctx context.Context, steps []step, stdout, stderr io.Writer) error
 // as well wherever KVM would pass the x2APIC through.
 func (s *session) qemuTests(ctx context.Context) error {
 	v := variant{testMode: true}
-	fmt.Fprintln(s.env.Stdout, "== QEMU test image")
 	b, err := s.buildBoot(ctx, v)
 	if err != nil {
 		return err
@@ -511,12 +510,33 @@ func (s *session) qemuTests(ctx context.Context) error {
 	if err := os.MkdirAll(screens, 0o755); err != nil {
 		return err
 	}
-	if err := s.testMachine(ctx, m, screens); err != nil {
-		return err
+	for _, pass := range testPasses(m, screens) {
+		fmt.Fprintln(s.env.Stdout, pass.title)
+		if err := s.testMachine(ctx, pass.machine, pass.screens); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(s.env.Stdout, "== QEMU test image without x2APIC")
-	m.WithoutX2APIC = true
-	return s.testMachine(ctx, m, "")
+	return nil
+}
+
+// testPass is one boot of the test image: its heading, the machine it
+// boots on, and where the screens it asks for go, if anywhere.
+type testPass struct {
+	title   string
+	machine qemu.Machine
+	screens string
+}
+
+// testPasses are the boots of the test image on m: first on a processor
+// as QEMU gives it, keeping its screens in screens, then on one without an
+// x2APIC.
+func testPasses(m qemu.Machine, screens string) []testPass {
+	without := m
+	without.WithoutX2APIC = true
+	return []testPass{
+		{title: "== QEMU test image", machine: m, screens: screens},
+		{title: "== QEMU test image without x2APIC", machine: without},
+	}
 }
 
 // testMachine boots the test image on m, prints each check, and keeps the

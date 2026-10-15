@@ -3,27 +3,35 @@
 //! itself, and the interrupt descriptor table (Intel SDM, volume 3,
 //! sections 3.4.5, 7.2.3, 7.7 and 6.14).
 
-/// Selectors, the byte offsets of the entries in [`gdt`].
+/// Selectors, the byte offsets of the entries in [`gdt`]. The user ones
+/// carry the privilege level 3 they are used with; user data comes before
+/// user code, as `sysret` will want it.
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
-pub const TASK_STATE: u16 = 0x18;
+pub const USER_DATA: u16 = 0x18 | 3;
+pub const USER_CODE: u16 = 0x20 | 3;
+pub const TASK_STATE: u16 = 0x28;
 
 /// 64-bit code: present, ring 0, readable, long mode.
 const CODE: u64 = 0x00af_9a00_0000_ffff;
 /// Data: present, ring 0, writable.
 const DATA: u64 = 0x00cf_9200_0000_ffff;
+/// The same two for ring 3.
+const USER_CODE_SEGMENT: u64 = 0x00af_fa00_0000_ffff;
+const USER_DATA_SEGMENT: u64 = 0x00cf_f200_0000_ffff;
 
-/// The global descriptor table: the null entry, kernel code, kernel data,
-/// and the two entries of the task state segment at `tss`.
+/// The global descriptor table: the null entry, kernel code and data, user
+/// data and code, and the two entries of the task state segment at `tss`.
 #[must_use]
-pub fn gdt(tss: u64) -> [u64; 5] {
+pub fn gdt(tss: u64) -> [u64; 7] {
     let [low, high] = task_state_descriptor(tss);
-    [SEGMENTS[0], SEGMENTS[1], SEGMENTS[2], low, high]
+    let [null, code, data, user_data, user_code] = SEGMENTS;
+    [null, code, data, user_data, user_code, low, high]
 }
 
-/// The entries every global descriptor table starts with: the null
-/// entry, kernel code and kernel data. Task states follow them.
-pub const SEGMENTS: [u64; 3] = [0, CODE, DATA];
+/// The entries every global descriptor table starts with: the null entry,
+/// kernel code and data, and user data and code. Task states follow them.
+pub const SEGMENTS: [u64; 5] = [0, CODE, DATA, USER_DATA_SEGMENT, USER_CODE_SEGMENT];
 
 /// The two entries of an available task state segment at `tss`.
 #[must_use]
@@ -204,7 +212,28 @@ mod tests {
         assert_eq!(data >> 47 & 1, 1, "present");
         assert_eq!(data >> 43 & 1, 0, "data");
         assert_eq!(data >> 41 & 1, 1, "writable");
-        assert_eq!([KERNEL_CODE, KERNEL_DATA, TASK_STATE], [8, 16, 24]);
+        assert_eq!(
+            [KERNEL_CODE, KERNEL_DATA, USER_DATA, USER_CODE, TASK_STATE],
+            [0x08, 0x10, 0x1b, 0x23, 0x28]
+        );
+    }
+
+    #[test]
+    fn user_descriptors_are_the_kernel_ones_for_ring_3() {
+        let table = gdt(0);
+        let user_code = table[usize::from(USER_CODE / 8)];
+        let user_data = table[usize::from(USER_DATA / 8)];
+        assert_eq!(user_code >> 45 & 3, 3, "code for ring 3");
+        assert_eq!(user_data >> 45 & 3, 3, "data for ring 3");
+        assert_eq!(user_code & !(3 << 45), table[usize::from(KERNEL_CODE / 8)]);
+        assert_eq!(user_data & !(3 << 45), table[usize::from(KERNEL_DATA / 8)]);
+        assert_eq!(USER_CODE & 3, 3, "selectors used from ring 3 ask for it");
+        assert_eq!(USER_DATA & 3, 3);
+        assert_eq!(
+            USER_CODE - USER_DATA,
+            8,
+            "data right before code, for sysret"
+        );
     }
 
     /// Base, limit and flags of a code or data descriptor, taken apart.
@@ -244,17 +273,17 @@ mod tests {
             0xffff_ffff_8765_4321,
         ] {
             let t = gdt(tss);
-            let base = (t[3] >> 16 & 0xff_ffff) | (t[3] >> 56 & 0xff) << 24 | t[4] << 32;
+            let base = (t[5] >> 16 & 0xff_ffff) | (t[5] >> 56 & 0xff) << 24 | t[6] << 32;
             assert_eq!(base, tss, "{tss:#x}");
-            assert_eq!(t[..3], gdt(0)[..3], "only the task state entries change");
+            assert_eq!(t[..5], gdt(0)[..5], "only the task state entries change");
         }
     }
 
     #[test]
     fn each_core_has_a_task_state_selector_of_its_own() {
         assert_eq!(task_state_selector(0), TASK_STATE);
-        assert_eq!(task_state_selector(1), 0x28);
-        assert_eq!(task_state_selector(63), 0x18 + 63 * 16);
+        assert_eq!(task_state_selector(1), 0x38);
+        assert_eq!(task_state_selector(63), 0x28 + 63 * 16);
         for core in 0..64 {
             let selector = task_state_selector(core);
             assert_eq!(selector & 0b111, 0, "core {core}: the GDT, ring 0");
@@ -271,24 +300,34 @@ mod tests {
         }
         assert_eq!(core_of_task_state(0), None, "nothing loaded yet");
         assert_eq!(core_of_task_state(0x10), None, "the data segment");
+        assert_eq!(core_of_task_state(0x23), None, "user code");
         assert_eq!(
-            core_of_task_state(0x20),
+            core_of_task_state(0x30),
             None,
             "the upper half of a descriptor"
         );
-        assert_eq!(core_of_task_state(0x1f), None);
+        assert_eq!(core_of_task_state(0x2f), None);
         for tss in [0, 0x1234, 0xffff_ffff_8012_3456] {
-            assert_eq!(task_state_descriptor(tss), gdt(tss)[3..5], "{tss:#x}");
+            assert_eq!(task_state_descriptor(tss), gdt(tss)[5..7], "{tss:#x}");
         }
-        assert_eq!(SEGMENTS, gdt(0)[..3]);
-        assert_eq!(SEGMENTS, [0, 0x00af_9a00_0000_ffff, 0x00cf_9200_0000_ffff]);
+        assert_eq!(SEGMENTS, gdt(0)[..5]);
+        assert_eq!(
+            SEGMENTS,
+            [
+                0,
+                0x00af_9a00_0000_ffff,
+                0x00cf_9200_0000_ffff,
+                0x00cf_f200_0000_ffff,
+                0x00af_fa00_0000_ffff
+            ]
+        );
     }
 
     #[test]
     fn the_task_state_descriptor_holds_its_address() {
         let tss = 0xffff_ffff_8012_3456;
         let table = gdt(tss);
-        let (low, high) = (table[3], table[4]);
+        let (low, high) = (table[5], table[6]);
         let base = (low >> 16 & 0xff_ffff) | (low >> 56 & 0xff) << 24 | high << 32;
         assert_eq!(base, tss);
         let limit = (low & 0xffff) | (low >> 48 & 0xf) << 16;
@@ -363,20 +402,20 @@ mod tests {
     #[test]
     fn task_state_descriptors_are_told_apart() {
         let table = gdt(0xffff_ffff_8000_9000);
-        assert!(is_task_state(table[3]), "available");
-        assert!(is_task_state(table[3] | 1 << 41), "busy");
-        assert!(!is_task_state(table[3] & !(1 << 47)), "not present");
+        assert!(is_task_state(table[5]), "available");
+        assert!(is_task_state(table[5] | 1 << 41), "busy");
+        assert!(!is_task_state(table[5] & !(1 << 47)), "not present");
         assert!(!is_task_state(table[0]), "the null entry");
         assert!(
-            !is_task_state(table[1]) && !is_task_state(table[2]),
-            "code and data"
+            table[1..5].iter().all(|&d| !is_task_state(d)),
+            "code and data, the kernel's and the user's"
         );
         assert!(
-            !is_task_state(table[3] & !(0x1f << 40) | 0x8c << 40),
+            !is_task_state(table[5] & !(0x1f << 40) | 0x8c << 40),
             "a call gate"
         );
         assert!(
-            !is_task_state(table[3] | 1 << 44),
+            !is_task_state(table[5] | 1 << 44),
             "the system bit must be clear"
         );
     }

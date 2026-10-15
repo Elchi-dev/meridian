@@ -45,9 +45,12 @@ const FAULT_STACK: usize = 16 * 1024;
 
 pub use kernel::CORES;
 
+/// How many entries the segments take before the task states.
+const SEGMENTS: usize = tables::SEGMENTS.len();
+
 struct Tables {
     /// The segments, then a task state for each core.
-    gdt: [u64; 3 + 2 * CORES],
+    gdt: [u64; SEGMENTS + 2 * CORES],
     task_states: [TaskState; CORES],
     idt: [Gate; 256],
     /// The first core's fault stack; the others get theirs from the frame
@@ -63,7 +66,7 @@ struct Shared(UnsafeCell<Tables>);
 unsafe impl Sync for Shared {}
 
 static TABLES: Shared = Shared(UnsafeCell::new(Tables {
-    gdt: [0; 3 + 2 * CORES],
+    gdt: [0; SEGMENTS + 2 * CORES],
     task_states: [const { TaskState::new() }; CORES],
     idt: [Gate::MISSING; 256],
     fault_stack: [0; FAULT_STACK],
@@ -114,8 +117,8 @@ pub fn install() {
     let t = unsafe { &mut *TABLES.0.get() };
     let stack_top = (&raw const t.fault_stack) as u64 + FAULT_STACK as u64;
     t.task_states[0].interrupt_stacks[0] = stack_top & !0xf;
-    t.gdt[..3].copy_from_slice(&tables::SEGMENTS);
-    t.gdt[3..5].copy_from_slice(&tables::task_state_descriptor(
+    t.gdt[..SEGMENTS].copy_from_slice(&tables::SEGMENTS);
+    t.gdt[SEGMENTS..SEGMENTS + 2].copy_from_slice(&tables::task_state_descriptor(
         (&raw const t.task_states[0]) as u64,
     ));
     for (vector, stub) in STUBS.iter().enumerate() {
@@ -153,7 +156,7 @@ pub fn prepare_core(number: usize, stack_top: u64) -> Option<u16> {
     unsafe {
         let state = &raw mut (*t).task_states[number];
         (*state).interrupt_stacks[0] = stack_top;
-        let entries = (&raw mut (*t).gdt).cast::<u64>().add(3 + 2 * number);
+        let entries = (&raw mut (*t).gdt).cast::<u64>().add(SEGMENTS + 2 * number);
         let [low, high] = tables::task_state_descriptor(state as u64);
         entries.write(low);
         entries.add(1).write(high);

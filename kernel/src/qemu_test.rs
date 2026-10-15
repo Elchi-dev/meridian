@@ -380,7 +380,8 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
     if x86::raw::apic_base().is_none() {
         report.check(
             "kernel.smp.alone",
-            raw::smp::running() == (0, 0, 0) && x86::raw::gdt_entries().get(5) == Some(&0),
+            raw::smp::running() == (0, 0, 0)
+                && x86::raw::gdt_entries().get(x86::tables::SEGMENTS.len() + 2) == Some(&0),
             "without a local APIC no other core should be started or given a task state",
         );
         return;
@@ -406,11 +407,17 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
         "every other core the MADT lists should have come into the kernel, on its own stack and the kernel's tables, and answered with its own APIC id",
     );
     let entries = x86::raw::gdt_entries();
+    let segments = x86::tables::SEGMENTS.len();
     let others = machine.cores.map_or(0, |n| n.saturating_sub(1) as usize);
     report.check(
         "kernel.smp.task_states",
-        (1..=others).all(|i| entries.get(3 + 2 * i).is_some_and(|e| e >> 40 & 0xf == 0xb))
-            && entries.get(3 + 2 * (others + 1)).is_some_and(|&e| e == 0),
+        (1..=others).all(|i| {
+            entries
+                .get(segments + 2 * i)
+                .is_some_and(|e| e >> 40 & 0xf == 0xb)
+        }) && entries
+            .get(segments + 2 * (others + 1))
+            .is_some_and(|&e| e == 0),
         "each other core should have loaded a task state of its own, and none past them be set up",
     );
     // Each one waits 10 ms after its INIT and twice 0.2 ms after its

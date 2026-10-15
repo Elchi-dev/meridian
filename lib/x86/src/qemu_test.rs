@@ -114,27 +114,29 @@ pub fn run(check: &mut impl FnMut(&str, bool, &str)) {
 /// of `cores`. They run from the kernel's test image, since the firmware
 /// needs its own tables while it runs.
 pub fn tables(interrupts: &[u8], cores: usize, check: &mut impl FnMut(&str, bool, &str)) {
-    use crate::tables::{KERNEL_CODE, KERNEL_DATA, TASK_STATE};
+    use crate::tables::{KERNEL_CODE, KERNEL_DATA, SEGMENTS, TASK_STATE};
 
+    let segments = SEGMENTS.len();
     let gdt = raw::gdt_register();
     check(
         "x86.gdt",
-        usize::from(gdt.limit) + 1 == (3 + 2 * cores) * 8 && { gdt.base } >= 0xffff_8000_0000_0000,
+        usize::from(gdt.limit) + 1 == (segments + 2 * cores) * 8 && { gdt.base }
+            >= 0xffff_8000_0000_0000,
         "the kernel's GDT, its segments and a task state for each core, should be loaded from the higher half",
     );
     let entries = raw::gdt_entries();
-    let tss = entries.get(3..5).map_or(0, |e| {
+    let tss = entries.get(segments..segments + 2).map_or(0, |e| {
         (e[0] >> 16 & 0xff_ffff) | (e[0] >> 56 & 0xff) << 24 | e[1] << 32
     });
+    let want = crate::tables::gdt(tss);
     check(
         "x86.gdt.entries",
-        entries.len() == 3 + 2 * cores
+        entries.len() == segments + 2 * cores
             && entries[0] == 0
-            && entries[1] & !(1 << 40) == crate::tables::gdt(tss)[1]
-            && entries[2] & !(1 << 40) == crate::tables::gdt(tss)[2]
-            && entries[3] & !(1 << 41) == crate::tables::gdt(tss)[3]
-            && entries[4] == crate::tables::gdt(tss)[4],
-        "the loaded GDT should hold the null, code, data and task state entries",
+            && (1..segments).all(|i| entries[i] & !(1 << 40) == want[i])
+            && entries[segments] & !(1 << 41) == want[segments]
+            && entries[segments + 1] == want[segments + 1],
+        "the loaded GDT should hold the null, kernel and user code and data, and task state entries",
     );
     check(
         "x86.segments",
@@ -151,7 +153,7 @@ pub fn tables(interrupts: &[u8], cores: usize, check: &mut impl FnMut(&str, bool
     // comparison above leaves those bits out.
     check(
         "x86.task_state.busy",
-        entries.get(3).is_some_and(|e| e >> 40 & 0xf == 0xb),
+        entries.get(segments).is_some_and(|e| e >> 40 & 0xf == 0xb),
         "loading the task register should mark its descriptor busy",
     );
     let idt = raw::idt_register();

@@ -102,9 +102,11 @@ Loader and UEFI:
 - [ ] Threads move between cores when one is busier than another
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
 - [x] An address space of its own for every program, given back whole when it ends; the kernel's half shared by all
-- [ ] Objects, handles with access masks, security tokens
+- [x] Handles with access masks, in a table per program, with generations so a closed handle reaches nothing (`lib/handles`)
+- [ ] Security tokens
 - [ ] `.mexec` loader (ELF with Meridian note sections)
-- [ ] IPC channels that carry handles
+- [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)
+- [ ] Channels that carry handles
 - [ ] KASLR
 
 ## M4: Storage and Strata

@@ -210,6 +210,25 @@ wakes there on time.
 Typed message channels that can carry handles, used by every service and by
 the Windows personality.
 
+What exists: channels between programs. A program reaches kernel objects
+only through handles in its own table (`lib/handles`): a number that holds
+the slot and the slot's generation, so a closed handle never reaches the
+object that later takes its slot, and the rights it has, of which a
+duplicate can only keep some. A channel (`lib/channel`) has two ends and a
+queue of up to eight messages of up to 128 bytes each way; once one end is
+closed the other reads what was sent before and then learns it is closed.
+Four system calls use them: make a channel, which hands back a handle to
+each end, send, receive, which leaves a message in place when its room is
+too small, and close. Every address and length is checked against the
+program's own address space first: what it sends has to be readable by it,
+the room it receives into writable. When a program ends, every handle it
+held is closed, and a channel goes once both its ends are. The test image
+has a program talk to itself, two programs on different cores talk to each
+other, and checks a closed end, a handle never handed out, a handle without
+the right to write, a full channel, a room too small, read only memory as
+room, and that no channel is left once the programs ended. Handles do not
+travel through channels yet.
+
 ## The screens the kernel draws itself (M1)
 
 - **Status screen.** The CPU cores found in the ACPI MADT, the memory map

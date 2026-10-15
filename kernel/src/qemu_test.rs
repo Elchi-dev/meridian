@@ -607,6 +607,7 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
     );
     thread_checks(report, tsc_hz.unwrap_or(0));
     user_checks(report);
+    ipc_checks(report);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);
@@ -840,6 +841,84 @@ fn ran(program: &'static raw::user::Program, argument: u64) -> Option<usize> {
         .then_some(slot)
 }
 
+/// Waits up to a second for the thread `slot` to end, and says whether it
+/// ended with `code`.
+fn ended_with(slot: Option<usize>, code: u64) -> bool {
+    let ended = (0..100).any(|_| {
+        raw::thread::sleep(1);
+        slot.is_some_and(|s| !raw::thread::alive(s))
+    });
+    ended && slot.is_some_and(|s| raw::user::seen::exit_of(s) == code)
+}
+
+/// Channels between programs: one program talks to itself, two on
+/// different cores talk to each other, a closed end shows as closed, a
+/// handle a program never got reaches nothing, and every channel goes once
+/// its ends are closed.
+fn ipc_checks<W: Write>(report: &mut Report<'_, W>) {
+    use handles::Rights;
+    use kernel::syscall::{BAD_HANDLE, CLOSED, DENIED, FULL, TOO_SMALL};
+    use raw::user::{probe, seen, start_holding};
+    let ends = Rights::READ | Rights::WRITE;
+    report.check(
+        "kernel.ipc.pair",
+        ended_with(ran(&probe::PAIR, 0), 5) && seen::logged(b"hello"),
+        "a program should send itself a message through a channel it made",
+    );
+    let other = raw::smp::others().next().unwrap_or(0);
+    let talk = raw::ipc::create().map(|(a, b)| {
+        let receiver = start_holding(other, &probe::RECEIVER, &[b], ends).ok();
+        let sender = start_holding(0, &probe::SENDER, &[a], ends).ok();
+        (receiver, sender)
+    });
+    report.check(
+        "kernel.ipc.between",
+        talk.is_some_and(|(receiver, sender)| ended_with(receiver, 4) && ended_with(sender, 0))
+            && seen::logged(b"ping"),
+        "two programs on different cores should talk through a channel",
+    );
+    let left_alone = raw::ipc::create().and_then(|(a, b)| {
+        let receiver = start_holding(0, &probe::RECEIVER, &[b], ends).ok();
+        raw::ipc::close(a);
+        receiver
+    });
+    report.check(
+        "kernel.ipc.closed",
+        ended_with(left_alone, CLOSED),
+        "a program waiting at a channel whose other end closed should learn it is closed",
+    );
+    report.check(
+        "kernel.ipc.bad_handle",
+        ended_with(ran(&probe::BAD_HANDLE, 0), BAD_HANDLE),
+        "a handle a program never got should reach nothing",
+    );
+    report.check(
+        "kernel.ipc.full",
+        ended_with(ran(&probe::FILL, 0), FULL),
+        "a channel should take eight messages and refuse the ninth",
+    );
+    report.check(
+        "kernel.ipc.too_small",
+        ended_with(ran(&probe::SMALL_ROOM, 0), TOO_SMALL),
+        "a message should stay when its room is too small, and read only memory be no room at all",
+    );
+    let denied = raw::ipc::create().and_then(|(a, b)| {
+        let sender = start_holding(0, &probe::SENDER, &[a], Rights::READ).ok();
+        raw::ipc::close(b);
+        sender
+    });
+    report.check(
+        "kernel.ipc.denied",
+        ended_with(denied, DENIED),
+        "a handle without the right to write should not send",
+    );
+    report.check(
+        "kernel.ipc.freed",
+        raw::ipc::live() == 0,
+        "every channel should go once both its ends are closed, by a program or by its end",
+    );
+}
+
 /// Whether thread `slot` ended by a fault of `vector` rather than exiting.
 fn ended_by(slot: Option<usize>, vector: u64) -> bool {
     use raw::user::seen;
@@ -911,6 +990,16 @@ fn user_checks<W: Write>(report: &mut Report<'_, W>) {
             && exits(ran(&probe::LONG_LOG, 0), TOO_LONG)
             && exits(ran(&probe::UNKNOWN, 0), NO_SUCH_CALL),
         "a system call should refuse the kernel's memory, a line too long and a number that is no call",
+    );
+    report.check(
+        "kernel.user.empty_log",
+        exits(ran(&probe::EMPTY_LOG, 0), 0),
+        "a line of no bytes should be logged from anywhere",
+    );
+    report.check(
+        "kernel.user.edge",
+        exits(ran(&probe::EDGE_LOG, 0), 0) && seen::logged(b"lastword"),
+        "a line that ends exactly at the end of its page should be read whole",
     );
     report.check(
         "kernel.user.yield",

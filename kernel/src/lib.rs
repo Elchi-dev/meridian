@@ -10,6 +10,7 @@ pub mod display;
 pub mod exceptions;
 pub mod hpet;
 pub mod machine;
+pub mod object;
 pub mod panic;
 pub mod screen;
 pub mod syscall;

@@ -105,6 +105,7 @@ pub fn take(regions: &[MemoryRegion]) -> Option<usize> {
     if TAKEN.swap(true, Ordering::AcqRel) {
         return None;
     }
+    KERNEL_ROOT.store(x86::raw::read_cr3() & !0xfff, Ordering::Release);
     let words = Frames::words_for(kernel::ram_top(regions));
     let bytes = words as u64 * 8;
     let home = kernel::bits_home(regions, bytes)?;
@@ -134,24 +135,20 @@ pub fn take(regions: &[MemoryRegion]) -> Option<usize> {
 /// at boot; 0 before.
 static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
 
-/// The kernel's level 4 table: the one CR3 held at boot, or before that
-/// the one it holds now.
+/// The kernel's level 4 table, the one CR3 held when the memory was set
+/// up.
 pub fn kernel_root() -> u64 {
-    match KERNEL_ROOT.load(Ordering::Acquire) {
-        0 => x86::raw::read_cr3() & !0xfff,
-        root => root,
-    }
+    KERNEL_ROOT.load(Ordering::Acquire)
 }
 
 /// Gives every slot of the kernel's half of its level 4 table a table, so
 /// an address space that copies that half sees whatever the kernel maps
-/// there later. Returns false when frames ran out first.
-pub fn prepare_kernel_half() -> bool {
-    let root = x86::raw::read_cr3() & !0xfff;
-    KERNEL_ROOT.store(root, Ordering::Release);
+/// there later. It stops early only when frames run out.
+pub fn prepare_kernel_half() {
+    let root = kernel_root();
     let mut frames = FRAMES.lock();
     let Some(frames) = frames.as_mut() else {
-        return false;
+        return;
     };
     let mut tables = KernelTables(frames);
     for slot in 256..512 {
@@ -159,12 +156,11 @@ pub fn prepare_kernel_half() -> bool {
             continue;
         }
         let Some(table) = paging::Frames::allocate(&mut tables) else {
-            return false;
+            break;
         };
         paging::Frames::table(&mut tables, root)[slot] =
             table | (Flags::PRESENT | Flags::WRITABLE).0;
     }
-    true
 }
 
 /// Whether every slot of the kernel's half of its level 4 table has a
@@ -348,23 +344,30 @@ pub fn translate(virt: u64) -> Option<(u64, Flags)> {
 /// Whether every one of the `len` bytes at `at` lies in the user half and
 /// is mapped for ring 3, so the kernel may read them for a system call.
 pub fn user_readable(at: u64, len: u64) -> bool {
-    if !kernel::syscall::in_user_half(at, len) {
-        return false;
-    }
-    if len == 0 {
-        return true;
-    }
-    let mut frames = FRAMES.lock();
-    let Some(frames) = frames.as_mut() else {
-        return false;
-    };
-    let space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
-    let (first, last) = (at & !0xfff, (at + len - 1) & !0xfff);
-    (first..=last).step_by(4096).all(|page| {
-        space
-            .translate(&mut KernelTables(frames), page)
-            .is_some_and(|(_, flags, _)| flags.contains(Flags::USER))
-    })
+    user_mapped(at, len, Flags::USER)
+}
+
+/// Whether every one of the `len` bytes at `at` lies in the user half and
+/// is mapped for ring 3 to write, so the kernel may write them for a
+/// system call.
+pub fn user_writable(at: u64, len: u64) -> bool {
+    user_mapped(at, len, Flags::USER | Flags::WRITABLE)
+}
+
+/// Whether every one of the `len` bytes at `at` lies in the user half and
+/// is mapped with `flags` in the address space running now.
+fn user_mapped(at: u64, len: u64, flags: Flags) -> bool {
+    kernel::syscall::in_user_half(at, len)
+        && (len == 0
+            || FRAMES.lock().as_mut().is_some_and(|frames| {
+                let space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+                let (first, last) = (at & !0xfff, (at + len - 1) & !0xfff);
+                (first..=last).step_by(4096).all(|page| {
+                    space
+                        .translate(&mut KernelTables(frames), page)
+                        .is_some_and(|(_, mapped, _)| mapped.contains(flags))
+                })
+            }))
 }
 
 /// The 8 bytes at `virt`. Only the test image reads memory this way, and

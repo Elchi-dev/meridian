@@ -1,20 +1,45 @@
 //! Ring 3. Every program gets an address space of its own, whose kernel
 //! half is the kernel's: its machine code and a stack page are mapped for
-//! ring 3 in its lower half, and a thread of its own enters it. System
+//! ring 3 in its lower half, and a thread of its own enters it. It also
+//! gets a handle table, its way to kernel objects such as channels. System
 //! calls and faults bring the thread back into the kernel, on its kernel
 //! stack; a fault in ring 3 ends only that program. Once it ends, its
-//! address space and everything in it go back to the frame allocator.
+//! handles are closed and its address space and everything in it go back
+//! to the frame allocator.
 
 use alloc::boxed::Box;
 use core::arch::global_asm;
 use core::fmt::Write;
 
+use channel::MESSAGE;
+use handles::{Handle, Rights, Table};
 use kernel::syscall::{self, Call};
+use kernel::thread::THREADS;
 use paging::Flags;
 
 use super::interrupts::Frame;
-use super::memory;
-use super::thread;
+use super::memory::{self, Spin};
+use super::{ipc, thread};
+
+/// The handles a program holds, at most this many.
+const HANDLES: usize = 64;
+
+/// What the kernel keeps for a program besides its address space.
+struct Process {
+    handles: Table<HANDLES>,
+}
+
+/// Each program's process, by the number of its thread.
+static PROCESSES: Spin<[Option<Box<Process>>; THREADS]> = Spin::new([const { None }; THREADS]);
+
+/// The rights a program has to the channel ends it holds.
+const ENDS: Rights = Rights(Rights::READ.0 | Rights::WRITE.0 | Rights::TRANSFER.0);
+
+/// What a program's thread takes with it into ring 3.
+struct Start {
+    argument: u64,
+    process: Box<Process>,
+}
 
 /// Where a program's code goes, and the top of its stack.
 pub const CODE_AT: u64 = 0x40_0000;
@@ -41,6 +66,53 @@ pub enum Error {
 /// When no memory is left for the address space, or the thread cannot
 /// start.
 pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<usize, Error> {
+    launch(
+        core,
+        program,
+        argument,
+        Box::new(Process {
+            handles: Table::new(),
+        }),
+    )
+}
+
+/// Starts `program` as [`start`] does, holding a handle with `rights` to
+/// each of the channel ends `objects` from the start; the first one's
+/// handle is its argument. Only the test image hands programs handles at
+/// their start yet.
+///
+/// # Errors
+///
+/// As for [`start`], and when the handles do not fit its table.
+#[cfg(feature = "qemu-test")]
+pub fn start_holding(
+    core: usize,
+    program: &'static Program,
+    objects: &[u64],
+    rights: Rights,
+) -> Result<usize, Error> {
+    let mut process = Box::new(Process {
+        handles: Table::new(),
+    });
+    let mut first = 0;
+    for (i, &object) in objects.iter().enumerate() {
+        let handle = process
+            .handles
+            .insert(object, rights)
+            .map_err(|_| Error::NoMemory)?;
+        if i == 0 {
+            first = u64::from(handle.0);
+        }
+    }
+    launch(core, program, first, process)
+}
+
+fn launch(
+    core: usize,
+    program: &'static Program,
+    argument: u64,
+    process: Box<Process>,
+) -> Result<usize, Error> {
     let root = memory::new_space().ok_or(Error::NoMemory)?;
     let stack = Flags::USER | Flags::WRITABLE | Flags::NO_EXECUTE;
     let mapped = memory::map_fresh_in(root, CODE_AT, Flags::USER, (program.code)()).is_ok()
@@ -49,19 +121,23 @@ pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<us
         memory::release_space(root);
         return Err(Error::NoMemory);
     }
-    let argument = Box::into_raw(Box::new(argument)) as u64;
-    thread::spawn_in(core, root, run, argument, thread::NORMAL).map_err(|e| {
+    let start = Box::into_raw(Box::new(Start { argument, process })) as u64;
+    thread::spawn_in(core, root, run, start, thread::NORMAL).map_err(|e| {
         // SAFETY: the box made just above, which no thread took.
-        drop(unsafe { Box::from_raw(argument as *mut u64) });
+        drop(unsafe { Box::from_raw(start as *mut Start) });
         memory::release_space(root);
         Error::Thread(e)
     })
 }
 
-/// The program's thread, in its own address space: enters ring 3.
-extern "C" fn run(argument: u64) {
-    // SAFETY: start hands each thread the box it made for it, once.
-    let argument = *unsafe { Box::from_raw(argument as *mut u64) };
+/// The program's thread, in its own address space: keeps its process and
+/// enters ring 3.
+extern "C" fn run(start: u64) {
+    // SAFETY: launch hands each thread the box it made for it, once.
+    let Start { argument, process } = *unsafe { Box::from_raw(start as *mut Start) };
+    if let Some(slot) = PROCESSES.lock().get_mut(thread::current()) {
+        *slot = Some(process);
+    }
     // SAFETY: start mapped the code and stack pages for ring 3 in this
     // thread's address space, which the switch to it loaded, every switch
     // to it put its kernel stack in the task state, and the IDT has the
@@ -69,9 +145,17 @@ extern "C" fn run(argument: u64) {
     unsafe { x86::raw::enter_user(CODE_AT, STACK_TOP, argument) }
 }
 
-/// Ends the program: back on the kernel's address space, its own goes back
-/// to the frame allocator, and its thread ends.
+/// Ends the program: its handles are closed, and back on the kernel's
+/// address space, its own goes back to the frame allocator, and its thread
+/// ends.
 fn finish() -> ! {
+    let process = PROCESSES
+        .lock()
+        .get_mut(thread::current())
+        .and_then(Option::take);
+    if let Some(mut process) = process {
+        process.handles.close_all(ipc::close);
+    }
     let root = thread::current_root();
     // SAFETY: the kernel's address space maps all the kernel does, this
     // stack included.
@@ -87,7 +171,7 @@ fn finish() -> ! {
 pub fn system_call(frame: &mut Frame) {
     #[cfg(feature = "qemu-test")]
     seen::RING.store(frame.cs & 3, core::sync::atomic::Ordering::Release);
-    frame.rax = match syscall::decode(frame.rax, frame.rdi, frame.rsi) {
+    frame.rax = match syscall::decode(frame.rax, frame.rdi, frame.rsi, frame.rdx) {
         Call::Exit(code) => {
             let _ = writeln!(
                 x86::raw::Com1::already_open(),
@@ -107,8 +191,110 @@ pub fn system_call(frame: &mut Frame) {
             0
         }
         Call::Ticks => super::interrupts::ticks(),
+        Call::Channel => match make_channel() {
+            Ok((a, b)) => {
+                frame.rdx = b;
+                a
+            }
+            Err(e) => e,
+        },
+        Call::Send { handle, at, len } => send(handle, at, len).map_or_else(|e| e, |()| 0),
+        Call::Receive { handle, at, room } => receive(handle, at, room).unwrap_or_else(|e| e),
+        Call::Close(handle) => close(handle).map_or_else(|e| e, |()| 0),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
+}
+
+/// Runs `with` on the running program's handle table.
+fn with_handles<R>(with: impl FnOnce(&mut Table<HANDLES>) -> Result<R, u64>) -> Result<R, u64> {
+    let mut processes = PROCESSES.lock();
+    let process = processes
+        .get_mut(thread::current())
+        .and_then(Option::as_mut);
+    with(&mut process.ok_or(syscall::BAD_HANDLE)?.handles)
+}
+
+/// The object a handle of the running program stands for, when it allows
+/// `needed`.
+fn object(handle: u64, needed: Rights) -> Result<u64, u64> {
+    let handle = Handle(u32::try_from(handle).map_err(|_| syscall::BAD_HANDLE)?);
+    with_handles(|t| {
+        t.get(handle, needed).map_err(|e| match e {
+            handles::Error::Denied(_) => syscall::DENIED,
+            _ => syscall::BAD_HANDLE,
+        })
+    })
+}
+
+/// A channel error as the answer to a system call.
+fn answer(e: channel::Error) -> u64 {
+    match e {
+        channel::Error::TooLong => syscall::TOO_LONG,
+        channel::Error::Full => syscall::FULL,
+        channel::Error::Empty => syscall::EMPTY,
+        channel::Error::TooSmall(_) => syscall::TOO_SMALL,
+        channel::Error::Closed => syscall::CLOSED,
+    }
+}
+
+/// A new channel, and the running program's handles to its two ends.
+fn make_channel() -> Result<(u64, u64), u64> {
+    let (a, b) = ipc::create().ok_or(syscall::NO_ROOM)?;
+    let handles = with_handles(|t| {
+        let first = t.insert(a, ENDS).map_err(|_| syscall::NO_ROOM)?;
+        let Ok(second) = t.insert(b, ENDS) else {
+            let _ = t.close(first);
+            return Err(syscall::NO_ROOM);
+        };
+        Ok((u64::from(first.0), u64::from(second.0)))
+    });
+    if handles.is_err() {
+        ipc::close(a);
+        ipc::close(b);
+    }
+    handles
+}
+
+/// Sends the `len` bytes at `at` through the channel end `handle` stands
+/// for.
+fn send(handle: u64, at: u64, len: u64) -> Result<(), u64> {
+    let count = usize::try_from(len)
+        .ok()
+        .filter(|&n| n <= MESSAGE)
+        .ok_or(syscall::TOO_LONG)?;
+    if !memory::user_readable(at, len) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let end = object(handle, Rights::WRITE)?;
+    let mut message = [0u8; MESSAGE];
+    // SAFETY: user_readable found every byte mapped for ring 3 in this
+    // program's address space, which only this thread runs.
+    unsafe { core::ptr::copy_nonoverlapping(at as *const u8, message.as_mut_ptr(), count) };
+    ipc::send(end, &message[..count]).map_err(answer)
+}
+
+/// Takes the next message for the channel end `handle` stands for into
+/// the `room` bytes at `at`, and answers its length.
+fn receive(handle: u64, at: u64, room: u64) -> Result<u64, u64> {
+    if !memory::user_writable(at, room) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let end = object(handle, Rights::READ)?;
+    let room = usize::try_from(room).unwrap_or(MESSAGE).min(MESSAGE);
+    let mut message = [0u8; MESSAGE];
+    let len = ipc::receive(end, &mut message[..room]).map_err(answer)?;
+    // SAFETY: user_writable found every byte of the room mapped writable
+    // for ring 3 in this program's address space, and len fits in it.
+    unsafe { core::ptr::copy_nonoverlapping(message.as_ptr(), at as *mut u8, len) };
+    Ok(len as u64)
+}
+
+/// Closes `handle`, and the channel end it stood for.
+fn close(handle: u64) -> Result<(), u64> {
+    let handle = Handle(u32::try_from(handle).map_err(|_| syscall::BAD_HANDLE)?);
+    let object = with_handles(|t| t.close(handle).map_err(|_| syscall::BAD_HANDLE))?;
+    ipc::close(object);
+    Ok(())
 }
 
 /// Writes the program's line to the log, once it is sure every byte is
@@ -329,6 +515,164 @@ pub mod probe {
         "mov eax, {exit}",
         "int 0x2e",
         "ud2",
+        // Makes a channel, sends itself "hello" through one end, takes it
+        // at the other, logs it and ends with its length.
+        ".global meridian_pair_start",
+        "meridian_pair_start:",
+        "mov eax, {channel}",
+        "int 0x2e",
+        "mov r12, rax",
+        "mov r13, rdx",
+        "mov rdi, r12",
+        "lea rsi, [rip + 6f]",
+        "mov edx, 5",
+        "mov eax, {send}",
+        "int 0x2e",
+        "mov rdi, r13",
+        "lea rsi, [rsp - 256]",
+        "mov edx, 128",
+        "mov eax, {receive}",
+        "int 0x2e",
+        "mov r14, rax",
+        "mov rdi, r14",
+        "lea rsi, [rsp - 256]",
+        "mov eax, {log}",
+        "int 0x2e",
+        "mov rdi, r14",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        "6: .ascii \"hello\"",
+        // Sends "ping" through the channel end its handle in rdi stands
+        // for, and ends with the answer.
+        ".global meridian_sender_start",
+        "meridian_sender_start:",
+        "lea rsi, [rip + 7f]",
+        "mov edx, 4",
+        "mov eax, {send}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        "7: .ascii \"ping\"",
+        // Waits for a message at the channel end its handle in rdi stands
+        // for, sleeping a tick while none is there, logs it and ends with
+        // its length, or with what it got instead.
+        ".global meridian_receiver_start",
+        "meridian_receiver_start:",
+        "mov rbx, rdi",
+        "8:",
+        "mov rdi, rbx",
+        "lea rsi, [rsp - 256]",
+        "mov edx, 128",
+        "mov eax, {receive}",
+        "int 0x2e",
+        "mov r12, rax",
+        "mov rcx, {empty}",
+        "cmp rax, rcx",
+        "jne 9f",
+        "mov edi, 1",
+        "mov eax, {sleep}",
+        "int 0x2e",
+        "jmp 8b",
+        "9:",
+        "mov rdi, r12",
+        "lea rsi, [rsp - 256]",
+        "mov eax, {log}",
+        "int 0x2e",
+        "mov rdi, r12",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // Logs nothing at all.
+        ".global meridian_empty_log_start",
+        "meridian_empty_log_start:",
+        "xor edi, edi",
+        "xor esi, esi",
+        "mov eax, {log}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // Logs the last 8 bytes of its stack page, up to the very end.
+        ".global meridian_edge_log_start",
+        "meridian_edge_log_start:",
+        "movabs rax, 0x64726f777473616c",
+        "mov [0x7ffff8], rax",
+        "mov esi, 0x7ffff8",
+        "mov edi, 8",
+        "mov eax, {log}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // Sends nine messages into a channel of its own that takes eight,
+        // and ends with the last answer.
+        ".global meridian_fill_start",
+        "meridian_fill_start:",
+        "mov eax, {channel}",
+        "int 0x2e",
+        "mov r12, rax",
+        "mov r15, 9",
+        "10:",
+        "mov rdi, r12",
+        "lea rsi, [rip]",
+        "mov edx, 1",
+        "mov eax, {send}",
+        "int 0x2e",
+        "dec r15",
+        "jnz 10b",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // Sends itself 5 bytes and gives 2 of room to take them, then
+        // gives its read only code as the room.
+        ".global meridian_small_room_start",
+        "meridian_small_room_start:",
+        "mov eax, {channel}",
+        "int 0x2e",
+        "mov r12, rax",
+        "mov r13, rdx",
+        "mov rdi, r12",
+        "lea rsi, [rip]",
+        "mov edx, 5",
+        "mov eax, {send}",
+        "int 0x2e",
+        "mov rdi, r13",
+        "lea rsi, [rsp - 64]",
+        "mov edx, 2",
+        "mov eax, {receive}",
+        "int 0x2e",
+        "mov r14, rax",
+        "mov rdi, r13",
+        "lea rsi, [rip]",
+        "mov edx, 8",
+        "mov eax, {receive}",
+        "int 0x2e",
+        "mov rcx, {bad_address}",
+        "cmp rax, rcx",
+        "jne 11f",
+        "mov rdi, r14",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "11:",
+        "ud2",
+        // Sends through a handle it never got.
+        ".global meridian_bad_handle_start",
+        "meridian_bad_handle_start:",
+        "mov edi, 999",
+        "lea rsi, [rip]",
+        "mov edx, 1",
+        "mov eax, {send}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
         // Ends with 42, by way of its stack.
         ".global meridian_stack_start",
         "meridian_stack_start:",
@@ -346,6 +690,11 @@ pub mod probe {
         ticks = const syscall::TICKS,
         too_long = const syscall::LOG_MAX + 1,
         yield_now = const syscall::YIELD,
+        channel = const syscall::CHANNEL,
+        send = const syscall::SEND,
+        receive = const syscall::RECEIVE,
+        empty = const syscall::EMPTY,
+        bad_address = const syscall::BAD_ADDRESS,
     );
 
     unsafe extern "C" {
@@ -361,6 +710,14 @@ pub mod probe {
         static meridian_spinner_start: u8;
         static meridian_keep_start: u8;
         static meridian_write_code_start: u8;
+        static meridian_pair_start: u8;
+        static meridian_sender_start: u8;
+        static meridian_receiver_start: u8;
+        static meridian_bad_handle_start: u8;
+        static meridian_empty_log_start: u8;
+        static meridian_edge_log_start: u8;
+        static meridian_fill_start: u8;
+        static meridian_small_room_start: u8;
         static meridian_run_stack_start: u8;
         static meridian_probes_end: u8;
     }
@@ -456,6 +813,66 @@ pub mod probe {
     }
 
     pub static WRITE_CODE: Program = Program { code: write_code };
+
+    fn pair() -> &'static [u8] {
+        bytes(
+            &raw const meridian_pair_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn sender() -> &'static [u8] {
+        bytes(
+            &raw const meridian_sender_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn receiver() -> &'static [u8] {
+        bytes(
+            &raw const meridian_receiver_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn bad_handle() -> &'static [u8] {
+        bytes(
+            &raw const meridian_bad_handle_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static PAIR: Program = Program { code: pair };
+    pub static SENDER: Program = Program { code: sender };
+    pub static RECEIVER: Program = Program { code: receiver };
+    pub static BAD_HANDLE: Program = Program { code: bad_handle };
+
+    fn empty_log() -> &'static [u8] {
+        bytes(
+            &raw const meridian_empty_log_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn edge_log() -> &'static [u8] {
+        bytes(
+            &raw const meridian_edge_log_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn fill() -> &'static [u8] {
+        bytes(
+            &raw const meridian_fill_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn small_room() -> &'static [u8] {
+        bytes(
+            &raw const meridian_small_room_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static EMPTY_LOG: Program = Program { code: empty_log };
+    pub static EDGE_LOG: Program = Program { code: edge_log };
+    pub static FILL: Program = Program { code: fill };
+    pub static SMALL_ROOM: Program = Program { code: small_room };
     pub static RUN_STACK: Program = Program { code: run_stack };
     pub static READ_KERNEL: Program = Program { code: read_kernel };
     pub static HALT: Program = Program { code: halt };

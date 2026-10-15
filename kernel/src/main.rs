@@ -30,7 +30,7 @@ fn up(tsc_hz: Option<u64>) -> Option<u64> {
 fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Com1) -> ! {
     let _ = kernel::greet(serial, regions);
     let free = raw::memory::take(regions);
-    let _ = raw::memory::prepare_kernel_half();
+    raw::memory::prepare_kernel_half();
     let _ = kernel::hand_out(serial, free);
     let machine = machine::read(&raw::DirectMap(regions), info.rsdp);
     let hpet = machine.hpet.and_then(raw::hpet::start);

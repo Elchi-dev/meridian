@@ -277,8 +277,7 @@ pub fn alive(slot: usize) -> bool {
         .is_some_and(|t| matches!(t.state, State::Ready | State::Running | State::Sleeping(_)))
 }
 
-/// The running thread's number. Only the test image asks.
-#[cfg(feature = "qemu-test")]
+/// The running thread's number.
 pub fn current() -> usize {
     THREADS_.lock().cores[this_core()].current
 }

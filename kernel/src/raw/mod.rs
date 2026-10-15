@@ -5,6 +5,7 @@
 pub mod apic;
 pub mod hpet;
 pub mod interrupts;
+pub mod ipc;
 pub mod memory;
 pub mod smp;
 pub mod thread;

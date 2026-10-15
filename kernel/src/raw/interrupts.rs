@@ -43,8 +43,7 @@ pub struct Frame {
 /// still have one when the kernel's own is used up.
 const FAULT_STACK: usize = 16 * 1024;
 
-/// The most cores that get a task state, and so are started.
-pub const CORES: usize = 64;
+pub use kernel::CORES;
 
 struct Tables {
     /// The segments, then a task state for each core.
@@ -81,7 +80,13 @@ pub const WAKE: u8 = 0x21;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// How many times the timer has interrupted.
+/// The number of the core this runs on, from the task state it loaded: 0
+/// for the first, and before any is loaded.
+pub fn this_core() -> usize {
+    tables::core_of_task_state(x86::raw::task_register()).unwrap_or(0)
+}
+
+/// How many times the first core's timer has interrupted.
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Acquire)
 }
@@ -205,7 +210,9 @@ pub fn fault_stack() -> core::ops::Range<u64> {
 /// counted and acknowledged; a spurious interrupt needs nothing.
 extern "sysv64" fn exception(frame: &mut Frame) {
     if frame.vector == u64::from(TIMER) {
-        TICKS.fetch_add(1, Ordering::AcqRel);
+        if this_core() == 0 {
+            TICKS.fetch_add(1, Ordering::AcqRel);
+        }
         x86::raw::end_of_interrupt();
         super::thread::tick();
         return;

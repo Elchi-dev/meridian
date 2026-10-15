@@ -27,7 +27,18 @@ pub fn start(tsc_hz: Option<u64>) -> Option<u32> {
     // in the IDT, the legacy PICs are masked, and nothing else is routed
     // to this processor.
     unsafe { x86::raw::enable_interrupts() };
+    // The other cores' timers run at the same rate, started by a short
+    // thread on each, so their threads take turns and wake on time too.
+    for core in super::smp::others() {
+        let _ = super::thread::spawn_on(core, tick_here, u64::from(period), 31);
+    }
     Some(period)
+}
+
+/// Starts the timer of the core it runs on, interrupting every `period`
+/// of its counts.
+extern "C" fn tick_here(period: u64) {
+    x86::raw::start_apic_ticks(TIMER, u32::try_from(period).unwrap_or(u32::MAX));
 }
 
 /// Stops the timer and the interrupts it brings.

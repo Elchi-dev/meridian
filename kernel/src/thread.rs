@@ -1,8 +1,9 @@
 //! Kernel threads, the parts that need no processor: where each thread's
 //! stack lies, and what a new thread's stack holds before it first runs.
 
-/// How many threads there can be at once, the first one included.
-pub const THREADS: usize = 64;
+/// How many threads there can be at once, the first one and every core's
+/// idle thread included.
+pub const THREADS: usize = 256;
 
 /// Where the threads' stacks lie. Each gets 64 KiB of address space, of
 /// which only the top 32 KiB are mapped, so a stack that runs over faults
@@ -57,6 +58,22 @@ mod tests {
         );
         assert_eq!((stack_top(THREADS - 1) - 1) >> 39 & 0x1ff, 505);
         assert!(stack_top(THREADS - 1) <= crate::APIC_PAGE);
+    }
+
+    #[test]
+    fn there_are_threads_left_when_every_core_idles() {
+        // Every core keeps one thread as its idle one, and the first core
+        // keeps the one that started the kernel too.
+        let kept = crate::CORES + 1;
+        assert!(
+            THREADS - kept >= 128,
+            "{} threads left on the most cores",
+            THREADS - kept
+        );
+        assert!(
+            u16::try_from(THREADS).is_ok(),
+            "lib/sched numbers threads in 16 bits"
+        );
     }
 
     #[test]

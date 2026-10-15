@@ -44,6 +44,15 @@ pub const fn task_state_selector(core: u16) -> u16 {
     TASK_STATE + 16 * core
 }
 
+/// The core whose task state `selector` names, the other way round from
+/// [`task_state_selector`]; `None` for a selector that names none, such as
+/// the 0 the task register holds before any is loaded.
+#[must_use]
+pub fn core_of_task_state(selector: u16) -> Option<usize> {
+    let offset = selector.checked_sub(TASK_STATE)?;
+    offset.is_multiple_of(16).then(|| usize::from(offset / 16))
+}
+
 /// The size of [`TaskState`] in bytes.
 const TASK_STATE_SIZE: u16 = 104;
 
@@ -254,6 +263,20 @@ mod tests {
                 SEGMENTS.len() + 2 * usize::from(core)
             );
         }
+        for core in 0..64 {
+            assert_eq!(
+                core_of_task_state(task_state_selector(core)),
+                Some(usize::from(core))
+            );
+        }
+        assert_eq!(core_of_task_state(0), None, "nothing loaded yet");
+        assert_eq!(core_of_task_state(0x10), None, "the data segment");
+        assert_eq!(
+            core_of_task_state(0x20),
+            None,
+            "the upper half of a descriptor"
+        );
+        assert_eq!(core_of_task_state(0x1f), None);
         for tss in [0, 0x1234, 0xffff_ffff_8012_3456] {
             assert_eq!(task_state_descriptor(tss), gdt(tss)[3..5], "{tss:#x}");
         }

@@ -598,7 +598,7 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
         ticks() > before,
         "a halted processor should wake at the next tick",
     );
-    thread_checks(report);
+    thread_checks(report, tsc_hz.unwrap_or(0));
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);
@@ -678,7 +678,7 @@ fn preemption_checks<W: Write>(report: &mut Report<'_, W>) {
     STOP.store(false, Ordering::Release);
     SPINS.store(0, Ordering::Release);
     RAN.store(0, Ordering::Release);
-    let spinner = thread::spawn(spinning, 0, NORMAL);
+    let spinner = thread::spawn_on(0, spinning, 0, NORMAL);
     thread::yield_now();
     let spun = SPINS.load(Ordering::Acquire);
     STOP.store(true, Ordering::Release);
@@ -689,7 +689,7 @@ fn preemption_checks<W: Write>(report: &mut Report<'_, W>) {
         "a thread that never gives way should still lose the processor at the next tick to one of its priority",
     );
     STOP.store(false, Ordering::Release);
-    let low = thread::spawn(spinning, 0, 1);
+    let low = thread::spawn_on(0, spinning, 0, 1);
     let at = ticks();
     thread::sleep(3);
     let slept = ticks() - at;
@@ -711,7 +711,7 @@ extern "C" fn where_am_i(_: u64) {
 /// Kernel threads on the first core, with the timer running: taking
 /// turns, going by priority, sleeping on the timer, each on a stack of its
 /// own with nothing below, and ending, so their numbers can be used again.
-fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
+fn thread_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     use kernel::thread::{STACK_PAGES, THREADS, stack_top};
     use raw::interrupts::ticks;
     use raw::thread::{self, Error, NORMAL};
@@ -722,8 +722,8 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
     // way makes.
     forget_the_trail();
     let (a, b) = x86::raw::without_interrupts(|| {
-        let a = thread::spawn(taking_turns, 1, NORMAL);
-        let b = thread::spawn(taking_turns, 2, NORMAL);
+        let a = thread::spawn_on(0, taking_turns, 1, NORMAL);
+        let b = thread::spawn_on(0, taking_turns, 2, NORMAL);
         for _ in 0..20 {
             thread::yield_now();
         }
@@ -743,8 +743,8 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
 
     forget_the_trail();
     let spawned = x86::raw::without_interrupts(|| {
-        let spawned =
-            [(10, 2), (20, 20), (30, 9)].map(|(me, priority)| thread::spawn(noting, me, priority));
+        let spawned = [(10, 2), (20, 20), (30, 9)]
+            .map(|(me, priority)| thread::spawn_on(0, noting, me, priority));
         thread::yield_now();
         spawned
     });
@@ -777,7 +777,7 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
 
     preemption_checks(report);
 
-    let slot = thread::spawn(where_am_i, 0, NORMAL);
+    let slot = thread::spawn_on(0, where_am_i, 0, NORMAL);
     thread::yield_now();
     let here = HERE.load(Ordering::Acquire);
     report.check(
@@ -795,7 +795,7 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
     RAN.store(0, Ordering::Release);
     let mut started = 0;
     let full = loop {
-        match thread::spawn(counting, 0, 1) {
+        match thread::spawn_on(0, counting, 0, 1) {
             Ok(_) => started += 1,
             Err(e) => break e,
         }
@@ -804,16 +804,107 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>) {
         }
     };
     thread::sleep(3);
-    let again = thread::spawn(noting, 0, NORMAL);
+    let again = thread::spawn_on(0, noting, 0, NORMAL);
     thread::yield_now();
     report.check(
         "kernel.thread.ended",
         full == Error::Full
-            && started == THREADS - 2
+            && started == THREADS - 2 - raw::smp::others().count()
             && RAN.load(Ordering::Acquire) as usize == started
             && again.is_ok()
-            && thread::spawn(noting, 0, 32) == Err(Error::NoSuchPriority(32)),
+            && thread::spawn_on(0, noting, 0, 32) == Err(Error::NoSuchPriority(32)),
         "every thread there can be should start and end, and an ended one's number should be used again",
+    );
+    other_core_checks(report, tsc_hz);
+}
+
+static SEEN: [AtomicU64; 8] = [const { AtomicU64::new(u64::MAX) }; 8];
+static SLEPT: AtomicU64 = AtomicU64::new(0);
+
+/// Keeps the number of the core it runs on under its argument.
+extern "C" fn which_core(slot: u64) {
+    if let Some(seen) = usize::try_from(slot).ok().and_then(|s| SEEN.get(s)) {
+        seen.store(raw::interrupts::this_core() as u64, Ordering::Release);
+    }
+}
+
+/// Sleeps three ticks and keeps how many passed.
+extern "C" fn sleeper(_: u64) {
+    let at = raw::interrupts::ticks();
+    raw::thread::sleep(3);
+    SLEPT.store(raw::interrupts::ticks() - at, Ordering::Release);
+}
+
+/// Threads on the other cores: each runs on the core it was started on, a
+/// thread there that never gives way loses the processor at that core's
+/// own tick, and a sleeper there wakes on time.
+fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
+    use raw::thread::{self, NORMAL};
+    let mut others = raw::smp::others();
+    let (first, last) = (others.next(), raw::smp::others().last());
+    let started = raw::smp::others()
+        .all(|core| thread::spawn_on(core, which_core, core as u64, NORMAL).is_ok());
+    thread::sleep(3);
+    report.check(
+        "kernel.thread.everywhere",
+        first.is_some()
+            && started
+            && raw::smp::others().all(|core| {
+                SEEN.get(core)
+                    .is_some_and(|s| s.load(Ordering::Acquire) == core as u64)
+            }),
+        "a thread started on another core should run on that core",
+    );
+    let Some(first) = first else {
+        return;
+    };
+    // A thread started there wakes the halted core with an interrupt at
+    // once, not at its next tick up to 10 ms later.
+    let woken = (0..3).all(|_| {
+        SEEN[first].store(u64::MAX, Ordering::Release);
+        thread::spawn_on(first, which_core, first as u64, NORMAL).is_ok()
+            && x86::raw::wait_for(tsc_hz / 1000, || {
+                SEEN[first].load(Ordering::Acquire) == first as u64
+            })
+    });
+    report.check(
+        "kernel.thread.woken_elsewhere",
+        woken,
+        "another core should run a thread started there within a millisecond, woken by an interrupt",
+    );
+    // Threads that end there free their numbers once that core switched
+    // away from them, so more than there are can start one after another.
+    RAN.store(0, Ordering::Release);
+    let freed = (0..300u32).all(|n| {
+        thread::spawn_on(first, counting, 0, NORMAL).is_ok()
+            && x86::raw::wait_for(tsc_hz / 100, || RAN.load(Ordering::Acquire) == n + 1)
+    });
+    report.check(
+        "kernel.thread.freed_elsewhere",
+        freed,
+        "threads that end on another core should free their numbers for the next ones",
+    );
+    forget_the_trail();
+    STOP.store(false, Ordering::Release);
+    RAN.store(0, Ordering::Release);
+    let spinner = thread::spawn_on(first, spinning, 0, NORMAL);
+    let other = thread::spawn_on(first, noting, 77, NORMAL);
+    thread::sleep(5);
+    let (noted, count) = trail();
+    STOP.store(true, Ordering::Release);
+    thread::sleep(3);
+    report.check(
+        "kernel.thread.preempted_elsewhere",
+        spinner.is_ok() && other.is_ok() && count == 1 && noted[0] == 77 && RAN.load(Ordering::Acquire) == 1,
+        "on another core too, a thread that never gives way should lose the processor at that core's tick",
+    );
+    SLEPT.store(0, Ordering::Release);
+    let slept = last.map(|core| thread::spawn_on(core, sleeper, 0, NORMAL));
+    thread::sleep(8);
+    report.check(
+        "kernel.thread.slept_elsewhere",
+        slept.is_some_and(|s| s.is_ok()) && (3..=5).contains(&SLEPT.load(Ordering::Acquire)),
+        "a thread sleeping on another core should wake there on time",
     );
 }
 

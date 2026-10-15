@@ -143,8 +143,9 @@ Windows thread priorities map one to one. The compositor and the cursor get
 reserved CPU time and memory, so input stays smooth even with every core at
 100 %.
 
-What exists: kernel threads on the first core. `lib/sched` keeps the
-threads that are ready in 32 queues, one per priority, with a bit for every
+What exists: kernel threads on every core. Each core has its own run
+queue, and a thread stays on the core it was started on. `lib/sched` keeps
+the threads that are ready in 32 queues, one per priority, with a bit for every
 queue that holds one; the highest goes first and threads of one priority
 take turns. Each thread has a 32 KiB stack at `kernel::thread::STACKS`
 with an unmapped page below it. A switch keeps the six registers a
@@ -155,14 +156,23 @@ of the same or a higher priority ready: the tick wakes the sleepers whose
 time has come and switches from inside the interrupt, and the thread that
 lost the processor returns from that interrupt when it gets it back. Spin
 locks keep interrupts off while they are held, so no thread loses the
-processor holding one. An idle thread at priority 0 halts the processor
-when nothing else is ready. The status screen's uptime now sleeps a tenth of a second between
+processor holding one. Each core has an idle thread that halts the
+processor when nothing else is ready there: on the first core one of its
+own, on the others the loop that also runs their jobs. A thread started on
+another core wakes it with an interrupt. Every core reads its number from
+the task state it loaded, and every core's timer ticks; the first core
+starts the others' by running a short thread on each, and only the first
+core's ticks count the time. A thread that ends is only freed for reuse
+once its core has switched away from its stack, so another core cannot
+start a thread there while it is still in use. The status screen's uptime now sleeps a tenth of a second between
 looks. The test image checks threads taking turns, the order of
 priorities, a sleep that ends on time and not a tick late, a thread that
 never gives way losing the processor at the next tick, a sleeper waking on
 time while a lower thread keeps the processor busy, the guard below a
-thread's stack, and that all 62 threads that can be started at once start,
-end and free their numbers. Threads on the other cores come next.
+thread's stack, that every thread that can be started at once starts, ends
+and frees its number, and on the other cores that a thread runs on the
+core it was started on, loses the processor there at that core's tick, and
+wakes there on time.
 
 ## IPC (M3)
 

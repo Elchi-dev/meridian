@@ -278,6 +278,9 @@ pub fn describe(
     }
 }
 
+/// The most cores that get a task state, and so are started.
+pub const CORES: usize = 64;
+
 /// Where the stacks of the other processors lie. Each stack gets 32 KiB
 /// of address space, of which only the top 16 KiB are mapped, so a stack
 /// that runs over faults instead of writing into the next one.

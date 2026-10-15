@@ -185,22 +185,46 @@ fn own_id(_: u64) -> u64 {
 }
 
 /// Runs the jobs core `number` is sent, and sleeps in between.
+/// The core's idle thread: it runs the jobs the core is sent, sleeps until
+/// the next interrupt when there is none, and lets the core's threads run.
 fn work(mailbox: &Mailbox) -> ! {
     loop {
         x86::raw::disable_interrupts();
         let job = mailbox.job.swap(0, Ordering::AcqRel);
         if job == 0 {
             // SAFETY: this core runs on the kernel's IDT, and its APIC only
-            // delivers WAKE and spurious interrupts, which have handlers.
+            // delivers its timer, WAKE and spurious interrupts, which have
+            // handlers.
             unsafe { x86::raw::enable_interrupts_and_wait() };
-            continue;
+        } else {
+            // SAFETY: only send stores a job, and only a fn(u64) -> u64.
+            let work = unsafe { core::mem::transmute::<usize, fn(u64) -> u64>(job) };
+            let result = work(mailbox.argument.load(Ordering::Acquire));
+            mailbox.result.store(result, Ordering::Release);
+            mailbox.done.store(true, Ordering::Release);
         }
-        // SAFETY: only send stores a job, and only a fn(u64) -> u64.
-        let work = unsafe { core::mem::transmute::<usize, fn(u64) -> u64>(job) };
-        let result = work(mailbox.argument.load(Ordering::Acquire));
-        mailbox.result.store(result, Ordering::Release);
-        mailbox.done.store(true, Ordering::Release);
+        super::thread::yield_now();
     }
+}
+
+/// Wakes core `number` with an interrupt, so it looks for threads that
+/// became ready there.
+pub fn wake(number: usize) {
+    if let Some(mailbox) = MAILBOXES.get(number) {
+        // SAFETY: every core runs on the kernel's IDT, which has the
+        // handler for WAKE.
+        unsafe { x86::raw::send_interrupt(mailbox.apic_id.load(Ordering::Acquire), WAKE) };
+    }
+}
+
+/// The numbers of the other cores that came into the kernel.
+pub fn others() -> impl Iterator<Item = usize> {
+    MAILBOXES
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, m)| m.ready.load(Ordering::Acquire))
+        .map(|(number, _)| number)
 }
 #[cfg(feature = "qemu-test")]
 static SETTLED: AtomicU32 = AtomicU32::new(0);
@@ -247,6 +271,7 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
     let Some(own) = x86::raw::apic_id() else {
         return 0;
     };
+    MAILBOXES[0].apic_id.store(own, Ordering::Release);
     let mut others = Vec::new();
     let listed = acpi::each_processor(madt, |p| {
         if p.usable && p.apic_id != own {
@@ -381,6 +406,9 @@ extern "sysv64" fn ap_main(number: u64) -> ! {
     let Some(mailbox) = MAILBOXES.get(number) else {
         x86::raw::halt()
     };
+    if !super::thread::join(number) {
+        x86::raw::halt()
+    }
     mailbox.ready.store(true, Ordering::Release);
     RUNNING.fetch_add(1, Ordering::AcqRel);
     work(mailbox)

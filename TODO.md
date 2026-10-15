@@ -98,7 +98,8 @@ Loader and UEFI:
 
 - [x] Kernel threads on the first core: 32 priority levels (`lib/sched`), a switch when one gives way, sleeping on the timer, an idle thread
 - [x] Preemption: at every tick the timer hands the processor to a ready thread of the same or a higher priority, and wakes the sleepers; spin locks keep interrupts off while held
-- [ ] Threads on every core, instead of the jobs the other cores take now
+- [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
+- [ ] Threads move between cores when one is busier than another
 - [ ] User mode and system calls
 - [ ] Objects, handles with access masks, security tokens
 - [ ] `.mexec` loader (ELF with Meridian note sections)

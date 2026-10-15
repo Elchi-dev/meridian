@@ -80,8 +80,23 @@ pub const TIMER: u8 = 0x20;
 pub const SPURIOUS: u8 = 0xff;
 /// The interrupt that wakes another core for a job.
 pub const WAKE: u8 = 0x21;
+/// The system call gate, the one interrupt ring 3 may raise itself.
+pub const SYSCALL: u8 = 0x2e;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Sets the stack the processor of `core` switches to when ring 3 calls the
+/// kernel or is interrupted: the running thread's kernel stack.
+pub fn set_kernel_stack(core: usize, top: u64) {
+    if core >= CORES {
+        return;
+    }
+    let t = TABLES.0.get();
+    // SAFETY: each core writes only its own task state's ring 0 stack, while
+    // its kernel switches threads and no ring 3 code runs on it; the
+    // processor reads it only on the way in from ring 3.
+    unsafe { (*t).task_states[core].privilege_stacks[0] = top };
+}
 
 /// The number of the core this runs on, from the task state it loaded: 0
 /// for the first, and before any is loaded.
@@ -128,8 +143,10 @@ pub fn install() {
     let timer: unsafe extern "C" fn() = timer_stub;
     let spurious: unsafe extern "C" fn() = spurious_stub;
     let wake: unsafe extern "C" fn() = wake_stub;
+    let syscall: unsafe extern "C" fn() = syscall_stub;
     t.idt[usize::from(TIMER)] = Gate::interrupt(timer as usize as u64, 0);
     t.idt[usize::from(WAKE)] = Gate::interrupt(wake as usize as u64, 0);
+    t.idt[usize::from(SYSCALL)] = Gate::user_interrupt(syscall as usize as u64);
     t.idt[usize::from(SPURIOUS)] = Gate::interrupt(spurious as usize as u64, 0);
     // SAFETY: the tables live in a static, so they stay where they are,
     // the GDT holds the selectors load_gdt uses and the task state at
@@ -229,9 +246,16 @@ extern "sysv64" fn exception(frame: &mut Frame) {
     if frame.vector == u64::from(SPURIOUS) {
         return;
     }
+    if frame.vector == u64::from(SYSCALL) {
+        super::user::system_call(frame);
+        return;
+    }
     #[cfg(feature = "qemu-test")]
     if expected::resume(frame) {
         return;
+    }
+    if frame.cs & 3 == 3 {
+        super::user::fault(frame);
     }
     super::crash_from_exception(frame.vector, frame.error, x86::raw::cr2(), frame.rip)
 }
@@ -303,6 +327,11 @@ macro_rules! stubs {
 #[unsafe(naked)]
 unsafe extern "C" fn timer_stub() {
     naked_asm!("push 0", "push {v}", "jmp {common}", v = const TIMER, common = sym common)
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn syscall_stub() {
+    naked_asm!("push 0", "push {v}", "jmp {common}", v = const SYSCALL, common = sym common)
 }
 
 #[unsafe(naked)]

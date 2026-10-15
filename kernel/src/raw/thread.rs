@@ -284,6 +284,7 @@ fn give_way(becomes: State) {
                 None
             } else {
                 threads.cores[core].current = next;
+                super::interrupts::set_kernel_stack(core, thread::stack_top(next));
                 if becomes == State::Ending {
                     threads.cores[core].retiring = current;
                 }

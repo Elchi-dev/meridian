@@ -263,9 +263,9 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
 /// The kernel's own tables are loaded, and each exception a check asks for
 /// reaches the handler with the right vector, error code and address.
 fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
-    use crate::raw::interrupts::{SPURIOUS, TIMER, WAKE};
+    use crate::raw::interrupts::{SPURIOUS, SYSCALL, TIMER, WAKE};
     x86::qemu_test::tables(
-        &[TIMER, WAKE, SPURIOUS],
+        &[TIMER, WAKE, SYSCALL, SPURIOUS],
         raw::interrupts::CORES,
         &mut |name, ok, why| {
             report.check(name, ok, why);
@@ -606,6 +606,7 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
         "a halted processor should wake at the next tick",
     );
     thread_checks(report, tsc_hz.unwrap_or(0));
+    user_checks(report);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);
@@ -823,6 +824,105 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
         "every thread there can be should start and end, and an ended one's number should be used again",
     );
     other_core_checks(report, tsc_hz);
+}
+
+/// Runs `program` in ring 3 on the first core, and says whether it started
+/// and ended within a second.
+fn ran(program: &'static raw::user::Program) -> bool {
+    raw::user::seen::forget();
+    let started = raw::user::start(0, program).is_ok();
+    started
+        && (0..100).any(|_| {
+            raw::thread::sleep(1);
+            !raw::user::busy()
+        })
+}
+
+/// Programs in ring 3: the first says hello through a system call from
+/// ring 3 and ends, a program's stack works, it can sleep and ask for the
+/// ticks, every way it can go wrong ends only its thread, and its pages
+/// are gone once it ended.
+fn user_checks<W: Write>(report: &mut Report<'_, W>) {
+    use kernel::syscall::{BAD_ADDRESS, NO_SUCH_CALL, TOO_LONG};
+    use raw::user::{self, CODE_AT, HELLO, STACK_TOP, probe, seen};
+    let exit = || seen::EXIT.load(Ordering::Acquire);
+    let fault = || seen::FAULT.load(Ordering::Acquire);
+    report.check(
+        "kernel.user.hello",
+        ran(&HELLO)
+            && seen::logged(b"Hello from ring 3, through a system call")
+            && seen::RING.load(Ordering::Acquire) == 3
+            && exit() == 0,
+        "the first program should say hello from ring 3 through a system call, and end with 0",
+    );
+    report.check(
+        "kernel.user.stack",
+        ran(&probe::STACK) && exit() == 42,
+        "a program's stack should work in ring 3",
+    );
+    let before = raw::interrupts::ticks();
+    report.check(
+        "kernel.user.sleep",
+        ran(&probe::NAP) && exit() >= before + 2,
+        "a program should sleep through a system call and ask for the ticks",
+    );
+    let read = ran(&probe::READ_KERNEL) && fault() == 14 && exit() == u64::MAX;
+    let halted = ran(&probe::HALT) && fault() == 13;
+    report.check(
+        "kernel.user.faults",
+        read && halted,
+        "reading the kernel's memory or halting in ring 3 should end only the program",
+    );
+    report.check(
+        "kernel.user.refused",
+        ran(&probe::BAD_LOG)
+            && exit() == BAD_ADDRESS
+            && ran(&probe::LONG_LOG)
+            && exit() == TOO_LONG
+            && ran(&probe::UNKNOWN)
+            && exit() == NO_SUCH_CALL,
+        "a system call should refuse the kernel's memory, a line too long and a number that is no call",
+    );
+    report.check(
+        "kernel.user.yield",
+        ran(&probe::YIELDER) && exit() == 0,
+        "a program should give way through a system call and come back",
+    );
+    report.check(
+        "kernel.user.unmapped",
+        ran(&probe::UNMAPPED_LOG) && exit() == BAD_ADDRESS,
+        "the log should refuse a user address where nothing is mapped",
+    );
+    // The spinner keeps the first core in ring 3 for 20 ticks without
+    // giving way; the first thread still runs in between, so the timer
+    // takes the processor from ring 3 and comes back on the right stack.
+    seen::forget();
+    let spinning = user::start(0, &probe::SPINNER);
+    let mut turns = 0;
+    while user::busy() && turns < 200 {
+        raw::thread::sleep(1);
+        turns += 1;
+    }
+    report.check(
+        "kernel.user.preempted",
+        spinning.is_ok() && !user::busy() && (10..200).contains(&turns) && exit() == 0,
+        "a program that never gives way should still lose the processor at every tick",
+    );
+    let first = user::start(0, &probe::NAP);
+    let second = user::start(0, &probe::STACK);
+    let ended = (0..100).any(|_| {
+        raw::thread::sleep(1);
+        !user::busy()
+    });
+    report.check(
+        "kernel.user.cleaned",
+        first.is_ok()
+            && second == Err(user::Error::Busy)
+            && ended
+            && raw::memory::translate(CODE_AT).is_none()
+            && raw::memory::translate(STACK_TOP - 4096).is_none(),
+        "one program should run at a time, and its pages should be gone once it ended",
+    );
 }
 
 static SEEN: [AtomicU64; 8] = [const { AtomicU64::new(u64::MAX) }; 8];

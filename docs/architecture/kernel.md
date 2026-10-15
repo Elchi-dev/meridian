@@ -124,6 +124,31 @@ the time a core that never starts gets.
 - page tables with NX on everything that is not code, W^X everywhere, and guard pages below every stack
 - SMEP and SMAP on from the start; KASLR from M3
 
+## Ring 3 (M3)
+
+What exists: programs run in ring 3. The GDT has code and data segments
+for ring 3, user data right before user code as `sysret` will want it.
+A program's machine code and a page of stack are mapped for ring 3 at
+4 MiB and 8 MiB in the kernel's address space, and a thread of its own
+enters it with `iretq`, every general register cleared. On every switch
+the task state gets the next thread's kernel stack, so an interrupt or
+system call from ring 3 lands on the right one. System calls go through
+`int 0x2e`, a gate ring 3 may use, a nod to Windows NT's first system
+call gate: the number in rax, arguments in rdi and rsi, the answer back
+in rax, errors from the top of the range. There are five so far: exit,
+log a line, give way, sleep and ask for the ticks. The log only reads
+bytes that lie in the lower half and are mapped for ring 3, at most 256
+of them. A fault in ring 3 ends only the program's thread and unmaps its
+pages; the kernel writes what happened to its log and goes on. The
+kernel's first program says hello from ring 3 through a system call. The
+test image runs probes that read the kernel's memory, halt, hand the log
+a kernel address, an unmapped one or a line too long, ask for a call that
+does not exist, sleep, give way, use their stack, and keep the processor
+for 20 ticks without giving way, and checks one program runs at a time
+and leaves no pages behind. Programs still share their addresses, so only
+one runs at a time; an address space of its own for every process comes
+next.
+
 ## Objects and handles (M3)
 
 Every resource is a kernel object: process, thread, section, event, mutex,

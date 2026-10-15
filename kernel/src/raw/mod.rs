@@ -9,6 +9,7 @@ pub mod memory;
 pub mod smp;
 pub mod thread;
 pub mod timer;
+pub mod user;
 
 #[cfg(not(test))]
 use core::cell::UnsafeCell;

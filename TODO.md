@@ -100,7 +100,8 @@ Loader and UEFI:
 - [x] Preemption: at every tick the timer hands the processor to a ready thread of the same or a higher priority, and wakes the sleepers; spin locks keep interrupts off while held
 - [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
 - [ ] Threads move between cores when one is busier than another
-- [ ] User mode and system calls
+- [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
+- [ ] An address space of its own for every process, so programs no longer share their addresses
 - [ ] Objects, handles with access masks, security tokens
 - [ ] `.mexec` loader (ELF with Meridian note sections)
 - [ ] IPC channels that carry handles

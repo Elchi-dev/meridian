@@ -116,6 +116,7 @@ fn finish(
     let timer = raw::timer::start(tsc_hz);
     let _ = kernel::waiting(serial, timer);
     raw::thread::start();
+    let _ = raw::user::start(0, &raw::user::HELLO);
     let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
         x86::raw::halt()
     };

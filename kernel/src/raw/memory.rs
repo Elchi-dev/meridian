@@ -234,6 +234,63 @@ pub fn translate(virt: u64) -> Option<(u64, Flags)> {
         .map(|(physical, flags, _)| (physical, flags))
 }
 
+/// Maps a fresh frame at `virt` with `flags`, holding `contents` and zeros
+/// after them.
+///
+/// # Errors
+///
+/// When no frame is left or [`map_page`] fails; the frame goes back then.
+pub fn map_fresh(virt: u64, flags: Flags, contents: &[u8]) -> Result<(), paging::Error> {
+    let frame = FRAMES
+        .lock()
+        .as_mut()
+        .and_then(Frames::alloc)
+        .ok_or(paging::Error::OutOfFrames)?;
+    let len = contents.len().min(4096);
+    // SAFETY: a frame just taken from the allocator, so nothing else uses
+    // it, in the direct map, and a whole frame long.
+    let page = unsafe { core::slice::from_raw_parts_mut((HHDM_BASE + frame) as *mut u8, 4096) };
+    page[..len].copy_from_slice(&contents[..len]);
+    page[len..].fill(0);
+    map_page(virt, frame, flags).inspect_err(|_| {
+        if let Some(frames) = FRAMES.lock().as_mut() {
+            let _ = frames.free(frame);
+        }
+    })
+}
+
+/// Takes the page at `virt` out of the kernel's address space and gives
+/// its frame back; nothing happens where nothing is mapped.
+pub fn unmap_and_free(virt: u64) {
+    if let Ok(frame) = unmap_page(virt)
+        && let Some(frames) = FRAMES.lock().as_mut()
+    {
+        let _ = frames.free(frame);
+    }
+}
+
+/// Whether every one of the `len` bytes at `at` lies in the user half and
+/// is mapped for ring 3, so the kernel may read them for a system call.
+pub fn user_readable(at: u64, len: u64) -> bool {
+    if !kernel::syscall::in_user_half(at, len) {
+        return false;
+    }
+    if len == 0 {
+        return true;
+    }
+    let mut frames = FRAMES.lock();
+    let Some(frames) = frames.as_mut() else {
+        return false;
+    };
+    let space = AddressSpace::existing(x86::raw::read_cr3() & !0xfff);
+    let (first, last) = (at & !0xfff, (at + len - 1) & !0xfff);
+    (first..=last).step_by(4096).all(|page| {
+        space
+            .translate(&mut KernelTables(frames), page)
+            .is_some_and(|(_, flags, _)| flags.contains(Flags::USER))
+    })
+}
+
 /// The 8 bytes at `virt`. Only the test image reads memory this way, and
 /// only pages it mapped itself or frames in the direct map.
 #[cfg(feature = "qemu-test")]

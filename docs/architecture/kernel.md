@@ -226,8 +226,17 @@ held is closed, and a channel goes once both its ends are. The test image
 has a program talk to itself, two programs on different cores talk to each
 other, and checks a closed end, a handle never handed out, a handle without
 the right to write, a full channel, a room too small, read only memory as
-room, and that no channel is left once the programs ended. Handles do not
-travel through channels yet.
+room, and that no channel is left once the programs ended.
+
+A message can carry a handle along: sending names it in r10, it needs the
+right to be handed over, and it leaves the sender's table once the
+message went; receiving puts it into the receiver's table, with the same
+rights, and hands back its number in rdx. A handle in a message nobody
+took is closed with the channel it waited in, and the channel it stood
+for goes in turn once both its ends are closed. The test image has a
+program hand one end of a channel of its own to a program on another
+core, which takes it and reads what was sent into it, and checks a
+handle nobody took leaves no channel behind.
 
 ## The screens the kernel draws itself (M1)
 

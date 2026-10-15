@@ -912,6 +912,34 @@ fn ipc_checks<W: Write>(report: &mut Report<'_, W>) {
         ended_with(denied, DENIED),
         "a handle without the right to write should not send",
     );
+    // A program hands one end of a channel of its own to another, through a
+    // channel the kernel gave them; the other takes it and reads what was
+    // sent into it. Handing over needs the right to.
+    let carries = Rights::READ | Rights::WRITE | Rights::TRANSFER;
+    let handover = raw::ipc::create().map(|(a, b)| {
+        let taker = start_holding(other, &probe::TAKER, &[b], carries).ok();
+        let passer = start_holding(0, &probe::PASSER, &[a], carries).ok();
+        (taker, passer)
+    });
+    report.check(
+        "kernel.ipc.handed_over",
+        handover.is_some_and(|(taker, passer)| ended_with(taker, 2) && ended_with(passer, BAD_HANDLE))
+            && seen::logged(b"hi"),
+        "a handle sent through a channel should leave its sender and reach the program that takes it",
+    );
+    // Nobody takes the end handed over here: closing the channel it waits
+    // in closes it too, so the channel it belongs to goes as well.
+    let unclaimed = raw::ipc::create().and_then(|(a, b)| {
+        let passer = start_holding(0, &probe::PASSER, &[a], carries).ok();
+        let ended = ended_with(passer, BAD_HANDLE);
+        raw::ipc::close(b);
+        ended.then_some(())
+    });
+    report.check(
+        "kernel.ipc.unclaimed",
+        unclaimed.is_some() && raw::ipc::live() == 0,
+        "a handle in a message nobody read should be closed with the channel it waited in",
+    );
     report.check(
         "kernel.ipc.freed",
         raw::ipc::live() == 0,

@@ -171,7 +171,7 @@ fn finish() -> ! {
 pub fn system_call(frame: &mut Frame) {
     #[cfg(feature = "qemu-test")]
     seen::RING.store(frame.cs & 3, core::sync::atomic::Ordering::Release);
-    frame.rax = match syscall::decode(frame.rax, frame.rdi, frame.rsi, frame.rdx) {
+    frame.rax = match syscall::decode(frame.rax, [frame.rdi, frame.rsi, frame.rdx, frame.r10]) {
         Call::Exit(code) => {
             let _ = writeln!(
                 x86::raw::Com1::already_open(),
@@ -198,8 +198,19 @@ pub fn system_call(frame: &mut Frame) {
             }
             Err(e) => e,
         },
-        Call::Send { handle, at, len } => send(handle, at, len).map_or_else(|e| e, |()| 0),
-        Call::Receive { handle, at, room } => receive(handle, at, room).unwrap_or_else(|e| e),
+        Call::Send {
+            handle,
+            at,
+            len,
+            carry,
+        } => send(handle, at, len, carry).map_or_else(|e| e, |()| 0),
+        Call::Receive { handle, at, room } => match receive(handle, at, room) {
+            Ok((len, brought)) => {
+                frame.rdx = brought;
+                len
+            }
+            Err(e) => e,
+        },
         Call::Close(handle) => close(handle).map_or_else(|e| e, |()| 0),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
@@ -217,7 +228,7 @@ fn with_handles<R>(with: impl FnOnce(&mut Table<HANDLES>) -> Result<R, u64>) -> 
 /// The object a handle of the running program stands for, when it allows
 /// `needed`.
 fn object(handle: u64, needed: Rights) -> Result<u64, u64> {
-    let handle = Handle(u32::try_from(handle).map_err(|_| syscall::BAD_HANDLE)?);
+    let handle = handle_of(handle)?;
     with_handles(|t| {
         t.get(handle, needed).map_err(|e| match e {
             handles::Error::Denied(_) => syscall::DENIED,
@@ -256,8 +267,9 @@ fn make_channel() -> Result<(u64, u64), u64> {
 }
 
 /// Sends the `len` bytes at `at` through the channel end `handle` stands
-/// for.
-fn send(handle: u64, at: u64, len: u64) -> Result<(), u64> {
+/// for, handing over the handle `carry` with them unless it is 0. A handle
+/// handed over leaves the sender's table once the message went.
+fn send(handle: u64, at: u64, len: u64, carry: u64) -> Result<(), u64> {
     let count = usize::try_from(len)
         .ok()
         .filter(|&n| n <= MESSAGE)
@@ -266,32 +278,67 @@ fn send(handle: u64, at: u64, len: u64) -> Result<(), u64> {
         return Err(syscall::BAD_ADDRESS);
     }
     let end = object(handle, Rights::WRITE)?;
+    let carried = match carry {
+        0 => None,
+        carry => {
+            let object = object(carry, Rights::TRANSFER)?;
+            let rights =
+                with_handles(|t| t.rights(handle_of(carry)?).map_err(|_| syscall::BAD_HANDLE))?;
+            Some(channel::Attachment {
+                object,
+                rights: rights.0,
+            })
+        }
+    };
     let mut message = [0u8; MESSAGE];
     // SAFETY: user_readable found every byte mapped for ring 3 in this
     // program's address space, which only this thread runs.
     unsafe { core::ptr::copy_nonoverlapping(at as *const u8, message.as_mut_ptr(), count) };
-    ipc::send(end, &message[..count]).map_err(answer)
+    ipc::send(end, &message[..count], carried).map_err(answer)?;
+    if carried.is_some() {
+        with_handles(|t| t.close(handle_of(carry)?).map_err(|_| syscall::BAD_HANDLE))?;
+    }
+    Ok(())
+}
+
+/// The handle a program named by `number`.
+fn handle_of(number: u64) -> Result<Handle, u64> {
+    u32::try_from(number)
+        .map(Handle)
+        .map_err(|_| syscall::BAD_HANDLE)
 }
 
 /// Takes the next message for the channel end `handle` stands for into
-/// the `room` bytes at `at`, and answers its length.
-fn receive(handle: u64, at: u64, room: u64) -> Result<u64, u64> {
+/// the `room` bytes at `at`, and answers its length and the handle to what
+/// it brought along, or 0. What it brought that does not fit the
+/// program's table is closed.
+fn receive(handle: u64, at: u64, room: u64) -> Result<(u64, u64), u64> {
     if !memory::user_writable(at, room) {
         return Err(syscall::BAD_ADDRESS);
     }
     let end = object(handle, Rights::READ)?;
     let room = usize::try_from(room).unwrap_or(MESSAGE).min(MESSAGE);
     let mut message = [0u8; MESSAGE];
-    let len = ipc::receive(end, &mut message[..room]).map_err(answer)?;
+    let (len, brought) = ipc::receive(end, &mut message[..room]).map_err(answer)?;
     // SAFETY: user_writable found every byte of the room mapped writable
     // for ring 3 in this program's address space, and len fits in it.
     unsafe { core::ptr::copy_nonoverlapping(message.as_ptr(), at as *mut u8, len) };
-    Ok(len as u64)
+    let handle = match brought {
+        None => 0,
+        Some(a) => with_handles(|t| Ok(t.insert(a.object, Rights(a.rights)).ok()))?.map_or_else(
+            || {
+                ipc::close(a.object);
+                0
+            },
+            |h| u64::from(h.0),
+        ),
+    };
+    Ok((len as u64, handle))
 }
 
 /// Closes `handle`, and the channel end it stood for.
 fn close(handle: u64) -> Result<(), u64> {
-    let handle = Handle(u32::try_from(handle).map_err(|_| syscall::BAD_HANDLE)?);
+    let handle = handle_of(handle)?;
     let object = with_handles(|t| t.close(handle).map_err(|_| syscall::BAD_HANDLE))?;
     ipc::close(object);
     Ok(())
@@ -585,6 +632,82 @@ pub mod probe {
         "mov eax, {exit}",
         "int 0x2e",
         "ud2",
+        // Makes a channel, sends "hi" into one end, and hands the other
+        // end over through the channel end its handle in rdi stands for.
+        // The end it handed over is not its own any more: it ends with
+        // what closing it answers.
+        ".global meridian_passer_start",
+        "meridian_passer_start:",
+        "mov rbx, rdi",
+        "mov eax, {channel}",
+        "int 0x2e",
+        "mov r12, rax",
+        "mov r13, rdx",
+        "mov rdi, r12",
+        "lea rsi, [rip + 12f]",
+        "mov edx, 2",
+        "xor r10d, r10d",
+        "mov eax, {send}",
+        "int 0x2e",
+        "mov rdi, rbx",
+        "lea rsi, [rip + 13f]",
+        "mov edx, 4",
+        "mov r10, r13",
+        "mov eax, {send}",
+        "int 0x2e",
+        "mov rdi, r13",
+        "mov eax, {close}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        "12: .ascii \"hi\"",
+        "13: .ascii \"take\"",
+        // Waits for a message bringing a handle at the channel end its
+        // handle in rdi stands for, then for a message at the end that
+        // handle stands for, logs it and ends with its length.
+        ".global meridian_taker_start",
+        "meridian_taker_start:",
+        "mov rbx, rdi",
+        "14:",
+        "mov rdi, rbx",
+        "lea rsi, [rsp - 256]",
+        "mov edx, 128",
+        "mov eax, {receive}",
+        "int 0x2e",
+        "mov rcx, {empty}",
+        "cmp rax, rcx",
+        "jne 15f",
+        "mov edi, 1",
+        "mov eax, {sleep}",
+        "int 0x2e",
+        "jmp 14b",
+        "15:",
+        "mov r12, rdx",
+        "16:",
+        "mov rdi, r12",
+        "lea rsi, [rsp - 256]",
+        "mov edx, 128",
+        "mov eax, {receive}",
+        "int 0x2e",
+        "mov rcx, {empty}",
+        "cmp rax, rcx",
+        "jne 17f",
+        "mov edi, 1",
+        "mov eax, {sleep}",
+        "int 0x2e",
+        "jmp 16b",
+        "17:",
+        "mov r13, rax",
+        "mov rdi, r13",
+        "lea rsi, [rsp - 256]",
+        "mov eax, {log}",
+        "int 0x2e",
+        "mov rdi, r13",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
         // Logs nothing at all.
         ".global meridian_empty_log_start",
         "meridian_empty_log_start:",
@@ -695,6 +818,7 @@ pub mod probe {
         receive = const syscall::RECEIVE,
         empty = const syscall::EMPTY,
         bad_address = const syscall::BAD_ADDRESS,
+        close = const syscall::CLOSE,
     );
 
     unsafe extern "C" {
@@ -715,6 +839,8 @@ pub mod probe {
         static meridian_receiver_start: u8;
         static meridian_bad_handle_start: u8;
         static meridian_empty_log_start: u8;
+        static meridian_passer_start: u8;
+        static meridian_taker_start: u8;
         static meridian_edge_log_start: u8;
         static meridian_fill_start: u8;
         static meridian_small_room_start: u8;
@@ -870,6 +996,22 @@ pub mod probe {
     }
 
     pub static EMPTY_LOG: Program = Program { code: empty_log };
+
+    fn passer() -> &'static [u8] {
+        bytes(
+            &raw const meridian_passer_start,
+            &raw const meridian_probes_end,
+        )
+    }
+    fn taker() -> &'static [u8] {
+        bytes(
+            &raw const meridian_taker_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static PASSER: Program = Program { code: passer };
+    pub static TAKER: Program = Program { code: taker };
     pub static EDGE_LOG: Program = Program { code: edge_log };
     pub static FILL: Program = Program { code: fill };
     pub static SMALL_ROOM: Program = Program { code: small_room };

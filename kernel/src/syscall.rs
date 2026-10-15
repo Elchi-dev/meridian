@@ -1,5 +1,5 @@
 //! System calls, the parts that need no processor: user code puts the
-//! call's number in rax and its arguments in rdi, rsi and rdx, runs
+//! call's number in rax and its arguments in rdi, rsi, rdx and r10, runs
 //! `int 0x2e`, and finds the answer in rax. Answers from the top of the
 //! range are errors.
 
@@ -16,10 +16,12 @@ pub const TICKS: u64 = 4;
 /// Makes a channel: the handle of one end comes back in rax, the other's
 /// in rdx.
 pub const CHANNEL: u64 = 5;
-/// Sends rdx bytes at rsi through the channel end of handle rdi.
+/// Sends rdx bytes at rsi through the channel end of handle rdi, handing
+/// over handle r10 with them unless r10 is 0.
 pub const SEND: u64 = 6;
 /// Takes the next message for the channel end of handle rdi into the rdx
-/// bytes at rsi, and answers its length.
+/// bytes at rsi, and answers its length; a handle it brought comes back in
+/// rdx, or 0.
 pub const RECEIVE: u64 = 7;
 /// Closes handle rdi.
 pub const CLOSE: u64 = 8;
@@ -56,21 +58,33 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Call {
     Exit(u64),
-    Log { len: u64, at: u64 },
+    Log {
+        len: u64,
+        at: u64,
+    },
     Yield,
     Sleep(u64),
     Ticks,
     Channel,
-    Send { handle: u64, at: u64, len: u64 },
-    Receive { handle: u64, at: u64, room: u64 },
+    Send {
+        handle: u64,
+        at: u64,
+        len: u64,
+        carry: u64,
+    },
+    Receive {
+        handle: u64,
+        at: u64,
+        room: u64,
+    },
     Close(u64),
     Unknown(u64),
 }
 
-/// The call `number` asks for, with `first`, `second` and `third` as rdi,
-/// rsi and rdx.
+/// The call `number` asks for, with `args` as rdi, rsi, rdx and r10.
 #[must_use]
-pub fn decode(number: u64, first: u64, second: u64, third: u64) -> Call {
+pub fn decode(number: u64, args: [u64; 4]) -> Call {
+    let [first, second, third, fourth] = args;
     match number {
         EXIT => Call::Exit(first),
         LOG => Call::Log {
@@ -85,6 +99,7 @@ pub fn decode(number: u64, first: u64, second: u64, third: u64) -> Call {
             handle: first,
             at: second,
             len: third,
+            carry: fourth,
         },
         RECEIVE => Call::Receive {
             handle: first,
@@ -109,37 +124,38 @@ mod tests {
 
     #[test]
     fn calls_come_from_their_registers() {
-        assert_eq!(decode(EXIT, 3, 9, 8), Call::Exit(3));
+        assert_eq!(decode(EXIT, [3, 9, 8, 0]), Call::Exit(3));
         assert_eq!(
-            decode(LOG, 12, 0x40_0100, 8),
+            decode(LOG, [12, 0x40_0100, 8, 0]),
             Call::Log {
                 len: 12,
                 at: 0x40_0100
             }
         );
-        assert_eq!(decode(YIELD, 1, 2, 3), Call::Yield);
-        assert_eq!(decode(SLEEP, 25, 2, 3), Call::Sleep(25));
-        assert_eq!(decode(TICKS, 1, 2, 3), Call::Ticks);
-        assert_eq!(decode(CHANNEL, 1, 2, 3), Call::Channel);
+        assert_eq!(decode(YIELD, [1, 2, 3, 0]), Call::Yield);
+        assert_eq!(decode(SLEEP, [25, 2, 3, 0]), Call::Sleep(25));
+        assert_eq!(decode(TICKS, [1, 2, 3, 0]), Call::Ticks);
+        assert_eq!(decode(CHANNEL, [1, 2, 3, 0]), Call::Channel);
         assert_eq!(
-            decode(SEND, 0x1_0001, 0x7f_f000, 4),
+            decode(SEND, [0x1_0001, 0x7f_f000, 4, 0x2_0002]),
             Call::Send {
                 handle: 0x1_0001,
                 at: 0x7f_f000,
-                len: 4
+                len: 4,
+                carry: 0x2_0002
             }
         );
         assert_eq!(
-            decode(RECEIVE, 2, 0x7f_f100, 128),
+            decode(RECEIVE, [2, 0x7f_f100, 128, 0]),
             Call::Receive {
                 handle: 2,
                 at: 0x7f_f100,
                 room: 128
             }
         );
-        assert_eq!(decode(CLOSE, 7, 2, 3), Call::Close(7));
-        assert_eq!(decode(9, 1, 2, 3), Call::Unknown(9));
-        assert_eq!(decode(u64::MAX, 1, 2, 3), Call::Unknown(u64::MAX));
+        assert_eq!(decode(CLOSE, [7, 2, 3, 0]), Call::Close(7));
+        assert_eq!(decode(9, [1, 2, 3, 0]), Call::Unknown(9));
+        assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
                 EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE

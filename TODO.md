@@ -106,7 +106,7 @@ Loader and UEFI:
 - [ ] Security tokens
 - [ ] `.mexec` loader (ELF with Meridian note sections)
 - [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)
-- [ ] Channels that carry handles
+- [x] Channels that carry handles: a handle handed over leaves its sender, needs the right to, and one nobody takes is closed with its channel
 - [ ] KASLR
 
 ## M4: Storage and Strata

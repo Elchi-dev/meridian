@@ -1,8 +1,9 @@
 //! Channels: two ends, and a queue of messages going each way. A message
 //! is up to [`MESSAGE`] bytes, and each queue holds up to [`QUEUED`] of
-//! them in the order they were sent. Once one end is closed, the other can
-//! still read what was sent before, and then learns the channel is closed.
-//! Nothing is allocated.
+//! them in the order they were sent. A message can carry one object along,
+//! such as a handle being handed over. Once one end is closed, the other
+//! can still read what was sent before, and then learns the channel is
+//! closed. Nothing is allocated.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -23,6 +24,13 @@ pub enum Error {
     TooSmall(usize),
     /// The other end is closed.
     Closed,
+}
+
+/// An object a message carries along, and the rights it comes with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    pub object: u64,
+    pub rights: u32,
 }
 
 /// The two ends of a channel.
@@ -54,6 +62,7 @@ impl End {
 struct Queue {
     messages: [[u8; MESSAGE]; QUEUED],
     lengths: [usize; QUEUED],
+    attached: [Option<Attachment>; QUEUED],
     first: usize,
     len: usize,
 }
@@ -62,11 +71,12 @@ impl Queue {
     const EMPTY: Queue = Queue {
         messages: [[0; MESSAGE]; QUEUED],
         lengths: [0; QUEUED],
+        attached: [None; QUEUED],
         first: 0,
         len: 0,
     };
 
-    fn push(&mut self, message: &[u8]) -> Result<(), Error> {
+    fn push(&mut self, message: &[u8], attached: Option<Attachment>) -> Result<(), Error> {
         if message.len() > MESSAGE {
             return Err(Error::TooLong);
         }
@@ -76,11 +86,12 @@ impl Queue {
         let at = (self.first + self.len) % QUEUED;
         self.messages[at][..message.len()].copy_from_slice(message);
         self.lengths[at] = message.len();
+        self.attached[at] = attached;
         self.len += 1;
         Ok(())
     }
 
-    fn pop(&mut self, into: &mut [u8]) -> Result<usize, Error> {
+    fn pop(&mut self, into: &mut [u8]) -> Result<(usize, Option<Attachment>), Error> {
         if self.len == 0 {
             return Err(Error::Empty);
         }
@@ -89,9 +100,10 @@ impl Queue {
             return Err(Error::TooSmall(len));
         }
         into[..len].copy_from_slice(&self.messages[self.first][..len]);
+        let attached = self.attached[self.first].take();
         self.first = (self.first + 1) % QUEUED;
         self.len -= 1;
-        Ok(len)
+        Ok((len, attached))
     }
 }
 
@@ -125,21 +137,41 @@ impl Channel {
     /// When the message is too long, the other end's queue is full, or
     /// either end is closed.
     pub fn send(&mut self, end: End, message: &[u8]) -> Result<(), Error> {
+        self.send_with(end, message, None)
+    }
+
+    /// Sends `message` from `end` to the other end, carrying `attached`
+    /// along. Should the message not go, the caller keeps what it would
+    /// have carried.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Channel::send`].
+    pub fn send_with(
+        &mut self,
+        end: End,
+        message: &[u8],
+        attached: Option<Attachment>,
+    ) -> Result<(), Error> {
         if self.closed != [false, false] {
             return Err(Error::Closed);
         }
-        self.waiting[end.other().index()].push(message)
+        self.waiting[end.other().index()].push(message, attached)
     }
 
     /// Takes the first message waiting for `end` into `into`, and returns
-    /// its length.
+    /// its length and what it carried along.
     ///
     /// # Errors
     ///
     /// When `end` is closed, nothing waits, which is [`Error::Closed`] once
     /// the other end is closed, or the message does not fit, in which case
     /// it stays.
-    pub fn receive(&mut self, end: End, into: &mut [u8]) -> Result<usize, Error> {
+    pub fn receive(
+        &mut self,
+        end: End,
+        into: &mut [u8],
+    ) -> Result<(usize, Option<Attachment>), Error> {
         if self.closed[end.index()] {
             return Err(Error::Closed);
         }
@@ -155,10 +187,17 @@ impl Channel {
         self.waiting[end.index()].len
     }
 
-    /// Closes `end`. What waits for it is dropped.
-    pub fn close(&mut self, end: End) {
+    /// Closes `end`. What waits for it is dropped, and each object the
+    /// dropped messages carried goes to `dropped`, once.
+    pub fn close(&mut self, end: End, mut dropped: impl FnMut(Attachment)) {
         self.closed[end.index()] = true;
-        self.waiting[end.index()] = Queue::EMPTY;
+        let queue = &mut self.waiting[end.index()];
+        queue
+            .attached
+            .iter_mut()
+            .filter_map(Option::take)
+            .for_each(&mut dropped);
+        *queue = Queue::EMPTY;
     }
 
     /// Whether both ends are closed, so the channel can go.
@@ -175,7 +214,14 @@ mod tests {
 
     fn read(c: &mut Channel, end: End) -> Result<Vec<u8>, Error> {
         let mut buf = [0u8; MESSAGE];
-        c.receive(end, &mut buf).map(|n| buf[..n].to_vec())
+        c.receive(end, &mut buf).map(|(n, attached)| {
+            assert_eq!(attached, None, "no message here carries anything");
+            buf[..n].to_vec()
+        })
+    }
+
+    fn none(_: Attachment) {
+        panic!("no message here carries anything");
     }
 
     #[test]
@@ -229,7 +275,7 @@ mod tests {
         assert_eq!(c.receive(End::A, &mut small), Err(Error::TooSmall(5)));
         assert_eq!(c.waiting(End::A), 1);
         let mut exact = [0u8; 5];
-        assert_eq!(c.receive(End::A, &mut exact), Ok(5));
+        assert_eq!(c.receive(End::A, &mut exact), Ok((5, None)));
         assert_eq!(&exact, b"hello");
     }
 
@@ -238,7 +284,7 @@ mod tests {
         let mut c = Channel::new();
         c.send(End::A, b"last words").unwrap();
         c.send(End::B, b"never read").unwrap();
-        c.close(End::A);
+        c.close(End::A, none);
         assert_eq!(c.waiting(End::A), 0, "what waited for the closed end goes");
         assert_eq!(c.send(End::B, b"too late"), Err(Error::Closed));
         assert_eq!(read(&mut c, End::B), Ok(b"last words".to_vec()));
@@ -254,7 +300,7 @@ mod tests {
             Err(Error::Closed),
             "and reads nothing"
         );
-        c.close(End::B);
+        c.close(End::B, none);
         assert!(c.finished());
         assert_eq!((End::A.other(), End::B.other()), (End::B, End::A));
     }
@@ -290,14 +336,100 @@ mod tests {
     fn a_channel_closed_at_both_ends_refuses_everything() {
         let mut c = Channel::new();
         c.send(End::A, b"lost").unwrap();
-        c.close(End::B);
-        c.close(End::A);
+        c.close(End::B, none);
+        c.close(End::A, none);
         assert!(c.finished());
         for end in [End::A, End::B] {
             assert_eq!(c.send(end, b"x"), Err(Error::Closed));
             assert_eq!(read(&mut c, end), Err(Error::Closed));
             assert_eq!(c.waiting(end), 0);
         }
+    }
+
+    #[test]
+    fn a_message_carries_its_object_along_and_keeps_it_while_it_waits() {
+        let mut c = Channel::new();
+        let key = Attachment {
+            object: 0x100_0000_0000_0042,
+            rights: 0b11,
+        };
+        c.send_with(End::A, b"take this", Some(key)).unwrap();
+        c.send(End::A, b"plain").unwrap();
+        let mut small = [0u8; 2];
+        assert_eq!(
+            c.receive(End::B, &mut small),
+            Err(Error::TooSmall(9)),
+            "it stays with its object"
+        );
+        let mut buf = [0u8; MESSAGE];
+        assert_eq!(c.receive(End::B, &mut buf), Ok((9, Some(key))));
+        assert_eq!(
+            c.receive(End::B, &mut buf),
+            Ok((5, None)),
+            "the next one carries nothing"
+        );
+    }
+
+    #[test]
+    fn a_message_that_does_not_go_leaves_its_object_with_the_sender() {
+        let mut c = Channel::new();
+        let key = Attachment {
+            object: 7,
+            rights: 1,
+        };
+        for _ in 0..QUEUED {
+            c.send(End::A, b"").unwrap();
+        }
+        assert_eq!(c.send_with(End::A, b"", Some(key)), Err(Error::Full));
+        let mut buf = [0u8; MESSAGE];
+        for _ in 0..QUEUED {
+            assert_eq!(
+                c.receive(End::B, &mut buf),
+                Ok((0, None)),
+                "the object went nowhere"
+            );
+        }
+        c.close(End::B, none);
+        assert_eq!(c.send_with(End::A, b"", Some(key)), Err(Error::Closed));
+    }
+
+    #[test]
+    fn closing_hands_back_every_object_still_waiting_once() {
+        let mut c = Channel::new();
+        // Going round the queue first puts the objects across its end.
+        for _ in 0..QUEUED - 2 {
+            c.send(End::A, b"").unwrap();
+            read(&mut c, End::B).unwrap();
+        }
+        for i in 0..5 {
+            let attached = (i % 2 == 0).then_some(Attachment {
+                object: i,
+                rights: 0,
+            });
+            c.send_with(End::A, b"x", attached).unwrap();
+        }
+        let mut buf = [0u8; MESSAGE];
+        assert_eq!(
+            c.receive(End::B, &mut buf),
+            Ok((
+                1,
+                Some(Attachment {
+                    object: 0,
+                    rights: 0
+                })
+            ))
+        );
+        let mut dropped = Vec::new();
+        c.close(End::B, |a| dropped.push(a.object));
+        assert_eq!(
+            dropped,
+            [2, 4],
+            "each once, the one taken already not at all"
+        );
+        let mut again = Vec::new();
+        c.close(End::B, |a| again.push(a));
+        assert_eq!(again, Vec::new(), "nothing is handed back twice");
+        assert_eq!(c.waiting(End::B), 0);
     }
 
     #[test]
@@ -319,7 +451,7 @@ mod tests {
                 0 => {
                     // Once in a while an end closes, and once both have, the
                     // next channel starts.
-                    c.close(end);
+                    c.close(end, none);
                     closed[mine] = true;
                     model[mine].clear();
                     if closed == [true, true] {

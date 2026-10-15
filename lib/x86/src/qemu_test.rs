@@ -2,7 +2,7 @@
 //! loader's test image in QEMU while the firmware is still in charge.
 
 use crate::raw;
-use crate::{Features, cr0, efer};
+use crate::{Features, Protections, cr0, efer};
 
 /// Runs every check and hands each result to `check`: its name, whether it
 /// passed, and what a failure means.
@@ -416,5 +416,29 @@ fn registers(check: &mut impl FnMut(&str, bool, &str)) {
         "x86.cpu_number",
         set && restored && read == Some(0x5a5a_0001),
         "QEMU's max processor has RDTSCP, so it should keep a number of its own in IA32_TSC_AUX",
+    );
+    check(
+        "x86.cr4",
+        raw::read_cr4() & 1 << 5 != 0,
+        "long mode runs with physical address extension on, so CR4 should say so",
+    );
+    let before = raw::user_access();
+    let inside = raw::with_user_access(raw::user_access);
+    check(
+        "x86.user_access",
+        !before && inside && !raw::user_access(),
+        "the AC flag should be set inside with_user_access and only there",
+    );
+}
+
+/// What keeps the kernel off the pages of ring 3, once it turned that on:
+/// QEMU's processor has SMEP and SMAP, and CR4 should have both on.
+pub fn protections(check: &mut impl FnMut(&str, bool, &str)) {
+    let has = Protections::detect();
+    let bits = has.cr4_bits();
+    check(
+        "x86.protect",
+        has.smep && has.smap && raw::read_cr4() & bits == bits,
+        "QEMU's processor has SMEP and SMAP, and both should be on",
     );
 }

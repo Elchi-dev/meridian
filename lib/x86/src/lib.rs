@@ -17,6 +17,52 @@ pub mod cr0 {
     pub const WRITE_PROTECT: u64 = 1 << 16;
 }
 
+/// Bits of CR4, from the Intel SDM, volume 3, section 2.5.
+pub mod cr4 {
+    /// The kernel faults when it runs code from a page of ring 3.
+    pub const SMEP: u64 = 1 << 20;
+    /// The kernel faults when it touches a page of ring 3, unless the AC
+    /// flag is set.
+    pub const SMAP: u64 = 1 << 21;
+}
+
+/// What keeps the kernel off the pages of ring 3, as far as this processor
+/// has it (Intel SDM, volume 3, section 4.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Protections {
+    pub smep: bool,
+    pub smap: bool,
+}
+
+impl Protections {
+    /// Reads them from the highest basic CPUID leaf and EBX of leaf 7.
+    #[must_use]
+    pub fn from_cpuid(highest: u32, leaf_7_ebx: u32) -> Protections {
+        if !has_leaf(highest, 7) {
+            return Protections::default();
+        }
+        Protections {
+            smep: leaf_7_ebx & 1 << 7 != 0,
+            smap: leaf_7_ebx & 1 << 20 != 0,
+        }
+    }
+
+    /// Asks this processor.
+    #[must_use]
+    pub fn detect() -> Protections {
+        Protections::from_cpuid(raw::cpuid(0)[0], raw::cpuid(7)[1])
+    }
+
+    /// The bits of CR4 that turn them on.
+    #[must_use]
+    pub fn cr4_bits(self) -> u64 {
+        [(self.smep, cr4::SMEP), (self.smap, cr4::SMAP)]
+            .iter()
+            .filter(|(on, _)| *on)
+            .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
 /// The extended feature enable register and its bits (Intel SDM, volume 3,
 /// section 2.2.1).
 pub mod efer {
@@ -258,6 +304,52 @@ pub fn brand() -> CpuText<48> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protections_come_from_leaf_7() {
+        let both = (1 << 7) | (1 << 20);
+        assert_eq!(
+            Protections::from_cpuid(7, both),
+            Protections {
+                smep: true,
+                smap: true
+            }
+        );
+        assert_eq!(
+            Protections::from_cpuid(0x1f, 1 << 7),
+            Protections {
+                smep: true,
+                smap: false
+            }
+        );
+        assert_eq!(
+            Protections::from_cpuid(0x1f, 1 << 20),
+            Protections {
+                smep: false,
+                smap: true
+            }
+        );
+        assert_eq!(
+            Protections::from_cpuid(6, both),
+            Protections::default(),
+            "a processor without leaf 7 leaves EBX meaning something else"
+        );
+        assert_eq!(
+            Protections::from_cpuid(0x1f, !both),
+            Protections::default(),
+            "only bits 7 and 20"
+        );
+    }
+
+    #[test]
+    fn each_protection_sets_its_own_bit_of_cr4() {
+        let only = |smep, smap| Protections { smep, smap }.cr4_bits();
+        assert_eq!(only(false, false), 0);
+        assert_eq!(only(true, false), 1 << 20);
+        assert_eq!(only(false, true), 1 << 21);
+        assert_eq!(only(true, true), cr4::SMEP | cr4::SMAP);
+        assert_eq!((cr4::SMEP, cr4::SMAP), (0x10_0000, 0x20_0000));
+    }
 
     #[test]
     fn the_x2apic_bit_is_bit_21_of_leaf_1() {

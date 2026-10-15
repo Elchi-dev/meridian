@@ -224,6 +224,46 @@ pub fn clear_write_protect() {
     unsafe { asm!("mov cr0, {}", in(reg) value, options(nostack, preserves_flags)) };
 }
 
+#[must_use]
+pub fn read_cr4() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR4 changes nothing.
+    unsafe { asm!("mov {}, cr4", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    value
+}
+
+/// Turns on what keeps the kernel off the pages of ring 3, as far as this
+/// processor has it. From then on the kernel reaches them only inside
+/// [`with_user_access`].
+pub fn protect(protections: crate::Protections) {
+    let value = read_cr4() | protections.cr4_bits();
+    // SAFETY: CPUID says the processor has each bit set here, and they only
+    // add faults.
+    unsafe { asm!("mov cr4, {}", in(reg) value, options(nostack, preserves_flags)) };
+}
+
+/// Runs `f` with the AC flag set, which lets the kernel touch pages of
+/// ring 3 while SMAP is on, and clears it again.
+pub fn with_user_access<R>(f: impl FnOnce() -> R) -> R {
+    // SAFETY: pushes RFLAGS, sets AC in it and pops it back; AC only
+    // decides whether touching pages of ring 3 faults.
+    unsafe { asm!("pushfq", "or dword ptr [rsp], 0x40000", "popfq") };
+    let result = f();
+    // SAFETY: the same, clearing AC.
+    unsafe { asm!("pushfq", "and dword ptr [rsp], 0xfffbffff", "popfq") };
+    result
+}
+
+/// Whether the AC flag is set right now. Only the QEMU checks ask.
+#[cfg(feature = "qemu-test")]
+#[must_use]
+pub fn user_access() -> bool {
+    let flags: u64;
+    // SAFETY: as in interrupts_enabled.
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags)) };
+    flags & 1 << 18 != 0
+}
+
 /// Whether this processor takes maskable interrupts right now.
 #[must_use]
 pub fn interrupts_enabled() -> bool {

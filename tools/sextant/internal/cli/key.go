@@ -67,9 +67,14 @@ func writeNew(path string, data []byte, perm fs.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
+	return finish(f, data)
+}
+
+// finish writes data to f and closes it, and returns the first error.
+func finish(f *os.File, data []byte) error {
+	_, err := f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
 	}
-	return f.Close()
+	return err
 }

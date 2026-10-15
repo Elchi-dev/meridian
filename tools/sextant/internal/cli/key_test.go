@@ -122,3 +122,23 @@ func TestTheReleaseCertificateIsTheOneSecurityNames(t *testing.T) {
 		t.Errorf("SECURITY.md should name the release certificate's SHA-256 %s", sum)
 	}
 }
+
+func TestAFileThatCannotBeWrittenSaysSo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "read-only")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(f, []byte("key")); err == nil {
+		t.Error("writing to a file opened for reading should fail")
+	}
+	if err := f.Close(); err == nil {
+		t.Error("finish should have closed the file")
+	}
+	if err := writeNew(path, []byte("key"), 0o600); err == nil {
+		t.Error("writeNew should not write over a file that is there")
+	}
+}

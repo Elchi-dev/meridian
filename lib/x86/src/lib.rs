@@ -26,6 +26,12 @@ pub mod cr4 {
     pub const SMAP: u64 = 1 << 21;
 }
 
+/// Whether the processor has RDRAND, given ECX of CPUID leaf 1.
+#[must_use]
+pub fn has_rdrand(leaf_1_ecx: u32) -> bool {
+    leaf_1_ecx & 1 << 30 != 0
+}
+
 /// What keeps the kernel off the pages of ring 3, as far as this processor
 /// has it (Intel SDM, volume 3, section 4.6).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -304,6 +310,14 @@ pub fn brand() -> CpuText<48> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rdrand_is_bit_30_of_leaf_1() {
+        assert!(has_rdrand(1 << 30));
+        assert!(has_rdrand(u32::MAX));
+        assert!(!has_rdrand(!(1 << 30)));
+        assert!(!has_rdrand(0));
+    }
 
     #[test]
     fn protections_come_from_leaf_7() {

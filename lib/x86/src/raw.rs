@@ -224,6 +224,24 @@ pub fn clear_write_protect() {
     unsafe { asm!("mov cr0, {}", in(reg) value, options(nostack, preserves_flags)) };
 }
 
+/// A random number from the processor, when it has RDRAND and gives one
+/// within ten tries, which is what Intel advises for a passing shortage.
+#[must_use]
+pub fn rdrand() -> Option<u64> {
+    if !crate::has_rdrand(cpuid(1)[2]) {
+        return None;
+    }
+    (0..10).find_map(|_| {
+        let (value, ok): (u64, u8);
+        // SAFETY: CPUID says the processor has RDRAND, which only writes
+        // the register and the carry flag.
+        unsafe {
+            asm!("rdrand {}", "setc {}", out(reg) value, out(reg_byte) ok, options(nomem, nostack));
+        };
+        (ok != 0).then_some(value)
+    })
+}
+
 #[must_use]
 pub fn read_cr4() -> u64 {
     let value: u64;

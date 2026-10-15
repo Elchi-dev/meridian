@@ -422,6 +422,23 @@ fn registers(check: &mut impl FnMut(&str, bool, &str)) {
         raw::read_cr4() & 1 << 5 != 0,
         "long mode runs with physical address extension on, so CR4 should say so",
     );
+    let draws = [raw::rdrand(), raw::rdrand(), raw::rdrand()];
+    check(
+        "x86.rdrand",
+        draws.iter().all(Option::is_some) && draws[0] != draws[1] && draws[1] != draws[2],
+        "QEMU's max processor has RDRAND, and it should give a new number each time",
+    );
+    let (mut ones, mut zeros) = (0u64, 0u64);
+    for _ in 0..64 {
+        let draw = raw::rdrand().unwrap_or(0);
+        ones |= draw;
+        zeros |= !draw;
+    }
+    check(
+        "x86.rdrand.bits",
+        ones == u64::MAX && zeros == u64::MAX,
+        "in 64 numbers from RDRAND every bit should be set once and clear once, or one is stuck",
+    );
     let before = raw::user_access();
     let inside = raw::with_user_access(raw::user_access);
     check(

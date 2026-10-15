@@ -144,7 +144,7 @@ pub fn run(
         );
     }
 
-    timer_checks(&mut report, tsc_hz);
+    timer_checks(&mut report, tsc_hz, info, regions);
     exception_checks(&mut report);
 
     // The last check is the panic screen: the panic handler takes over,
@@ -558,7 +558,12 @@ fn handover_screen_checks<W: Write>(
 
 /// Starts the APIC timer, sees it tick and wake the processor from hlt,
 /// and stops it again, so the crashes after this run as before.
-fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
+fn timer_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    tsc_hz: Option<u64>,
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+) {
     use crate::raw::interrupts::ticks;
     use crate::raw::timer;
 
@@ -608,6 +613,7 @@ fn timer_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: Option<u64>) {
     thread_checks(report, tsc_hz.unwrap_or(0));
     user_checks(report);
     ipc_checks(report);
+    program_checks(report, info, regions);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);
@@ -980,6 +986,37 @@ fn user_fault_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.user.stack_not_run",
         faults(fetched, 14) && fetched.is_some_and(|s| seen::error_of(s) == 0b1_0101),
         "a program should not run code from its stack",
+    );
+}
+
+/// Programs from the disk: the loader handed over hello from
+/// meridian/programs, and it runs in ring 3 from its ELF file, where its
+/// test build checks every system call through the program runtime before
+/// it greets; a file that is no ELF file does not start.
+fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
+    use raw::user::{self, seen};
+    let hello = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello");
+    report.check(
+        "kernel.programs.read",
+        hello.is_some_and(|(m, file)| file.starts_with(b"\x7fELF") && m.size == file.len() as u64),
+        "the loader should hand over hello from meridian/programs",
+    );
+    let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
+    if let Some(slot) = started {
+        seen::forget(slot);
+    }
+    report.check(
+        "kernel.programs.hello",
+        ended_with(started, 0) && seen::logged(b"Hello from ring 3, in Rust"),
+        "hello should run from its file, find every call working and greet",
+    );
+    let mut text = [b' '; 64];
+    text[..9].copy_from_slice(b"#!/bin/sh");
+    report.check(
+        "kernel.programs.not_elf",
+        user::start_file(0, &text, 0) == Err(user::Error::Elf(elf::Error::NotElf))
+            && user::start_file(0, b"\x7fELF", 0) == Err(user::Error::Elf(elf::Error::Truncated)),
+        "a file that is no ELF file should not start",
     );
 }
 

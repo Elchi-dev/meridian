@@ -1,6 +1,6 @@
 //! Ring 3. Every program gets an address space of its own, whose kernel
-//! half is the kernel's: its machine code and a stack page are mapped for
-//! ring 3 in its lower half, and a thread of its own enters it. It also
+//! half is the kernel's: its image and its stack are mapped for ring 3 in
+//! its lower half, and a thread of its own enters it. It also
 //! gets a handle table, its way to kernel objects such as channels. System
 //! calls and faults bring the thread back into the kernel, on its kernel
 //! stack; a fault in ring 3 ends only that program. Once it ends, its
@@ -8,11 +8,14 @@
 //! to the frame allocator.
 
 use alloc::boxed::Box;
+use alloc::vec;
+#[cfg(feature = "qemu-test")]
 use core::arch::global_asm;
 use core::fmt::Write;
 
 use channel::MESSAGE;
 use handles::{Handle, Rights, Table};
+use kernel::program::{self, Refusal, STACK_PAGES};
 use kernel::syscall::{self, Call};
 use kernel::thread::THREADS;
 use paging::Flags;
@@ -37,15 +40,16 @@ const ENDS: Rights = Rights(Rights::READ.0 | Rights::WRITE.0 | Rights::TRANSFER.
 
 /// What a program's thread takes with it into ring 3.
 struct Start {
+    entry: u64,
     argument: u64,
     process: Box<Process>,
 }
 
-/// Where a program's code goes, and the top of its stack.
-pub const CODE_AT: u64 = 0x40_0000;
-pub const STACK_TOP: u64 = 0x80_0000;
+pub use kernel::program::{CODE_AT, STACK_TOP};
 
-/// A program: its machine code, position independent and at most a page.
+/// A program built into the test image: its machine code, position
+/// independent and at most a page.
+#[cfg(feature = "qemu-test")]
 pub struct Program {
     code: fn() -> &'static [u8],
 }
@@ -56,6 +60,10 @@ pub enum Error {
     NoMemory,
     /// Its thread could not start.
     Thread(thread::Error),
+    /// Its file is no ELF file Meridian reads.
+    Elf(elf::Error),
+    /// Its file is one, but not a program Meridian runs.
+    Refused(Refusal),
 }
 
 /// Starts `program` in ring 3 with `argument` in rdi, in an address space
@@ -65,6 +73,7 @@ pub enum Error {
 ///
 /// When no memory is left for the address space, or the thread cannot
 /// start.
+#[cfg(feature = "qemu-test")]
 pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<usize, Error> {
     launch(
         core,
@@ -74,6 +83,36 @@ pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<us
             handles: Table::new(),
         }),
     )
+}
+
+/// Starts the program in the ELF file `file` in ring 3 with `argument` in
+/// rdi, in an address space and a thread of its own on `core`, and returns
+/// the thread's number. Each page of its image goes where [`program::place`] says, as
+/// [`program::page_flags`] allows.
+///
+/// # Errors
+///
+/// When the file is no program Meridian runs, no memory is left for its
+/// address space, or its thread cannot start.
+pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Error> {
+    let elf = elf::Elf::parse(file).map_err(Error::Elf)?;
+    let (first, size) = elf.span().map_err(Error::Elf)?;
+    let segments = elf.segments().map_err(Error::Elf)?;
+    let segments = segments.as_slice();
+    let entry = program::place((first, size), elf.entry(), segments).map_err(Error::Refused)?;
+    let mut image = vec![0u8; usize::try_from(size).map_err(|_| Error::NoMemory)?];
+    elf.load(&mut image, CODE_AT).map_err(Error::Elf)?;
+    let root = memory::new_space().ok_or(Error::NoMemory)?;
+    let mut mapped = true;
+    for (offset, page) in (0..).step_by(4096).zip(image.chunks(4096)) {
+        if let Ok(Some(flags)) = program::page_flags(segments, first + offset) {
+            mapped &= memory::map_fresh_in(root, CODE_AT + offset, flags, page).is_ok();
+        }
+    }
+    let process = Box::new(Process {
+        handles: Table::new(),
+    });
+    spawn(core, root, mapped, entry, argument, process)
 }
 
 /// Starts `program` as [`start`] does, holding a handle with `rights` to
@@ -107,6 +146,7 @@ pub fn start_holding(
     launch(core, program, first, process)
 }
 
+#[cfg(feature = "qemu-test")]
 fn launch(
     core: usize,
     program: &'static Program,
@@ -114,14 +154,35 @@ fn launch(
     process: Box<Process>,
 ) -> Result<usize, Error> {
     let root = memory::new_space().ok_or(Error::NoMemory)?;
+    let mapped = memory::map_fresh_in(root, CODE_AT, Flags::USER, (program.code)()).is_ok();
+    spawn(core, root, mapped, CODE_AT, argument, process)
+}
+
+/// Gives the program in the address space at `root`, whose image is mapped
+/// unless `mapped` is false, its stack and a thread that enters it at
+/// `entry`.
+fn spawn(
+    core: usize,
+    root: u64,
+    mapped: bool,
+    entry: u64,
+    argument: u64,
+    process: Box<Process>,
+) -> Result<usize, Error> {
     let stack = Flags::USER | Flags::WRITABLE | Flags::NO_EXECUTE;
-    let mapped = memory::map_fresh_in(root, CODE_AT, Flags::USER, (program.code)()).is_ok()
-        && memory::map_fresh_in(root, STACK_TOP - 4096, stack, &[]).is_ok();
-    if !mapped {
+    let bottom = STACK_TOP - STACK_PAGES * 4096;
+    let stacked = (bottom..STACK_TOP)
+        .step_by(4096)
+        .all(|page| memory::map_fresh_in(root, page, stack, &[]).is_ok());
+    if !mapped || !stacked {
         memory::release_space(root);
         return Err(Error::NoMemory);
     }
-    let start = Box::into_raw(Box::new(Start { argument, process })) as u64;
+    let start = Box::into_raw(Box::new(Start {
+        entry,
+        argument,
+        process,
+    })) as u64;
     thread::spawn_in(core, root, run, start, thread::NORMAL).map_err(|e| {
         // SAFETY: the box made just above, which no thread took.
         drop(unsafe { Box::from_raw(start as *mut Start) });
@@ -134,15 +195,19 @@ fn launch(
 /// enters ring 3.
 extern "C" fn run(start: u64) {
     // SAFETY: launch hands each thread the box it made for it, once.
-    let Start { argument, process } = *unsafe { Box::from_raw(start as *mut Start) };
+    let Start {
+        entry,
+        argument,
+        process,
+    } = *unsafe { Box::from_raw(start as *mut Start) };
     if let Some(slot) = PROCESSES.lock().get_mut(thread::current()) {
         *slot = Some(process);
     }
-    // SAFETY: start mapped the code and stack pages for ring 3 in this
+    // SAFETY: spawn mapped the image and the stack for ring 3 in this
     // thread's address space, which the switch to it loaded, every switch
     // to it put its kernel stack in the task state, and the IDT has the
     // system call gate for ring 3.
-    unsafe { x86::raw::enter_user(CODE_AT, STACK_TOP, argument) }
+    unsafe { x86::raw::enter_user(entry, STACK_TOP, argument) }
 }
 
 /// Ends the program: its handles are closed, and back on the kernel's
@@ -384,13 +449,15 @@ pub fn fault(frame: &Frame) -> ! {
     finish()
 }
 
+#[cfg(feature = "qemu-test")]
 fn bytes(start: *const u8, end: *const u8) -> &'static [u8] {
     // SAFETY: the two symbols of a program in .rodata, end after start,
     // and the bytes between them never change.
     unsafe { core::slice::from_raw_parts(start, end as usize - start as usize) }
 }
 
-// The first program: it writes a line to the log and ends.
+// The first program Meridian ran: it writes a line to the log and ends.
+#[cfg(feature = "qemu-test")]
 global_asm!(
     ".pushsection .rodata.meridian_programs, \"a\"",
     ".global meridian_hello_start",
@@ -413,11 +480,13 @@ global_asm!(
     exit = const syscall::EXIT,
 );
 
+#[cfg(feature = "qemu-test")]
 unsafe extern "C" {
     static meridian_hello_start: u8;
     static meridian_hello_end: u8;
 }
 
+#[cfg(feature = "qemu-test")]
 fn hello() -> &'static [u8] {
     bytes(
         &raw const meridian_hello_start,
@@ -425,7 +494,8 @@ fn hello() -> &'static [u8] {
     )
 }
 
-/// The first program Meridian runs in ring 3.
+/// The first program Meridian ran in ring 3, written in machine code.
+#[cfg(feature = "qemu-test")]
 pub static HELLO: Program = Program { code: hello };
 
 /// Programs that try what ring 3 must not do, or reach the edges of what

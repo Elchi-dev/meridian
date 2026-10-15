@@ -17,7 +17,7 @@ use core::cell::UnsafeCell;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, MemoryRegion, PixelFormat};
+use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, MemoryRegion, Module, PixelFormat};
 #[cfg(not(test))]
 use canvas::Scratch;
 use canvas::{Canvas, Format};
@@ -186,6 +186,29 @@ pub fn back_buffer(info: &BootInfo, regions: &[MemoryRegion]) -> Option<Canvas<'
 }
 
 static BACK_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// The files the loader read for the kernel, each with its bytes, leaving
+/// out any that do not lie in the kernel's own memory.
+pub fn modules<'a>(
+    info: &BootInfo,
+    regions: &'a [MemoryRegion],
+) -> impl Iterator<Item = (Module, &'static [u8])> + 'a {
+    let (at, count) = kernel::program::module_list(info, regions).unwrap_or((0, 0));
+    (0..count).filter_map(move |i| {
+        let entry = HHDM_BASE + at + (i * size_of::<Module>()) as u64;
+        // SAFETY: module_list found the whole list in the kernel's own
+        // memory, which the direct map covers and nothing writes.
+        let module = Module::from_bytes(unsafe { &*(entry as *const [u8; size_of::<Module>()]) });
+        let len = usize::try_from(module.size).ok()?;
+        kernel::program::module_kept(&module, regions).then(|| {
+            // SAFETY: the same, for the bytes module_kept checked.
+            let bytes = unsafe {
+                core::slice::from_raw_parts((HHDM_BASE + module.start) as *const u8, len)
+            };
+            (module, bytes)
+        })
+    })
+}
 
 /// The framebuffer for the panic screen, even when it was handed out.
 #[cfg(not(test))]

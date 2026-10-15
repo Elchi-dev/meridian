@@ -105,8 +105,8 @@ fn finish(
 /// processor; without one it spins.
 #[cfg(not(feature = "qemu-test"))]
 fn finish(
-    _: &BootInfo,
-    _: &[MemoryRegion],
+    info: &BootInfo,
+    regions: &[MemoryRegion],
     _: &Machine,
     tsc_hz: Option<u64>,
     display: Option<&mut Display<'_>>,
@@ -117,7 +117,12 @@ fn finish(
     let timer = raw::timer::start(tsc_hz);
     let _ = kernel::waiting(serial, timer);
     raw::thread::start();
-    let _ = raw::user::start(0, &raw::user::HELLO, 0);
+    for (module, file) in raw::modules(info, regions) {
+        if let Err(e) = raw::user::start_file(0, file, 0) {
+            let name = core::str::from_utf8(module.name()).unwrap_or("?");
+            let _ = writeln!(serial, "kernel: {name} did not start: {e:?}");
+        }
+    }
     let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
         x86::raw::halt()
     };

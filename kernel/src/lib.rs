@@ -13,6 +13,7 @@ pub mod log;
 pub mod machine;
 pub mod object;
 pub mod panic;
+pub mod program;
 pub mod screen;
 pub use abi as syscall;
 pub mod thread;

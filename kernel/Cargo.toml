@@ -24,6 +24,7 @@ acpi = { path = "../lib/acpi" }
 bootinfo = { path = "../lib/bootinfo" }
 canvas = { path = "../lib/canvas" }
 channel = { path = "../lib/channel" }
+elf = { path = "../lib/elf" }
 font = { path = "../lib/font" }
 frames = { path = "../lib/frames" }
 handles = { path = "../lib/handles" }

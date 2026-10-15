@@ -71,6 +71,7 @@ dependencies = [
  "bootinfo",
  "canvas",
  "channel",
+ "elf",
  "font",
  "frames",
  "handles",

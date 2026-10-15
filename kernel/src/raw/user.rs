@@ -447,16 +447,8 @@ fn with_handles<R>(with: impl FnOnce(&mut Table<HANDLES>) -> Result<R, u64>) -> 
 /// zeroed, writable and not executable, and answers where they start.
 fn map(pages: u64) -> Result<u64, u64> {
     let at = with_process(|p| p.heap.take(pages).map_err(syscall::Error::code))?;
-    let root = thread::current_root();
     let flags = Flags::USER | Flags::WRITABLE | Flags::NO_EXECUTE;
-    for i in 0..pages {
-        if memory::map_fresh_in(root, at + i * 4096, flags, &[]).is_err() {
-            for mapped in 0..i {
-                let _ = memory::unmap_fresh_in(root, at + mapped * 4096);
-            }
-            return Err(syscall::NO_ROOM);
-        }
-    }
+    memory::map_pages(thread::current_root(), at, pages, flags).map_err(|()| syscall::NO_ROOM)?;
     Ok(at)
 }
 
@@ -467,10 +459,7 @@ fn unmap(at: u64, pages: u64) -> Result<(), u64> {
     if !given || !memory::user_writable(at, pages * 4096) {
         return Err(syscall::BAD_ADDRESS);
     }
-    let root = thread::current_root();
-    for i in 0..pages {
-        let _ = memory::unmap_fresh_in(root, at + i * 4096);
-    }
+    memory::unmap_pages(thread::current_root(), at, pages);
     Ok(())
 }
 

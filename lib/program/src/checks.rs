@@ -275,6 +275,12 @@ fn pages_come_and_go() -> Outcome {
     )?;
     expect(unmap(first, 1) == Ok(()), "the rest should go back")?;
     expect(unmap(second, 1) == Ok(()), "and the other piece")?;
+    let three = map(3).map_err(|_| "three pages should be given")?;
+    expect(unmap(three, 3) == Ok(()), "three should go back at once")?;
+    expect(
+        (0..3).all(|i| unmap(three + i * 4096, 1) == Err(Error::BadAddress)),
+        "and every one of them be gone",
+    )?;
     expect(
         map(1).is_ok_and(|again| again > second),
         "what went back should not be given again",
@@ -320,7 +326,15 @@ fn heap_in_use() -> Outcome {
     for _ in 0..1000 {
         grown.push_str("room ");
     }
-    expect(grown.len() == 5000, "a string should grow")
+    expect(grown.len() == 5000, "a string should grow")?;
+    for round in 0..64u8 {
+        let block = alloc::vec![round; 64 * 1024];
+        expect(
+            block[65_535] == round,
+            "a block should hold what it was made of",
+        )?;
+    }
+    Ok(())
 }
 
 /// Starts exitwith with one end of a fresh channel, and returns the

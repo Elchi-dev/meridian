@@ -339,6 +339,30 @@ pub fn map_stack(top: u64, pages: u64) -> Result<(), paging::Error> {
     Ok(())
 }
 
+/// Maps `pages` fresh pages, zeroed, from `at` on in the address space at
+/// `root`, with `flags`.
+///
+/// # Errors
+///
+/// When the frames or tables run out; then none of them stays mapped.
+pub fn map_pages(root: u64, at: u64, pages: u64, flags: Flags) -> Result<(), ()> {
+    for i in 0..pages {
+        if map_fresh_in(root, at + i * 4096, flags, &[]).is_err() {
+            unmap_pages(root, at, i);
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+/// Takes the `pages` pages from `at` on out of the address space at
+/// `root`, which runs on this processor, and gives their frames back.
+pub fn unmap_pages(root: u64, at: u64, pages: u64) {
+    for i in 0..pages {
+        let _ = unmap_fresh_in(root, at + i * 4096);
+    }
+}
+
 /// Takes the 4 KiB page at `virt` out of the address space at `root`,
 /// which runs on this processor, and gives its frame back.
 ///

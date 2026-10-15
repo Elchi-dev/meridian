@@ -18,3 +18,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0010](0010-sextant-writes-disk-images.md) | Write disk images with sextant itself | accepted |
 | [0011](0011-ci-checkout-only.md) | Run CI on GitHub Actions with actions/checkout as the only action | accepted |
 | [0012](0012-fonts.md) | Use Inter and JetBrains Mono as the system fonts | accepted |
+| [0013](0013-start-through-a-shim-signed-by-microsoft.md) | Start through a shim signed by Microsoft | accepted |

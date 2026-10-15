@@ -60,7 +60,8 @@ Loader and UEFI:
 - [ ] Start Windows and Linux on the laptop, with Secure Boot on
 - [x] Rust `.meri` reader passing the conformance suite (`lib/meri`), without allocating
 - [x] `boot.meri`: the loader reads its settings with `lib/meri`
-- [ ] Shim under `third-party/` with its decision record
+- [x] Decision record 0013: Ubuntu's shim signed by Microsoft, MokManager for enrolling Meridian's key
+- [ ] Shim and MokManager under `third-party/shim/`, `sextant image` writing them, and a QEMU test on OVMF with Microsoft's keys that enrolls the key through MokManager
 - [x] `.sbat` section in `meridian.efi`
 - [x] Authenticode signer in sextant; development keys per machine
 - [ ] The release key as a CI secret, which Samuel adds

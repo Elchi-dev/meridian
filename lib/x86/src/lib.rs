@@ -361,6 +361,101 @@ mod tests {
     }
 
     #[test]
+    fn every_register_has_a_place_of_its_own_in_the_page() {
+        let registers = [
+            apic::ID,
+            apic::VERSION,
+            apic::END_OF_INTERRUPT,
+            apic::SPURIOUS,
+            apic::COMMAND,
+            apic::COMMAND + 1,
+            apic::LVT_TIMER,
+            apic::TIMER_INITIAL,
+            apic::TIMER_CURRENT,
+            apic::TIMER_DIVIDE,
+        ];
+        let offsets = registers.map(apic::offset);
+        for (i, &at) in offsets.iter().enumerate() {
+            assert_eq!(at % 16, 0, "register {:#x}", registers[i]);
+            assert!(
+                at < 4096,
+                "register {:#x} lies outside the page",
+                registers[i]
+            );
+            assert!(
+                !offsets[..i].contains(&at),
+                "register {:#x} shares its place",
+                registers[i]
+            );
+        }
+        assert_eq!(
+            apic::offset(apic::COMMAND + 1) - apic::offset(apic::COMMAND),
+            0x10
+        );
+    }
+
+    #[test]
+    fn a_command_split_in_two_comes_back_whole() {
+        for id in 0..=255 {
+            for vector in [0x20, 0x21, 0xfe, 0xff] {
+                let command = apic::fixed(id, vector);
+                let (high, low) = apic::split_command(command);
+                assert_eq!(
+                    high & 0x00ff_ffff,
+                    0,
+                    "{id}: only the top byte names the processor"
+                );
+                assert_eq!(
+                    u64::from(high >> 24) << 32 | u64::from(low),
+                    command,
+                    "{id}, {vector:#x}"
+                );
+            }
+        }
+        // An xAPIC addresses 8 bits of processors; more cannot be sent.
+        let (high, _) = apic::split_command(apic::fixed(0x1_02, 0x21));
+        assert_eq!(high >> 24, 0x02);
+    }
+
+    #[test]
+    fn the_base_keeps_only_its_page() {
+        for value in [
+            0,
+            0xfee0_0900,
+            0xfee0_0fff,
+            u64::MAX,
+            0x8000_0000_0000_0d00,
+            0x000f_ffff_ffff_f000,
+        ] {
+            let base = apic::base_address(value);
+            assert_eq!(base % 4096, 0, "{value:#x}");
+            assert_eq!(
+                base >> 52,
+                0,
+                "{value:#x}: above the physical address width"
+            );
+            assert_eq!(apic::base_address(base), base, "{value:#x}");
+            assert_eq!(base & !value, 0, "{value:#x}: nothing added");
+        }
+    }
+
+    #[test]
+    fn only_bit_9_says_there_is_an_apic() {
+        for bit in 0..32 {
+            assert_eq!(apic::on_chip(1 << bit), bit == 9, "bit {bit}");
+            assert_eq!(apic::on_chip(!(1 << bit)), bit != 9, "all but bit {bit}");
+        }
+    }
+
+    #[test]
+    fn the_xapic_id_is_the_top_byte() {
+        for id in 0..=255u32 {
+            assert_eq!(apic::xapic_id(id << 24 | 0x00ff_ffff), id);
+            assert_eq!(apic::xapic_id(id << 24), id);
+        }
+    }
+
+    #[test]
     fn an_xapic_takes_commands_in_two_halves() {
         assert_eq!(apic::split_command(apic::init(3)), (0x0300_0000, 0x4500));
         assert_eq!(

@@ -261,22 +261,7 @@ pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
         (0x10..=0x15).contains(&(version & 0xff)) && version >> 16 & 0xff >= 3,
         "an integrated APIC should give its version and at least four timer and interrupt entries",
     );
-    // CPUID leaf 0xB gives the x2APIC id in EDX, leaf 1 the low 8 bits
-    // of it, the whole xAPIC id, in the top byte of EBX.
-    let leaf_b = (raw::cpuid(0)[0] >= 0xb).then(|| raw::cpuid(0xb)[3]);
-    let low = raw::cpuid(1)[1] >> 24;
-    let id = raw::apic_id();
-    check(
-        "x86.apic.id",
-        id.is_some_and(|id| {
-            if x2apic {
-                id & 0xff == low && leaf_b.is_none_or(|b| b == id)
-            } else {
-                id == low
-            }
-        }),
-        "the APIC id should be the one CPUID reports for this processor",
-    );
+    identity(check, x2apic);
     let cr3 = raw::read_cr3();
     check(
         "x86.cr3",
@@ -317,6 +302,40 @@ pub fn apic(check: &mut impl FnMut(&str, bool, &str)) {
         "x86.apic.spurious",
         set == spurious(0xef),
         "the spurious vector should be set, with the APIC turned on",
+    );
+}
+
+/// The APIC's id, read through its register directly and through
+/// [`raw::apic_id`], against the one CPUID reports.
+fn identity(check: &mut impl FnMut(&str, bool, &str), x2apic: bool) {
+    use raw::read_apic;
+    // Read directly, the id register holds the id whole in x2APIC mode and
+    // in its top byte in xAPIC mode, so a wrong place in the page shows.
+    let register = read_apic(crate::apic::ID);
+    check(
+        "x86.apic.id_register",
+        if x2apic {
+            raw::apic_id().is_some_and(|id| u64::from(id) == register)
+        } else {
+            raw::apic_id().is_some_and(|id| register == u64::from(id) << 24)
+        },
+        "the id register should hold the id where the APIC's mode puts it",
+    );
+    // CPUID leaf 0xB gives the x2APIC id in EDX, leaf 1 the low 8 bits
+    // of it, the whole xAPIC id, in the top byte of EBX.
+    let leaf_b = (raw::cpuid(0)[0] >= 0xb).then(|| raw::cpuid(0xb)[3]);
+    let low = raw::cpuid(1)[1] >> 24;
+    let id = raw::apic_id();
+    check(
+        "x86.apic.id",
+        id.is_some_and(|id| {
+            if x2apic {
+                id & 0xff == low && leaf_b.is_none_or(|b| b == id)
+            } else {
+                id == low
+            }
+        }),
+        "the APIC id should be the one CPUID reports for this processor",
     );
 }
 

@@ -76,6 +76,17 @@ func TestSecureBootFirmwareGetsSMMAndAProtectedFlash(t *testing.T) {
 	}
 }
 
+func TestAMachineCanLackTheX2APIC(t *testing.T) {
+	m := fullMachine()
+	m.WithoutX2APIC = true
+	if got := strings.Join(m.Args(), " "); !strings.HasPrefix(got, "-machine q35 -cpu max,-x2apic -m ") {
+		t.Fatalf("got %s", got)
+	}
+	if got := strings.Join(fullMachine().Args(), " "); !strings.HasPrefix(got, "-machine q35 -cpu max -m ") {
+		t.Fatalf("an ordinary machine keeps its x2APIC: %s", got)
+	}
+}
+
 func TestASecondDiskComesAfterTheFirst(t *testing.T) {
 	m := fullMachine()
 	m.SecondDisk = "/out/other,disk.img"

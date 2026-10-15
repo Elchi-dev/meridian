@@ -48,6 +48,9 @@ type Machine struct {
 	// variables writable only from it, so nothing outside the firmware can
 	// change the keys.
 	SecureBoot bool
+	// WithoutX2APIC hides the x2APIC from the processor, so it has only
+	// the older xAPIC, as processors from before about 2013 do.
+	WithoutX2APIC bool
 }
 
 // Exit codes of isa-debug-exit: QEMU exits with (value << 1) | 1, and test
@@ -91,9 +94,13 @@ func (m Machine) Args() []string {
 	if m.SecureBoot {
 		board = "q35,smm=on"
 	}
+	cpu := "max"
+	if m.WithoutX2APIC {
+		cpu = "max,-x2apic"
+	}
 	args := []string{
 		"-machine", board,
-		"-cpu", "max",
+		"-cpu", cpu,
 		"-m", strconv.FormatInt(m.Memory>>20, 10) + "M",
 		"-smp", strconv.Itoa(m.CPUs),
 	}

@@ -451,6 +451,9 @@ func runSteps(ctx context.Context, steps []step, stdout, stderr io.Writer) error
 	return nil
 }
 
+// qemuTests boots the QEMU test image twice: on a processor as QEMU gives
+// it, and on one without an x2APIC, so the kernel's xAPIC path is checked
+// as well wherever KVM would pass the x2APIC through.
 func (s *session) qemuTests(ctx context.Context) error {
 	v := variant{testMode: true}
 	fmt.Fprintln(s.env.Stdout, "== QEMU test image")
@@ -470,6 +473,17 @@ func (s *session) qemuTests(ctx context.Context) error {
 	if err := os.MkdirAll(screens, 0o755); err != nil {
 		return err
 	}
+	if err := s.testMachine(ctx, m, screens); err != nil {
+		return err
+	}
+	fmt.Fprintln(s.env.Stdout, "== QEMU test image without x2APIC")
+	m.WithoutX2APIC = true
+	return s.testMachine(ctx, m, "")
+}
+
+// testMachine boots the test image on m, prints each check, and keeps the
+// screens it asks for in screens unless that is empty.
+func (s *session) testMachine(ctx context.Context, m qemu.Machine, screens string) error {
 	res, err := qemu.Run(ctx, m, qemu.Options{
 		Timeout:       s.settings.QEMU.Timeout,
 		AnswerPress:   true,

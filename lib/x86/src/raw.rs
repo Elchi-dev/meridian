@@ -185,6 +185,17 @@ pub fn read_cr3() -> u64 {
     value
 }
 
+/// Switches to the address space whose level 4 table is at `root`.
+///
+/// # Safety
+///
+/// The table must map the running code, its stack and everything the
+/// kernel reaches as the one loaded now does.
+pub unsafe fn load_cr3(root: u64) {
+    // SAFETY: the caller promises the new tables map what runs.
+    unsafe { asm!("mov cr3, {}", in(reg) root, options(nostack, preserves_flags)) };
+}
+
 #[must_use]
 pub fn read_cr0() -> u64 {
     let value: u64;
@@ -717,9 +728,9 @@ pub fn mask_legacy_pics() {
     }
 }
 
-/// Leaves the kernel for ring 3 at `rip`, with the stack at `rsp` and
-/// interrupts on, and every general register cleared so nothing of the
-/// kernel's shows there.
+/// Leaves the kernel for ring 3 at `rip`, with the stack at `rsp`,
+/// interrupts on, `argument` in rdi and every other general register
+/// cleared, so nothing of the kernel's shows there.
 ///
 /// # Safety
 ///
@@ -727,7 +738,7 @@ pub fn mask_legacy_pics() {
 /// hold the kernel stack to come back on, and the IDT must give ring 3 a
 /// way back through a system call gate; whatever ring 3 does then cannot
 /// harm the kernel.
-pub unsafe fn enter_user(rip: u64, rsp: u64) -> ! {
+pub unsafe fn enter_user(rip: u64, rsp: u64, argument: u64) -> ! {
     // SAFETY: the caller promises the pages, the stack to come back on and
     // the gates; iretq takes the processor to ring 3 with the selectors
     // pushed here.
@@ -738,12 +749,12 @@ pub unsafe fn enter_user(rip: u64, rsp: u64) -> ! {
             "push 0x202",
             "push {cs}",
             "push rsi",
+            "mov rdi, rdx",
             "xor eax, eax",
             "xor ebx, ebx",
             "xor ecx, ecx",
             "xor edx, edx",
             "xor esi, esi",
-            "xor edi, edi",
             "xor ebp, ebp",
             "xor r8d, r8d",
             "xor r9d, r9d",
@@ -758,6 +769,7 @@ pub unsafe fn enter_user(rip: u64, rsp: u64) -> ! {
             cs = const tables::USER_CODE as u64,
             in("rdi") rsp,
             in("rsi") rip,
+            in("rdx") argument,
             options(noreturn),
         );
     }

@@ -32,8 +32,10 @@ type Machine struct {
 	// Display opens a window. Without it the machine still has a VGA card,
 	// so the firmware offers a framebuffer, but nothing is shown.
 	Display bool
-	// DebugExit adds isa-debug-exit on port 0xf4, which test images use to
-	// end QEMU with their verdict.
+	// DebugExit makes it a machine for test images: it adds isa-debug-exit
+	// on port 0xf4, which they end QEMU with to give their verdict, and a
+	// PCIe root port with a random number generator behind it, for their
+	// checks of devices on a bus of their own.
 	DebugExit bool
 	// Monitor is a QEMU character device for the human monitor, such as
 	// "tcp:127.0.0.1:4444,server=on,wait=off". Empty means no monitor.
@@ -134,7 +136,11 @@ func (m Machine) Args() []string {
 		args = append(args, "-display", "none")
 	}
 	if m.DebugExit {
-		args = append(args, "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04")
+		args = append(args,
+			"-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+			"-device", "pcie-root-port,id=meridian.port,chassis=1,slot=1",
+			"-device", "virtio-rng-pci,bus=meridian.port",
+		)
 	}
 	if m.Monitor != "" {
 		args = append(args, "-monitor", m.Monitor)

@@ -24,6 +24,7 @@ func TestArgsForAFullMachine(t *testing.T) {
 	want := "-machine q35 -cpu max -m 512M -smp 4 -accel kvm -accel tcg -nodefaults -no-reboot -vga std -serial stdio " +
 		"-drive if=pflash,format=raw,readonly=on,file=/fw/code.fd -drive if=pflash,format=raw,file=/run/vars.fd " +
 		"-drive format=raw,file=/out/meridian.img -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04 " +
+		"-device pcie-root-port,id=meridian.port,chassis=1,slot=1 -device virtio-rng-pci,bus=meridian.port " +
 		"-monitor tcp:127.0.0.1:4444,server=on,wait=off -s -S"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)

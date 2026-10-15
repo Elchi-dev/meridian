@@ -47,6 +47,16 @@ pub fn enable(at: Address) {
     }
 }
 
+/// The vendor id configuration space holds for `at`: [`pci::NOBODY`] where
+/// no function is, none outside the region. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn vendor(at: Address) -> Option<u16> {
+    let virt = config(at)?;
+    // SAFETY: as in header.
+    let word = unsafe { core::ptr::read_volatile(virt as *const u32) };
+    u16::try_from(word & 0xffff).ok()
+}
+
 /// The command register of the function at `at`. Only the test image asks.
 #[cfg(feature = "qemu-test")]
 pub fn command(at: Address) -> Option<u16> {
@@ -80,18 +90,14 @@ pub fn header(at: Address) -> Option<Header> {
 }
 
 /// Hands every function there is to `found`: those on bus 0, then those
-/// behind each bridge, each bus once.
+/// behind each bridge. A bridge's bus counts only when it is above the
+/// bridge's own, as PCI numbers them, so no bus is reached in a circle.
 pub fn each(mut found: impl FnMut(Address, Header)) {
-    let mut seen = [0u64; 4];
     let mut buses = [0u8; 256];
     let mut waiting = 1;
     while waiting > 0 {
         waiting -= 1;
         let bus = buses[waiting];
-        if seen[usize::from(bus / 64)] & 1 << (bus % 64) != 0 {
-            continue;
-        }
-        seen[usize::from(bus / 64)] |= 1 << (bus % 64);
         for device in 0..32 {
             for function in 0..8 {
                 let at = Address {
@@ -106,7 +112,7 @@ pub fn each(mut found: impl FnMut(Address, Header)) {
                     continue;
                 };
                 found(at, h);
-                if h.layout == 1 && h.secondary_bus != 0 && waiting < buses.len() {
+                if h.layout == 1 && h.secondary_bus > bus && waiting < buses.len() {
                     buses[waiting] = h.secondary_bus;
                     waiting += 1;
                 }

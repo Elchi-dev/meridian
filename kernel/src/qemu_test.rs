@@ -304,8 +304,21 @@ fn pci_checks<W: Write>(report: &mut Report<'_, W>) {
     };
     report.check(
         "kernel.pci.found",
-        host && registers && in_order && raw::pci::header(nobody).is_none(),
+        host && registers && in_order && raw::pci::vendor(nobody) == Some(pci::NOBODY),
         "q35's host bridge and AHCI controller should be found, each function once, the controller's registers in memory",
+    );
+    let bridge = found
+        .iter()
+        .find(|(at, h)| at.bus == 0 && h.kind() == "PCI bridge");
+    let behind = bridge.is_some_and(|(_, b)| {
+        found
+            .iter()
+            .any(|(at, h)| at.bus == b.secondary_bus && b.secondary_bus > 0 && h.vendor == 0x1af4)
+    });
+    report.check(
+        "kernel.pci.bridge",
+        behind && found.iter().all(|(at, _)| at.bus <= 1),
+        "the root port the test machine has should lead to its random number generator, on a bus of its own",
     );
     report.check(
         "kernel.pci.enabled",

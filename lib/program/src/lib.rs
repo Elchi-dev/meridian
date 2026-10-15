@@ -1,11 +1,14 @@
 //! What a Meridian program written in Rust is built on: the system calls
-//! as functions, the start the kernel jumps to, a log line built with
-//! `format_args!`, and what a panic does. A program names its main function
-//! with [`main!`]; main gets the handle the kernel started it with, and
-//! what it returns is the program's exit code.
+//! as functions, the start the kernel jumps to, a heap for `alloc`, a log
+//! line built with `format_args!`, and what a panic does. A program names
+//! its main function with [`main!`]; main gets the handle the kernel
+//! started it with, and what it returns is the program's exit code.
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
+use core::alloc::Layout;
 use core::fmt;
 
 pub use abi::Error;
@@ -15,6 +18,8 @@ use abi::{Call, LOG_BYTES, answer};
 pub mod checks;
 #[allow(unsafe_code)]
 mod raw;
+
+pub use raw::Allocator;
 
 /// A handle of the program's, standing for a kernel object such as a
 /// channel end. Its number is never 0.
@@ -100,6 +105,65 @@ pub fn receive(end: Handle, room: &mut [u8]) -> Result<(usize, Option<Handle>), 
 /// When the handle is not the program's.
 pub fn close(handle: Handle) -> Result<(), Error> {
     done(raw::call(Call::Close(handle.0)).0)
+}
+
+/// Asks for `pages` fresh pages, zeroed and writable, and returns where
+/// they start. The heap takes its memory from here.
+///
+/// # Errors
+///
+/// For 0 pages or more than one call gives, and when no memory or no room
+/// in the program's heap region is left.
+pub fn map(pages: u64) -> Result<u64, Error> {
+    answer(raw::call(Call::Map(pages)).0)
+}
+
+/// Gives back the `pages` pages at `at`, which [`map`] gave.
+///
+/// # Errors
+///
+/// When they are not all pages [`map`] gave and still there.
+pub fn unmap(at: u64, pages: u64) -> Result<(), Error> {
+    done(raw::call(Call::Unmap { at, pages }).0)
+}
+
+/// The largest alignment the heap gives: that of the pages it lies on.
+pub const ALIGN_MAX: usize = 4096;
+
+/// The heap's bookkeeping over memory at `base`: which of its blocks are
+/// taken, in bits kept elsewhere, and where each allocation lies.
+pub struct Pool<'a> {
+    base: usize,
+    heap: heap::Heap<'a>,
+}
+
+impl<'a> Pool<'a> {
+    /// A pool over the `size` bytes at `base`, all free, its bits kept in
+    /// `bits`, which need [`heap::Heap::words_for`] words.
+    pub fn new(base: usize, size: usize, bits: &'a mut [u64]) -> Pool<'a> {
+        Pool {
+            base,
+            heap: heap::Heap::new(bits, size),
+        }
+    }
+
+    /// Where room for `layout` lies, now taken, or none when there is no
+    /// room or it asks for more than [`ALIGN_MAX`].
+    pub fn alloc(&mut self, layout: Layout) -> Option<usize> {
+        if layout.align() > ALIGN_MAX {
+            return None;
+        }
+        let offset = self.heap.alloc(layout.size(), layout.align())?;
+        Some(self.base + offset)
+    }
+
+    /// Gives back the room for `layout` at `at`, which [`Pool::alloc`]
+    /// handed out. Anything else is left alone.
+    pub fn free(&mut self, at: usize, layout: Layout) {
+        if let Some(offset) = at.checked_sub(self.base) {
+            let _ = self.heap.free(offset, layout.size());
+        }
+    }
 }
 
 fn log_call(line: &str) -> Call {
@@ -287,6 +351,53 @@ mod tests {
         assert_eq!(received(0, 0x3_0005), Ok((0, Some(Handle(0x3_0005)))));
         assert_eq!(received(abi::EMPTY, 0x3_0005), Err(Error::Empty));
         assert_eq!(received(abi::TOO_SMALL, 0), Err(Error::TooSmall));
+    }
+
+    fn layout(size: usize, align: usize) -> Layout {
+        Layout::from_size_align(size, align).unwrap()
+    }
+
+    #[test]
+    fn the_heap_hands_out_addresses_in_its_memory() {
+        let mut bits = [0u64; 4];
+        let base = 0x10_0000_0000;
+        let mut pool = Pool::new(base, 4096, &mut bits);
+        let first = pool.alloc(layout(24, 8)).unwrap();
+        let second = pool.alloc(layout(8, 8)).unwrap();
+        assert_eq!(first, base, "the first room is at the start");
+        assert_eq!(second, base + 32, "24 bytes take two blocks of 16");
+        let page = pool.alloc(layout(16, 1024)).unwrap();
+        assert_eq!(page % 1024, 0);
+        assert!((base..base + 4096).contains(&page));
+    }
+
+    #[test]
+    fn room_given_back_is_handed_out_again() {
+        let mut bits = [0u64; 4];
+        let base = 0x20_0000;
+        let mut pool = Pool::new(base, 4096, &mut bits);
+        let all = pool.alloc(layout(4096, 16)).unwrap();
+        assert_eq!(pool.alloc(layout(1, 1)), None, "the memory is used up");
+        pool.free(all, layout(4096, 16));
+        assert_eq!(pool.alloc(layout(1, 1)), Some(base));
+        pool.free(base - 16, layout(16, 16));
+        pool.free(base + 8192, layout(16, 16));
+        assert_eq!(
+            pool.alloc(layout(16, 16)),
+            Some(base + 16),
+            "foreign frees change nothing"
+        );
+    }
+
+    #[test]
+    fn the_heap_aligns_no_further_than_its_pages() {
+        let mut bits = [0u64; 32];
+        let mut pool = Pool::new(0x40_0000, 32 * 1024, &mut bits);
+        assert!(
+            pool.alloc(layout(8, ALIGN_MAX))
+                .is_some_and(|a| a % ALIGN_MAX == 0)
+        );
+        assert_eq!(pool.alloc(layout(8, ALIGN_MAX * 2)), None);
     }
 
     #[test]

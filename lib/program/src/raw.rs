@@ -1,7 +1,14 @@
-//! What takes unsafe code: the one way into the kernel, `int 0x2e`, and
-//! the start of a program, which the linker has to find by its name.
+//! What takes unsafe code: the one way into the kernel, `int 0x2e`, the
+//! heap behind `alloc`, and the start of a program, which the linker has
+//! to find by its name.
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use abi::Call;
+
+use crate::Pool;
 
 /// Makes the system call `call`, and returns what the kernel left in rax
 /// and rdx.
@@ -25,9 +32,85 @@ pub fn call(call: Call) -> (u64, u64) {
     (rax, rdx)
 }
 
+/// The pages the heap maps the first time it is asked for room, 1 MiB;
+/// the bits that say which of its blocks are taken lie in its last pages.
+const HEAP_PAGES: u64 = 256;
+const HEAP_BYTES: usize = 256 * 4096;
+const BITS: usize = HEAP_BYTES / heap::BLOCK / 64;
+
+/// The heap of a program: a [`Pool`] over memory from [`crate::map`],
+/// which [`main!`] makes the global allocator.
+pub struct Allocator {
+    taken: AtomicBool,
+    pool: UnsafeCell<Option<Pool<'static>>>,
+}
+
+// SAFETY: the pool is only reached while `taken` is held.
+unsafe impl Sync for Allocator {}
+
+impl Default for Allocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Allocator {
+    #[must_use]
+    pub const fn new() -> Allocator {
+        Allocator {
+            taken: AtomicBool::new(false),
+            pool: UnsafeCell::new(None),
+        }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&mut Option<Pool<'static>>) -> R) -> R {
+        while self.taken.swap(true, Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+        // SAFETY: `taken` makes this the only reference.
+        let result = f(unsafe { &mut *self.pool.get() });
+        self.taken.store(false, Ordering::Release);
+        result
+    }
+}
+
+/// Maps the heap's memory and puts its bits at its end.
+fn first_pool() -> Option<Pool<'static>> {
+    let at = usize::try_from(crate::map(HEAP_PAGES).ok()?).ok()?;
+    let size = HEAP_BYTES - BITS * 8;
+    // SAFETY: the kernel just mapped these pages for this program alone,
+    // zeroed and writable, and the pool never hands out the bytes where
+    // the bits lie.
+    let bits = unsafe { core::slice::from_raw_parts_mut((at + size) as *mut u64, BITS) };
+    Some(Pool::new(at, size, bits))
+}
+
+// SAFETY: every allocation is room the pool took for it alone, in memory
+// that stays mapped, aligned as the layout asks or refused.
+unsafe impl GlobalAlloc for Allocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.with(|pool| {
+            if pool.is_none() {
+                *pool = first_pool();
+            }
+            pool.as_mut()
+                .and_then(|p| p.alloc(layout))
+                .map_or(core::ptr::null_mut(), |at| at as *mut u8)
+        })
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.with(|pool| {
+            if let Some(p) = pool.as_mut() {
+                p.free(ptr as usize, layout);
+            }
+        });
+    }
+}
+
 /// Makes `main`, a `fn(Handle) -> u64`, the program's main function: the
 /// kernel starts the program with a handle, and it ends with the code main
-/// returns. Also gives the program its panic handler.
+/// returns. Also gives the program its panic handler and its heap.
 #[macro_export]
 macro_rules! main {
     ($main:path) => {
@@ -56,5 +139,9 @@ macro_rules! main {
         fn panic(info: &core::panic::PanicInfo) -> ! {
             $crate::panicked(info)
         }
+
+        #[cfg(not(test))]
+        #[global_allocator]
+        static __PROGRAM_HEAP: $crate::Allocator = $crate::Allocator::new();
     };
 }

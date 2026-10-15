@@ -3,15 +3,19 @@
 //! and hello ends with the number that failed, which the kernel's check
 //! wants to be 0.
 
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use abi::LOG_BYTES;
 
-use crate::{Error, Handle, channel, close, log, receive, send};
+use crate::{Error, Handle, channel, close, log, map, receive, send, unmap};
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 11] = [
+const CHECKS: [(&str, Check); 14] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -23,6 +27,9 @@ const CHECKS: [(&str, Check); 11] = [
     ("channel.full", full),
     ("close", closed_twice),
     ("handle", not_a_handle),
+    ("memory", pages_come_and_go),
+    ("memory.sizes", sizes_there_are),
+    ("alloc", heap_in_use),
 ];
 
 /// Runs every check and answers how many failed.
@@ -225,6 +232,68 @@ fn closed_twice() -> Outcome {
         "a closed handle should be gone",
     )?;
     expect(close(b) == Ok(()), "the other end should close")
+}
+
+fn pages_come_and_go() -> Outcome {
+    let first = map(2).map_err(|_| "two pages should be given")?;
+    let second = map(1).map_err(|_| "and one more")?;
+    expect(
+        first % 4096 == 0 && first >= 0x10_0000_0000 && second >= first + 2 * 4096,
+        "pages should come on whole pages, from the heap region, one piece after another",
+    )?;
+    expect(unmap(first + 4096, 1) == Ok(()), "a part should go back")?;
+    expect(
+        unmap(first, 2) == Err(Error::BadAddress),
+        "pages that went back already should not go again",
+    )?;
+    expect(unmap(first, 1) == Ok(()), "the rest should go back")?;
+    expect(unmap(second, 1) == Ok(()), "and the other piece")?;
+    expect(
+        map(1).is_ok_and(|again| again > second),
+        "what went back should not be given again",
+    )
+}
+
+fn sizes_there_are() -> Outcome {
+    expect(map(0) == Err(Error::BadSize), "no pages are no request")?;
+    expect(
+        map(16385) == Err(Error::BadSize),
+        "one call gives at most 64 MiB",
+    )?;
+    expect(
+        unmap(0x40_0000, 1) == Err(Error::BadAddress),
+        "the program's image is not the heap's to give back",
+    )?;
+    expect(
+        unmap(0x10_0000_0000, 0) == Err(Error::BadAddress),
+        "nothing cannot go back either",
+    )
+}
+
+fn heap_in_use() -> Outcome {
+    let numbers: Vec<u64> = (1..=1000).collect();
+    expect(
+        numbers.iter().sum::<u64>() == 500_500,
+        "a vector should hold what was pushed",
+    )?;
+    let text = alloc::format!("{} numbers, the last {}", numbers.len(), numbers[999]);
+    expect(
+        text == "1000 numbers, the last 1000",
+        "a string should be formatted",
+    )?;
+    drop(numbers);
+    let page = Box::new([7u8; 4096]);
+    expect(page.iter().all(|&b| b == 7), "a box should hold a page")?;
+    let mut big: Vec<u8> = Vec::new();
+    expect(
+        big.try_reserve(2 << 20).is_err(),
+        "more than the heap holds should be refused, not crash",
+    )?;
+    let mut grown = String::new();
+    for _ in 0..1000 {
+        grown.push_str("room ");
+    }
+    expect(grown.len() == 5000, "a string should grow")
 }
 
 fn not_a_handle() -> Outcome {

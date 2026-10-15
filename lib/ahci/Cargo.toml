@@ -1,0 +1,12 @@
+[package]
+name = "ahci"
+description = "AHCI without the hardware: command frames, port status and what a disk says about itself"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

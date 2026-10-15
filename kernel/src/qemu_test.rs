@@ -1080,11 +1080,83 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     );
     let mut text = [b' '; 64];
     text[..9].copy_from_slice(b"#!/bin/sh");
+    low_memory_checks(report, hello.map(|(_, file)| file));
     report.check(
         "kernel.programs.not_elf",
         user::start_file(0, &text, 0) == Err(user::Error::Elf(elf::Error::NotElf))
             && user::start_file(0, b"\x7fELF", 0) == Err(user::Error::Elf(elf::Error::Truncated)),
         "a file that is no ELF file should not start",
+    );
+}
+
+/// Takes every free frame out of the allocator, each holding the address
+/// of the one taken before, and returns the last one taken.
+fn hold_frames() -> u64 {
+    let mut last = 0;
+    while let Some(frame) = raw::memory::FRAMES
+        .lock()
+        .as_mut()
+        .and_then(frames::Frames::alloc)
+    {
+        raw::memory::write_word(HHDM_BASE + frame, last);
+        last = frame;
+    }
+    last
+}
+
+/// Gives back the last frame [`hold_frames`] took, and returns the one
+/// before it.
+fn release_frame(last: u64) -> u64 {
+    let before = raw::memory::read_word(HHDM_BASE + last);
+    if let Some(frames) = raw::memory::FRAMES.lock().as_mut() {
+        let _ = frames.free(last);
+    }
+    before
+}
+
+/// A program that cannot have the memory it needs does not start, and
+/// whatever it got so far goes back: hello is started with one free frame
+/// after another more, until it starts.
+fn low_memory_checks<W: Write>(report: &mut Report<'_, W>, file: Option<&[u8]>) {
+    use raw::user::{self, Error};
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map_or(0, frames::Frames::free_frames)
+    };
+    let _ = writeln!(
+        report.out,
+        "kernel: hello once more, short of memory, so its own checks fail"
+    );
+    let before = free();
+    let mut held = hold_frames();
+    let mut refused = 0;
+    let mut tidy = true;
+    let mut started = None;
+    while started.is_none() && tidy && held != 0 {
+        let left = free();
+        match file.map(|f| user::start_file(0, f, 0)) {
+            Some(Err(Error::NoMemory)) => {
+                refused += 1;
+                tidy = free() == left;
+                held = release_frame(held);
+            }
+            Some(Ok(slot)) => started = Some(slot),
+            _ => tidy = false,
+        }
+    }
+    if let Some(slot) = started {
+        raw::user::seen::forget(slot);
+        let _ = ended_with(started, 0);
+    }
+    while held != 0 {
+        held = release_frame(held);
+    }
+    report.check(
+        "kernel.programs.low_memory",
+        refused > 10 && tidy && started.is_some_and(|s| !raw::thread::alive(s)) && free() == before,
+        "a program short of memory should not start and should leave every frame it took",
     );
 }
 

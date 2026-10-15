@@ -107,14 +107,15 @@ pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Erro
     let mut image = vec![0u8; usize::try_from(size).map_err(|_| Error::NoMemory)?];
     elf.load(&mut image, CODE_AT).map_err(Error::Elf)?;
     let root = memory::new_space().ok_or(Error::NoMemory)?;
-    let mut mapped = true;
     for (offset, page) in (0..).step_by(4096).zip(image.chunks(4096)) {
-        if let Ok(Some(flags)) = program::page_flags(segments, first + offset) {
-            mapped &= memory::map_fresh_in(root, CODE_AT + offset, flags, page).is_ok();
+        if let Ok(Some(flags)) = program::page_flags(segments, first + offset)
+            && memory::map_fresh_in(root, CODE_AT + offset, flags, page).is_err()
+        {
+            memory::release_space(root);
+            return Err(Error::NoMemory);
         }
     }
-    let process = Process::new();
-    spawn(core, root, mapped, entry, argument, process)
+    spawn(core, root, entry, argument, Process::new())
 }
 
 /// Starts `program` as [`start`] does, holding a handle with `rights` to
@@ -154,17 +155,18 @@ fn launch(
     process: Box<Process>,
 ) -> Result<usize, Error> {
     let root = memory::new_space().ok_or(Error::NoMemory)?;
-    let mapped = memory::map_fresh_in(root, CODE_AT, Flags::USER, (program.code)()).is_ok();
-    spawn(core, root, mapped, CODE_AT, argument, process)
+    if memory::map_fresh_in(root, CODE_AT, Flags::USER, (program.code)()).is_err() {
+        memory::release_space(root);
+        return Err(Error::NoMemory);
+    }
+    spawn(core, root, CODE_AT, argument, process)
 }
 
-/// Gives the program in the address space at `root`, whose image is mapped
-/// unless `mapped` is false, its stack and a thread that enters it at
-/// `entry`.
+/// Gives the program whose image is mapped in the address space at `root`
+/// its stack and a thread that enters it at `entry`.
 fn spawn(
     core: usize,
     root: u64,
-    mapped: bool,
     entry: u64,
     argument: u64,
     process: Box<Process>,
@@ -174,7 +176,7 @@ fn spawn(
     let stacked = (bottom..STACK_TOP)
         .step_by(4096)
         .all(|page| memory::map_fresh_in(root, page, stack, &[]).is_ok());
-    if !mapped || !stacked {
+    if !stacked {
         memory::release_space(root);
         return Err(Error::NoMemory);
     }

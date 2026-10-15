@@ -93,9 +93,7 @@ fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Com1) {
     });
     if let Some((at, pci::Bar::Memory { address, .. })) = found.nvme {
         raw::pci::enable(at);
-        if raw::nvme::start(address)
-            && let Some(drive) = raw::nvme::drive()
-        {
+        if let Some(drive) = raw::nvme::start(address) {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
             let mut read = |lba, into: &mut [u8]| raw::nvme::read(lba, into).is_ok();

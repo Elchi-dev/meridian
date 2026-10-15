@@ -49,6 +49,9 @@ pub struct Drive {
     capabilities: Capabilities,
     admin: Queue,
     io: Queue,
+    /// The id of the next command. Ids only have to differ among the
+    /// commands of a queue still running, and each command here is waited
+    /// for, so one count does for both queues.
     next: u16,
 }
 
@@ -82,8 +85,9 @@ fn set_register32(offset: usize, value: u32) {
 }
 
 fn set_register64(offset: usize, value: u64) {
-    set_register32(offset, u32::try_from(value & 0xffff_ffff).unwrap_or(0));
-    set_register32(offset + 4, u32::try_from(value >> 32).unwrap_or(0));
+    let (low, high) = nvme::halves(value);
+    set_register32(offset, low);
+    set_register32(offset + 4, high);
 }
 
 fn wait(done: impl Fn() -> bool) -> bool {
@@ -136,23 +140,23 @@ fn submit(
 /// Takes the controller whose registers lie at physical `registers`:
 /// maps them, turns it off and on again with queues of its own, asks it
 /// and its first namespace who they are, and makes a pair of queues for
-/// reading. Says whether it is ready.
-pub fn start(registers: u64) -> bool {
+/// reading. Returns it once it is ready.
+pub fn start(registers: u64) -> Option<Drive> {
     if !memory::map_registers(kernel::NVME_REGISTERS, registers & !0xfff, 2) {
-        return false;
+        return None;
     }
     let low = u64::from(register32(register::CAPABILITIES));
     let high = u64::from(register32(register::CAPABILITIES + 4));
     let capabilities = Capabilities::read(high << 32 | low);
     if !capabilities.usable(ENTRIES, 2 * 4096) {
-        return false;
+        return None;
     }
     set_register32(register::CONFIGURATION, 0);
     if !wait(|| register32(register::STATUS) & register::READY == 0) {
-        return false;
+        return None;
     }
     let (Some(admin), Some(io)) = (Queue::new(0), Queue::new(1)) else {
-        return false;
+        return None;
     };
     set_register32(register::ADMIN_QUEUES, nvme::admin_queues(ENTRIES));
     set_register64(register::ADMIN_SUBMISSION, admin.submissions);
@@ -160,7 +164,7 @@ pub fn start(registers: u64) -> bool {
     set_register32(register::CONFIGURATION, nvme::ENABLED);
     let state = || State::read(register32(register::STATUS));
     if !wait(|| state() != State::Off) || state() != State::Ready {
-        return false;
+        return None;
     }
     let mut drive = Drive {
         controller: Controller::read(&[0; 4096]),
@@ -173,9 +177,7 @@ pub fn start(registers: u64) -> bool {
         io,
         next: 1,
     };
-    let Some(page) = memory::device_frame() else {
-        return false;
-    };
+    let page = memory::device_frame()?;
     let mut data = [0u8; 4096];
     let mut identify = |drive: &mut Drive, namespace: u32| {
         let id = drive.next;
@@ -203,7 +205,7 @@ pub fn start(registers: u64) -> bool {
         .and_then(|d| Namespace::read(&d));
     memory::give_back(page);
     let (Ok(controller), Some(namespace)) = (controller, namespace) else {
-        return false;
+        return None;
     };
     drive.controller = controller;
     drive.namespace = namespace;
@@ -220,15 +222,15 @@ pub fn start(registers: u64) -> bool {
         )
         .is_err()
         {
-            return false;
+            return None;
         }
     }
-    drive.next += 2;
     *DRIVE.lock() = Some(drive);
-    true
+    Some(drive)
 }
 
-/// The controller started, if any.
+/// The controller started, if any. Only the test image asks.
+#[cfg(feature = "qemu-test")]
 pub fn drive() -> Option<Drive> {
     *DRIVE.lock()
 }

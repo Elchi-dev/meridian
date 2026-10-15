@@ -32,6 +32,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "channel"
+version = "0.0.0"
+
+[[package]]
 name = "elf"
 version = "0.0.0"
 

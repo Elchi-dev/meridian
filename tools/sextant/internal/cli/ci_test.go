@@ -214,6 +214,21 @@ func TestCIRunsInTheRepositoryWithItsBuildFolder(t *testing.T) {
 	}
 }
 
+func TestCIDoesNotStartInsideItself(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sextant.meri"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(insideChecks, "1")
+	r := runIn(dir, "ci")
+	if r.code != ExitFailure || !strings.Contains(r.stderr, "inside its own checks") || r.stdout != "" {
+		t.Errorf("exit %d\nstdout %s\nstderr %s", r.code, r.stdout, r.stderr)
+	}
+	if r := runIn(dir, "ci", "--list"); r.code != ExitOK {
+		t.Errorf("listing the checks starts none of them: exit %d, %s", r.code, r.stderr)
+	}
+}
+
 func TestCIListsItsSteps(t *testing.T) {
 	r := run("ci", "--list")
 	if r.code != ExitOK || strings.Count(r.stdout, "\n") != len(ciSteps()) {

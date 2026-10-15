@@ -339,8 +339,8 @@ func TestTheHostTestsAreCargosThenGos(t *testing.T) {
 	s := testSession(filepath.Join("b", "uild"))
 	s.root = filepath.Join("r", "oot")
 	want := []step{
-		{s.root, "cargo", []string{"test", "--workspace", "--locked"}, []string{"CARGO_TARGET_DIR=" + filepath.Join("b", "uild"), "SEXTANT_INSIDE_HOST_TESTS=1"}},
-		{filepath.Join(s.root, "tools", "sextant"), "go", []string{"test", "./..."}, []string{"SEXTANT_INSIDE_HOST_TESTS=1"}},
+		{s.root, "cargo", []string{"test", "--workspace", "--locked"}, []string{"CARGO_TARGET_DIR=" + filepath.Join("b", "uild"), "SEXTANT_INSIDE_CHECKS=1"}},
+		{filepath.Join(s.root, "tools", "sextant"), "go", []string{"test", "./..."}, []string{"SEXTANT_INSIDE_CHECKS=1"}},
 	}
 	if got := s.hostSteps(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v", got)
@@ -390,7 +390,7 @@ func TestHostTestsDoNotStartInsideThemselves(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sextant.meri"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(insideHostTests, "1")
+	t.Setenv(insideChecks, "1")
 	for _, args := range [][]string{{"test", "--host"}, {"test"}} {
 		r := runIn(dir, args...)
 		if r.code != ExitFailure || !strings.Contains(r.stderr, "inside its own host tests") || strings.Contains(r.stdout, "== cargo") {

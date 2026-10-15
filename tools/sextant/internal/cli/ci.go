@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"go/format"
@@ -72,6 +73,9 @@ func ciCommand(env Env, args []string, steps []ciStep) error {
 		}
 		return nil
 	}
+	if os.Getenv(insideChecks) != "" {
+		return errors.New("sextant ci is running inside its own checks, which would start them again without end")
+	}
 	s, err := openSession(env)
 	if err != nil {
 		return err
@@ -83,7 +87,7 @@ func ciCommand(env Env, args []string, steps []ciStep) error {
 	r := ciRun{
 		root:   s.root,
 		self:   self,
-		env:    []string{"CARGO_TARGET_DIR=" + s.settings.BuildDir},
+		env:    []string{"CARGO_TARGET_DIR=" + s.settings.BuildDir, insideChecks + "=1"},
 		out:    env.Stdout,
 		errOut: env.Stderr,
 		github: os.Getenv("GITHUB_ACTIONS") == "true",

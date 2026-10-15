@@ -61,22 +61,22 @@ func bootParts() Boot {
 	return Boot{
 		Loader: []byte("efi"), Certificate: []byte("cer"), Kernel: []byte("elf"),
 		Shim:     Shim{Shim: []byte("shim"), Manager: []byte("mok"), Licences: []byte("bsd")},
-		Programs: map[string][]byte{"hello": []byte("hi"), "init": []byte("first")},
+		Programs: map[string][]byte{"hello.mexec": []byte("hi"), "init.mexec": []byte("first")},
 	}
 }
 
 func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
 	got := BootFiles(bootParts())
 	want := map[string]string{
-		"EFI/BOOT/BOOTX64.EFI":       "shim",
-		"EFI/BOOT/grubx64.efi":       "efi",
-		"EFI/BOOT/mmx64.efi":         "mok",
-		"meridian.cer":               "cer",
-		"meridian/licences/shim.txt": "bsd",
-		"meridian/kernel":            "elf",
-		"meridian/boot.meri":         Settings,
-		"meridian/programs/hello":    "hi",
-		"meridian/programs/init":     "first",
+		"EFI/BOOT/BOOTX64.EFI":          "shim",
+		"EFI/BOOT/grubx64.efi":          "efi",
+		"EFI/BOOT/mmx64.efi":            "mok",
+		"meridian.cer":                  "cer",
+		"meridian/licences/shim.txt":    "bsd",
+		"meridian/kernel":               "elf",
+		"meridian/boot.meri":            Settings,
+		"meridian/programs/hello.mexec": "hi",
+		"meridian/programs/init.mexec":  "first",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d files, want %d", len(got), len(want))
@@ -91,7 +91,7 @@ func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
 func TestTestImagesCarryAnExampleSystem(t *testing.T) {
 	got := TestFiles(bootParts())
 	if len(got) != len(BootFiles(bootParts()))+5 || len(LongName) != 254 || string(got[LongName]) != "long name\n" ||
-		string(got["meridian/programs/hello_again"]) != "hi" || string(got["meridian/programs/init_again"]) != "first" ||
+		string(got["meridian/programs/hello_again.mexec"]) != "hi" || string(got["meridian/programs/init_again.mexec"]) != "first" ||
 		string(got["EFI/example/grubx64.efi"]) != "efi" || string(got["EFI/other/tool.efi"]) != "efi" ||
 		string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" || string(got[FirmwarePath]) != "shim" {
 		t.Fatalf("got %v", got)

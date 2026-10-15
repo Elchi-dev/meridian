@@ -96,6 +96,10 @@ const KernelPath = "meridian/kernel"
 // kernel to start.
 const ProgramsPath = "meridian/programs"
 
+// ProgramExt ends the name of every native program: an ELF file with the
+// notes that make it Meridian's (docs/formats/mexec.md).
+const ProgramExt = ".mexec"
+
 // SettingsPath is where the loader reads its settings.
 const SettingsPath = "meridian/boot.meri"
 
@@ -170,7 +174,7 @@ func TestFiles(b Boot) map[string][]byte {
 	files[SettingsPath] = []byte(testSettings)
 	files[LongName] = []byte("long name\n")
 	for name, data := range b.Programs {
-		files[ProgramsPath+"/"+name+AgainSuffix] = data
+		files[ProgramsPath+"/"+strings.TrimSuffix(name, ProgramExt)+AgainSuffix+ProgramExt] = data
 	}
 	return files
 }

@@ -257,6 +257,7 @@ On 15 October 2026:
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | how the parts fit, and one page per big part |
 | [testing](docs/testing.md) | host tests, QEMU test images, mutation testing |
 | [.meri format](docs/formats/meri.md) | the settings and system file format |
+| [.mexec format](docs/formats/mexec.md) | the format of Meridian's own programs |
 | [decision records](docs/adr/README.md) | every decision, with the alternatives that lost |
 | [CONTRIBUTING](CONTRIBUTING.md) | building, testing and the rules |
 | [SECURITY](SECURITY.md) | reporting a vulnerability |

@@ -105,7 +105,7 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 	}
 	programs := map[string][]byte{}
 	for _, part := range cargo.Programs {
-		programs[part.File] = read(part)
+		programs[part.File+image.ProgramExt] = read(part)
 	}
 	b := image.Boot{Loader: read(cargo.Loader), Kernel: read(cargo.Kernel), Shim: shim, Programs: programs}
 	if qemuTest {

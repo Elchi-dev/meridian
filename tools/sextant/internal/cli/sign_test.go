@@ -151,9 +151,9 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 	}
 	loaderData, _ := os.ReadFile(b.loader)
 	kernelData, _ := os.ReadFile(b.kernel)
-	hello, _ := os.ReadFile(b.programs["hello"])
+	hello, _ := os.ReadFile(b.programs["hello.mexec"])
 	if !bytes.HasPrefix(hello, []byte("\x7fELF")) {
-		t.Fatalf("hello was not built: %d bytes from %q", len(hello), b.programs["hello"])
+		t.Fatalf("hello was not built: %d bytes from %q", len(hello), b.programs["hello.mexec"])
 	}
 	if certificateTableSize(t, loaderData) != 0 {
 		t.Fatal("Cargo's loader should not be signed yet")
@@ -167,7 +167,7 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, v := range []variant{{}, {testMode: true}} {
-		files, err := s.bootFiles(v, loaderData, kernelData, map[string][]byte{"hello": hello})
+		files, err := s.bootFiles(v, loaderData, kernelData, map[string][]byte{"hello.mexec": hello})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestImagesCarryASignedLoader(t *testing.T) {
 		if !bytes.Equal(files[image.KernelPath], kernelData) {
 			t.Errorf("test mode %v: the kernel should be on the image as built", v.testMode)
 		}
-		if !bytes.Equal(files[image.ProgramsPath+"/hello"], hello) {
+		if !bytes.Equal(files[image.ProgramsPath+"/hello.mexec"], hello) {
 			t.Errorf("test mode %v: hello should be on the image as built", v.testMode)
 		}
 	}

@@ -1032,8 +1032,8 @@ fn user_fault_checks<W: Write>(report: &mut Report<'_, W>) {
 /// it greets; a file that is no ELF file does not start.
 fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
     use raw::user::{self, seen};
-    let hello = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello");
-    let again = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello_again");
+    let hello = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello.mexec");
+    let again = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello_again.mexec");
     report.check(
         "kernel.programs.read",
         raw::modules(info, regions).count() == 2
@@ -1084,6 +1084,12 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         before.is_some() && free() == before,
         "hello's image, stack and heap should all go back once it ended",
     );
+    report.check(
+        "kernel.programs.not_meridian",
+        user::start_file(0, &plain_elf(), 0)
+            == Err(user::Error::Refused(kernel::program::Refusal::NotMeridian)),
+        "an ELF file without Meridian's notes is no .mexec file and should not start",
+    );
     let mut text = [b' '; 64];
     text[..9].copy_from_slice(b"#!/bin/sh");
     low_memory_checks(report, hello.map(|(_, file)| file));
@@ -1093,6 +1099,33 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
             && user::start_file(0, b"\x7fELF", 0) == Err(user::Error::Elf(elf::Error::Truncated)),
         "a file that is no ELF file should not start",
     );
+}
+
+/// The smallest ELF file the kernel would otherwise run: a header, one
+/// loadable segment over the whole file, and a `ud2` at its entry, but no
+/// Meridian notes.
+fn plain_elf() -> [u8; 128] {
+    let mut file = [0u8; 128];
+    file[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+    let fields: [(usize, &[u8]); 13] = [
+        (16, &3u16.to_le_bytes()),
+        (18, &62u16.to_le_bytes()),
+        (20, &1u32.to_le_bytes()),
+        (24, &120u64.to_le_bytes()),
+        (32, &64u64.to_le_bytes()),
+        (52, &64u16.to_le_bytes()),
+        (54, &56u16.to_le_bytes()),
+        (56, &1u16.to_le_bytes()),
+        (64, &1u32.to_le_bytes()),
+        (68, &5u32.to_le_bytes()),
+        (96, &128u64.to_le_bytes()),
+        (104, &128u64.to_le_bytes()),
+        (120, &[0x0f, 0x0b]),
+    ];
+    for (at, bytes) in fields {
+        file[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    file
 }
 
 /// Takes every free frame out of the allocator, each holding the address

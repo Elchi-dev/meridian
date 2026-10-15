@@ -70,7 +70,7 @@ pub fn checks(system: &System, serial: &mut impl Write) {
 
     let hello = system
         .boot_volume()
-        .and_then(|root| root.open("/meridian/programs/hello"))
+        .and_then(|root| root.open("/meridian/programs/hello.mexec"))
         .and_then(|file| file.info());
     uefi::qemu_test::Report::check(
         &mut report,

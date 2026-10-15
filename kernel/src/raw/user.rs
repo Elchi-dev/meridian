@@ -9,6 +9,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec;
+use alloc::vec::Vec;
 #[cfg(feature = "qemu-test")]
 use core::arch::global_asm;
 use core::fmt::Write;
@@ -32,13 +33,19 @@ struct Process {
     handles: Table<HANDLES>,
     /// How much of its heap region its MAP calls took.
     heap: program::Heap,
+    /// The name its file gives it, up to [`NAME`] bytes, for the log.
+    name: Vec<u8>,
 }
+
+/// The most of a program's name the kernel keeps.
+const NAME: usize = 32;
 
 impl Process {
     fn new() -> Box<Process> {
         Box::new(Process {
             handles: Table::new(),
             heap: program::Heap::new(),
+            name: Vec::new(),
         })
     }
 }
@@ -103,6 +110,7 @@ pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Erro
     let (first, size) = elf.span().map_err(Error::Elf)?;
     let segments = elf.segments().map_err(Error::Elf)?;
     let segments = segments.as_slice();
+    let about = program::metadata(elf.notes()).map_err(Error::Refused)?;
     let entry = program::place((first, size), elf.entry(), segments).map_err(Error::Refused)?;
     let mut image = vec![0u8; usize::try_from(size).map_err(|_| Error::NoMemory)?];
     elf.load(&mut image, CODE_AT).map_err(Error::Elf)?;
@@ -115,7 +123,9 @@ pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Erro
             return Err(Error::NoMemory);
         }
     }
-    spawn(core, root, entry, argument, Process::new())
+    let mut process = Process::new();
+    process.name = about.name.iter().copied().take(NAME).collect();
+    spawn(core, root, entry, argument, process)
 }
 
 /// Starts `program` as [`start`] does, holding a handle with `rights` to
@@ -240,10 +250,7 @@ pub fn system_call(frame: &mut Frame) {
     seen::called_from(frame.cs, frame.rax);
     frame.rax = match syscall::decode(frame.rax, [frame.rdi, frame.rsi, frame.rdx, frame.r10]) {
         Call::Exit(code) => {
-            let _ = writeln!(
-                x86::raw::Com1::already_open(),
-                "user: the program ended with {code}"
-            );
+            ended(format_args!("ended with {code}"));
             #[cfg(feature = "qemu-test")]
             seen::exited(code);
             finish()
@@ -283,6 +290,22 @@ pub fn system_call(frame: &mut Frame) {
         Call::Unmap { at, pages } => unmap(at, pages).map_or_else(|e| e, |()| 0),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
+}
+
+/// Writes to the log how the running program ended, under its name.
+fn ended(how: core::fmt::Arguments<'_>) {
+    let mut serial = x86::raw::Com1::already_open();
+    let _ = serial.write_str("user: ");
+    let named = with_process(|p| {
+        for &byte in &p.name {
+            let _ = serial.write_char(kernel::log::shown(byte));
+        }
+        Ok(!p.name.is_empty())
+    });
+    if named != Ok(true) {
+        let _ = serial.write_str("the program");
+    }
+    let _ = writeln!(serial, " {how}");
 }
 
 /// Runs `with` on the running program's process.
@@ -483,13 +506,10 @@ fn log(at: u64, len: u64) -> u64 {
 
 /// A fault in ring 3: the program ends, and the kernel goes on.
 pub fn fault(frame: &Frame) -> ! {
-    let _ = writeln!(
-        x86::raw::Com1::already_open(),
-        "user: the program ended by exception {} with error {:#x} at {:#x}",
-        frame.vector,
-        frame.error,
-        frame.rip
-    );
+    ended(format_args!(
+        "ended by exception {} with error {:#x} at {:#x}",
+        frame.vector, frame.error, frame.rip
+    ));
     #[cfg(feature = "qemu-test")]
     seen::faulted(frame.vector, frame.error);
     finish()

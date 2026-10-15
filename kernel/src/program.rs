@@ -4,7 +4,7 @@
 //! them may do.
 
 use bootinfo::{BootInfo, HHDM_BASE, MemoryRegion, Module, Modules, RegionKind};
-use elf::Segment;
+use elf::{Note, Segment};
 use paging::Flags;
 
 const PAGE: u64 = 4096;
@@ -89,6 +89,44 @@ pub enum Refusal {
     WritableCode(u64),
     /// It would start at this address, as linked, on no executable page.
     BadEntry(u64),
+    /// Its file is an ELF file, but carries no Meridian note saying it is
+    /// a `.mexec` file.
+    NotMeridian,
+    /// Its file is a `.mexec` file of this version, which this kernel does
+    /// not know.
+    Version(u32),
+}
+
+/// What a program's file says about it in its Meridian notes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Metadata<'a> {
+    /// Its name, empty when it gives none.
+    pub name: &'a [u8],
+}
+
+/// Reads the Meridian notes among `notes`.
+///
+/// # Errors
+///
+/// When none says the file is a `.mexec` file, or one says it is of a
+/// version this kernel does not know.
+pub fn metadata<'a>(notes: impl Iterator<Item = Note<'a>>) -> Result<Metadata<'a>, Refusal> {
+    let mut version = None;
+    let mut name: &[u8] = &[];
+    for note in notes.filter(|n| n.owner == abi::NOTE_OWNER) {
+        match note.kind {
+            abi::NOTE_VERSION => {
+                version = Some(note.desc.try_into().map_or(0, u32::from_le_bytes));
+            }
+            abi::NOTE_NAME => name = note.desc,
+            _ => {}
+        }
+    }
+    match version {
+        Some(abi::MEXEC_VERSION) => Ok(Metadata { name }),
+        Some(other) => Err(Refusal::Version(other)),
+        None => Err(Refusal::NotMeridian),
+    }
 }
 
 /// Where the list of the files the loader read lies, physically, and how
@@ -264,6 +302,51 @@ mod tests {
             segment(0x26e0, 0x37a8, false, true),
             segment(0x6e88, 0x210, true, false),
         ]
+    }
+
+    fn note(owner: &'static [u8], kind: u32, desc: &'static [u8]) -> Note<'static> {
+        Note { owner, kind, desc }
+    }
+
+    #[test]
+    fn a_meridian_program_says_so_in_a_note() {
+        let notes = [
+            note(b"GNU", 1, &[1, 0, 0, 0]),
+            note(b"Meridian", 1, &[1, 0, 0, 0]),
+            note(b"Meridian", 2, b"hello"),
+            note(b"Meridian", 77, b"a kind to come"),
+        ];
+        assert_eq!(metadata(notes.into_iter()), Ok(Metadata { name: b"hello" }));
+        let nameless = [note(b"Meridian", 1, &[1, 0, 0, 0])];
+        assert_eq!(metadata(nameless.into_iter()), Ok(Metadata { name: b"" }));
+    }
+
+    #[test]
+    fn a_file_without_the_note_is_no_meridian_program() {
+        assert_eq!(metadata([].into_iter()), Err(Refusal::NotMeridian));
+        let others = [
+            note(b"GNU", 1, &[1, 0, 0, 0]),
+            note(b"Meridian", 2, b"hello"),
+        ];
+        assert_eq!(
+            metadata(others.into_iter()),
+            Err(Refusal::NotMeridian),
+            "a name alone, or another owner's kind 1, says nothing"
+        );
+        let later = [note(b"Meridian", 1, &[2, 0, 0, 0])];
+        assert_eq!(metadata(later.into_iter()), Err(Refusal::Version(2)));
+        let broken = [note(b"Meridian", 1, &[1, 0, 0])];
+        assert_eq!(
+            metadata(broken.into_iter()),
+            Err(Refusal::Version(0)),
+            "a version in three bytes is none"
+        );
+        let owner = [note(b"Meridian\0", 1, &[1, 0, 0, 0])];
+        assert_eq!(
+            metadata(owner.into_iter()),
+            Err(Refusal::NotMeridian),
+            "lib/elf takes the zero off the owner"
+        );
     }
 
     #[test]

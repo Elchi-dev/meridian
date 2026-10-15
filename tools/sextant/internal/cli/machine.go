@@ -79,7 +79,7 @@ func (s *session) buildBoot(ctx context.Context, v variant) (built, error) {
 		if err != nil {
 			return built{}, err
 		}
-		b.programs[part.File] = path
+		b.programs[part.File+image.ProgramExt] = path
 	}
 	return b, nil
 }

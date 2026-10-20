@@ -44,8 +44,9 @@ is what exists today; everything after it is still to come.
   second, the legacy 8259s are masked, and the processor sleeps with `hlt`
   between ticks, drawing the uptime again when the second changes. Without
   a local APIC or a known counter rate it spins as before. `sextant test
-  --qemu` boots the test image twice, the second time on a processor
-  without an x2APIC, so both modes are checked on every run. The test image
+  --qemu` boots the test image twice, the second time on a machine
+  without an x2APIC or an i8042, so both modes are checked on every run,
+  and a keyboard that never answers too. The test image
   checks the APIC was off before, sees about ten ticks in a tenth of a
   second, a halted processor wake at the next one, and the timer stop.
 - **The status screen.** In the boot screens' dark look, drawn with
@@ -427,7 +428,10 @@ What exists:
   the key waits in a queue for the terminal, which takes it once there is
   one. The test image wants the keyboard's input let through as its
   vector, and each key sextant presses, `a`, `shift-z` and `up`, to come
-  as exactly its events.
+  as exactly its events. The kernel tries the i8042 whatever the FADT
+  says, since some firmware gets that flag wrong; the test image goes by it,
+  and its second machine has a USB keyboard and no i8042, where nothing
+  should answer, the keyboard's input stays held back and no key comes.
 - **Partitions and FAT32.** `lib/gpt` reads a GPT header with every check
   UEFI asks for, and its entries once their CRC-32 matches; `lib/fat`
   reads FAT32 volumes, long names checked against their short entry,

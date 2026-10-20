@@ -37,6 +37,29 @@ pub struct Region {
     pub length: u32,
 }
 
+impl Region {
+    /// Where byte `skip` of the region lies, for a base address register
+    /// that starts at `bar`.
+    #[must_use]
+    pub fn at(&self, bar: u64, skip: u64) -> u64 {
+        bar + u64::from(self.offset) + skip
+    }
+}
+
+/// The page that holds the register at physical `at`, and where the
+/// register lies once that page is mapped at `virt`.
+#[must_use]
+pub fn window(at: u64, virt: u64) -> (u64, u64) {
+    (at & !0xfff, virt + (at & 0xfff))
+}
+
+/// Where the low and the high half of the 64-bit register at `at` lie, as
+/// it is read and written: two 32-bit registers, the low one first.
+#[must_use]
+pub fn halves(at: u64) -> [u64; 2] {
+    [at, at + 4]
+}
+
 /// Where a device keeps its configuration structures, and how far apart
 /// the notification addresses of its queues are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +69,15 @@ pub struct Layout {
     pub notify_multiplier: u32,
     pub isr: Region,
     pub device: Region,
+}
+
+impl Layout {
+    /// How far into the notification region a queue is rung whose
+    /// notification offset is `off`.
+    #[must_use]
+    pub fn notify_skip(&self, off: u16) -> u64 {
+        u64::from(off) * u64::from(self.notify_multiplier)
+    }
 }
 
 fn word(bytes: &[u8], at: usize) -> Option<u32> {
@@ -133,9 +165,24 @@ pub fn accept(offered: u64) -> Option<u64> {
         .then_some(offered & (features::VERSION_1 | features::BLOCK_READ_ONLY))
 }
 
+/// Whether the features taken say the device only reads.
+#[must_use]
+pub fn read_only(taken: u64) -> bool {
+    taken & features::BLOCK_READ_ONLY != 0
+}
+
 /// How many entries the queue Meridian sets up has, at most: a read needs
 /// three descriptors, and there is one read at a time.
 pub const QUEUE_SIZE: u16 = 8;
+
+/// How many entries the queue gets where the device has room for `room`:
+/// no more than [`QUEUE_SIZE`], and none when fewer than the three one
+/// request takes.
+#[must_use]
+pub fn queue_size(room: u16) -> Option<u16> {
+    let size = room.min(QUEUE_SIZE);
+    (size >= 3).then_some(size)
+}
 
 /// Where the parts of a split virtqueue lie in its memory: the descriptor
 /// table from the start, the driver's ring right after it, and the
@@ -188,6 +235,18 @@ pub mod block {
     pub const UNSUPPORTED: u8 = 2;
     /// The size of the sectors requests count in, whatever the disk's.
     pub const SECTOR: u64 = 512;
+
+    /// The most bytes one request moves: a frame's worth.
+    pub const PART: usize = 4096;
+
+    /// The parts of [`PART`] bytes or less that `len` bytes from `sector`
+    /// on go in: the sector each starts at, and where in the bytes it lies.
+    pub fn parts(sector: u64, len: usize) -> impl Iterator<Item = (u64, core::ops::Range<usize>)> {
+        (0..len).step_by(PART).map(move |start| {
+            let first = sector + start as u64 / SECTOR;
+            (first, start..len.min(start + PART))
+        })
+    }
 }
 
 /// The header of a request to read from `sector` on.
@@ -251,6 +310,72 @@ pub fn used_entry(ring: &[u8], index: u16, size: u16) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registers_lie_where_their_bar_and_region_put_them() {
+        let region = Region {
+            bar: 4,
+            offset: 0x3000,
+            length: 0x1000,
+        };
+        assert_eq!(region.at(0xfe00_0000, 0), 0xfe00_3000);
+        assert_eq!(region.at(0xfe00_0000, 0x18), 0xfe00_3018, "and further in");
+        assert_eq!(
+            window(0xfe00_3018, 0xffff_0000_0000_2000),
+            (0xfe00_3000, 0xffff_0000_0000_2018)
+        );
+        assert_eq!(
+            window(0xfe00_4000, 0x7000),
+            (0xfe00_4000, 0x7000),
+            "a register that starts its page"
+        );
+        assert_eq!(halves(0x1000), [0x1000, 0x1004]);
+    }
+
+    #[test]
+    fn queues_are_rung_as_far_apart_as_the_multiplier_says() {
+        let region = Region {
+            bar: 4,
+            offset: 0,
+            length: 0,
+        };
+        let layout = Layout {
+            common: region,
+            notify: region,
+            notify_multiplier: 4,
+            isr: region,
+            device: region,
+        };
+        assert_eq!([0, 1, 3].map(|off| layout.notify_skip(off)), [0, 4, 12]);
+        let wide = Layout {
+            notify_multiplier: 0x1000,
+            ..layout
+        };
+        assert_eq!(wide.notify_skip(u16::MAX), 0x0fff_f000, "a page apart");
+    }
+
+    #[test]
+    fn a_queue_takes_what_room_there_is_up_to_its_own() {
+        assert_eq!(
+            [0, 2, 3, 7, 8, 9, 256].map(queue_size),
+            [None, None, Some(3), Some(7), Some(8), Some(8), Some(8)]
+        );
+        assert!(read_only(features::VERSION_1 | features::BLOCK_READ_ONLY));
+        assert!(!read_only(features::VERSION_1));
+    }
+
+    #[test]
+    fn requests_go_a_frame_at_a_time() {
+        let parts = |sector, len| block::parts(sector, len).collect::<Vec<_>>();
+        assert_eq!(parts(10, 0), []);
+        assert_eq!(parts(10, 512), [(10, 0..512)]);
+        assert_eq!(parts(10, 4096), [(10, 0..4096)]);
+        assert_eq!(
+            parts(10, 2 * 4096 + 512),
+            [(10, 0..4096), (18, 4096..8192), (26, 8192..8704)],
+            "each part eight sectors after the one before"
+        );
+    }
 
     /// A capability of `kind` at `at` in `config`, pointing at the next one.
     fn capability(config: &mut [u8], at: usize, next: u8, kind: u8, region: Region) {

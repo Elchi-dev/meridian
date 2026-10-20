@@ -8,6 +8,7 @@ extern crate alloc;
 pub use canvas::Text;
 
 pub mod clock;
+pub mod console;
 pub mod disk;
 pub mod display;
 pub mod exceptions;

@@ -619,6 +619,7 @@ fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
         }),
         "the virtio disk should be acknowledged, driven and ready, with version 1 and its only reading agreed on, and its first queue of 8 entries on",
     );
+    virtio_window_checks(report);
     report.check(
         "kernel.virtio.unsupported",
         raw::virtio::ask(0x7f) == Err(Error::Failed(virtio::block::UNSUPPORTED))
@@ -729,6 +730,28 @@ fn write_place_checks<W: Write>(
         "kernel.disk.write_direction",
         out && back,
         "the command header should tell the controller that a write's data goes to the disk and a read's comes from it",
+    );
+}
+
+/// The virtio disk's common, device and notification registers each lie in
+/// a page of their own, in that order, in the window the kernel's layout
+/// keeps for them, uncached, and nothing lies next to it.
+fn virtio_window_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::memory::translate;
+    let at = |page: u64| kernel::VIRTIO_REGISTERS + page * 4096;
+    let pages = [0, 1, 2].map(|page| translate(at(page)));
+    let uncached = pages
+        .iter()
+        .all(|p| p.is_some_and(|(_, flags)| flags.contains(paging::Flags::NO_CACHE)));
+    let apart = pages[0]
+        .zip(pages[1])
+        .zip(pages[2])
+        .is_some_and(|((a, b), c)| a.0 != b.0 && b.0 != c.0);
+    let alone = translate(at(0) - 4096).is_none() && translate(at(3)).is_none();
+    report.check(
+        "kernel.virtio.window",
+        uncached && apart && alone,
+        "the virtio disk's registers should take the three pages of the kernel's window for them, uncached, and nothing next to it",
     );
 }
 

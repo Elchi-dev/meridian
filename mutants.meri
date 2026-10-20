@@ -247,3 +247,10 @@ allow {
     mutation = "& to |"
     reason = "the keyboard's interrupt only comes once a byte waits, so the look before taking it always finds one"
 }
+
+allow {
+    file = "kernel/src/raw/virtio.rs"
+    line = "write32(base + common::DEVICE_FEATURE_SELECT, select);"
+    mutation = "+ to -"
+    reason = "the device feature select register lies at offset 0 of the common configuration, so adding its offset or taking it away is the same"
+}

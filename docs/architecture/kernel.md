@@ -177,7 +177,11 @@ root, which the caller's token has to be allowed to run, as a process of
 its own, hands it a handle
 the parent gives up, which becomes its argument, and answers a handle to
 the process. WAIT answers how the process ended: its exit code, or the
-vector of the exception that ended it. `kernel::process` keeps every
+vector of the exception that ended it. TERMINATE asks a process to end
+with a code; the process table keeps the first code asked for, and the
+program ends on its next way back to ring 3, which every interrupt and
+every call checks for, or while it waits for another process, so even
+one that never calls the kernel ends at the next tick. `kernel::process` keeps every
 process a handle can stand for and frees it only once it ended and the
 last handle to it is closed, so its parent can ask for as long as it
 likes. Closing a handle closes whatever kind of object it stands for,

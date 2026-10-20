@@ -1725,9 +1725,7 @@ extern "C" fn busy_noting_cores(me: u64) {
 
 /// Threads on the other cores: each runs on the core it was started on, a
 /// thread there that never gives way loses the processor at that core's
-/// own tick, and a sleeper there wakes on time. Of two threads that never
-/// give way, started on one core without being kept there, one moves to a
-/// core that has nothing else to run.
+/// own tick, and a sleeper there wakes on time.
 fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     use raw::thread::{self, NORMAL};
     let mut others = raw::smp::others();
@@ -1816,6 +1814,14 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
         slept.is_some_and(|s| s.is_ok()) && (3..=5).contains(&SLEPT.load(Ordering::Acquire)),
         "a thread sleeping on another core should wake there on time",
     );
+    moving_checks(report, first);
+}
+
+/// Of two threads that never give way, started on core `first` without
+/// being kept there, one moves to a core that has nothing else to run,
+/// and two started for that core stay.
+fn moving_checks<W: Write>(report: &mut Report<'_, W>, first: usize) {
+    use raw::thread::{self, NORMAL};
     for cores in &RAN_ON {
         cores.store(0, Ordering::Release);
     }
@@ -1832,6 +1838,19 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
         "kernel.thread.moved",
         started && both && elsewhere,
         "of two threads that never give way on one core, one should move to a core with nothing to run",
+    );
+    for cores in &RAN_ON {
+        cores.store(0, Ordering::Release);
+    }
+    let pinned = (0..2).all(|me| thread::spawn_on(first, busy_noting_cores, me, NORMAL).is_ok());
+    thread::sleep(30);
+    report.check(
+        "kernel.thread.kept",
+        pinned
+            && RAN_ON
+                .iter()
+                .all(|cores| cores.load(Ordering::Acquire) == 1 << first),
+        "two threads started for one core should stay there, though another has nothing to run",
     );
 }
 

@@ -126,13 +126,12 @@ impl<const CORES: usize> Table<CORES> {
             stack: 0,
             mapped: false,
             root: 0,
-            pinned: false,
+            pinned: true,
         };
         let mut all = [free; THREADS];
         all[0] = Thread {
             state: State::Running,
             priority: NORMAL,
-            pinned: true,
             ..free
         };
         let mut cores = [const {

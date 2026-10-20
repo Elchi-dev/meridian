@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod format;
 pub mod name;
 pub mod write;
 

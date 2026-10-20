@@ -477,7 +477,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
 
 /// A short entry called `short` with `attributes`, whose first cluster is
 /// `first`, empty, made on [`DATE`].
-fn short_entry(short: &[u8; 11], attributes: u8, first: u32) -> [u8; 32] {
+pub(crate) fn short_entry(short: &[u8; 11], attributes: u8, first: u32) -> [u8; 32] {
     let mut e = [0u8; 32];
     e[..11].copy_from_slice(short);
     e[11] = attributes;

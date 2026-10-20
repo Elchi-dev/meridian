@@ -288,6 +288,38 @@ pub fn describe(
     }
 }
 
+/// Writes which of the threads' floating point and vector registers are
+/// kept, and with what.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn registers(out: &mut impl Write, saving: x86::fpu::Saving) -> fmt::Result {
+    use x86::fpu::{Saving, parts};
+    let (on, with) = match saving {
+        Saving::Fx => (parts::X87 | parts::SSE, "FXSAVE"),
+        Saving::X(on) => (on, "XSAVE"),
+    };
+    let names = [
+        (parts::X87, "x87"),
+        (parts::SSE, "SSE"),
+        (parts::AVX, "AVX"),
+        (parts::AVX_512, "AVX-512"),
+    ];
+    let kept: alloc::vec::Vec<&str> = names
+        .iter()
+        .filter(|&&(part, _)| on & part == part)
+        .map(|&(_, name)| name)
+        .collect();
+    let (last, rest) = kept.split_last().unwrap_or((&"nothing", &[]));
+    write!(out, "Registers: ")?;
+    for (i, name) in rest.iter().enumerate() {
+        let gap = if i + 1 == rest.len() { " and " } else { ", " };
+        write!(out, "{name}{gap}")?;
+    }
+    writeln!(out, "{last}, kept with {with}")
+}
+
 /// Writes the line the kernel logs for the PCI function at `at`: where it
 /// is, who made it and what it is.
 ///
@@ -807,6 +839,48 @@ mod tests {
             out,
             "Cores: not listed in the ACPI tables\nTime stamp counter: not measured, neither the ACPI timer nor the HPET could be used\n"
         );
+    }
+
+    #[test]
+    fn the_registers_kept_are_named() {
+        use x86::fpu::Saving;
+        struct Broken;
+        impl Write for Broken {
+            fn write_str(&mut self, _: &str) -> fmt::Result {
+                Err(fmt::Error)
+            }
+        }
+        let line = |saving| {
+            let mut out = String::new();
+            registers(&mut out, saving).unwrap();
+            out
+        };
+        assert_eq!(
+            line(Saving::Fx),
+            "Registers: x87 and SSE, kept with FXSAVE\n"
+        );
+        assert_eq!(
+            line(Saving::X(0b11)),
+            "Registers: x87 and SSE, kept with XSAVE\n"
+        );
+        assert_eq!(
+            line(Saving::X(0b111)),
+            "Registers: x87, SSE and AVX, kept with XSAVE\n",
+            "as on a Ryzen 5 5600G"
+        );
+        assert_eq!(
+            line(Saving::X(0xe7)),
+            "Registers: x87, SSE, AVX and AVX-512, kept with XSAVE\n",
+            "as on an EPYC 9355P"
+        );
+        assert_eq!(
+            line(Saving::X(0x67)),
+            "Registers: x87, SSE and AVX, kept with XSAVE\n",
+            "AVX-512 only with all three of its parts"
+        );
+        assert_eq!(line(Saving::X(0)), "Registers: nothing, kept with XSAVE\n");
+        assert!(registers(&mut Broken, Saving::Fx).is_err());
+        assert!(registers(&mut Broken, Saving::X(0b111)).is_err());
     }
 
     #[test]

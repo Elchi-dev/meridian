@@ -1,7 +1,8 @@
-//! Writing FAT32. For now: clusters taken and given back, in every copy of
-//! the FAT, with the free count and the next free cluster `FSInfo` keeps.
+//! Writing FAT32: clusters taken and given back, in every copy of the
+//! FAT, with the free count and the next free cluster `FSInfo` keeps, and
+//! files written into their chains, which grow as they need.
 
-use crate::{Error, Fat, u32_at};
+use crate::{Entry, Error, Fat, Place, u32_at};
 
 /// What a writer puts in the entry of a chain's last cluster.
 const LAST: u32 = 0x0fff_ffff;
@@ -132,6 +133,119 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
         Err(Error::Full)
     }
 
+    /// Takes a free cluster as [`Writer::take`] does, and zeroes it.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Writer::take`].
+    pub fn take_zeroed(&mut self) -> Result<u32, Error> {
+        let cluster = self.take()?;
+        let v = self.fat.volume;
+        let first = v.first_sector(cluster).ok_or(Error::BadChain)?;
+        let zeros = [0u8; 4096];
+        for sector in first..first + u64::from(v.sectors_per_cluster) {
+            self.put(sector, &zeros[..v.sector_size as usize])?;
+        }
+        Ok(cluster)
+    }
+
+    /// Writes `entry`'s first cluster and size into its short entry at
+    /// `place`, leaving the rest of the entry as it is.
+    ///
+    /// # Errors
+    ///
+    /// When the sector cannot be read or written.
+    pub fn save(&mut self, place: Place, entry: &Entry) -> Result<(), Error> {
+        let size = self.fat.volume.sector_size as usize;
+        let mut room = [0u8; 4096];
+        self.fat.sector(place.sector, &mut room[..size])?;
+        let e = &mut room[place.index * 32..place.index * 32 + 32];
+        let first = entry.first.to_le_bytes();
+        e[20..22].copy_from_slice(&first[2..4]);
+        e[26..28].copy_from_slice(&first[..2]);
+        e[28..32].copy_from_slice(&entry.size.to_le_bytes());
+        self.put(place.sector, &room[..size])
+    }
+
+    /// Writes `from` into the file `entry` stands for from its byte
+    /// `offset` on, taking clusters for it as it grows, and answers how many
+    /// bytes that is: all of them. Bytes between its end and `offset` read
+    /// as zeros after. `entry` holds its new first cluster and size, which
+    /// [`Writer::save`] puts in its directory.
+    ///
+    /// # Errors
+    ///
+    /// When the file would grow past what FAT32 sizes hold, no cluster is
+    /// left, its chain is broken, or the volume cannot be read or written.
+    pub fn write_at(
+        &mut self,
+        entry: &mut Entry,
+        offset: u64,
+        from: &[u8],
+    ) -> Result<usize, Error> {
+        let end = offset
+            .checked_add(from.len() as u64)
+            .ok_or(Error::TooLarge)?;
+        let end = u32::try_from(end).map_err(|_| Error::TooLarge)?;
+        if from.is_empty() {
+            return Ok(0);
+        }
+        let start = u32::try_from(offset).map_err(|_| Error::TooLarge)?;
+        let zeros = [0u8; 4096];
+        while entry.size < start {
+            let n = (start - entry.size).min(4096);
+            self.write_at(entry, u64::from(entry.size), &zeros[..n as usize])?;
+        }
+        if entry.first == 0 {
+            entry.first = self.take_zeroed()?;
+        }
+        let bytes = u32::try_from(self.fat.volume.cluster_bytes()).map_err(|_| Error::TooLarge)?;
+        let (first, last) = (start / bytes, (end - 1) / bytes);
+        let mut cluster = entry.first;
+        for index in 0..=last {
+            if index >= first {
+                let from_at = (index * bytes).max(start);
+                let to = (index + 1).checked_mul(bytes).map_or(end, |t| t.min(end));
+                let part = &from[(from_at - start) as usize..(to - start) as usize];
+                self.write_in(cluster, (from_at - index * bytes) as usize, part)?;
+            }
+            if index < last {
+                cluster = if let Some(next) = self.fat.next(cluster)? {
+                    next
+                } else {
+                    let grown = self.take_zeroed()?;
+                    self.set(cluster, grown)?;
+                    grown
+                };
+            }
+        }
+        entry.size = entry.size.max(end);
+        Ok(from.len())
+    }
+
+    /// Writes `from` into cluster `cluster` from its byte `at` on, reading
+    /// first each sector it writes only part of.
+    fn write_in(&mut self, cluster: u32, at: usize, from: &[u8]) -> Result<(), Error> {
+        let v = self.fat.volume;
+        let size = v.sector_size as usize;
+        let first = v.first_sector(cluster).ok_or(Error::BadChain)?;
+        let mut room = [0u8; 4096];
+        let mut done = 0;
+        while done < from.len() {
+            let byte = at + done;
+            let sector = first + (byte / size) as u64;
+            let skip = byte % size;
+            let n = (size - skip).min(from.len() - done);
+            if n < size {
+                self.fat.sector(sector, &mut room[..size])?;
+            }
+            room[skip..skip + n].copy_from_slice(&from[done..done + n]);
+            self.put(sector, &room[..size])?;
+            done += n;
+        }
+        Ok(())
+    }
+
     /// Gives back every cluster of the chain from `first` on, and answers
     /// how many.
     ///
@@ -241,6 +355,182 @@ mod tests {
 
     fn fsinfo(image: &[u8]) -> (u32, u32) {
         (u32_at(image, 512 + FREE), u32_at(image, 512 + NEXT))
+    }
+
+    /// A volume mkfs.fat made, with `files` copied onto its root by mcopy.
+    fn holding(name: &str, files: &[(&str, &[u8])]) -> Option<Vec<u8>> {
+        let image = formatted(name)?;
+        if !require_tool("mcopy") {
+            return None;
+        }
+        let path = scratch(name);
+        std::fs::write(&path, &image).unwrap();
+        for (file, bytes) in files {
+            let source = scratch(&format!("{name}-{file}"));
+            std::fs::write(&source, bytes).unwrap();
+            let copied = Command::new("mcopy")
+                .arg("-i")
+                .arg(&path)
+                .arg(&source)
+                .arg(format!("::{file}"))
+                .output()
+                .unwrap();
+            assert!(copied.status.success(), "{copied:?}");
+            let _ = std::fs::remove_file(&source);
+        }
+        let image = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        Some(image)
+    }
+
+    /// The file `file` on the volume `image`, as mtype reads it.
+    fn typed(image: &[u8], name: &str, file: &str) -> Vec<u8> {
+        let path = scratch(name);
+        std::fs::write(&path, image).unwrap();
+        let out = Command::new("mtype")
+            .arg("-i")
+            .arg(&path)
+            .arg(format!("::{file}"))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.status.success(), "{out:?}");
+        out.stdout
+    }
+
+    fn pattern(len: usize, seed: u8) -> Vec<u8> {
+        (0..len)
+            .map(|i| u8::try_from(i % 251).unwrap() ^ seed)
+            .collect()
+    }
+
+    #[test]
+    fn a_file_written_inside_keeps_the_rest() {
+        let old = pattern(1000, 7);
+        let Some(image) = holding("inside", &[("a.txt", &old)]) else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut entry, place) = w.fat.lookup_at(root, "a.txt").unwrap();
+        let before = image.borrow()[entry_bytes(place)].to_vec();
+        assert_eq!(w.write_at(&mut entry, 510, b"across a sector"), Ok(15));
+        assert_eq!(entry.size, 1000, "no longer than it was");
+        w.save(place, &entry).unwrap();
+        let mut want = old.clone();
+        want[510..525].copy_from_slice(b"across a sector");
+        let now = image.borrow().clone();
+        assert_eq!(typed(&now, "inside", "a.txt"), want);
+        assert_eq!(now[entry_bytes(place)], before[..], "the entry as it was");
+        assert!(sound(&now, "inside"));
+    }
+
+    /// Where the short entry at `place` lies in the image.
+    fn entry_bytes(place: Place) -> core::ops::Range<usize> {
+        let at = usize::try_from(place.sector).unwrap() * 512 + place.index * 32;
+        at..at + 32
+    }
+
+    #[test]
+    fn a_file_that_grows_takes_clusters_for_it() {
+        let old = pattern(1000, 3);
+        let Some(image) = holding("grow", &[("b.bin", &old)]) else {
+            return;
+        };
+        let free = fsinfo(&image).0;
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut entry, place) = w.fat.lookup_at(root, "b.bin").unwrap();
+        let more = pattern(3000, 9);
+        assert_eq!(w.write_at(&mut entry, 1000, &more), Ok(3000));
+        assert_eq!(entry.size, 4000);
+        w.save(place, &entry).unwrap();
+        let now = image.borrow().clone();
+        let mut want = old;
+        want.extend_from_slice(&more);
+        assert_eq!(typed(&now, "grow", "b.bin"), want);
+        assert_eq!(
+            fsinfo(&now).0,
+            free - 6,
+            "two clusters held a kilobyte, eight hold four"
+        );
+        assert!(sound(&now, "grow"));
+        let mut read = vec![0u8; 4000];
+        assert_eq!(w.fat.read_file(&entry, &mut read), Ok(4000));
+        assert_eq!(read, want, "as the reader reads it too");
+    }
+
+    #[test]
+    fn what_lies_between_a_file_and_a_write_past_its_end_reads_as_zeros() {
+        let Some(mut image) = holding("gap", &[("c.bin", b"short")]) else {
+            return;
+        };
+        let root_place = {
+            let probe = Rc::new(RefCell::new(image.clone()));
+            let mut w = writer(&probe);
+            let root = w.fat.volume.root;
+            let (entry, _) = w.fat.lookup_at(root, "c.bin").unwrap();
+            w.fat.volume.first_sector(entry.first).unwrap()
+        };
+        let sector = usize::try_from(root_place).unwrap() * 512;
+        image[sector + 5..sector + 512].fill(0xaa);
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut entry, place) = w.fat.lookup_at(root, "c.bin").unwrap();
+        assert_eq!(w.write_at(&mut entry, 5000, b"end"), Ok(3));
+        w.save(place, &entry).unwrap();
+        let now = image.borrow().clone();
+        let mut want = b"short".to_vec();
+        want.resize(5000, 0);
+        want.extend_from_slice(b"end");
+        assert_eq!(
+            typed(&now, "gap", "c.bin"),
+            want,
+            "not what lay past its old end"
+        );
+        assert!(sound(&now, "gap"));
+    }
+
+    #[test]
+    fn an_empty_file_gets_its_first_cluster() {
+        let Some(image) = holding("empty", &[("d.txt", b"")]) else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut entry, place) = w.fat.lookup_at(root, "d.txt").unwrap();
+        assert_eq!((entry.first, entry.size), (0, 0));
+        assert_eq!(w.write_at(&mut entry, 0, &[]), Ok(0), "nothing written");
+        assert_eq!(entry.first, 0, "and nothing taken");
+        assert_eq!(w.write_at(&mut entry, 0, b"now"), Ok(3));
+        assert!(entry.first >= 3);
+        w.save(place, &entry).unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(typed(&now, "empty", "d.txt"), b"now");
+        assert!(sound(&now, "empty"));
+    }
+
+    #[test]
+    fn no_file_grows_past_what_fat32_sizes_hold() {
+        let Some(image) = holding("large", &[("e.txt", b"e")]) else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let before = image.borrow().clone();
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut entry, _) = w.fat.lookup_at(root, "e.txt").unwrap();
+        assert_eq!(
+            w.write_at(&mut entry, u64::from(u32::MAX), b"x"),
+            Err(Error::TooLarge)
+        );
+        assert_eq!(w.write_at(&mut entry, u64::MAX, b"x"), Err(Error::TooLarge));
+        assert_eq!(w.write_at(&mut entry, 1 << 32, &[]), Err(Error::TooLarge));
+        assert_eq!(*image.borrow(), before, "and nothing was written");
     }
 
     #[test]

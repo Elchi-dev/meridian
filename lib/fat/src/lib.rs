@@ -29,6 +29,8 @@ pub enum Error {
     Write,
     /// No cluster is free.
     Full,
+    /// A file would grow past the 4 GiB less a byte FAT32 sizes hold.
+    TooLarge,
 }
 
 /// The geometry of a FAT32 volume, from its boot sector.
@@ -137,6 +139,14 @@ impl Volume {
     pub fn cluster_bytes(&self) -> usize {
         (self.sector_size * self.sectors_per_cluster) as usize
     }
+}
+
+/// Where a short directory entry lies: in which sector of the volume, and
+/// which of the sector's 32-byte entries it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub sector: u64,
+    pub index: usize,
 }
 
 /// What a directory entry says about a file or directory.
@@ -307,8 +317,8 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
     }
 
     /// Hands every sector of the chain from `first` on to `each`, in order,
-    /// until it answers false or the chain ends.
-    fn walk(&mut self, first: u32, mut each: impl FnMut(&[u8]) -> bool) -> Result<(), Error> {
+    /// with its number, until it answers false or the chain ends.
+    fn walk(&mut self, first: u32, mut each: impl FnMut(u64, &[u8]) -> bool) -> Result<(), Error> {
         let size = self.volume.sector_size as usize;
         let mut room = [0u8; 4096];
         let mut cluster = first;
@@ -318,7 +328,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
                 if !(self.read)(sector, &mut room[..size]) {
                     return Err(Error::Read);
                 }
-                if !each(&room[..size]) {
+                if !each(sector, &room[..size]) {
                     return Ok(());
                 }
             }
@@ -344,9 +354,22 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
         directory: u32,
         mut each: impl FnMut(&[u16], Entry) -> bool,
     ) -> Result<(), Error> {
+        self.entries_at(directory, |name, entry, _| each(name, entry))
+    }
+
+    /// As [`Fat::entries`], with where each short entry lies.
+    ///
+    /// # Errors
+    ///
+    /// When the directory cannot be read.
+    pub fn entries_at(
+        &mut self,
+        directory: u32,
+        mut each: impl FnMut(&[u16], Entry, Place) -> bool,
+    ) -> Result<(), Error> {
         let mut long = LongName::new();
-        self.walk(directory, |sector| {
-            for e in sector.as_chunks::<32>().0 {
+        self.walk(directory, |at, sector| {
+            for (index, e) in sector.as_chunks::<32>().0.iter().enumerate() {
                 match e[0] {
                     0 => return false,
                     0xe5 => long.next = None,
@@ -361,7 +384,8 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
                             len += 1;
                         }
                         let name = long.of(e).unwrap_or(&short[..len]);
-                        let go_on = dots || each(name, Entry::read(e));
+                        let place = Place { sector: at, index };
+                        let go_on = dots || each(name, Entry::read(e), place);
                         long.next = None;
                         if !go_on {
                             return false;
@@ -380,11 +404,20 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
     ///
     /// When no entry has the name, or the directory cannot be read.
     pub fn lookup(&mut self, directory: u32, name: &str) -> Result<Entry, Error> {
+        self.lookup_at(directory, name).map(|(entry, _)| entry)
+    }
+
+    /// As [`Fat::lookup`], with where the entry's short entry lies.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Fat::lookup`].
+    pub fn lookup_at(&mut self, directory: u32, name: &str) -> Result<(Entry, Place), Error> {
         let mut found = None;
-        self.entries(directory, |units, entry| {
+        self.entries_at(directory, |units, entry, place| {
             let matches = same(units.iter().copied(), name);
             if matches {
-                found = Some(entry);
+                found = Some((entry, place));
             }
             !matches
         })?;

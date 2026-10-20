@@ -2,7 +2,7 @@
 //! the boot sector gives, the chains of clusters files lie in, directories
 //! with their long names, and files found by path. The caller reads the
 //! volume's sectors; sectors are counted from the volume's first. [`write`]
-//! writes them too.
+//! writes them too, and [`format`] makes new volumes.
 
 #![cfg_attr(not(test), no_std)]
 

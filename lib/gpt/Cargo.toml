@@ -1,6 +1,6 @@
 [package]
 name = "gpt"
-description = "GUID partition tables, read and checked"
+description = "GUID partition tables, read and checked, and written new"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

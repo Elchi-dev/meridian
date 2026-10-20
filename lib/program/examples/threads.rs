@@ -35,25 +35,25 @@ fn threads(end: Handle) -> u64 {
     };
     match word {
         b"sum" => {
-            let started = (1..=4).all(|n| program::thread(sender, n).is_ok());
+            let started = (1..=4).all(|n| program::thread(move || sender(n)).is_ok());
             while started && SENT.load(Ordering::Acquire) < 4 {
                 program::sleep(1);
             }
             u64::from(!started)
         }
-        b"last" => match program::thread(sleeper, 0) {
+        b"last" => match program::thread(sleeper) {
             Ok(()) => program::end_thread(3),
             Err(_) => 0xbad,
         },
         b"exit" => {
-            if program::thread(spinner, 0).is_err() {
+            if program::thread(spinner).is_err() {
                 return 0xbad;
             }
             program::sleep(2);
             9
         }
         b"fault" => {
-            if program::thread(deeper, 0).is_err() {
+            if program::thread(|| deeper(0)).is_err() {
                 return 0xbad;
             }
             loop {
@@ -73,13 +73,13 @@ fn sender(n: u64) -> u64 {
 }
 
 #[cfg_attr(test, allow(dead_code))]
-fn sleeper(_: u64) -> u64 {
+fn sleeper() -> u64 {
     program::sleep(5);
     7
 }
 
 #[cfg_attr(test, allow(dead_code))]
-fn spinner(_: u64) -> u64 {
+fn spinner() -> u64 {
     loop {
         core::hint::spin_loop();
     }

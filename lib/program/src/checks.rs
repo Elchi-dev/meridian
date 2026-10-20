@@ -523,7 +523,7 @@ fn found(n: u64) -> u64 {
 
 fn a_thread_of_its_own() -> Outcome {
     expect(
-        crate::thread(found, 21) == Ok(()),
+        crate::thread(|| found(21)) == Ok(()),
         "hello should start a thread of its own",
     )?;
     let seen = (0..100).any(|_| {

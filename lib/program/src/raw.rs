@@ -34,17 +34,17 @@ pub fn call(call: Call) -> (u64, u64) {
     (rax, rdx)
 }
 
-/// What [`start_thread`] hands a new thread: what to run, with what.
-type Start = (fn(u64) -> u64, u64);
+/// What [`start_thread`] hands a new thread: the work it does.
+type Work = Box<dyn FnOnce() -> u64 + Send>;
 
-/// Starts `entry(argument)` as another thread of this program, with its
-/// stack pointer at `stack`.
+/// Starts another thread of this program that does `work`, with its stack
+/// pointer at `stack`.
 ///
 /// # Errors
 ///
 /// When the kernel starts no thread.
-pub fn start_thread(entry: fn(u64) -> u64, argument: u64, stack: u64) -> Result<(), Error> {
-    let start = Box::into_raw(Box::new((entry, argument)));
+pub fn start_thread(work: Work, stack: u64) -> Result<(), Error> {
+    let start = Box::into_raw(Box::new(work));
     let call = Call::Thread {
         entry: thread_entry as *const () as usize as u64,
         stack,
@@ -73,8 +73,8 @@ extern "C" fn thread_entry() -> ! {
 extern "C" fn run_thread(start: u64) -> ! {
     // SAFETY: start_thread made the box and handed it to this thread
     // alone.
-    let (entry, argument) = *unsafe { Box::from_raw(start as *mut Start) };
-    crate::end_thread(entry(argument))
+    let work = *unsafe { Box::from_raw(start as *mut Work) };
+    crate::end_thread(work())
 }
 
 /// The pages the heap maps the first time it is asked for room, 1 MiB;

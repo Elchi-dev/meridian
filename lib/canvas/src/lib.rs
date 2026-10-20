@@ -281,28 +281,69 @@ impl<'a> Canvas<'a> {
             &mut scratch.acc,
             &mut scratch.coverage,
         )?;
-        let Some(p) = raster else {
-            return Ok(());
-        };
-        let (left, top) = (pen_x + p.left, baseline + p.top);
-        for gy in 0..p.height {
+        if let Some(p) = raster {
+            let coverage = &scratch.coverage[..p.width * p.height];
+            self.coverage(
+                pen_x + p.left,
+                baseline + p.top,
+                p.width,
+                coverage,
+                style.color,
+            );
+        }
+        Ok(())
+    }
+
+    /// Blends `color` into the rectangle `width` pixels wide whose top left
+    /// pixel is at `left`, `top`, row by row, each pixel as far as
+    /// `coverage` says, from 0 for none to 255 for all of it. What lies off
+    /// the canvas is left out, and so are pixels without coverage.
+    pub fn coverage(&mut self, left: i32, top: i32, width: usize, coverage: &[u8], color: Color) {
+        if width == 0 {
+            return;
+        }
+        for (gy, row) in coverage.chunks(width).enumerate() {
             let Some(y) = on_canvas(top, gy, self.height) else {
                 continue;
             };
-            for gx in 0..p.width {
-                let c = scratch.coverage[gy * p.width + gx];
+            for (gx, &c) in row.iter().enumerate() {
                 let Some(x) = on_canvas(left, gx, self.width) else {
                     continue;
                 };
                 if c > 0 {
                     let at = y * self.stride + x;
                     let under = Color::decode(self.pixels[at], self.format);
-                    self.pixels[at] = under.blend(style.color, c).encode(self.format);
+                    self.pixels[at] = under.blend(color, c).encode(self.format);
                 }
             }
         }
-        Ok(())
     }
+}
+
+/// Rasterizes `c` in `style` with its pen on a whole pixel, as a monospaced
+/// grid draws each character in its own cell, and returns where the bitmap
+/// goes relative to the pen, as [`Canvas::coverage`] takes it, with the
+/// bitmap itself in `scratch`. `None` for a character that draws nothing,
+/// such as a space; one the font lacks gets its missing-glyph box.
+///
+/// # Errors
+///
+/// The font's errors, and [`Error::BufferTooSmall`] for a glyph larger
+/// than [`GLYPH_LIMIT`].
+pub fn rasterize<'s>(
+    style: &Style<'_>,
+    c: char,
+    scratch: &'s mut Scratch,
+) -> Result<Option<(font::Placement, &'s [u8])>, Error> {
+    let glyph = style.font.glyph_index(c).unwrap_or(0);
+    let raster = style.font.rasterize(
+        glyph,
+        style.px,
+        0.0,
+        &mut scratch.acc,
+        &mut scratch.coverage,
+    )?;
+    Ok(raster.map(|p| (p, &scratch.coverage[..p.width * p.height])))
 }
 
 /// What text looks like: its font, its size in pixels per em, its colour.
@@ -768,6 +809,69 @@ mod tests {
                 assert_eq!(canvas.pixel(x, y), Some(expected), "({gx}, {gy})");
             }
         }
+    }
+
+    #[test]
+    fn coverage_blends_by_how_much_of_each_pixel_it_covers() {
+        let mut buf = Buffer::new(6, 4);
+        let mut c = buf.canvas(Format::Rgb);
+        c.coverage(1, 1, 3, &[255, 128, 0, 0, 64, 255], SUN);
+        assert_eq!(c.pixel(1, 1), Some(SUN));
+        assert_eq!(c.pixel(2, 1), Some(NIGHT.blend(SUN, 128)));
+        assert_eq!(c.pixel(3, 1), Some(NIGHT), "no coverage, no change");
+        assert_eq!(c.pixel(1, 2), Some(NIGHT));
+        assert_eq!(c.pixel(2, 2), Some(NIGHT.blend(SUN, 64)));
+        assert_eq!(c.pixel(3, 2), Some(SUN));
+        let outside = [(0, 0), (4, 1), (1, 0), (1, 3), (5, 3)];
+        assert!(outside.iter().all(|&(x, y)| c.pixel(x, y) == Some(NIGHT)));
+        assert!(buf.padding_untouched());
+    }
+
+    #[test]
+    fn coverage_off_the_canvas_is_left_out() {
+        let mut buf = Buffer::new(4, 3);
+        let mut c = buf.canvas(Format::Bgr);
+        c.coverage(-1, -1, 2, &[255; 4], TEXT);
+        assert_eq!(c.pixel(0, 0), Some(TEXT), "the one pixel on the canvas");
+        assert_eq!((c.pixel(1, 0), c.pixel(0, 1)), (Some(NIGHT), Some(NIGHT)));
+        c.coverage(3, 2, 3, &[255; 6], TEXT);
+        assert_eq!(c.pixel(3, 2), Some(TEXT));
+        c.coverage(i32::MAX, i32::MIN, 2, &[255; 4], TEXT);
+        c.coverage(0, 0, 0, &[255; 4], TEXT);
+        assert_eq!(c.pixel(1, 1), Some(NIGHT), "nothing is 0 pixels wide");
+        let lit = (0..3).flat_map(|y| (0..4).map(move |x| (x, y)));
+        assert_eq!(lit.filter(|&(x, y)| c.pixel(x, y) == Some(TEXT)).count(), 2);
+        assert!(buf.padding_untouched());
+    }
+
+    #[test]
+    fn a_character_rasterized_once_draws_as_text_draws_it() {
+        let s = style(18.0, TEXT);
+        let mut scratch = Scratch::new();
+        let (p, coverage) = rasterize(&s, 'M', &mut scratch).unwrap().unwrap();
+        let coverage = coverage.to_vec();
+        assert_eq!(coverage.len(), p.width * p.height);
+        assert!(p.top < 0 && p.width > 5, "{p:?}");
+        let mut from_text = Buffer::new(30, 30);
+        let mut from_mask = Buffer::new(30, 30);
+        from_text
+            .canvas(Format::Bgr)
+            .text(&s, 7, 22, "M", &mut scratch)
+            .unwrap();
+        from_mask
+            .canvas(Format::Bgr)
+            .coverage(7 + p.left, 22 + p.top, p.width, &coverage, TEXT);
+        assert_eq!(from_text.pixels, from_mask.pixels);
+        assert_eq!(rasterize(&s, ' ', &mut scratch).unwrap(), None);
+        let lacking = rasterize(&s, '\u{10ffff}', &mut scratch).unwrap();
+        assert!(
+            lacking.is_some_and(|(p, _)| p.width > 0),
+            "the missing-glyph box"
+        );
+        assert_eq!(
+            rasterize(&style(120.0, TEXT), 'M', &mut scratch),
+            Err(Error::BufferTooSmall)
+        );
     }
 
     #[test]

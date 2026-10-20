@@ -41,6 +41,10 @@ pub enum Error {
     NotAFile,
     /// The token may not open it so.
     Refused(Refusal),
+    /// It is a file, which has no entries to list.
+    NotADirectory,
+    /// The room given is too small for what was asked.
+    TooSmall,
     /// Every file that can be open is.
     NoRoom,
     /// Its volume could not be read.
@@ -133,6 +137,41 @@ pub fn read(slot: usize, offset: u64, into: &mut [u8]) -> Result<usize, Error> {
     let fat = mounted[file.volume].as_mut().ok_or(Error::NotFound)?;
     fat.read_at(&file.entry, offset, into)
         .map_err(|_| Error::Read)
+}
+
+/// Writes the name of entry `index` of the open directory in `slot`,
+/// counted from 0, into `into` in UTF-8, and returns its length and
+/// whether that entry is a directory itself.
+///
+/// # Errors
+///
+/// When nothing is open there, it is a file, it has no entry `index`, the
+/// name does not fit, or its volume cannot be read.
+pub fn list(slot: usize, index: u64, into: &mut [u8]) -> Result<(usize, bool), Error> {
+    let open = OPEN
+        .lock()
+        .get(slot)
+        .copied()
+        .flatten()
+        .ok_or(Error::NotFound)?;
+    if !open.entry.directory {
+        return Err(Error::NotADirectory);
+    }
+    let mut mounted = MOUNTED.lock();
+    let fat = mounted[open.volume].as_mut().ok_or(Error::NotFound)?;
+    let mut found = None;
+    let mut at = 0;
+    fat.entries(open.entry.first, |units, entry| {
+        if at == index {
+            found = Some((vfs::name_into(units, into), entry.directory));
+            return false;
+        }
+        at += 1;
+        true
+    })
+    .map_err(|_| Error::Read)?;
+    let (len, directory) = found.ok_or(Error::NotFound)?;
+    Ok((len.ok_or(Error::TooSmall)?, directory))
 }
 
 /// How big the open file in `slot` is, and whether it is a directory.

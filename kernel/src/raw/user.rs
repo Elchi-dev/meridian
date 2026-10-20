@@ -340,6 +340,18 @@ pub fn system_call(frame: &mut Frame) {
             room,
             offset,
         } => read(handle, at, room, offset).unwrap_or_else(|e| e),
+        Call::List {
+            handle,
+            at,
+            room,
+            index,
+        } => match list(handle, at, room, index) {
+            Ok((len, directory)) => {
+                frame.rdx = u64::from(directory);
+                len
+            }
+            Err(e) => e,
+        },
         Call::Info(handle) => match info(handle) {
             Ok((size, directory)) => {
                 frame.rdx = u64::from(directory);
@@ -639,6 +651,8 @@ fn file_answer(e: super::vfs::Error) -> u64 {
         Error::BadPath => syscall::BAD_ARGUMENT,
         Error::NotFound => syscall::NOT_FOUND,
         Error::NotAFile => syscall::NOT_A_FILE,
+        Error::NotADirectory => syscall::NOT_A_DIRECTORY,
+        Error::TooSmall => syscall::TOO_SMALL,
         Error::Refused(_) => syscall::DENIED,
         Error::NoRoom => syscall::NO_ROOM,
         Error::Read => syscall::UNREADABLE,
@@ -700,6 +714,32 @@ fn read(handle: u64, at: u64, room: u64, offset: u64) -> Result<u64, u64> {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
     });
     Ok(len as u64)
+}
+
+/// The most bytes a name LIST hands out takes: 255 units of UTF-16, each
+/// at most four bytes of UTF-8.
+const NAME_MAX: usize = 1024;
+
+/// Writes the name of entry `index` of the directory `handle` stands for
+/// into the `room` bytes at `at`, and answers its length and whether that
+/// entry is a directory.
+fn list(handle: u64, at: u64, room: u64, index: u64) -> Result<(u64, bool), u64> {
+    let Some(Object::File { slot }) = Object::from_number(object(handle, Rights::READ)?) else {
+        return Err(syscall::DENIED);
+    };
+    if !memory::user_writable(at, room) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let room = usize::try_from(room).unwrap_or(NAME_MAX).min(NAME_MAX);
+    let mut bytes = [0u8; NAME_MAX];
+    let (len, directory) =
+        super::vfs::list(slot, index, &mut bytes[..room]).map_err(file_answer)?;
+    // SAFETY: user_writable found every byte of the room mapped writable
+    // for ring 3 in this program's address space, and len fits in it.
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
+    });
+    Ok((len as u64, directory))
 }
 
 /// The size of the file `handle` stands for, and whether it is a

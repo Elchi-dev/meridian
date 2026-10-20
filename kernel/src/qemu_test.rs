@@ -619,6 +619,7 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
         vfs::close(slot);
     }
     mount_checks(report);
+    list_checks(report);
     report.check(
         "kernel.vfs.slots",
         opened_low
@@ -662,6 +663,40 @@ fn mount_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.vfs.mount",
         mounted,
         "a place should take one volume, a disk without FAT32 none, and four volumes all there is room for",
+    );
+}
+
+/// The programs' directory lists the three programs test images carry and
+/// the second copy of each, none of them a directory.
+fn list_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::vfs;
+    let system = security::Token::system();
+    let mut listed = alloc::vec::Vec::new();
+    if let Ok(slot) = vfs::open("/System/Boot/meridian/programs", &system, abi::file::READ) {
+        let mut room = [0u8; 64];
+        while let Ok((len, directory)) = vfs::list(slot, listed.len() as u64, &mut room) {
+            listed.push((
+                alloc::string::String::from_utf8_lossy(&room[..len]).into_owned(),
+                directory,
+            ));
+        }
+        vfs::close(slot);
+    }
+    let mut names: alloc::vec::Vec<&str> = listed.iter().map(|(n, _)| n.as_str()).collect();
+    names.sort_unstable();
+    report.check(
+        "kernel.vfs.list",
+        names
+            == [
+                "exitwith.mexec",
+                "exitwith_again.mexec",
+                "hello.mexec",
+                "hello_again.mexec",
+                "whoami.mexec",
+                "whoami_again.mexec",
+            ]
+            && listed.iter().all(|(_, directory)| !directory),
+        "the programs' directory should list the three programs test images carry, each twice",
     );
 }
 
@@ -1542,6 +1577,7 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::OPEN,
         abi::READ,
         abi::INFO,
+        abi::LIST,
         abi::EXIT,
     ];
     report.check(

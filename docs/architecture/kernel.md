@@ -333,7 +333,8 @@ never mounts theirs. A loader that names none, as one started from a CD
 does, leaves the first EFI system partition found. OPEN takes a path and the rights wanted from
 `abi::file` and answers a handle that reads only when reading was asked
 for; READ reads up to a page from any byte on; INFO answers the size and
-whether it is a directory. An open file is a kernel object like a
+whether it is a directory; LIST hands out the name of a directory's
+entry by its number, in UTF-8, and whether that one is a directory. An open file is a kernel object like a
 process, so its handle can be handed on through a channel. The test
 image reads boot.meri through the tree as AHCI and FAT32 read it
 straight, from inside the kernel and from hello, and checks the files

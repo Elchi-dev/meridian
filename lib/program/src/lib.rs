@@ -207,6 +207,34 @@ pub fn info(file: Handle) -> Result<Info, Error> {
     info_from(rax, rdx)
 }
 
+/// Writes the name of entry `index` of the directory `directory`, counted
+/// from 0, into `room`, and returns its length and whether the entry is a
+/// directory itself.
+///
+/// # Errors
+///
+/// When the handle is not the program's, may not read, or stands for a
+/// file, the directory has no such entry, the name does not fit, or the
+/// disk cannot be read.
+pub fn list(directory: Handle, index: u64, room: &mut [u8]) -> Result<(usize, bool), Error> {
+    let (rax, rdx) = raw::call(list_call(directory, index, room));
+    listed(rax, rdx)
+}
+
+fn list_call(directory: Handle, index: u64, room: &mut [u8]) -> Call {
+    Call::List {
+        handle: directory.0,
+        at: room.as_mut_ptr() as u64,
+        room: room.len() as u64,
+        index,
+    }
+}
+
+fn listed(rax: u64, rdx: u64) -> Result<(usize, bool), Error> {
+    let len = answer(rax)?;
+    Ok((usize::try_from(len).unwrap_or(usize::MAX), rdx != 0))
+}
+
 fn open_call(path: &str, wanted: u32) -> Call {
     Call::Open {
         len: path.len() as u64,
@@ -555,6 +583,19 @@ mod tests {
             })
         );
         assert_eq!(info_from(abi::BAD_HANDLE, 1), Err(Error::BadHandle));
+        let mut names = [0u8; 64];
+        assert_eq!(
+            list_call(Handle(0x3_0002), 5, &mut names),
+            Call::List {
+                handle: 0x3_0002,
+                at: names.as_ptr() as u64,
+                room: 64,
+                index: 5
+            }
+        );
+        assert_eq!(listed(9, 0), Ok((9, false)));
+        assert_eq!(listed(8, 1), Ok((8, true)));
+        assert_eq!(listed(abi::NOT_FOUND, 0), Err(Error::NotFound));
     }
 
     #[test]

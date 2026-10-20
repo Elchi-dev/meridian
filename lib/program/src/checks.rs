@@ -12,15 +12,15 @@ use abi::{LOG_BYTES, MESSAGE_BYTES};
 use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
-    Ended, Error, Handle, Info, channel, close, info, log, map, open, raw, read, receive, send,
-    spawn, spawn_restricted, token, unmap, wait,
+    Ended, Error, Handle, Info, channel, close, info, list, log, map, open, raw, read, receive,
+    send, spawn, spawn_restricted, token, unmap, wait,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 23] = [
+const CHECKS: [(&str, Check); 24] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -44,6 +44,7 @@ const CHECKS: [(&str, Check); 23] = [
     ("spawn.token", child_gets_no_more),
     ("file", settings_read_back),
     ("file.refused", files_that_do_not_open),
+    ("file.list", directories_list_their_entries),
 ];
 
 /// Runs every check and answers how many failed.
@@ -584,8 +585,9 @@ fn files_that_do_not_open() -> Outcome {
     let mut room = [0u8; 8];
     expect(
         read(stranger, 0, &mut room) == Err(Error::BadHandle)
-            && info(stranger) == Err(Error::BadHandle),
-        "a made up handle is no file to read or ask about",
+            && info(stranger) == Err(Error::BadHandle)
+            && list(stranger, 0, &mut room) == Err(Error::BadHandle),
+        "a made up handle is no file to read, ask about or list",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -607,6 +609,51 @@ fn files_that_do_not_open() -> Outcome {
     expect(
         read(blind, 0, &mut room) == Err(Error::Denied) && close(blind) == Ok(()),
         "a handle opened without the right to read should not read",
+    )
+}
+
+fn directories_list_their_entries() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let meridian = open("/System/Boot/meridian", abi::file::READ)
+        .map_err(|_| "the meridian directory should open")?;
+    let mut names = Vec::new();
+    let mut room = [0u8; 64];
+    for index in 0.. {
+        match list(meridian, index, &mut room) {
+            Ok((len, directory)) => names.push((
+                String::from_utf8_lossy(&room[..len]).into_owned(),
+                directory,
+            )),
+            Err(Error::NotFound) => break,
+            Err(_) => return Err("each entry should list until the last"),
+        }
+    }
+    let has = |name: &str, directory: bool| names.iter().any(|(n, d)| n == name && *d == directory);
+    expect(
+        has("boot.meri", false) && has("kernel", false) && has("programs", true),
+        "the meridian directory should list boot.meri, the kernel and the programs' directory",
+    )?;
+    expect(
+        list(meridian, 0, &mut room[..1]) == Err(Error::TooSmall),
+        "a name should not be cut to fit",
+    )?;
+    let settings = open("/System/Boot/meridian/boot.meri", abi::file::READ)
+        .map_err(|_| "boot.meri should open")?;
+    expect(
+        list(settings, 0, &mut room) == Err(Error::NotADirectory),
+        "a file has no entries",
+    )?;
+    let blind =
+        open("/System/Boot/meridian", 0).map_err(|_| "a directory should open for nothing")?;
+    expect(
+        list(blind, 0, &mut room) == Err(Error::Denied),
+        "a handle opened without the right to read should not list",
+    )?;
+    expect(
+        close(meridian) == Ok(()) && close(settings) == Ok(()) && close(blind) == Ok(()),
+        "the handles should close",
     )
 }
 

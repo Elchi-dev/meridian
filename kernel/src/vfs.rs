@@ -69,6 +69,21 @@ fn capital(c: char) -> char {
     }
 }
 
+/// Writes the name `units`, in UTF-16 as FAT32 keeps names, into `into` in
+/// UTF-8, a unit that is no character as U+FFFD, and returns how many bytes
+/// it took; none when they do not fit.
+#[must_use]
+pub fn name_into(units: &[u16], into: &mut [u8]) -> Option<usize> {
+    let mut len = 0;
+    for c in char::decode_utf16(units.iter().copied()) {
+        let c = c.unwrap_or(char::REPLACEMENT_CHARACTER);
+        let end = len + c.len_utf8();
+        c.encode_utf8(into.get_mut(len..end)?);
+        len = end;
+    }
+    Some(len)
+}
+
 /// Why a volume could not be mounted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MountError {
@@ -294,6 +309,31 @@ mod tests {
         );
         assert!(!same_name("stra\u{df}e", "STRASSE"));
         assert!(same_name("", ""));
+    }
+
+    #[test]
+    fn a_name_is_handed_out_in_utf8() {
+        let mut room = [0u8; 16];
+        let units: Vec<u16> = "boot.meri".encode_utf16().collect();
+        assert_eq!(name_into(&units, &mut room), Some(9));
+        assert_eq!(&room[..9], b"boot.meri");
+        let wide: Vec<u16> = "\u{e4}\u{20ac}\u{1f600}".encode_utf16().collect();
+        assert_eq!(name_into(&wide, &mut room), Some(2 + 3 + 4));
+        assert_eq!(&room[..9], "\u{e4}\u{20ac}\u{1f600}".as_bytes());
+        assert_eq!(
+            name_into(&[0xd800, 0x41], &mut room),
+            Some(4),
+            "a lone half of a pair"
+        );
+        assert_eq!(&room[..4], "\u{fffd}A".as_bytes());
+        assert_eq!(name_into(&units, &mut room[..8]), None, "a byte short");
+        assert_eq!(name_into(&units, &mut room[..9]), Some(9), "just enough");
+        assert_eq!(
+            name_into(&wide, &mut room[..8]),
+            None,
+            "no character cut in two"
+        );
+        assert_eq!(name_into(&[], &mut []), Some(0));
     }
 
     #[test]

@@ -53,6 +53,10 @@ pub const READ: u64 = 15;
 /// Answers the size of the file of handle rdi, with rdx 1 when it is a
 /// directory and 0 when not.
 pub const INFO: u64 = 16;
+/// Writes the name of entry r10 of the directory of handle rdi, counted
+/// from 0, into the rdx bytes at rsi in UTF-8, and answers its length,
+/// with rdx 1 when the entry is a directory and 0 when not.
+pub const LIST: u64 = 17;
 
 /// The rights to a file, as Windows numbers them.
 pub mod file {
@@ -103,9 +107,11 @@ pub enum Error {
     NotAFile,
     /// The disk a file is on could not be read.
     Unreadable,
+    /// The handle stands for a file, which has no entries to list.
+    NotADirectory,
 }
 
-const ERRORS: [Error; 17] = [
+const ERRORS: [Error; 18] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -123,6 +129,7 @@ const ERRORS: [Error; 17] = [
     Error::NotFound,
     Error::NotAFile,
     Error::Unreadable,
+    Error::NotADirectory,
 ];
 
 impl Error {
@@ -162,6 +169,7 @@ pub const BAD_ARGUMENT: u64 = Error::BadArgument.code();
 pub const NOT_FOUND: u64 = Error::NotFound.code();
 pub const NOT_A_FILE: u64 = Error::NotAFile.code();
 pub const UNREADABLE: u64 = Error::Unreadable.code();
+pub const NOT_A_DIRECTORY: u64 = Error::NotADirectory.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -237,6 +245,12 @@ pub enum Call {
         offset: u64,
     },
     Info(u64),
+    List {
+        handle: u64,
+        at: u64,
+        room: u64,
+        index: u64,
+    },
     Unknown(u64),
 }
 
@@ -279,6 +293,12 @@ impl Call {
                 offset,
             } => (READ, [handle, at, room, offset]),
             Call::Info(handle) => (INFO, [handle, 0, 0, 0]),
+            Call::List {
+                handle,
+                at,
+                room,
+                index,
+            } => (LIST, [handle, at, room, index]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -338,6 +358,12 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             offset: fourth,
         },
         INFO => Call::Info(first),
+        LIST => Call::List {
+            handle: first,
+            at: second,
+            room: third,
+            index: fourth,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -428,14 +454,23 @@ mod tests {
             }
         );
         assert_eq!(decode(INFO, [0x3_0001, 2, 3, 4]), Call::Info(0x3_0001));
-        assert_eq!(decode(17, [1, 2, 3, 0]), Call::Unknown(17));
+        assert_eq!(
+            decode(LIST, [0x3_0002, 0x7f_d000, 1024, 7]),
+            Call::List {
+                handle: 0x3_0002,
+                at: 0x7f_d000,
+                room: 1024,
+                index: 7
+            }
+        );
+        assert_eq!(decode(18, [1, 2, 3, 0]), Call::Unknown(18));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
                 EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT, TOKEN, OPEN, READ, INFO
+                WAIT, TOKEN, OPEN, READ, INFO, LIST
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         );
     }
 
@@ -460,6 +495,33 @@ mod tests {
     }
 
     #[test]
+    fn list_takes_its_registers_as_read_does() {
+        for last in [0, 1, 255, 1 << 40, u64::MAX] {
+            let args = [0x3_0002, 0x7f_d000, 64, last];
+            let Call::Read {
+                handle,
+                at,
+                room,
+                offset,
+            } = decode(READ, args)
+            else {
+                panic!("READ should read as a read");
+            };
+            let index = offset;
+            assert_eq!(
+                decode(LIST, args),
+                Call::List {
+                    handle,
+                    at,
+                    room,
+                    index
+                },
+                "{last}"
+            );
+        }
+    }
+
+    #[test]
     fn token_takes_its_room_first_as_log_takes_its_length() {
         let Call::Log { len, at } = decode(LOG, [64, 0x7f_e000, 0, 0]) else {
             panic!("LOG should read as a log line");
@@ -476,7 +538,8 @@ mod tests {
         assert_eq!(BAD_ARGUMENT, u64::MAX - 13);
         assert_eq!(NOT_A_FILE, u64::MAX - 15);
         assert_eq!(UNREADABLE, u64::MAX - 16);
-        assert_eq!(ERRORS.last(), Some(&Error::Unreadable));
+        assert_eq!(NOT_A_DIRECTORY, u64::MAX - 17);
+        assert_eq!(ERRORS.last(), Some(&Error::NotADirectory));
     }
 
     #[test]
@@ -507,6 +570,7 @@ mod tests {
             NOT_FOUND,
             NOT_A_FILE,
             UNREADABLE,
+            NOT_A_DIRECTORY,
         ];
         for (i, &e) in errors.iter().enumerate() {
             assert_eq!(
@@ -573,7 +637,13 @@ mod tests {
                 offset: 1 << 40,
             },
             Call::Info(0x3_0004),
-            Call::Unknown(17),
+            Call::List {
+                handle: 0x3_0005,
+                at: 0x7f_b000,
+                room: 64,
+                index: 300,
+            },
+            Call::Unknown(18),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -605,6 +675,7 @@ mod tests {
             (OPEN, 3),
             (READ, 4),
             (INFO, 1),
+            (LIST, 4),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -627,7 +698,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > INFO,
+                number > LIST,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -688,9 +759,10 @@ mod tests {
         assert_eq!(answer(NOT_FOUND), Err(Error::NotFound));
         assert_eq!(answer(NOT_A_FILE), Err(Error::NotAFile));
         assert_eq!(answer(UNREADABLE), Err(Error::Unreadable));
+        assert_eq!(answer(NOT_A_DIRECTORY), Err(Error::NotADirectory));
         assert_eq!(
-            answer(UNREADABLE - 1),
-            Ok(UNREADABLE - 1),
+            answer(NOT_A_DIRECTORY - 1),
+            Ok(NOT_A_DIRECTORY - 1),
             "just below them"
         );
         assert_eq!(answer(0), Ok(0));
@@ -728,6 +800,7 @@ mod tests {
             (Error::NotFound, NOT_FOUND),
             (Error::NotAFile, NOT_A_FILE),
             (Error::Unreadable, UNREADABLE),
+            (Error::NotADirectory, NOT_A_DIRECTORY),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

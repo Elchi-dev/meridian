@@ -70,6 +70,13 @@ pub const KEY: u64 = 19;
 /// over, or at the next interrupt, or while it waits for another process.
 /// A process that ended already stays as it ended.
 pub const TERMINATE: u64 = 20;
+/// Starts another thread of the caller's program, in ring 3 at rdi with
+/// its stack pointer at rsi and rdx in rdi, and answers 0. It ends with
+/// [`END_THREAD`], and the program once its last thread ended.
+pub const THREAD: u64 = 21;
+/// Ends the calling thread. Should it be its program's last, the program
+/// exits with the code rdi; [`EXIT`] ends every thread of it at once.
+pub const END_THREAD: u64 = 22;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -276,6 +283,12 @@ pub enum Call {
         handle: u64,
         code: u64,
     },
+    Thread {
+        entry: u64,
+        stack: u64,
+        argument: u64,
+    },
+    EndThread(u64),
     Unknown(u64),
 }
 
@@ -327,6 +340,12 @@ impl Call {
             Call::Write { len, at } => (WRITE, [len, at, 0, 0]),
             Call::Key => (KEY, [0; 4]),
             Call::Terminate { handle, code } => (TERMINATE, [handle, code, 0, 0]),
+            Call::Thread {
+                entry,
+                stack,
+                argument,
+            } => (THREAD, [entry, stack, argument, 0]),
+            Call::EndThread(code) => (END_THREAD, [code, 0, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -401,6 +420,12 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             handle: first,
             code: second,
         },
+        THREAD => Call::Thread {
+            entry: first,
+            stack: second,
+            argument: third,
+        },
+        END_THREAD => Call::EndThread(first),
         other => Call::Unknown(other),
     }
 }
@@ -473,17 +498,26 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(21, [1, 2, 3, 0]), Call::Unknown(21));
+        assert_eq!(decode(23, [1, 2, 3, 0]), Call::Unknown(23));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
                 EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT, TOKEN, OPEN, READ, INFO, LIST, WRITE, KEY, TERMINATE
+                WAIT, TOKEN, OPEN, READ, INFO, LIST, WRITE, KEY, TERMINATE, THREAD, END_THREAD
             ],
             [
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
             ]
         );
+        assert_eq!(
+            decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
+            Call::Thread {
+                entry: 0x40_1000,
+                stack: 0x10_0000_4000,
+                argument: 7
+            }
+        );
+        assert_eq!(decode(END_THREAD, [3, 2, 1, 0]), Call::EndThread(3));
         assert_eq!(
             decode(TERMINATE, [0x5_0001, 77, 3, 4]),
             Call::Terminate {
@@ -710,7 +744,13 @@ mod tests {
                 handle: 0x4_0002,
                 code: u64::MAX,
             },
-            Call::Unknown(21),
+            Call::Thread {
+                entry: 0x40_6000,
+                stack: 0x10_0000_8000,
+                argument: u64::MAX,
+            },
+            Call::EndThread(1 << 63),
+            Call::Unknown(23),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -746,6 +786,8 @@ mod tests {
             (WRITE, 2),
             (KEY, 0),
             (TERMINATE, 2),
+            (THREAD, 3),
+            (END_THREAD, 1),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -768,7 +810,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > TERMINATE,
+                number > END_THREAD,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -823,6 +865,13 @@ mod tests {
             code: 21,
         };
         assert_eq!(terminate.encode(), (TERMINATE, [20, 21, 0, 0]));
+        let thread = Call::Thread {
+            entry: 22,
+            stack: 23,
+            argument: 24,
+        };
+        assert_eq!(thread.encode(), (THREAD, [22, 23, 24, 0]));
+        assert_eq!(Call::EndThread(25).encode(), (END_THREAD, [25, 0, 0, 0]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 

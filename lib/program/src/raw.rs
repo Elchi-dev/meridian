@@ -6,7 +6,9 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use abi::Call;
+use alloc::boxed::Box;
+
+use abi::{Call, Error};
 
 use crate::Pool;
 
@@ -30,6 +32,49 @@ pub fn call(call: Call) -> (u64, u64) {
         );
     }
     (rax, rdx)
+}
+
+/// What [`start_thread`] hands a new thread: what to run, with what.
+type Start = (fn(u64) -> u64, u64);
+
+/// Starts `entry(argument)` as another thread of this program, with its
+/// stack pointer at `stack`.
+///
+/// # Errors
+///
+/// When the kernel starts no thread.
+pub fn start_thread(entry: fn(u64) -> u64, argument: u64, stack: u64) -> Result<(), Error> {
+    let start = Box::into_raw(Box::new((entry, argument)));
+    let call = Call::Thread {
+        entry: thread_entry as *const () as usize as u64,
+        stack,
+        argument: start as u64,
+    };
+    abi::answer(self::call(call).0)
+        .map(|_| ())
+        .inspect_err(|_| {
+            // SAFETY: the box made just above, which no thread took.
+            drop(unsafe { Box::from_raw(start) });
+        })
+}
+
+/// Where a thread [`start_thread`] started enters ring 3: the call leaves
+/// the stack as every function expects to find it.
+#[unsafe(naked)]
+extern "C" fn thread_entry() -> ! {
+    core::arch::naked_asm!(
+        "and rsp, -16",
+        "call {run}",
+        "ud2",
+        run = sym run_thread,
+    )
+}
+
+extern "C" fn run_thread(start: u64) -> ! {
+    // SAFETY: start_thread made the box and handed it to this thread
+    // alone.
+    let (entry, argument) = *unsafe { Box::from_raw(start as *mut Start) };
+    crate::end_thread(entry(argument))
 }
 
 /// The pages the heap maps the first time it is asked for room, 1 MiB;

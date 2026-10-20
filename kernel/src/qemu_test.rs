@@ -1457,6 +1457,7 @@ fn timer_checks<W: Write>(
     );
     thread_checks(report, tsc_hz.unwrap_or(0));
     fpu_checks(report);
+    program_thread_checks(report);
     user_checks(report);
     entry_checks(report);
     given_back_checks(report);
@@ -2224,6 +2225,49 @@ fn entry_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.user.access_flag",
         exited && !seen::USER_ACCESS.load(Ordering::Acquire),
         "a program that sets AC should not take it into the kernel, where it would switch SMAP off",
+    );
+}
+
+/// Programs with threads: none starts in the kernel's half or on a stack
+/// above the program's, a program whose first thread left ends with its
+/// last one's code, and an exit ends a thread that never calls the kernel,
+/// so that the address space comes back whole.
+fn program_thread_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::user::{probe, seen};
+    report.check(
+        "kernel.threads.refused",
+        ended_with(ran(&probe::THREAD_NOWHERE, 0), abi::BAD_ADDRESS)
+            && ended_with(ran(&probe::THREAD_NO_STACK, 0), abi::BAD_ADDRESS),
+        "a thread should not start in the kernel's half or with its stack above the program's",
+    );
+    let logged = |line: &[u8]| {
+        (0..100).any(|_| {
+            raw::thread::sleep(1);
+            seen::ended(line)
+        })
+    };
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let before = free();
+    let two = ran(&probe::TWO_THREADS, 0);
+    report.check(
+        "kernel.threads.last",
+        two.is_some() && logged(b"user: the program ended with 5\n"),
+        "a program whose first thread left should end with its last thread's code",
+    );
+    let all = ran(&probe::EXIT_ALL, 0);
+    let back = (0..100).any(|_| {
+        raw::thread::sleep(1);
+        free() == before
+    });
+    report.check(
+        "kernel.threads.all",
+        all.is_some() && seen::ended(b"user: the program ended with 9\n") && back,
+        "an exit should end a thread that never calls the kernel too, so the address space comes back whole",
     );
 }
 

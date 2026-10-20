@@ -42,6 +42,40 @@ pub fn exit(code: u64) -> ! {
     }
 }
 
+/// Ends the calling thread. Should it be its program's last, the program
+/// ends with `code`.
+pub fn end_thread(code: u64) -> ! {
+    raw::call(Call::EndThread(code));
+    // The kernel never comes back from the end of a thread.
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// The pages of the stack [`thread`] gives each thread: 64 KiB.
+pub const THREAD_STACK_PAGES: u64 = 16;
+
+/// Starts `entry(argument)` as another thread of this program, on a stack
+/// of [`THREAD_STACK_PAGES`] fresh pages with one left unmapped below, so a
+/// thread that runs out of stack faults rather than writing over what lies
+/// there. The stack stays until the program ends. The thread ends once
+/// `entry` returns, and the program once its last thread ended, with the
+/// code that one returned; [`exit`] ends every thread at once.
+///
+/// # Errors
+///
+/// When there is no memory for the stack, no thread left, or the program
+/// is ending.
+pub fn thread(entry: fn(u64) -> u64, argument: u64) -> Result<(), Error> {
+    let guard = map(THREAD_STACK_PAGES + 1)?;
+    let stack = guard + 4096;
+    let started = unmap(guard, 1)
+        .and_then(|()| raw::start_thread(entry, argument, stack + THREAD_STACK_PAGES * 4096));
+    started.inspect_err(|_| {
+        let _ = unmap(stack, THREAD_STACK_PAGES);
+    })
+}
+
 /// Writes `line` to the kernel's log.
 ///
 /// # Errors

@@ -44,6 +44,8 @@ struct Process {
     object: Option<usize>,
     /// Who it runs as, and what it may do.
     token: Token,
+    /// How many of its threads run, and how it ends once they all left.
+    threads: kernel::process::Threads,
 }
 
 /// The processes handles can stand for: those programs spawned.
@@ -64,6 +66,7 @@ impl Process {
             name: Vec::new(),
             object: None,
             token: *token,
+            threads: kernel::process::Threads::new(),
         })
     }
 }
@@ -85,8 +88,9 @@ const ENDS: Rights = Rights(Rights::READ.0 | Rights::WRITE.0 | Rights::TRANSFER.
 /// What a program's thread takes with it into ring 3.
 struct Start {
     entry: u64,
+    stack: u64,
     argument: u64,
-    process: Box<Process>,
+    process: Shared,
 }
 
 pub use kernel::program::{CODE_AT, STACK_TOP};
@@ -228,8 +232,9 @@ fn spawn(
     }
     let start = Box::into_raw(Box::new(Start {
         entry,
+        stack: STACK_TOP,
         argument,
-        process,
+        process: Arc::new(Spin::new(*process)),
     })) as u64;
     thread::spawn_in(core, root, run, start, thread::NORMAL).map_err(|e| {
         // SAFETY: the box made just above, which no thread took.
@@ -239,50 +244,104 @@ fn spawn(
     })
 }
 
-/// The program's thread, in its own address space: keeps its process and
-/// enters ring 3.
+/// A thread of a program, in the program's address space: keeps its
+/// process and enters ring 3.
 extern "C" fn run(start: u64) {
-    // SAFETY: launch hands each thread the box it made for it, once.
+    // SAFETY: spawn and start_thread hand each thread the box they made
+    // for it, once.
     let Start {
         entry,
+        stack,
         argument,
         process,
     } = *unsafe { Box::from_raw(start as *mut Start) };
     #[cfg(feature = "qemu-test")]
     seen::starting(thread::current());
     if let Some(slot) = PROCESSES.lock().get_mut(thread::current()) {
-        *slot = Some(Arc::new(Spin::new(*process)));
+        *slot = Some(process);
     }
-    // SAFETY: spawn mapped the image and the stack for ring 3 in this
-    // thread's address space, which the switch to it loaded, every switch
-    // to it put its kernel stack in the task state, and the IDT has the
-    // system call gate for ring 3.
-    unsafe { x86::raw::enter_user(entry, STACK_TOP, argument) }
+    // SAFETY: the image is mapped for ring 3 in this thread's address
+    // space, which the switch to it loaded, and so is the stack for the
+    // first thread, which spawn mapped; another thread's stack is its
+    // program's to give, and only the program faults when it is not one.
+    // Every switch to the thread put its kernel stack in the task state,
+    // and the IDT has the system call gate for ring 3.
+    unsafe { x86::raw::enter_user(entry, stack, argument) }
 }
 
-/// Ends the program: its handles are closed, and back on the kernel's
-/// address space, its own goes back to the frame allocator, and its thread
-/// ends.
-fn finish(outcome: Outcome) -> ! {
+/// Ends the whole program as `outcome`: its other threads end at their
+/// next way back to ring 3, and this one leaves at once.
+fn end_program(outcome: Outcome) -> ! {
+    if let Some(process) = current_process() {
+        process.lock().threads.end(outcome);
+    }
+    leave(0)
+}
+
+/// The running thread leaves its program, having ended with `code` when it
+/// ended on its own. The last thread to leave closes the program's handles,
+/// says how the program ended to whoever waits for it, and gives its
+/// address space back; each goes back to the kernel's address space first,
+/// and ends.
+fn leave(code: u64) -> ! {
     let process = PROCESSES
         .lock()
         .get_mut(thread::current())
         .and_then(Option::take);
-    if let Some(process) = process {
+    let last = process.is_some_and(|process| {
         let mut process = process.lock();
+        let on_its_own = process.threads.ending().is_none();
+        let Some(outcome) = process.threads.leave(code) else {
+            return false;
+        };
+        if on_its_own {
+            log_ended(&process.name, format_args!("ended with {code}"));
+            #[cfg(feature = "qemu-test")]
+            seen::exited(code);
+        }
         process.handles.close_all(close_object);
         if let Some(slot) = process.object {
             OBJECTS.lock().end(slot, outcome);
         }
-    }
+        true
+    });
     let root = thread::current_root();
     // SAFETY: the kernel's address space maps all the kernel does, this
     // stack included.
     unsafe { x86::raw::load_cr3(memory::kernel_root()) };
-    if root != 0 {
+    if last && root != 0 {
         memory::release_space(root);
     }
     thread::exit()
+}
+
+/// Starts another thread of the running program at `entry` in ring 3, its
+/// stack pointer at `stack` and `argument` in rdi, on this core to begin
+/// with.
+fn start_thread(entry: u64, stack: u64, argument: u64) -> Result<u64, u64> {
+    if !abi::in_user_half(entry, 1) || !abi::in_user_half(stack, 0) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let process = current_process().ok_or(syscall::BAD_HANDLE)?;
+    if !process.lock().threads.start() {
+        return Err(syscall::DENIED);
+    }
+    let start = Box::into_raw(Box::new(Start {
+        entry,
+        stack,
+        argument,
+        process: process.clone(),
+    })) as u64;
+    let core = super::interrupts::this_core();
+    thread::spawn_in(core, thread::current_root(), run, start, thread::NORMAL).map_or_else(
+        |_| {
+            // SAFETY: the box made just above, which no thread took.
+            drop(unsafe { Box::from_raw(start as *mut Start) });
+            process.lock().threads.not_started();
+            Err(syscall::NO_ROOM)
+        },
+        |_| Ok(0),
+    )
 }
 
 /// A system call from ring 3, on the calling thread's kernel stack: the
@@ -295,8 +354,14 @@ pub fn system_call(frame: &mut Frame) {
             ended(format_args!("ended with {code}"));
             #[cfg(feature = "qemu-test")]
             seen::exited(code);
-            finish(Outcome::Exited(code))
+            end_program(Outcome::Exited(code))
         }
+        Call::Thread {
+            entry,
+            stack,
+            argument,
+        } => start_thread(entry, stack, argument).unwrap_or_else(|e| e),
+        Call::EndThread(code) => leave(code),
         Call::Log { len, at } => log(at, len),
         Call::Yield => {
             thread::yield_now();
@@ -389,29 +454,42 @@ fn terminate(handle: u64, code: u64) -> Result<(), u64> {
     Ok(())
 }
 
-/// Ends the running program, when it was asked to, with the code it was
-/// asked to end with: on every way back to ring 3, and while it waits.
+/// Ends the running thread when another one ended its program, and the
+/// whole program when it was asked to, with the code it was asked to end
+/// with: on every way back to ring 3, and while it waits.
 pub fn end_if_asked() {
-    let object = current_process().and_then(|p| p.lock().object);
-    let asked = object.and_then(|slot| OBJECTS.lock().asked(slot));
-    if let Some(code) = asked {
+    let Some((ending, object)) = current_process().map(|process| {
+        let process = process.lock();
+        (process.threads.ending(), process.object)
+    }) else {
+        return;
+    };
+    if ending.is_some() {
+        leave(0)
+    }
+    if let Some(code) = object.and_then(|slot| OBJECTS.lock().asked(slot)) {
         ended(format_args!("was stopped, with {code}"));
         #[cfg(feature = "qemu-test")]
         seen::exited(code);
-        finish(Outcome::Exited(code))
+        end_program(Outcome::Exited(code))
     }
 }
 
 /// Writes to the log how the running program ended, under its name.
 fn ended(how: core::fmt::Arguments<'_>) {
     let name = with_process(|p| Ok(p.name.clone())).unwrap_or_default();
+    log_ended(&name, how);
+}
+
+/// Writes to the log how the program `name` ended.
+fn log_ended(name: &[u8], how: core::fmt::Arguments<'_>) {
     let serial = super::serial::already_open();
     #[cfg(not(feature = "qemu-test"))]
-    let _ = kernel::log::ended(&mut { serial }, &name, how);
+    let _ = kernel::log::ended(&mut { serial }, name, how);
     #[cfg(feature = "qemu-test")]
     {
         let mut through = seen::Through::new(serial);
-        let _ = kernel::log::ended(&mut through, &name, how);
+        let _ = kernel::log::ended(&mut through, name, how);
         seen::keep_ended(&through);
     }
 }
@@ -872,7 +950,7 @@ pub fn fault(frame: &Frame) -> ! {
     ));
     #[cfg(feature = "qemu-test")]
     seen::faulted(frame.vector, frame.error);
-    finish(Outcome::Faulted(frame.vector))
+    end_program(Outcome::Faulted(frame.vector))
 }
 
 #[cfg(feature = "qemu-test")]
@@ -1344,6 +1422,73 @@ pub mod probe {
         "mov eax, {exit}",
         "int 0x2e",
         "ud2",
+        // Asks for a thread that would start in the kernel's half, and ends
+        // with the answer.
+        ".global meridian_thread_nowhere_start",
+        "meridian_thread_nowhere_start:",
+        "mov rdi, {user_end}",
+        "mov rsi, {stack_top}",
+        "xor edx, edx",
+        "mov eax, {thread}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // The same with a stack above the program's half.
+        ".global meridian_thread_no_stack_start",
+        "meridian_thread_no_stack_start:",
+        "lea rdi, [rip + meridian_thread_no_stack_start]",
+        "mov rsi, {past_end}",
+        "xor edx, edx",
+        "mov eax, {thread}",
+        "int 0x2e",
+        "mov rdi, rax",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        // Starts a second thread on the lower half of its stack, which
+        // sleeps and ends with the 5 it was given, and ends its first one
+        // with 3 at once: the program ends with the last one's code.
+        ".global meridian_two_threads_start",
+        "meridian_two_threads_start:",
+        "lea rdi, [rip + 2f]",
+        "mov rsi, {lower_stack}",
+        "mov edx, 5",
+        "mov eax, {thread}",
+        "int 0x2e",
+        "mov edi, 3",
+        "mov eax, {end_thread}",
+        "int 0x2e",
+        "ud2",
+        "2:",
+        "mov rbx, rdi",
+        "mov edi, 2",
+        "mov eax, {sleep}",
+        "int 0x2e",
+        "mov rdi, rbx",
+        "mov eax, {end_thread}",
+        "int 0x2e",
+        "ud2",
+        // Starts a second thread that spins without ever calling the
+        // kernel, then exits with 9, which has to end that one too.
+        ".global meridian_exit_all_start",
+        "meridian_exit_all_start:",
+        "lea rdi, [rip + 2f]",
+        "mov rsi, {lower_stack}",
+        "xor edx, edx",
+        "mov eax, {thread}",
+        "int 0x2e",
+        "mov edi, 2",
+        "mov eax, {sleep}",
+        "int 0x2e",
+        "mov edi, 9",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        "2:",
+        "pause",
+        "jmp 2b",
         ".global meridian_probes_end",
         "meridian_probes_end:",
         ".popsection",
@@ -1362,6 +1507,12 @@ pub mod probe {
         map = const syscall::MAP,
         unmap = const syscall::UNMAP,
         spawn = const syscall::SPAWN,
+        thread = const syscall::THREAD,
+        end_thread = const syscall::END_THREAD,
+        user_end = const syscall::USER_END,
+        past_end = const syscall::USER_END + 16,
+        stack_top = const super::STACK_TOP,
+        lower_stack = const super::STACK_TOP - 0x8000,
     );
 
     unsafe extern "C" {
@@ -1392,8 +1543,49 @@ pub mod probe {
         static meridian_stale_start: u8;
         static meridian_spawn_longest_start: u8;
         static meridian_spawn_too_long_start: u8;
+        static meridian_thread_nowhere_start: u8;
+        static meridian_thread_no_stack_start: u8;
+        static meridian_two_threads_start: u8;
+        static meridian_exit_all_start: u8;
         static meridian_probes_end: u8;
     }
+
+    fn thread_nowhere() -> &'static [u8] {
+        bytes(
+            &raw const meridian_thread_nowhere_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    fn thread_no_stack() -> &'static [u8] {
+        bytes(
+            &raw const meridian_thread_no_stack_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    fn two_threads() -> &'static [u8] {
+        bytes(
+            &raw const meridian_two_threads_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    fn exit_all() -> &'static [u8] {
+        bytes(
+            &raw const meridian_exit_all_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static THREAD_NOWHERE: Program = Program {
+        code: thread_nowhere,
+    };
+    pub static THREAD_NO_STACK: Program = Program {
+        code: thread_no_stack,
+    };
+    pub static TWO_THREADS: Program = Program { code: two_threads };
+    pub static EXIT_ALL: Program = Program { code: exit_all };
 
     // Each probe runs to the end of them all; what follows its own code
     // is never reached.

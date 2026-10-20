@@ -646,7 +646,7 @@ fn pages_for(bytes: u64) -> usize {
 fn back_buffer(system: &System, screen: Option<uefi::raw::graphics::Framebuffer>) -> u64 {
     screen
         .and_then(|fb| {
-            let bytes = u64::from(fb.width) * u64::from(fb.height) * 4;
+            let bytes = handover::frame_bytes(fb.width, fb.height);
             system.allocate_pages(KERNEL_TYPE, pages_for(bytes)).ok()
         })
         .map_or(0, |pages| pages.start())

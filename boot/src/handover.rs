@@ -215,6 +215,13 @@ pub fn framebuffer(fb: Option<uefi::raw::graphics::Framebuffer>) -> bootinfo::Fr
     }
 }
 
+/// How many bytes one frame `width` by `height` pixels takes, four to a
+/// pixel, as the kernel's back buffer holds one.
+#[must_use]
+pub fn frame_bytes(width: u32, height: u32) -> u64 {
+    (u64::from(width) * u64::from(height)).saturating_mul(4)
+}
+
 /// Whether `entry` lies in a segment the kernel may run code from.
 #[must_use]
 pub fn entry_is_code(segments: &[Segment], entry: u64) -> bool {
@@ -285,6 +292,19 @@ impl core::fmt::Display for Problem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_takes_four_bytes_a_pixel() {
+        assert_eq!(frame_bytes(1280, 800), 4_096_000);
+        assert_eq!(frame_bytes(1920, 1080), 8_294_400);
+        assert_eq!(frame_bytes(1, 1), 4);
+        assert_eq!(frame_bytes(0, 1080), 0);
+        assert_eq!(
+            frame_bytes(u32::MAX, u32::MAX),
+            u64::MAX,
+            "no wrapping around"
+        );
+    }
     use paging::PageSize;
 
     struct Heap {

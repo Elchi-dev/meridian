@@ -311,15 +311,21 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
         Err(Error::BadChain)
     }
 
-    /// The entry called `name` in the directory whose first cluster is
-    /// `directory`: by its long name when it has one, else by its short.
+    /// Hands `each` every entry of the directory whose first cluster is
+    /// `directory`, in the order they lie there, with its name: the long
+    /// one when it has one, else the short. The entries `.` and `..` that
+    /// every directory but the root holds are left out. Stops when `each`
+    /// answers false.
     ///
     /// # Errors
     ///
-    /// When no entry has the name, or the directory cannot be read.
-    pub fn lookup(&mut self, directory: u32, name: &str) -> Result<Entry, Error> {
+    /// When the directory cannot be read.
+    pub fn entries(
+        &mut self,
+        directory: u32,
+        mut each: impl FnMut(&[u16], Entry) -> bool,
+    ) -> Result<(), Error> {
         let mut long = LongName::new();
-        let mut found = None;
         self.walk(directory, |sector| {
             for e in sector.as_chunks::<32>().0 {
                 match e[0] {
@@ -328,19 +334,40 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
                     _ if e[11] & 0x3f == 0x0f => long.add(e),
                     _ if e[11] & 0x08 != 0 => long.next = None,
                     _ => {
-                        let matches = match long.of(e) {
-                            Some(units) => same(units.iter().copied(), name),
-                            None => same(short_name(e), name),
-                        };
+                        let dots = e[..11] == *b".          " || e[..11] == *b"..         ";
+                        let mut short = [0u16; 12];
+                        let mut len = 0;
+                        for (room, unit) in short.iter_mut().zip(short_name(e)) {
+                            *room = unit;
+                            len += 1;
+                        }
+                        let name = long.of(e).unwrap_or(&short[..len]);
+                        let go_on = dots || each(name, Entry::read(e));
                         long.next = None;
-                        if matches {
-                            found = Some(Entry::read(e));
+                        if !go_on {
                             return false;
                         }
                     }
                 }
             }
             true
+        })
+    }
+
+    /// The entry called `name` in the directory whose first cluster is
+    /// `directory`: by its long name when it has one, else by its short.
+    ///
+    /// # Errors
+    ///
+    /// When no entry has the name, or the directory cannot be read.
+    pub fn lookup(&mut self, directory: u32, name: &str) -> Result<Entry, Error> {
+        let mut found = None;
+        self.entries(directory, |units, entry| {
+            let matches = same(units.iter().copied(), name);
+            if matches {
+                found = Some(entry);
+            }
+            !matches
         })?;
         found.ok_or(Error::NotFound)
     }
@@ -747,6 +774,103 @@ mod tests {
         .unwrap();
         assert_eq!((v.sector_size, v.cluster_bytes()), (4096, 4096));
         assert_eq!(v.entry_of(1024), (33, 0), "1024 entries a 4 KiB sector");
+    }
+
+    fn names_in(
+        fat: &mut Fat<impl FnMut(u64, &mut [u8]) -> bool>,
+        directory: u32,
+    ) -> Vec<(String, bool)> {
+        let mut names = Vec::new();
+        fat.entries(directory, |units, entry| {
+            names.push((String::from_utf16(units).unwrap(), entry.directory));
+            true
+        })
+        .unwrap();
+        names
+    }
+
+    #[test]
+    fn a_directory_lists_its_entries_by_the_names_they_show() {
+        let (disk, _) = volume();
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        let root = fat.volume.root;
+        let names = names_in(&mut fat, root);
+        assert_eq!(
+            names[0],
+            ("meridian".to_string(), true),
+            "its long name, past the volume label"
+        );
+        assert_eq!(
+            names[1],
+            ("README.TXT".to_string(), false),
+            "the deleted entry before it left out"
+        );
+        assert_eq!(names[2], ("EMPTY".to_string(), false));
+        assert_eq!(names[3], ("FILL00".to_string(), false));
+        assert!(
+            names
+                .iter()
+                .any(|(n, d)| n == &format!("long-name-{}", "x".repeat(244)) && !d)
+        );
+        assert!(!names.iter().any(|(n, _)| n.starts_with("OLD")));
+        let meridian = fat.find("meridian").unwrap();
+        assert_eq!(
+            names_in(&mut fat, meridian.first),
+            [("boot.meri".to_string(), false)]
+        );
+        let mut seen = 0;
+        fat.entries(root, |_, _| {
+            seen += 1;
+            seen < 3
+        })
+        .unwrap();
+        assert_eq!(seen, 3, "it stops when told to");
+    }
+
+    #[test]
+    fn a_directory_leaves_out_its_dot_entries() {
+        let mut disk = Disk::new();
+        let file = disk.file(b"a");
+        let inner = directory(
+            &mut disk,
+            None,
+            &[
+                short(b".          ", 0x10, 9, 0),
+                short(b"..         ", 0x10, 0, 0),
+                short(b"A       TXT", 0x20, file, 1),
+                short(b"..X        ", 0x20, file, 1),
+            ],
+        );
+        directory(&mut disk, Some(2), &[short(b"INNER      ", 0x10, inner, 0)]);
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        assert_eq!(
+            names_in(&mut fat, inner),
+            [("A.TXT".to_string(), false), ("..X".to_string(), false)],
+            "a name that only starts with dots stays"
+        );
+        assert_eq!(fat.lookup(inner, "."), Err(Error::NotFound));
+        assert_eq!(fat.lookup(inner, ".."), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_read_lists_nothing() {
+        let (disk, _) = volume();
+        let mut boot_only = |lba, into: &mut [u8]| {
+            lba == 0 && {
+                into.copy_from_slice(&disk.sectors[&0][..into.len()]);
+                true
+            }
+        };
+        let mut fat = Fat::open(&mut boot_only).unwrap();
+        let mut called = false;
+        assert_eq!(
+            fat.entries(2, |_, _| {
+                called = true;
+                true
+            }),
+            Err(Error::Read)
+        );
+        assert!(!called);
     }
 
     #[test]

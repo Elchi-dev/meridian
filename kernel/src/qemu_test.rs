@@ -178,6 +178,14 @@ pub fn after_panic(screen: Option<&Canvas<'_>>, details: &Details<'_>, serial: &
                 "the panic screen should get the message and where it came from",
             );
             crash_screen_checks(&mut report, screen, "panic");
+            let look = |c: &Canvas<'_>| c.pixel(20, 20);
+            let before = screen.and_then(look);
+            raw::console::write("\u{c}written after the crash");
+            report.check(
+                "kernel.console.after_crash",
+                before.is_some_and(|p| p != NIGHT) && screen.and_then(look) == before,
+                "once a crash took the screen, the console should draw on it no more",
+            );
             FAILED.store(report.failed, Ordering::Release);
             STAGE.store(2, Ordering::Release);
             raw::allow_another_crash();
@@ -808,7 +816,7 @@ fn console_checks<W: Write>(report: &mut Report<'_, W>, display: Option<Display<
     let Some(display) = display else {
         return;
     };
-    let started = raw::console::start(display);
+    let started = raw::console::start(display).is_some();
     raw::console::write("Meridian\n");
     let shape = raw::console::shape();
     let lit = shape.is_some_and(|(_, (width, height))| {
@@ -838,10 +846,15 @@ fn console_checks<W: Write>(report: &mut Report<'_, W>, display: Option<Display<
     let erased = raw::console::row(1).as_deref() == Some("")
         && cell(0, 1) == Some(SUN)
         && cell(1, 1) == Some(NIGHT);
+    raw::console::write("  \n  ");
+    let one = cell(2, 1) == Some(NIGHT) && cell(2, 2) == Some(SUN);
+    let columns = shape.map_or(0, |((columns, _), _)| columns);
+    raw::console::write(&" ".repeat(columns - 2));
+    let edge = cell(columns - 1, 2) == Some(SUN) && cell(0, 3) == Some(NIGHT);
     report.check(
         "kernel.console.cursor",
-        waiting && typed && erased,
-        "the cursor should be a block of sun in the cell the next character goes to, and a backspace should leave the dark behind",
+        waiting && typed && erased && one && edge,
+        "the cursor should be a block of sun in the cell the next character goes to, in its row alone, in the last column while it waits at the edge, and a backspace should leave the dark behind",
     );
     let rows = shape.map_or(0, |((_, rows), _)| rows);
     raw::console::write("\u{c}");

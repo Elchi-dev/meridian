@@ -44,16 +44,12 @@ fn style() -> Option<Style<'static>> {
     })
 }
 
-/// Takes `display` over for the console, clears it, and says whether the
-/// font could be read to draw it.
-pub fn start(display: Display<'static>) -> bool {
-    let Some(style) = style() else {
-        return false;
-    };
+/// Takes `display` over for the console and clears it; `None` when the
+/// font could not be read to draw it.
+pub fn start(display: Display<'static>) -> Option<()> {
+    let style = style()?;
     let metrics = style.font.line_metrics(PX);
-    let Ok(width) = style.font.layout("M", PX, |_| {}) else {
-        return false;
-    };
+    let width = style.font.layout("M", PX, |_| {}).ok()?;
     let (cell_width, cell_height) = (cell_pixels(width), cell_pixels(metrics.line_height()));
     let screen = display.screen();
     let columns = fit(screen.width(), MARGIN, cell_width);
@@ -68,7 +64,7 @@ pub fn start(display: Display<'static>) -> bool {
     console.display.frame(|c| c.fill(NIGHT));
     draw(&mut console);
     *CONSOLE.lock() = Some(console);
-    true
+    Some(())
 }
 
 /// Writes `text` on the console, when there is one and no crash took the
@@ -83,7 +79,9 @@ pub fn write(text: &str) {
     }
 }
 
-/// Draws the rows that changed and the cursor where it is now.
+/// Draws the rows that changed and the cursor where it is now. A cursor
+/// that waits past the right edge is drawn in the last column, under the
+/// character there.
 fn draw(console: &mut Console) {
     let Some(style) = style() else {
         return;
@@ -108,9 +106,9 @@ fn draw(console: &mut Console) {
             .display
             .update(at(MARGIN), at(top), width, cell_height, |c| {
                 c.fill_rect(at(MARGIN), at(top), width, cell_height, NIGHT);
-                if row == cursor.1 && cursor.0 < grid.columns() {
+                if row == cursor.1 {
                     c.fill_rect(
-                        at(MARGIN + cursor.0 * cell_width),
+                        at(MARGIN + cursor.0.min(grid.columns() - 1) * cell_width),
                         at(top),
                         cell_width,
                         cell_height,

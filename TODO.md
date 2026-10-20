@@ -127,6 +127,7 @@ Loader and UEFI:
 - [x] AHCI ports started again after a command fails
 - [ ] virtio-blk
 - [ ] Interrupts for disks instead of polling
+- [ ] Reads of more than one sector at a time: FAT32 reads a file a sector per command, so a debug build of a program took over a second to start from its file
 - [x] GPT in the kernel (`lib/gpt`)
 - [x] FAT32 read in the kernel (`lib/fat`)
 - [ ] FAT32 written, for the installer
@@ -140,6 +141,7 @@ Loader and UEFI:
 
 - [ ] init and the service manager
 - [x] A first shell on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `clear`, `exit`, on every image
+- [x] The shell starts a program by its name in `/System/Boot/meridian/programs` or by its path (SPAWN takes paths), and says how it ended
 - [ ] The shell, with an `sh` mode; `cls` and `clear`
 - [ ] Command-line tools
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

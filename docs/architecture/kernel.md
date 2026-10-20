@@ -172,7 +172,9 @@ is not in its code. A program that cannot get the memory it needs does
 not start, and gives back every frame it took.
 
 **Processes.** SPAWN starts the program a file of the loader's is named
-after, such as `hello.mexec`, as a process of its own, hands it a handle
+after, such as `hello.mexec`, or the one in the file at a path from the
+root, which the caller's token has to be allowed to run, as a process of
+its own, hands it a handle
 the parent gives up, which becomes its argument, and answers a handle to
 the process. WAIT answers how the process ended: its exit code, or the
 vector of the exception that ended it. `kernel::process` keeps every
@@ -365,17 +367,24 @@ screen: `kernel::console::Grid` keeps rows of characters and a cursor,
 wraps a line at the right edge, scrolls past the last row, and knows a new
 line, a carriage return, a tab, a backspace and a form feed; the kernel
 draws a changed row at a time in `JetBrains Mono`, light on the dark, the
-cursor a block of sun. A crash takes the screen from it. WRITE puts a
+cursor a block of sun, each character on a whole pixel in its own cell, so
+its glyph is rasterized once and drawn from memory after. A crash takes
+the screen from it. WRITE puts a
 program's text there, and KEY hands out the keys the keyboard sent; any
 program may use both until terminals and focus exist. The runtime turns a
 key into a character on a US layout; others come from CLDR with Horizon.
 
 The shell edits a line with either shift and backspace and runs `help`,
-`echo`, `ls`, `cat`, `clear` and `exit`, reading the tree of files. The
-test image checks the console's text, cursor, scrolling and clearing on
-the screen, a line hello writes from ring 3, and types at the shell with
-keys sextant presses: it has to greet, echo, list a directory, name a
-command it does not know and end at `exit`.
+`echo`, `ls`, `cat`, `clear` and `exit`, reading the tree of files. Any
+other word is a program: by its name in `/System/Boot/meridian/programs`,
+or by its path, started with SPAWN and waited for, and the shell says how
+it ended unless it exited with 0. The test image checks the console's
+text, cursor, cells, scrolling and clearing on the screen, that a
+character is rasterized once, that nothing is drawn once a crash took the
+screen, a line hello writes from ring 3, and types at the shell with keys
+sextant presses: it has to greet, echo, list a directory, show the
+shim's licences to their end, name a command it does not know, run
+exitwith from its file and say it ended with 2989, and end at `exit`.
 
 ## The screens the kernel draws itself (M1)
 

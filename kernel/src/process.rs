@@ -24,6 +24,8 @@ pub enum State {
 struct Entry {
     state: State,
     handles: u32,
+    /// The exit code it was asked to end with.
+    asked: Option<u64>,
 }
 
 /// Up to `N` processes that handles can stand for.
@@ -50,6 +52,7 @@ impl<const N: usize> Table<N> {
         self.entries[slot] = Some(Entry {
             state: State::Running,
             handles: 1,
+            asked: None,
         });
         Some(slot)
     }
@@ -69,6 +72,30 @@ impl<const N: usize> Table<N> {
             }
             self.free_if_done(slot);
         }
+    }
+
+    /// Asks process `slot` to end with `code`, unless it ended or was asked
+    /// before.
+    pub fn ask_to_end(&mut self, slot: usize, code: u64) {
+        if let Some(e) = self.running(slot) {
+            e.asked.get_or_insert(code);
+        }
+    }
+
+    /// The exit code process `slot` was asked to end with, while it runs.
+    #[must_use]
+    pub fn asked(&self, slot: usize) -> Option<u64> {
+        self.entries
+            .get(slot)?
+            .filter(|e| e.state == State::Running)?
+            .asked
+    }
+
+    fn running(&mut self, slot: usize) -> Option<&mut Entry> {
+        self.entries
+            .get_mut(slot)?
+            .as_mut()
+            .filter(|e| e.state == State::Running)
     }
 
     /// A handle that stood for process `slot` was closed. Its slot goes
@@ -166,6 +193,30 @@ mod tests {
             Some(State::Running),
             "the other one is untouched"
         );
+    }
+
+    #[test]
+    fn a_process_asked_to_end_keeps_the_first_code_it_was_given() {
+        let mut t = Table::<2>::new();
+        let slot = t.create().unwrap();
+        assert_eq!(t.asked(slot), None);
+        t.ask_to_end(slot, 77);
+        t.ask_to_end(slot, 78);
+        assert_eq!(t.asked(slot), Some(77));
+        assert_eq!(t.state(slot), Some(State::Running), "until it does");
+        t.end(slot, Outcome::Exited(77));
+        assert_eq!(t.asked(slot), None, "one that ended runs no more");
+        let other = t.create().unwrap();
+        assert_eq!(t.asked(other), None, "the other one was not asked");
+        t.end(other, Outcome::Exited(1));
+        t.ask_to_end(other, 2);
+        assert_eq!(
+            t.state(other),
+            Some(State::Ended(Outcome::Exited(1))),
+            "one that ended stays as it ended"
+        );
+        t.ask_to_end(9, 1);
+        assert_eq!(t.asked(9), None);
     }
 
     #[test]

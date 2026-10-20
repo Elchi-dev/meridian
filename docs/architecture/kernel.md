@@ -340,6 +340,26 @@ image reads boot.meri through the tree as AHCI and FAT32 read it
 straight, from inside the kernel and from hello, and checks the files
 and paths that must not open.
 
+## The console (M5)
+
+Until Horizon draws the screen, the kernel has a text console for the
+shell. Once the image carries `shell.mexec`, the kernel gives it the
+screen: `kernel::console::Grid` keeps rows of characters and a cursor,
+wraps a line at the right edge, scrolls past the last row, and knows a new
+line, a carriage return, a tab, a backspace and a form feed; the kernel
+draws a changed row at a time in `JetBrains Mono`, light on the dark, the
+cursor a block of sun. A crash takes the screen from it. WRITE puts a
+program's text there, and KEY hands out the keys the keyboard sent; any
+program may use both until terminals and focus exist. The runtime turns a
+key into a character on a US layout; others come from CLDR with Horizon.
+
+The shell edits a line with either shift and backspace and runs `help`,
+`echo`, `ls`, `cat`, `clear` and `exit`, reading the tree of files. The
+test image checks the console's text, cursor, scrolling and clearing on
+the screen, a line hello writes from ring 3, and types at the shell with
+keys sextant presses: it has to greet, echo, list a directory, name a
+command it does not know and end at `exit`.
+
 ## The screens the kernel draws itself (M1)
 
 - **Status screen.** The CPU cores found in the ACPI MADT, the memory map

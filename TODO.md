@@ -137,9 +137,11 @@ Loader and UEFI:
 ## M5: Userland
 
 - [ ] init and the service manager
+- [x] A first shell on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `clear`, `exit`, on every image
 - [ ] The shell, with an `sh` mode; `cls` and `clear`
 - [ ] Command-line tools
-- [ ] Text terminal
+- [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime
+- [ ] Text terminal as a program of its own, keyboard layouts beyond US
 
 ## M6: Windows programs, step 1
 

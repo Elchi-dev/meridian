@@ -101,7 +101,8 @@ Loader and UEFI:
 - [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
 - [x] Threads move between cores: a core with nothing to run takes a waiting thread from a busy one, unless it was started for its core
 - [x] Each thread's FPU and SSE registers kept across switches, before programs use them: XSAVE with AVX and AVX-512 where the processor has them, FXSAVE otherwise, fresh for every new thread
-- [ ] Threads in programs, and with them TLB shootdowns: a page one thread unmaps must not stay cached on another core
+- [x] Threads in programs, and with them TLB shootdowns: a page one thread unmaps must not stay cached on another core (THREAD, END_THREAD, the SHOOTDOWN interrupt)
+- [x] TERMINATE: a process ends at its next way back to ring 3, also while it waits
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
 - [x] An address space of its own for every program, given back whole when it ends; the kernel's half shared by all
 - [x] Handles with access masks, in a table per program, with generations so a closed handle reaches nothing (`lib/handles`)

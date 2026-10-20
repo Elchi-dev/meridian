@@ -282,6 +282,25 @@ core it was started on, loses the processor there at that core's tick, and
 wakes there on time, and that of two threads that never give way on one
 core, one moves to a core with nothing to run.
 
+Programs have threads too: THREAD starts another one in the caller's
+address space, on a stack the runtime maps with a page left unmapped
+below, and END_THREAD ends one; a program ends once its last thread left,
+with that one's code, while EXIT, a fault or TERMINATE end every thread of
+it, the others leaving at their next way back to ring 3. When pages of a
+program go while another core runs one of its threads, that core may
+still remember where they led: UNMAP sends each such core the SHOOTDOWN
+interrupt to forget them and gives the frames back only once all
+answered. One shootdown runs at a time, and a core waiting to start its
+own answers the one that runs. Every core keeps its number where RDTSCP
+and RDPID find it. The test image checks that no thread starts in the
+kernel's half or on a stack above the program's, that a program ends with
+its last thread's code, that an exit ends a thread that never calls the
+kernel so the address space comes back whole, and that a page one thread
+gives back is gone at once for another thread reading it on another
+core, which without the shootdown went on reading it; hello starts a
+program of threads that end in each of those ways, and a thread of its
+own.
+
 Each thread has floating point and vector registers of its own. Every
 core turns the x87 unit and SSE on, and where the processor has XSAVE it
 keeps the x87, SSE, AVX and AVX-512 parts it has, as the first core found

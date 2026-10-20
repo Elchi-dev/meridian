@@ -7,6 +7,18 @@ use crate::{UNITS, checksum};
 /// The most UTF-16 units a long name holds.
 pub const LONGEST: usize = 255;
 
+/// Whether `name` may be a long name: something is left once its leading
+/// periods and spaces go, it ends in neither, it fits [`LONGEST`] units,
+/// and it holds no control character and none of `"*/:<>?\|`.
+#[must_use]
+pub fn valid(name: &str) -> bool {
+    let forbidden = |c: char| c < ' ' || "\"*/:<>?\\|".contains(c);
+    !name.trim_start_matches(['.', ' ']).is_empty()
+        && !name.ends_with(['.', ' '])
+        && name.encode_utf16().count() <= LONGEST
+        && !name.chars().any(forbidden)
+}
+
 /// Whether `c` may stand in a short name as it is.
 fn allowed(c: u8) -> bool {
     c.is_ascii_uppercase() || c.is_ascii_digit() || b"$%'-_@~`!(){}^#&".contains(&c)
@@ -14,9 +26,13 @@ fn allowed(c: u8) -> bool {
 
 /// The short name `name` gets in a directory where `taken` says which
 /// short names are in use already, and whether its long name has to go
-/// with it: none when it gets no number from 1 to 999999 that is free.
+/// with it: none when it gets no number from 1 to 999999 that is free,
+/// or is only periods and spaces.
 pub fn short_for(name: &str, mut taken: impl FnMut(&[u8; 11]) -> bool) -> Option<([u8; 11], bool)> {
     let trimmed = name.trim_start_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        return None;
+    }
     // The basis takes what comes before the first period, the extension
     // what comes after the last.
     let (first, last) = (trimmed.find('.'), trimmed.rfind('.'));
@@ -42,13 +58,13 @@ pub fn short_for(name: &str, mut taken: impl FnMut(&[u8; 11]) -> bool) -> Option
     let base_len = fold(base, &mut short[..8]);
     fold(ext, &mut short[8..]);
     lossy |= base.contains(' ') || ext.contains(' ');
-    if !lossy && base_len > 0 && !taken(&short) {
+    if !lossy && !taken(&short) {
         return Some((short, false));
     }
     for n in 1u32..=999_999 {
         let mut tail = [0u8; 7];
         let digits = write_number(n, &mut tail);
-        let keep = base_len.min(7 - digits.len()).max(1);
+        let keep = base_len.min(7 - digits.len());
         let mut candidate = short;
         candidate[keep] = b'~';
         candidate[keep + 1..keep + 1 + digits.len()].copy_from_slice(digits);
@@ -109,6 +125,53 @@ mod tests {
 
     fn none_taken(_: &[u8; 11]) -> bool {
         false
+    }
+
+    #[test]
+    fn long_names_may_hold_most_but_not_everything() {
+        let fine = [
+            "a",
+            ".bashrc",
+            "My File.txt",
+            "a+b,c;d=e[f]",
+            "\u{1f600}",
+            "tab\u{7f}",
+        ];
+        for name in fine
+            .iter()
+            .map(ToString::to_string)
+            .chain(["z".repeat(255)])
+        {
+            assert!(valid(&name), "{name}");
+        }
+        let bad = [
+            "", ".", "..", "...", " . ", "a.", "a ", "a/b", "a\\b", "a:b", "a*b", "a?b", "a\"b",
+            "a<b", "a>b", "a|b", "a\u{1}b", "a\u{1f}",
+        ];
+        for name in bad.iter().map(ToString::to_string).chain(["z".repeat(256)]) {
+            assert!(!valid(&name), "{name:?}");
+        }
+        assert!(valid(" lead"), "leading spaces go, as leading periods do");
+    }
+
+    #[test]
+    fn a_name_of_only_periods_and_spaces_has_no_short_name() {
+        for name in ["", "...", " . "] {
+            assert_eq!(short_for(name, none_taken), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn what_a_short_name_cannot_say_takes_a_number() {
+        let cases = [
+            (".bashrc", *b"BASHRC~1   "),
+            ("A.B.C", *b"A~1     C  "),
+            ("MY FILE.TXT", *b"MYFILE~1TXT"),
+            ("FILE.T T", *b"FILE~1  TT "),
+        ];
+        for (name, short) in cases {
+            assert_eq!(short_for(name, none_taken), Some((short, true)), "{name}");
+        }
     }
 
     #[test]

@@ -261,14 +261,18 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
     ///
     /// # Errors
     ///
-    /// When an entry has the name already, the name is empty or too long,
-    /// no cluster is left, or the volume cannot be read or written.
+    /// When an entry has the name already, the name is not one
+    /// [`name::valid`] allows, no cluster is left, or the volume cannot be
+    /// read or written.
     pub fn create(
         &mut self,
         directory: u32,
         name: &str,
         directory_too: bool,
     ) -> Result<(Entry, Place), Error> {
+        if !name::valid(name) {
+            return Err(Error::BadName);
+        }
         match self.fat.lookup(directory, name) {
             Ok(_) => return Err(Error::Exists),
             Err(Error::NotFound) => {}
@@ -876,6 +880,11 @@ mod tests {
         assert_eq!(image.borrow()[entry_bytes(second)][..11], *b"README~2TXT");
         assert!(sound(&image.borrow(), "short"));
         assert_eq!(w.create(root, &"y".repeat(256), false), Err(Error::BadName));
+        let before = image.borrow().clone();
+        for bad in ["...", "a/b", "trailing."] {
+            assert_eq!(w.create(root, bad, false), Err(Error::BadName), "{bad}");
+        }
+        assert_eq!(*image.borrow(), before, "and nothing was written");
     }
 
     #[test]

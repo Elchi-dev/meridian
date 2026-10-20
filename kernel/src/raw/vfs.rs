@@ -47,21 +47,33 @@ pub enum Error {
     Read,
 }
 
-/// Hangs the FAT32 volume `read` reads at the path `at`, read only. Says
-/// whether it does.
-pub fn mount(at: &str, read: Reader) -> bool {
-    let Ok(volume) = fat::Fat::open(read) else {
-        return false;
-    };
+/// Why a volume could not be mounted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MountError {
+    /// It holds no FAT32 volume, or could not be read.
+    NotFat,
+    /// Every volume there can be hangs somewhere already.
+    Full,
+    /// The place is none, or taken.
+    Place(vfs::MountError),
+}
+
+/// Hangs the FAT32 volume `read` reads at the path `at`, read only.
+///
+/// # Errors
+///
+/// When it holds no FAT32 volume, every volume there can be hangs in the
+/// tree already, or the place is none or taken.
+pub fn mount(at: &str, read: Reader) -> Result<(), MountError> {
+    let volume = fat::Fat::open(read).map_err(|_| MountError::NotFat)?;
     let mut mounted = MOUNTED.lock();
-    let Some(free) = mounted.iter().position(Option::is_none) else {
-        return false;
-    };
-    if MOUNTS.lock().mount(at, free).is_err() {
-        return false;
-    }
+    let free = mounted
+        .iter()
+        .position(Option::is_none)
+        .ok_or(MountError::Full)?;
+    MOUNTS.lock().mount(at, free).map_err(MountError::Place)?;
     mounted[free] = Some(volume);
-    true
+    Ok(())
 }
 
 /// Opens the file at `path` for the rights `wanted`, as `token` may, and

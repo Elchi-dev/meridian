@@ -365,6 +365,16 @@ mod tests {
             "reading up"
         );
         assert_eq!(
+            may_open(
+                &medium,
+                &file,
+                standard::READ_CONTROL | standard::SYNCHRONIZE,
+                true
+            ),
+            Ok(()),
+            "everyone may also read who may do what, and wait for it"
+        );
+        assert_eq!(
             may_open(&medium, &file, file::WRITE, false),
             Err(Refusal::Denied(file::WRITE))
         );

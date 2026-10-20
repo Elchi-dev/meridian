@@ -132,10 +132,8 @@ fn mount_boot(
         return;
     };
     let first = esp.first;
-    if raw::vfs::mount(
-        "/System/Boot",
-        Box::new(move |lba, into| read(first + lba, into)),
-    ) {
+    let volume = Box::new(move |lba, into: &mut [u8]| read(first + lba, into));
+    if raw::vfs::mount("/System/Boot", volume).is_ok() {
         let _ = writeln!(
             serial,
             "kernel: the partition the loader came from, on {disk}, hangs at /System/Boot, read only"

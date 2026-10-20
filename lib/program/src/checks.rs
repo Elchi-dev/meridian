@@ -569,6 +569,17 @@ fn files_that_do_not_open() -> Outcome {
         abi::answer(raw::call(too_long).0) == Err(Error::TooLong),
         "a path longer than PATH_BYTES",
     )?;
+    let mut longest = [b'a'; abi::PATH_BYTES];
+    longest[0] = b'/';
+    let just = abi::Call::Open {
+        len: longest.len() as u64,
+        at: longest.as_ptr() as u64,
+        wanted: u64::from(abi::file::READ),
+    };
+    expect(
+        abi::answer(raw::call(just).0) == Err(Error::NotFound),
+        "a path of PATH_BYTES is still one, if of no file",
+    )?;
     let stranger = Handle(0x7777_0042);
     let mut room = [0u8; 8];
     expect(

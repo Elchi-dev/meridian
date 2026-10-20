@@ -618,6 +618,7 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
     for slot in held {
         vfs::close(slot);
     }
+    mount_checks(report);
     report.check(
         "kernel.vfs.slots",
         opened_low
@@ -627,6 +628,40 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
                 .inspect(|&slot| vfs::close(slot))
                 .is_ok(),
         "a closed file's slot should be free again, and the 65th file open at once find none",
+    );
+}
+
+/// Mounting more: a place that is taken, in other capitals, takes no
+/// second volume; a disk without FAT32 none; the boot volume read through
+/// a second place reads the same files; and four volumes are all there is
+/// room for.
+fn mount_checks<W: Write>(report: &mut Report<'_, W>) {
+    use abi::file::READ;
+    use raw::vfs;
+    let system = security::Token::system();
+    let reader = |port: usize, first: u64| -> raw::vfs::Reader {
+        alloc::boxed::Box::new(move |lba, into: &mut [u8]| {
+            raw::ahci::read(port, first + lba, into).is_ok()
+        })
+    };
+    let mounted = esp_of_disk().is_some_and(|(port, esp)| {
+        use kernel::vfs::MountError::Taken;
+        use raw::vfs::MountError::{Full, NotFat, Place};
+        let taken = vfs::mount("/system/boot", reader(port, esp.first)) == Err(Place(Taken));
+        let blank = vfs::mount("/Volumes/Blank", reader(port, 0)) == Err(NotFat);
+        let again = vfs::mount("/Volumes/Again", reader(port, esp.first)).is_ok();
+        let through = vfs::open("/Volumes/Again/meridian/boot.meri", &system, READ)
+            .inspect(|&slot| vfs::close(slot))
+            .is_ok();
+        let filled = vfs::mount("/Volumes/Third", reader(port, esp.first)).is_ok()
+            && vfs::mount("/Volumes/Fourth", reader(port, esp.first)).is_ok();
+        let full = vfs::mount("/Volumes/Fifth", reader(port, esp.first)) == Err(Full);
+        taken && blank && again && through && filled && full
+    });
+    report.check(
+        "kernel.vfs.mount",
+        mounted,
+        "a place should take one volume, a disk without FAT32 none, and four volumes all there is room for",
     );
 }
 

@@ -427,6 +427,25 @@ fn child_ended_from_outside() -> Outcome {
         close(spinning) == Ok(()) && close(its) == Ok(()),
         "its handles should close",
     )?;
+    let (later, its) = exitwith()?;
+    let (waiting, theirs) = exitwith()?;
+    expect(
+        send(theirs, b"wait", Some(later)) == Ok(()),
+        "a child should be handed another to wait for",
+    )?;
+    sleep(2);
+    expect(
+        terminate(waiting, 81) == Ok(()) && wait(waiting) == Ok(Ended::Exited(81)),
+        "a child that waits for another should still end once asked to",
+    )?;
+    expect(
+        send(its, &5u64.to_le_bytes(), None) == Ok(()),
+        "the other one should still be there to end on its own",
+    )?;
+    expect(
+        close(waiting) == Ok(()) && close(theirs) == Ok(()) && close(its) == Ok(()),
+        "their handles should close",
+    )?;
     expect(
         terminate(end, 1) == Err(Error::Denied),
         "a channel is no process to end",

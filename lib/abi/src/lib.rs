@@ -67,8 +67,8 @@ pub const WRITE: u64 = 18;
 pub const KEY: u64 = 19;
 /// Ends the process of handle rdi, which has to allow writing, with the
 /// exit code rsi, at its next way back to ring 3: once a call it is in is
-/// over, or at the next interrupt. A process that ended already stays as
-/// it ended.
+/// over, or at the next interrupt, or while it waits for another process.
+/// A process that ended already stays as it ended.
 pub const TERMINATE: u64 = 20;
 
 /// The most bytes one WRITE takes.

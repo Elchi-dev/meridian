@@ -379,9 +379,9 @@ fn terminate(handle: u64, code: u64) -> Result<(), u64> {
     Ok(())
 }
 
-/// Called on every way back to ring 3: ends the running program, when it
-/// was asked to, with the code it was asked to end with.
-pub fn back_to_ring_3() {
+/// Ends the running program, when it was asked to, with the code it was
+/// asked to end with: on every way back to ring 3, and while it waits.
+pub fn end_if_asked() {
     let object = PROCESSES
         .lock()
         .get(thread::current())
@@ -520,7 +520,10 @@ fn wait(handle: u64) -> Result<(u64, u64), u64> {
         match state {
             Some(State::Ended(Outcome::Exited(code))) => return Ok((code, 0)),
             Some(State::Ended(Outcome::Faulted(vector))) => return Ok((vector, 1)),
-            Some(State::Running) => thread::sleep(1),
+            Some(State::Running) => {
+                end_if_asked();
+                thread::sleep(1);
+            }
             None => return Err(syscall::BAD_HANDLE),
         }
     }

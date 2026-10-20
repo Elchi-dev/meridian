@@ -4,6 +4,7 @@
 //! changed since they were last drawn. The kernel draws the rows; this
 //! says what is in them.
 
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -150,9 +151,112 @@ impl Grid {
     }
 }
 
+/// A character's glyph as the console draws it: where its bitmap's top
+/// left pixel goes from the pen on the baseline, how wide the bitmap is,
+/// and how much of each pixel it covers, row by row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Glyph {
+    pub left: i32,
+    pub top: i32,
+    pub width: usize,
+    pub coverage: Vec<u8>,
+}
+
+/// How many characters' glyphs [`Glyphs`] keeps before it starts over.
+pub const KEPT: usize = 256;
+
+/// The glyphs of the characters the console drew, each rasterized once:
+/// every cell is on a whole pixel, so a character looks the same in each.
+pub struct Glyphs {
+    known: BTreeMap<char, Option<Glyph>>,
+    made: usize,
+}
+
+impl Glyphs {
+    #[must_use]
+    pub const fn new() -> Glyphs {
+        Glyphs {
+            known: BTreeMap::new(),
+            made: 0,
+        }
+    }
+
+    /// The glyph of `c`, which `make` rasterizes the first time `c` is
+    /// asked for; `None` for a character that draws nothing. With
+    /// [`KEPT`] characters known, all are forgotten before another.
+    pub fn get(&mut self, c: char, make: impl FnOnce(char) -> Option<Glyph>) -> Option<&Glyph> {
+        if self.known.len() == KEPT && !self.known.contains_key(&c) {
+            self.known.clear();
+        }
+        let count = &mut self.made;
+        self.known
+            .entry(c)
+            .or_insert_with(|| {
+                *count += 1;
+                make(c)
+            })
+            .as_ref()
+    }
+
+    /// How many glyphs were rasterized so far.
+    #[must_use]
+    pub fn made(&self) -> usize {
+        self.made
+    }
+}
+
+impl Default for Glyphs {
+    fn default() -> Self {
+        Glyphs::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dot(c: char) -> Glyph {
+        Glyph {
+            left: 1,
+            top: -2,
+            width: 1,
+            coverage: vec![u8::try_from(u32::from(c) % 256).unwrap()],
+        }
+    }
+
+    fn again(_: char) -> Option<Glyph> {
+        panic!("a known glyph should not be rasterized again")
+    }
+
+    #[test]
+    fn a_glyph_is_rasterized_once() {
+        let made = |c| Some(dot(c));
+        let mut g = Glyphs::new();
+        assert_eq!(g.get('a', made), Some(&dot('a')));
+        assert_eq!(g.get('a', again), Some(&dot('a')));
+        assert_eq!(g.get('b', made).map(|g| g.coverage[0]), Some(b'b'));
+        assert_eq!(g.made(), 2);
+        assert_eq!(g.get(' ', |_| None), None, "a space draws nothing");
+        assert_eq!(g.get(' ', again), None, "and is known to");
+        assert_eq!(g.made(), 3);
+    }
+
+    #[test]
+    fn a_full_cache_starts_over() {
+        let made = |c| Some(dot(c));
+        let mut g = Glyphs::default();
+        let chars: Vec<char> = ('\u{100}'..).take(KEPT).collect();
+        for &c in &chars {
+            g.get(c, made);
+        }
+        assert_eq!(g.made(), KEPT);
+        assert!(g.get(chars[0], again).is_some(), "still known when full");
+        assert!(g.get('x', made).is_some());
+        assert_eq!(g.made(), KEPT + 1);
+        assert_eq!(g.get('x', again), Some(&dot('x')), "the new one is kept");
+        g.get(chars[0], made);
+        assert_eq!(g.made(), KEPT + 2, "the old ones were forgotten");
+    }
 
     fn text(g: &Grid, row: usize) -> String {
         g.row(row).iter().collect::<String>().trim_end().to_string()

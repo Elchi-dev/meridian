@@ -1159,6 +1159,58 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_that_holds_something_is_known_by_its_first_entry() {
+        let Some(image) = formatted("rmdir-broken") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (folder, _) = w.create(root, "folder", true).unwrap();
+        // Fourteen files fill its cluster after `.` and `..`, so no empty
+        // entry ends it there, and its chain goes on to a cluster there is
+        // none of.
+        for i in 0..14 {
+            w.create(folder.first, &format!("F{i:02}.TXT"), false)
+                .unwrap();
+        }
+        assert_eq!(w.fat.next(folder.first), Ok(None), "one cluster, full");
+        w.set(folder.first, 1).unwrap();
+        assert_eq!(
+            w.remove(root, "folder"),
+            Err(Error::NotEmpty),
+            "what it holds says enough, whatever comes after"
+        );
+    }
+
+    #[test]
+    fn a_long_entry_is_no_short_name_however_it_reads() {
+        let Some(image) = formatted("cjk") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        // Five of U+4142 make a long entry whose first 11 bytes read
+        // ABABABABABA: its order byte 0x41, then 42 41 for each unit.
+        let (_, long) = w.create(root, &"\u{4142}".repeat(5), false).unwrap();
+        let all = places(&mut w, root);
+        let at = all.iter().position(|p| *p == long).unwrap();
+        assert_eq!(
+            image.borrow()[entry_bytes(all[at - 1])][..11],
+            *b"ABABABABABA"
+        );
+        let (_, short) = w.create(root, "ABABABAB.ABA", false).unwrap();
+        assert_eq!(image.borrow()[entry_bytes(short)][..11], *b"ABABABABABA");
+        assert_eq!(
+            places(&mut w, root).iter().position(|p| *p == short),
+            Some(at + 1),
+            "with no long name of its own"
+        );
+        assert!(sound(&image.borrow(), "cjk"));
+    }
+
+    #[test]
     fn a_cluster_taken_ends_a_chain_of_its_own_in_both_fats() {
         let Some(image) = formatted("take") else {
             return;

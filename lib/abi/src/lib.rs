@@ -45,6 +45,14 @@ pub const WAIT: u64 = 12;
 /// into the rdi bytes at rsi, and answers how many bytes it took.
 pub const TOKEN: u64 = 13;
 
+/// The rights to a file, as Windows numbers them.
+pub mod file {
+    pub const READ: u32 = 1;
+    pub const WRITE: u32 = 1 << 1;
+    pub const APPEND: u32 = 1 << 2;
+    pub const RUN: u32 = 1 << 5;
+}
+
 /// Why a call failed. Each error is an answer counting down from the top
 /// of the range, so no address, length or handle is mistaken for one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +153,9 @@ pub const MEXEC_VERSION: u32 = 1;
 
 /// The longest message a channel takes, in bytes.
 pub const MESSAGE_BYTES: usize = 128;
+
+/// The longest path a call takes, in bytes.
+pub const PATH_BYTES: usize = 512;
 
 /// The longest line the log takes, in bytes.
 pub const LOG_BYTES: usize = 256;
@@ -383,6 +394,14 @@ mod tests {
         assert_eq!(NOT_A_PROGRAM, u64::MAX - 12);
         assert_eq!(BAD_ARGUMENT, u64::MAX - 13);
         assert_eq!(ERRORS.last(), Some(&Error::BadArgument));
+    }
+
+    #[test]
+    fn file_rights_are_windows_own() {
+        assert_eq!(
+            [file::READ, file::WRITE, file::APPEND, file::RUN],
+            [1, 2, 4, 0x20]
+        );
     }
 
     #[test]

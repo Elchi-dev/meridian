@@ -88,6 +88,12 @@ impl Table {
         Some(Table { header, entries })
     }
 
+    /// The first partition the table lists of the type `kind`.
+    #[must_use]
+    pub fn first_of(&self, kind: gpt::Guid) -> Option<Partition> {
+        self.partitions().map(|(_, p)| p).find(|p| p.kind == kind)
+    }
+
     /// The partitions the table lists, each with its number, counted from
     /// 1 as entries are, unused ones left out.
     pub fn partitions(&self) -> impl Iterator<Item = (usize, Partition)> + '_ {
@@ -188,6 +194,25 @@ mod tests {
                 "AHCI port 3, partition 5: P, 0 MiB from sector 133120, type 11111111-1111-1111-1111-111111111111\n",
             ]
         );
+    }
+
+    #[test]
+    fn the_first_partition_of_a_type_is_found_by_it() {
+        let image = disk(
+            8192,
+            &[
+                (0, gpt::MERIDIAN_SYSTEM.0, 2048, 3071),
+                (1, gpt::EFI_SYSTEM.0, 3072, 4095),
+                (2, gpt::EFI_SYSTEM.0, 4096, 5119),
+            ],
+        );
+        let table = Table::read(&mut reader(&image)).unwrap();
+        assert_eq!(table.first_of(gpt::EFI_SYSTEM).map(|p| p.first), Some(3072));
+        assert_eq!(
+            table.first_of(gpt::MERIDIAN_SYSTEM).map(|p| p.first),
+            Some(2048)
+        );
+        assert_eq!(table.first_of(gpt::Guid([0x11; 16])), None);
     }
 
     #[test]

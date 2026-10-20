@@ -21,6 +21,7 @@ pub mod program;
 pub mod screen;
 pub use abi as syscall;
 pub mod thread;
+pub mod vfs;
 
 use core::fmt::{self, Write};
 

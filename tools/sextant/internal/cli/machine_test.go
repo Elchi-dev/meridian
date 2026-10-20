@@ -250,12 +250,16 @@ func TestTheTestImageBootsAgainOnAnOlderMachine(t *testing.T) {
 	if first.title != "== QEMU test image" || !reflect.DeepEqual(first.machine, m) || first.screens != "/build/screens" {
 		t.Errorf("first pass: %+v", first)
 	}
-	if second.title != "== QEMU test image without x2APIC, XSAVE or PS/2" || !second.machine.WithoutX2APIC || !second.machine.WithoutXSAVE || !second.machine.WithoutPS2 || second.screens != "" {
+	if second.title != "== QEMU test image without x2APIC, XSAVE or PS/2, writing copies" || !second.machine.WithoutX2APIC || !second.machine.WithoutXSAVE || !second.machine.WithoutPS2 || second.screens != "" {
 		t.Errorf("the second pass should hide the x2APIC, XSAVE and PS/2 and keep no screens: %+v", second)
+	}
+	if first.machine.WritingCopies || !second.machine.WritingCopies {
+		t.Errorf("only the second pass's other disks should write, to copies: %+v, %+v", first.machine, second.machine)
 	}
 	second.machine.WithoutX2APIC = false
 	second.machine.WithoutXSAVE = false
 	second.machine.WithoutPS2 = false
+	second.machine.WritingCopies = false
 	if !reflect.DeepEqual(second.machine, m) {
 		t.Errorf("the second machine should differ in nothing else: %+v", second.machine)
 	}

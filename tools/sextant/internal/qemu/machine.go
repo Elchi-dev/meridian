@@ -61,6 +61,10 @@ type Machine struct {
 	// WithoutPS2 leaves the 8042 out, so the keyboard is a USB one behind
 	// an xHCI controller, as on PCs without PS/2 ports.
 	WithoutPS2 bool
+	// WritingCopies lets the test machine's NVMe and virtio disks write
+	// too: into copies of the disk QEMU keeps until it ends, so what the
+	// AHCI disk wrote stays as it was. Without it they only read.
+	WritingCopies bool
 }
 
 // Exit codes of isa-debug-exit: QEMU exits with (value << 1) | 1, and test
@@ -159,12 +163,17 @@ func (m Machine) Args() []string {
 			"-device", "virtio-rng-pci,bus=meridian.port",
 		)
 		if m.Disk != "" {
+			// The disk is open for writing already; these looks at it
+			// write only to copies if at all, so they do not ask for the
+			// lock.
+			mode := "readonly=on"
+			if m.WritingCopies {
+				mode = "snapshot=on"
+			}
 			args = append(args,
-				// The disk is open for writing already; these looks at it
-				// only read, so they do not ask for the lock.
-				"-drive", "if=none,id=meridian.nvme,format=raw,readonly=on,file.locking=off,file="+escape(m.Disk),
+				"-drive", "if=none,id=meridian.nvme,format=raw,"+mode+",file.locking=off,file="+escape(m.Disk),
 				"-device", "nvme,serial=meridian,drive=meridian.nvme",
-				"-drive", "if=none,id=meridian.virtio,format=raw,readonly=on,file.locking=off,file="+escape(m.Disk),
+				"-drive", "if=none,id=meridian.virtio,format=raw,"+mode+",file.locking=off,file="+escape(m.Disk),
 				"-device", "virtio-blk-pci,drive=meridian.virtio",
 			)
 		}

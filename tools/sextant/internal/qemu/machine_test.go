@@ -134,6 +134,25 @@ func TestAMachineCanLackPS2(t *testing.T) {
 	}
 }
 
+func TestTheOtherDisksCanWriteToCopies(t *testing.T) {
+	m := fullMachine()
+	m.WritingCopies = true
+	got := strings.Join(m.Args(), " ")
+	for _, id := range []string{"meridian.nvme", "meridian.virtio"} {
+		want := "-drive if=none,id=" + id + ",format=raw,snapshot=on,file.locking=off,file=/out/meridian.img "
+		if !strings.Contains(got, want) {
+			t.Errorf("%s should write to a copy: %s", id, got)
+		}
+	}
+	if strings.Contains(got, "id=meridian.nvme,format=raw,readonly") || strings.Contains(got, "id=meridian.virtio,format=raw,readonly") {
+		t.Errorf("and not only read: %s", got)
+	}
+	plain := strings.Join(fullMachine().Args(), " ")
+	if strings.Contains(plain, "snapshot") {
+		t.Errorf("an ordinary test machine's other disks only read: %s", plain)
+	}
+}
+
 func TestASecondDiskComesAfterTheFirst(t *testing.T) {
 	m := fullMachine()
 	m.SecondDisk = "/out/other,disk.img"

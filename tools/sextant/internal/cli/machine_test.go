@@ -201,10 +201,11 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 	}
 	r = runIn(realRoot(t), "build")
 	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
-	if r.code != ExitOK || len(lines) != 3 ||
+	if r.code != ExitOK || len(lines) != 4 ||
 		!strings.HasSuffix(lines[0], filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi")) ||
 		!strings.HasSuffix(lines[1], filepath.Join("x86_64-unknown-none", "debug", "kernel")) ||
-		!strings.HasSuffix(lines[2], filepath.Join("x86_64-unknown-none", "debug", "examples", "hello")) {
+		!strings.HasSuffix(lines[2], filepath.Join("x86_64-unknown-none", "debug", "examples", "hello")) ||
+		!strings.HasSuffix(lines[3], filepath.Join("x86_64-unknown-none", "debug", "examples", "shell")) {
 		t.Fatalf("exit %d, stdout %q", r.code, r.stdout)
 	}
 	if loader, err := os.ReadFile(lines[0]); err != nil || bytes.Contains(loader, []byte("TESTS DONE")) {
@@ -229,7 +230,8 @@ func TestOnlyTestImagesCarryTheTestPrograms(t *testing.T) {
 		_, hello := b.programs["hello.mexec"]
 		_, exitWith := b.programs["exitwith.mexec"]
 		_, whoAmI := b.programs["whoami.mexec"]
-		if !hello || exitWith != v.testMode || whoAmI != v.testMode || len(b.programs) != want {
+		_, shell := b.programs["shell.mexec"]
+		if !hello || !shell || exitWith != v.testMode || whoAmI != v.testMode || len(b.programs) != want {
 			t.Errorf("test mode %v: %v", v.testMode, b.programs)
 		}
 	}

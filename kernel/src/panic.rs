@@ -9,7 +9,9 @@ use qr::{Code, Ecc};
 
 static INTER: &[u8] = include_bytes!("../../third-party/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../../third-party/fonts/Inter-SemiBold.ttf");
-static MONO: &[u8] = include_bytes!("../../third-party/fonts/JetBrainsMono-Regular.ttf");
+/// `JetBrains Mono`, the system's monospaced font (ADR 0012), which the
+/// panic screen and the console write in.
+pub static MONO: &[u8] = include_bytes!("../../third-party/fonts/JetBrainsMono-Regular.ttf");
 
 /// What the screen tells.
 pub struct Details<'a> {

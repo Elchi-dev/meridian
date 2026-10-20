@@ -27,6 +27,10 @@ test = true
 name = "whoami"
 test = true
 
+[[example]]
+name = "shell"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

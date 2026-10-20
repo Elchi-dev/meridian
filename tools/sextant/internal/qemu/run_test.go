@@ -155,7 +155,7 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 		}
 	}
 	var want []string
-	for _, name := range []string{"boot", "boot-log", "status", "panic", "double-fault"} {
+	for _, name := range []string{"boot", "boot-log", "status", "console", "panic", "double-fault"} {
 		want = append(want, filepath.Join(screens, name+".png"))
 	}
 	if !slices.Equal(res.Screens, want) {
@@ -164,8 +164,9 @@ func TestTheTestImagePassesOnRealFirmware(t *testing.T) {
 	checkBootScreen(t, want[0])
 	checkLogScreen(t, want[1])
 	checkStatusScreen(t, want[2])
-	checkCrashScreen(t, want[3], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
-	checkCrashScreen(t, want[4], "\nmessage: double fault: a second exception came while the first was being handled")
+	checkConsoleScreen(t, want[3])
+	checkCrashScreen(t, want[4], "\nevent: panic\nmessage: a test of the panic screen\nat: kernel/src/qemu_test.rs:")
+	checkCrashScreen(t, want[5], "\nmessage: double fault: a second exception came while the first was being handled")
 	if !strings.Contains(res.Serial, consoleProbe) {
 		t.Errorf("the console probe did not reach the screen whole:\n%s", res.Serial)
 	}
@@ -232,8 +233,8 @@ func TestAScriptPressesKeysOnTheMachine(t *testing.T) {
 	}
 }
 
-// The image people boot starts the kernel, which says hello and then
-// keeps the uptime on its screen current.
+// The image people boot starts the kernel, which says hello and gives the
+// screen to the console, where the shell greets and then waits for keys.
 func TestThePlainImageStartsTheKernel(t *testing.T) {
 	r := newRig(t)
 	m := r.machine(diskWithLoader(t, false))
@@ -244,8 +245,9 @@ func TestThePlainImageStartsTheKernel(t *testing.T) {
 		Script: []Step{
 			{Wait: "Meridian boot "},
 			{Wait: "Meridian kernel "},
-			{Wait: "There is nothing more to do yet.", Screen: "early"},
-			{Pause: 2500 * time.Millisecond, Screen: "later"},
+			{Wait: "There is nothing more to do yet."},
+			{Pause: 2500 * time.Millisecond, Screen: "shell"},
+			{Pause: 1000 * time.Millisecond, Screen: "later"},
 		},
 		StopAfterScript: true,
 		Screens:         screens,
@@ -253,17 +255,28 @@ func TestThePlainImageStartsTheKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 4 || !res.Stopped || res.TimedOut {
+	if res.StepsDone != 5 || !res.Stopped || res.TimedOut {
 		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
 	}
 	if strings.Contains(res.Serial, "TEST ") {
 		t.Fatalf("the plain image ran checks:\n%s", res.Serial)
 	}
-	// Only the uptime changed: its value starts at x 196 and its letters
-	// sit on the baseline at y 282.
-	changed := changedArea(t, filepath.Join(screens, "early.png"), filepath.Join(screens, "later.png"))
-	if changed.Empty() || changed.Min.X < 196 || changed.Min.Y < 260 || changed.Max.Y > 290 {
-		t.Fatalf("between the two screens, %v changed; want only the uptime", changed)
+	// The console's dark, with the greeting's light letters in its first
+	// row, 16 pixels in from the edges.
+	_, _, shell := openScreen(t, filepath.Join(screens, "shell.png"))
+	night := [3]uint32{0x15, 0x17, 0x1a}
+	lit := false
+	for x := 16; x < 400 && !lit; x++ {
+		for y := 16; y < 40 && !lit; y++ {
+			lit = shell(x, y)[0] > 0xc0
+		}
+	}
+	if shell(4, 4) != night || shell(600, 600) != night || !lit {
+		t.Fatalf("the screen should show the console, dark with the greeting at its top: %v %v %v", shell(4, 4), shell(600, 600), lit)
+	}
+	// Nothing moves while the shell waits for a key.
+	if changed := changedArea(t, filepath.Join(screens, "shell.png"), filepath.Join(screens, "later.png")); !changed.Empty() {
+		t.Fatalf("between the two screens, %v changed; want nothing while the shell waits", changed)
 	}
 }
 
@@ -668,6 +681,31 @@ func TestQEMUDiesWithTheProcessThatStartedIt(t *testing.T) {
 
 // openScreen decodes a saved screen and gives its size and a way to read
 // a pixel's colour.
+// checkConsoleScreen wants the console the kernel's checks left: dark to
+// its corners, light letters in its first row, and the cursor a block of
+// sun yellow.
+func checkConsoleScreen(t *testing.T, path string) {
+	t.Helper()
+	w, h, at := openScreen(t, path)
+	night := [3]uint32{0x15, 0x17, 0x1a}
+	for _, p := range [][2]int{{0, 0}, {w - 1, 0}, {0, h - 1}, {w - 1, h - 1}} {
+		if at(p[0], p[1]) != night {
+			t.Errorf("pixel %v is %x, want the console's dark", p, at(p[0], p[1]))
+		}
+	}
+	lit, sun := false, false
+	for y := 16; y < h-16; y++ {
+		for x := 16; x < w-16; x++ {
+			c := at(x, y)
+			lit = lit || (y < 40 && c[0] > 0xc0 && c[2] > 0xc0)
+			sun = sun || c == [3]uint32{0xff, 0xc6, 0x2b}
+		}
+	}
+	if !lit || !sun {
+		t.Errorf("want light letters in the first row (%v) and a sun yellow cursor (%v)", lit, sun)
+	}
+}
+
 func openScreen(t *testing.T, path string) (int, int, func(x, y int) [3]uint32) {
 	t.Helper()
 	f, err := os.Open(path)

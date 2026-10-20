@@ -19,6 +19,7 @@ use security::{Restriction, Token};
 
 #[cfg(feature = "qemu-test")]
 pub mod checks;
+pub mod layout;
 #[allow(unsafe_code)]
 mod raw;
 
@@ -165,6 +166,52 @@ pub fn spawn_restricted(
     restriction: Restriction,
 ) -> Result<Handle, Error> {
     answer(raw::call(spawn_call(name, carry, restriction.word())).0).map(Handle)
+}
+
+/// A key going down or coming up, by its USB HID usage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub usage: u16,
+    pub pressed: bool,
+}
+
+/// Writes `text` to the console, in pieces as long as one call takes.
+///
+/// # Errors
+///
+/// When the kernel refuses a piece.
+pub fn write(text: &str) -> Result<(), Error> {
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut take = rest.len().min(abi::WRITE_BYTES);
+        while !rest.is_char_boundary(take) {
+            take -= 1;
+        }
+        done(raw::call(write_call(&rest[..take])).0)?;
+        rest = &rest[take..];
+    }
+    Ok(())
+}
+
+/// The next key the keyboard sent, when one waits.
+#[must_use]
+pub fn key() -> Option<KeyEvent> {
+    key_from(raw::call(Call::Key).0)
+}
+
+fn write_call(text: &str) -> Call {
+    Call::Write {
+        len: text.len() as u64,
+        at: text.as_ptr() as u64,
+    }
+}
+
+fn key_from(rax: u64) -> Option<KeyEvent> {
+    let value = answer(rax).ok()?;
+    Some(KeyEvent {
+        usage: u16::try_from(value & 0xffff).unwrap_or(0),
+        pressed: value >> 16 & 1 == 1,
+    })
 }
 
 /// What INFO says about a file.
@@ -544,6 +591,41 @@ mod tests {
                 carry: 0x2_0003,
                 restriction: 0x8000_0001_0000_0000
             }
+        );
+    }
+
+    #[test]
+    fn text_goes_to_the_console_and_keys_come_back() {
+        let text = "ls /System";
+        assert_eq!(
+            write_call(text),
+            Call::Write {
+                len: 10,
+                at: text.as_ptr() as u64
+            }
+        );
+        assert_eq!(
+            key_from(0x1_0004),
+            Some(KeyEvent {
+                usage: 0x04,
+                pressed: true
+            })
+        );
+        assert_eq!(
+            key_from(0x00e1),
+            Some(KeyEvent {
+                usage: 0xe1,
+                pressed: false
+            })
+        );
+        assert_eq!(key_from(abi::EMPTY), None, "no key waits");
+        assert_eq!(
+            key_from(0x3_0052),
+            Some(KeyEvent {
+                usage: 0x52,
+                pressed: true
+            }),
+            "only bit 16 says pressed"
         );
     }
 

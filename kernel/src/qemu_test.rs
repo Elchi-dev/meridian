@@ -40,7 +40,7 @@ pub fn run(
     regions: &[MemoryRegion],
     machine: &Machine,
     tsc_hz: Option<u64>,
-    display: Option<&Display<'_>>,
+    display: Option<Display<'static>>,
     free: Option<usize>,
     serial: &mut Serial,
 ) -> ! {
@@ -49,7 +49,7 @@ pub fn run(
         failed: 0,
     };
     report.check("kernel.entered", true, "");
-    let screen = display.map(Display::screen);
+    let screen = display.as_ref().map(Display::screen);
 
     let info_at = core::ptr::from_ref(info) as u64;
     report.check(
@@ -133,20 +133,17 @@ pub fn run(
     memory_checks(&mut report, regions, free);
     mapping_checks(&mut report);
     screen_checks(&mut report, info, screen);
-    handover_screen_checks(&mut report, info, regions, display);
+    handover_screen_checks(&mut report, info, regions, display.as_ref());
     if screen.is_some() {
-        // sextant keeps the picture and answers with a carriage return.
-        // COM1 as it is, not opened again: that would clear an answer that
-        // came quickly.
-        let _ = writeln!(report.out, "SCREEN status");
-        let answer = Com1::already_open().receive(1 << 24);
+        let kept = keep_screen(&mut report, "status");
         report.check(
             "kernel.screen.kept",
-            answer == Some(b'\r'),
+            kept,
             "sextant should answer SCREEN with a carriage return on the serial port",
         );
     }
 
+    console_checks(&mut report, display);
     device_checks(&mut report, info, regions);
     timer_checks(&mut report, tsc_hz, info, regions, machine);
     exception_checks(&mut report);
@@ -666,7 +663,7 @@ fn mount_checks<W: Write>(report: &mut Report<'_, W>) {
     );
 }
 
-/// The programs' directory lists the three programs test images carry and
+/// The programs' directory lists the four programs test images carry and
 /// the second copy of each, none of them a directory.
 fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::vfs;
@@ -692,11 +689,13 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "exitwith_again.mexec",
                 "hello.mexec",
                 "hello_again.mexec",
+                "shell.mexec",
+                "shell_again.mexec",
                 "whoami.mexec",
                 "whoami_again.mexec",
             ]
             && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the three programs test images carry, each twice",
+        "the programs' directory should list the four programs test images carry, each twice",
     );
 }
 
@@ -787,6 +786,146 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         "kernel.keyboard.keys",
         all,
         "each key sextant presses should come as the keyboard's events, in order and nothing else",
+    );
+}
+
+/// The console, once it takes the screen over: text written goes into its
+/// grid and shows on the screen, light on the dark around it, a form feed
+/// clears it, and text past its last row moves the rows up. sextant keeps
+/// a picture of it.
+fn console_checks<W: Write>(report: &mut Report<'_, W>, display: Option<Display<'static>>) {
+    use canvas::palette::{NIGHT, SUN};
+    let Some(display) = display else {
+        return;
+    };
+    let started = raw::console::start(display);
+    raw::console::write("Meridian\n");
+    let shape = raw::console::shape();
+    let lit = shape.is_some_and(|(_, (width, height))| {
+        (16..16 + width).any(|x| {
+            (16..16 + height).any(|y| raw::console::pixel(x, y).is_some_and(|c| c != NIGHT))
+        })
+    });
+    report.check(
+        "kernel.console.write",
+        started
+            && raw::console::row(0).as_deref() == Some("Meridian")
+            && lit
+            && raw::console::pixel(4, 4) == Some(NIGHT),
+        "text written should go into the console's first row and show light on the dark around it",
+    );
+    let cell = |column: usize, row: usize| {
+        let (width, height) = shape.map_or((0, 0), |(_, cell)| cell);
+        raw::console::pixel(
+            16 + column * width + width / 2,
+            16 + row * height + height / 2,
+        )
+    };
+    let waiting = cell(0, 1) == Some(SUN);
+    raw::console::write("x");
+    let typed = raw::console::row(1).as_deref() == Some("x") && cell(1, 1) == Some(SUN);
+    raw::console::write("\u{8}");
+    let erased = raw::console::row(1).as_deref() == Some("")
+        && cell(0, 1) == Some(SUN)
+        && cell(1, 1) == Some(NIGHT);
+    report.check(
+        "kernel.console.cursor",
+        waiting && typed && erased,
+        "the cursor should be a block of sun in the cell the next character goes to, and a backspace should leave the dark behind",
+    );
+    let rows = shape.map_or(0, |((_, rows), _)| rows);
+    raw::console::write("\u{c}");
+    let cleared = raw::console::row(0).as_deref() == Some("");
+    for n in 0..=rows {
+        raw::console::write(&alloc::format!("line {n}\n"));
+    }
+    report.check(
+        "kernel.console.scroll",
+        rows > 2 && cleared && raw::console::row(0).as_deref() == Some("line 2"),
+        "a form feed should clear the console, and lines past its last row move the rows up",
+    );
+    let _ = keep_screen(report, "console");
+}
+
+/// Asks sextant to keep a picture of the screen as `name`, and says whether
+/// it answered with a carriage return, as it does once it has. COM1 as it
+/// is, not opened again: that would clear an answer that came quickly.
+fn keep_screen<W: Write>(report: &mut Report<'_, W>, name: &str) -> bool {
+    let _ = writeln!(report.out, "SCREEN {name}");
+    Com1::already_open().receive(1 << 24) == Some(b'\r')
+}
+
+/// The shell, on the console, typed at with keys sextant presses: echo
+/// shows its words, ls lists a directory with its subdirectories marked,
+/// or booted from a CD says there is none, a command it does not know is
+/// named as one, and exit ends it.
+fn shell_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+    tsc_hz: Option<u64>,
+) {
+    use raw::user::{self, seen};
+    let Some((_, file)) = raw::modules(info, regions).find(|(m, _)| m.name() == b"shell.mexec")
+    else {
+        report.check("kernel.shell", false, "every image should carry the shell");
+        return;
+    };
+    if raw::console::shape().is_none() {
+        return;
+    }
+    raw::console::write("\u{c}");
+    seen::forget();
+    let started = user::start_file(0, file, 0);
+    // sextant takes 50 ms a key, and a path is a few dozen of them.
+    let patience = tsc_hz.unwrap_or(1_000_000_000) * 5;
+    let mut typed = |keys: &[&str]| {
+        for key in keys {
+            let _ = writeln!(report.out, "PRESS {key}");
+        }
+        raw::thread::sleep(raw::timer::HZ / 5);
+    };
+    let rows = || -> alloc::vec::Vec<alloc::string::String> {
+        let count = raw::console::shape().map_or(0, |((_, rows), _)| rows);
+        (0..count).filter_map(raw::console::row).collect()
+    };
+    let waited_for = |line: &str| {
+        let start = x86::raw::tsc();
+        while x86::raw::tsc() - start < patience {
+            if rows().iter().any(|r| r == line) {
+                return true;
+            }
+            raw::thread::sleep(1);
+        }
+        false
+    };
+    let greeted = waited_for("Meridian shell. Type help to see what it knows.");
+    typed(&["e", "c", "h", "o", "spc", "h", "i", "ret"]);
+    let echoed = waited_for("> echo hi") && waited_for("hi");
+    typed(&[
+        "l", "s", "spc", "slash", "shift-s", "y", "s", "t", "e", "m", "slash", "shift-b", "o", "o",
+        "t", "slash", "m", "e", "r", "i", "d", "i", "a", "n", "ret",
+    ]);
+    let disk = esp_of_disk().is_some();
+    let listed = if disk {
+        waited_for("boot.meri") && waited_for("programs/")
+    } else {
+        waited_for("/System/Boot/meridian: no such file")
+    };
+    typed(&["n", "o", "p", "e", "ret"]);
+    let refused = waited_for("nope: no such command");
+    typed(&["e", "x", "i", "t", "ret"]);
+    let ended = started.is_ok_and(|slot| {
+        let start = x86::raw::tsc();
+        while raw::thread::alive(slot) && x86::raw::tsc() - start < patience {
+            raw::thread::sleep(1);
+        }
+        !raw::thread::alive(slot) && seen::exit_of(slot) == 0
+    });
+    report.check(
+        "kernel.shell",
+        greeted && echoed && listed && refused && ended,
+        "the shell should greet, echo, list a directory, name a command it does not know, and end at exit",
     );
 }
 
@@ -1241,7 +1380,15 @@ fn timer_checks<W: Write>(
     given_back_checks(report);
     ipc_checks(report);
     program_checks(report, info, regions);
+    let rows = raw::console::shape().map_or(0, |((_, rows), _)| rows);
+    report.check(
+        "kernel.console.from_ring_3",
+        raw::console::shape().is_none()
+            || (0..rows).any(|r| raw::console::row(r).as_deref() == Some("hello on the console")),
+        "the line hello writes should show on the console",
+    );
     keyboard_checks(report, machine, tsc_hz);
+    shell_checks(report, info, regions, tsc_hz);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);
@@ -1670,6 +1817,8 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::READ,
         abi::INFO,
         abi::LIST,
+        abi::WRITE,
+        abi::KEY,
         abi::EXIT,
     ];
     report.check(

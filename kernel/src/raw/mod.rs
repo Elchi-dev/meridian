@@ -4,6 +4,7 @@
 
 pub mod ahci;
 pub mod apic;
+pub mod console;
 pub mod hpet;
 pub mod interrupts;
 pub mod ioapic;
@@ -271,9 +272,14 @@ pub fn stop() -> ! {
 }
 
 /// Set by the first panic, so a panic while drawing the panic screen
-/// stops at once instead of drawing again.
-#[cfg(not(test))]
+/// stops at once instead of drawing again, and the console draws no more.
 static PANICKING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a crash took the screen, which nothing else may draw on then.
+pub fn panicking() -> bool {
+    PANICKING.load(Ordering::Acquire)
+}
+
 /// Working space for the panic screen. The stack may be nearly used up
 /// when a panic comes, so it is not taken from there.
 #[cfg(not(test))]

@@ -72,15 +72,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Serial) -> ! {
             );
         }
     }
-    finish(
-        info,
-        regions,
-        &machine,
-        tsc_hz,
-        display.as_mut(),
-        free,
-        serial,
-    )
+    finish(info, regions, &machine, tsc_hz, display, free, serial)
 }
 
 /// Finds every PCI function, logs it, and starts the first AHCI and the
@@ -181,31 +173,25 @@ fn finish(
     regions: &[MemoryRegion],
     machine: &Machine,
     tsc_hz: Option<u64>,
-    display: Option<&mut Display<'_>>,
+    display: Option<Display<'static>>,
     free: Option<usize>,
     serial: &mut Serial,
 ) -> ! {
-    qemu_test::run(
-        info,
-        regions,
-        machine,
-        tsc_hz,
-        display.map(|d| &*d),
-        free,
-        serial,
-    )
+    qemu_test::run(info, regions, machine, tsc_hz, display, free, serial)
 }
 
-/// Keeps the uptime on the screen current. With the timer it sleeps a
-/// tenth of a second between looks, while the idle thread halts the
-/// processor; without one it spins.
+/// Starts the programs, and gives the screen to the console when one of
+/// them is the shell, which writes on it; otherwise it keeps the uptime
+/// on the screen current. With the timer it sleeps a tenth of a second
+/// between looks, while the idle thread halts the processor; without one
+/// it spins.
 #[cfg(not(feature = "qemu-test"))]
 fn finish(
     info: &BootInfo,
     regions: &[MemoryRegion],
     _: &Machine,
     tsc_hz: Option<u64>,
-    display: Option<&mut Display<'_>>,
+    mut display: Option<Display<'static>>,
     _: Option<usize>,
     serial: &mut Serial,
 ) -> ! {
@@ -213,14 +199,20 @@ fn finish(
     let timer = raw::timer::start(tsc_hz);
     let _ = kernel::waiting(serial, timer);
     raw::thread::start();
+    let shell = raw::modules(info, regions).any(|(m, _)| m.name() == b"shell.mexec");
+    if shell && let Some(screen) = display.take() {
+        let _ = raw::console::start(screen);
+    }
     for (module, file) in raw::modules(info, regions) {
         if let Err(e) = raw::user::start_file(0, file, 0) {
             let name = core::str::from_utf8(module.name()).unwrap_or("?");
             let _ = writeln!(serial, "kernel: {name} did not start: {e:?}");
         }
     }
-    let (Some(display), Some(mut shown)) = (display, up(tsc_hz)) else {
-        x86::raw::halt()
+    let (Some(display), Some(mut shown)) = (display.as_mut(), up(tsc_hz)) else {
+        loop {
+            raw::thread::sleep(raw::timer::HZ);
+        }
     };
     let mut scratch = Scratch::new();
     let (x, y, width, height) = kernel::screen::uptime_area(display.screen().width());

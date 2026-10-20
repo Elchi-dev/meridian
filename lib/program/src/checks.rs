@@ -12,15 +12,15 @@ use abi::{LOG_BYTES, MESSAGE_BYTES};
 use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
-    Ended, Error, Handle, Info, channel, close, info, list, log, map, open, raw, read, receive,
-    send, spawn, spawn_restricted, token, unmap, wait,
+    Ended, Error, Handle, Info, channel, close, info, key, list, log, map, open, raw, read,
+    receive, send, spawn, spawn_restricted, token, unmap, wait, write,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 24] = [
+const CHECKS: [(&str, Check); 25] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -45,6 +45,7 @@ const CHECKS: [(&str, Check); 24] = [
     ("file", settings_read_back),
     ("file.refused", files_that_do_not_open),
     ("file.list", directories_list_their_entries),
+    ("console", writes_on_the_console),
 ];
 
 /// Runs every check and answers how many failed.
@@ -654,6 +655,36 @@ fn directories_list_their_entries() -> Outcome {
     expect(
         close(meridian) == Ok(()) && close(settings) == Ok(()) && close(blind) == Ok(()),
         "the handles should close",
+    )
+}
+
+fn writes_on_the_console() -> Outcome {
+    expect(
+        write("hello on the console\n") == Ok(()),
+        "a line should go to the console",
+    )?;
+    let broken = [0xffu8, 0xfe];
+    let not_text = abi::Call::Write {
+        len: broken.len() as u64,
+        at: broken.as_ptr() as u64,
+    };
+    let too_long = abi::Call::Write {
+        len: abi::WRITE_BYTES as u64 + 1,
+        at: broken.as_ptr() as u64,
+    };
+    let kernels = abi::Call::Write {
+        len: 1,
+        at: abi::USER_END,
+    };
+    expect(
+        abi::answer(raw::call(not_text).0) == Err(Error::BadArgument)
+            && abi::answer(raw::call(too_long).0) == Err(Error::TooLong)
+            && abi::answer(raw::call(kernels).0) == Err(Error::BadAddress),
+        "bytes that are no UTF-8, more than WRITE_BYTES and the kernel's half should not be written",
+    )?;
+    expect(
+        key().is_none(),
+        "no key should wait before anyone pressed one",
     )
 }
 

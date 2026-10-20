@@ -57,6 +57,15 @@ pub const INFO: u64 = 16;
 /// from 0, into the rdx bytes at rsi in UTF-8, and answers its length,
 /// with rdx 1 when the entry is a directory and 0 when not.
 pub const LIST: u64 = 17;
+/// Writes the rdi bytes at rsi, which have to be UTF-8, to the console,
+/// at most [`WRITE_BYTES`] of them.
+pub const WRITE: u64 = 18;
+/// Answers the next key the keyboard sent: its USB HID usage in the low
+/// 16 bits, and 1 << 16 when it went down. Empty when none waits.
+pub const KEY: u64 = 19;
+
+/// The most bytes one WRITE takes.
+pub const WRITE_BYTES: usize = 4096;
 
 /// The rights to a file, as Windows numbers them.
 pub mod file {
@@ -251,6 +260,11 @@ pub enum Call {
         room: u64,
         index: u64,
     },
+    Write {
+        len: u64,
+        at: u64,
+    },
+    Key,
     Unknown(u64),
 }
 
@@ -299,6 +313,8 @@ impl Call {
                 room,
                 index,
             } => (LIST, [handle, at, room, index]),
+            Call::Write { len, at } => (WRITE, [len, at, 0, 0]),
+            Call::Key => (KEY, [0; 4]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -364,6 +380,11 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             room: third,
             index: fourth,
         },
+        WRITE => Call::Write {
+            len: first,
+            at: second,
+        },
+        KEY => Call::Key,
         other => Call::Unknown(other),
     }
 }
@@ -436,6 +457,21 @@ mod tests {
                 at: 0x7f_e000
             }
         );
+        assert_eq!(decode(20, [1, 2, 3, 0]), Call::Unknown(20));
+        assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
+        assert_eq!(
+            [
+                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
+                WAIT, TOKEN, OPEN, READ, INFO, LIST, WRITE, KEY
+            ],
+            [
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+            ]
+        );
+    }
+
+    #[test]
+    fn calls_for_files_and_the_console_come_from_their_registers() {
         assert_eq!(
             decode(OPEN, [30, 0x7f_e000, 1, 4]),
             Call::Open {
@@ -463,15 +499,14 @@ mod tests {
                 index: 7
             }
         );
-        assert_eq!(decode(18, [1, 2, 3, 0]), Call::Unknown(18));
-        assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
-            [
-                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT, TOKEN, OPEN, READ, INFO, LIST
-            ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            decode(WRITE, [5, 0x7f_a000, 3, 4]),
+            Call::Write {
+                len: 5,
+                at: 0x7f_a000
+            }
         );
+        assert_eq!(decode(KEY, [1, 2, 3, 4]), Call::Key);
     }
 
     #[test]
@@ -643,7 +678,12 @@ mod tests {
                 room: 64,
                 index: 300,
             },
-            Call::Unknown(18),
+            Call::Write {
+                len: 12,
+                at: 0x40_5000,
+            },
+            Call::Key,
+            Call::Unknown(20),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -676,6 +716,8 @@ mod tests {
             (READ, 4),
             (INFO, 1),
             (LIST, 4),
+            (WRITE, 2),
+            (KEY, 0),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -696,11 +738,7 @@ mod tests {
     fn the_calls_are_numbered_without_gaps() {
         for number in 0..64 {
             let call = decode(number, [0; 4]);
-            assert_eq!(
-                call == Call::Unknown(number),
-                number > LIST,
-                "call {number}"
-            );
+            assert_eq!(call == Call::Unknown(number), number > KEY, "call {number}");
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
         }
         for error in ERRORS {
@@ -745,6 +783,9 @@ mod tests {
         };
         assert_eq!(open.encode(), (OPEN, [14, 15, 16, 0]));
         assert_eq!(Call::Info(17).encode(), (INFO, [17, 0, 0, 0]));
+        let write = Call::Write { len: 18, at: 19 };
+        assert_eq!(write.encode(), (WRITE, [18, 19, 0, 0]));
+        assert_eq!(Call::Key.encode(), (KEY, [0; 4]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 

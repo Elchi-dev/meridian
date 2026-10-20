@@ -352,6 +352,10 @@ pub fn system_call(frame: &mut Frame) {
             }
             Err(e) => e,
         },
+        Call::Write { len, at } => write(len, at).map_or_else(|e| e, |()| 0),
+        Call::Key => super::ps2::next().map_or(syscall::EMPTY, |e| {
+            u64::from(e.key.0) | u64::from(e.pressed) << 16
+        }),
         Call::Info(handle) => match info(handle) {
             Ok((size, directory)) => {
                 frame.rdx = u64::from(directory);
@@ -393,20 +397,9 @@ pub fn close_object(object: u64) {
 /// the running program's token, restricted by the word `restriction`
 /// unless that is 0.
 fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64, u64> {
-    let count = usize::try_from(len)
-        .ok()
-        .filter(|&n| n <= bootinfo::Module::NAME)
-        .ok_or(syscall::NO_SUCH_PROGRAM)?;
-    if !memory::user_readable(at, len) {
-        return Err(syscall::BAD_ADDRESS);
-    }
     let mut name = [0u8; bootinfo::Module::NAME];
-    // SAFETY: user_readable found every byte mapped for ring 3 in this
-    // program's address space, which only this thread runs.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(at as *const u8, name.as_mut_ptr(), count);
-    });
-    let file = super::module(&name[..count]).ok_or(syscall::NO_SUCH_PROGRAM)?;
+    let name = copy_in(at, len, &mut name, syscall::NO_SUCH_PROGRAM)?;
+    let file = super::module(name).ok_or(syscall::NO_SUCH_PROGRAM)?;
     let mut token = with_process(|p| Ok(p.token))?;
     if restriction != 0 {
         let restriction = Restriction::from_word(restriction).ok_or(syscall::BAD_ARGUMENT)?;
@@ -663,20 +656,9 @@ fn file_answer(e: super::vfs::Error) -> u64 {
 /// `wanted`, as the running program's token may, and answers a handle to
 /// it that may read it when that was asked for, and be handed on.
 fn open(len: u64, at: u64, wanted: u64) -> Result<u64, u64> {
-    let count = usize::try_from(len)
-        .ok()
-        .filter(|&n| n <= syscall::PATH_BYTES)
-        .ok_or(syscall::TOO_LONG)?;
-    if !memory::user_readable(at, len) {
-        return Err(syscall::BAD_ADDRESS);
-    }
     let mut bytes = [0u8; syscall::PATH_BYTES];
-    // SAFETY: user_readable found every byte mapped for ring 3 in this
-    // program's address space, which only this thread runs.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(at as *const u8, bytes.as_mut_ptr(), count);
-    });
-    let path = core::str::from_utf8(&bytes[..count]).map_err(|_| syscall::BAD_ARGUMENT)?;
+    let path = copy_in(at, len, &mut bytes, syscall::TOO_LONG)?;
+    let path = core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)?;
     let wanted = u32::try_from(wanted).map_err(|_| syscall::BAD_ARGUMENT)?;
     let token = with_process(|p| Ok(p.token))?;
     let slot = super::vfs::open(path, &token, wanted).map_err(file_answer)?;
@@ -714,6 +696,34 @@ fn read(handle: u64, at: u64, room: u64, offset: u64) -> Result<u64, u64> {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
     });
     Ok(len as u64)
+}
+
+/// Writes the `len` bytes at `at`, which have to be UTF-8, to the console.
+fn write(len: u64, at: u64) -> Result<(), u64> {
+    let mut bytes = [0u8; syscall::WRITE_BYTES];
+    let text = copy_in(at, len, &mut bytes, syscall::TOO_LONG)?;
+    super::console::write(core::str::from_utf8(text).map_err(|_| syscall::BAD_ARGUMENT)?);
+    Ok(())
+}
+
+/// Copies the `len` bytes at `at`, the running program's, into the start
+/// of `into` and returns them: `too_long` when they do not fit there, and
+/// `BAD_ADDRESS` when they are not all the program's to give.
+fn copy_in(at: u64, len: u64, into: &mut [u8], too_long: u64) -> Result<&[u8], u64> {
+    let count = usize::try_from(len)
+        .ok()
+        .filter(|&n| n <= into.len())
+        .ok_or(too_long)?;
+    if !memory::user_readable(at, len) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    // SAFETY: user_readable found every byte mapped for ring 3 in this
+    // program's address space, which only this thread runs, so nothing
+    // unmaps them while they are copied, and they fit `into`.
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(at as *const u8, into.as_mut_ptr(), count);
+    });
+    Ok(&into[..count])
 }
 
 /// The most bytes a name LIST hands out takes: 255 units of UTF-16, each

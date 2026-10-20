@@ -21,6 +21,13 @@ pub fn cell_pixels(measure: f32) -> usize {
     usize::from(whole)
 }
 
+/// How many cells of `cell` pixels fit across `screen` pixels with
+/// `margin` left free on either side; one at least.
+#[must_use]
+pub fn fit(screen: usize, margin: usize, cell: usize) -> usize {
+    (screen.saturating_sub(2 * margin) / cell.max(1)).max(1)
+}
+
 /// What the console shows: `columns` characters in each of `rows` rows.
 pub struct Grid {
     columns: usize,
@@ -302,6 +309,16 @@ mod tests {
             Vec::<usize>::new(),
             "a backspace at the start changes nothing"
         );
+    }
+
+    #[test]
+    fn as_many_cells_fit_as_the_screen_has_room_for() {
+        assert_eq!(fit(1280, 16, 11), 113, "1248 pixels of cells 11 wide");
+        assert_eq!(fit(800, 16, 24), 32);
+        assert_eq!(fit(1286, 16, 11), 114, "a whole cell more");
+        assert_eq!(fit(1285, 16, 11), 113, "a pixel short of one");
+        assert_eq!(fit(20, 16, 11), 1, "no room: one cell anyway");
+        assert_eq!(fit(100, 0, 0), 100, "a cell is a pixel at least");
     }
 
     #[test]

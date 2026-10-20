@@ -101,9 +101,7 @@ pub fn configuration() -> Option<u8> {
         .flatten()
 }
 
-/// The oldest key event waiting. Only the test image takes keys yet; the
-/// terminal will.
-#[cfg(feature = "qemu-test")]
+/// The oldest key event waiting.
 pub fn next() -> Option<ps2::Event> {
     KEYS.lock().pop()
 }

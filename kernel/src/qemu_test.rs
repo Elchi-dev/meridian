@@ -880,8 +880,9 @@ fn keep_screen<W: Write>(report: &mut Report<'_, W>, name: &str) -> bool {
 
 /// The shell, on the console, typed at with keys sextant presses: echo
 /// shows its words, ls lists a directory with its subdirectories marked,
-/// or booted from a CD says there is none, a command it does not know is
-/// named as one, a program's name runs it from its file, and exit ends it.
+/// or booted from a CD says there is none, cat shows a file longer than
+/// one read to its end, a command it does not know is named as one, a
+/// program's name runs it from its file, and exit ends it.
 fn shell_checks<W: Write>(
     report: &mut Report<'_, W>,
     info: &BootInfo,
@@ -937,6 +938,17 @@ fn shell_checks<W: Write>(
     } else {
         waited_for("/System/Boot/meridian: no such file")
     };
+    // The shim's licences take three reads and more.
+    typed(&[
+        "c", "a", "t", "spc", "slash", "shift-s", "y", "s", "t", "e", "m", "slash", "shift-b", "o",
+        "o", "t", "slash", "m", "e", "r", "i", "d", "i", "a", "n", "slash", "l", "i", "c", "e",
+        "n", "c", "e", "s", "slash", "s", "h", "i", "m", "dot", "t", "x", "t", "ret",
+    ]);
+    let shown = if disk {
+        waited_for(" OF THE POSSIBILITY OF SUCH DAMAGE.")
+    } else {
+        waited_for("/System/Boot/meridian/licences/shim.txt: no such file")
+    };
     typed(&["n", "o", "p", "e", "ret"]);
     let refused = waited_for("nope: no such command");
     // exitwith, given no channel, ends with 0xbad.
@@ -956,8 +968,8 @@ fn shell_checks<W: Write>(
     });
     report.check(
         "kernel.shell",
-        greeted && echoed && listed && refused && ran && ended,
-        "the shell should greet, echo, list a directory, name a command it does not know, run a program from its file and say how it ended, and end at exit",
+        greeted && echoed && listed && shown && refused && ran && ended,
+        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, run a program from its file and say how it ended, and end at exit",
     );
 }
 

@@ -410,16 +410,23 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
     let mut read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
     let table = kernel::disk::Table::read(&mut read);
     let esp = table.as_ref().and_then(|t| t.partitions().next());
+    let system = table.as_ref().and_then(|t| t.partitions().nth(1));
     report.check(
         "kernel.gpt.read",
-        table.is_some_and(|t| t.header.backup + 1 == sectors && t.partitions().count() == 1)
+        table.is_some_and(|t| t.header.backup + 1 == sectors && t.partitions().count() == 2)
             && esp.is_some_and(|(number, p)| {
                 number == 1
                     && p.kind == gpt::EFI_SYSTEM
                     && (p.first, p.sectors()) == (2048, 131_072)
                     && p.name().eq("EFI system partition".chars())
+            })
+            && system.is_some_and(|(number, p)| {
+                number == 2
+                    && p.kind == gpt::MERIDIAN_SYSTEM
+                    && (p.first, p.sectors()) == (133_120, 2048)
+                    && p.name().eq("Meridian system".chars())
             }),
-        "the boot disk's partition table should list sextant's one EFI system partition of 64 MiB from 1 MiB on",
+        "the boot disk's partition table should list sextant's EFI system partition of 64 MiB from 1 MiB on, and the test disk's Meridian system partition of 1 MiB after it",
     );
     ahci_port_checks(report, disk.port);
 }

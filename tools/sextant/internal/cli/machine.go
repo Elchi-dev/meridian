@@ -229,6 +229,9 @@ func (s *session) writeImage(ctx context.Context, v variant, b built, out string
 	}
 	seed, when := s.identity(ctx)
 	contents := image.Contents{Seed: seed, Time: when, Files: files}
+	if v.testMode {
+		contents.System = image.TestSystem
+	}
 	if v.iso {
 		return image.ISO(out, contents)
 	}

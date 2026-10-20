@@ -30,7 +30,14 @@ type Contents struct {
 	Seed  string
 	Time  time.Time
 	Files map[string][]byte
+	// System is the size of a Meridian system partition after the EFI
+	// system partition, left empty; 0 for none. Only a disk has one.
+	System int64
 }
+
+// TestSystem is the size of the Meridian system partition of test disks,
+// where the test image may write.
+const TestSystem = 1 << 20
 
 // FirmwarePath is where UEFI firmware looks for a loader on removable
 // media and on disks without boot entries. Images put the shim there,
@@ -253,7 +260,8 @@ func volumeID(seed string) uint32 {
 	return crc32.ChecksumIEEE([]byte("fat:" + seed))
 }
 
-// Disk writes a raw GPT disk image with one EFI system partition.
+// Disk writes a raw GPT disk image with an EFI system partition, and a
+// Meridian system partition after it when the contents ask for one.
 func Disk(path string, c Contents) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -268,11 +276,14 @@ func Disk(path string, c Contents) error {
 
 func writeDisk(f *os.File, c Contents) error {
 	d := gpt.Disk{
-		Size: ESPSize + 2<<20,
+		Size: ESPSize + 2<<20 + c.System,
 		Seed: c.Seed,
 		Partitions: []gpt.Partition{
 			{Name: "EFI system partition", Type: gpt.EFISystemPartition, Size: ESPSize},
 		},
+	}
+	if c.System > 0 {
+		d.Partitions = append(d.Partitions, gpt.Partition{Name: "Meridian system", Type: gpt.MeridianSystem, Size: c.System})
 	}
 	if err := f.Truncate(d.Size); err != nil {
 		return err

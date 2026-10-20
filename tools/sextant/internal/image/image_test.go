@@ -293,6 +293,48 @@ func TestDiskLayoutAsSfdiskSeesIt(t *testing.T) {
 	}
 }
 
+func TestATestDiskHasRoomForMeridiansOwnSystem(t *testing.T) {
+	sfdisk := tool(t, "sfdisk")
+	path := diskFile(t, Contents{Seed: "system", Time: stamp, Files: files(), System: TestSystem})
+	out, err := exec.Command(sfdisk, "--json", path).Output()
+	if err != nil {
+		t.Fatalf("sfdisk: %v", err)
+	}
+	var table struct {
+		PartitionTable struct {
+			Partitions []struct {
+				Start int64  `json:"start"`
+				Size  int64  `json:"size"`
+				Type  string `json:"type"`
+				Name  string `json:"name"`
+			} `json:"partitions"`
+		} `json:"partitiontable"`
+	}
+	if err := json.Unmarshal(out, &table); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	parts := table.PartitionTable.Partitions
+	if len(parts) != 2 || parts[0].Size != ESPSize/512 {
+		t.Fatalf("partitions: %+v", parts)
+	}
+	system := parts[1]
+	if system.Type != "B0DD29AB-2286-43EF-9809-E345D01A1B29" || system.Name != "Meridian system" ||
+		system.Size != TestSystem/512 || system.Start < parts[0].Start+parts[0].Size {
+		t.Fatalf("the Meridian system partition: %+v", system)
+	}
+	if out, err := exec.Command(sfdisk, "--verify", path).CombinedOutput(); err != nil {
+		t.Fatalf("sfdisk --verify: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := data[system.Start*512 : (system.Start+system.Size)*512]
+	if !bytes.Equal(room, make([]byte, len(room))) {
+		t.Error("the partition should be left empty")
+	}
+}
+
 func TestDiskFilesAsMtoolsSeesThem(t *testing.T) {
 	mtype := tool(t, "mtype")
 	fsck := tool(t, "fsck.fat")

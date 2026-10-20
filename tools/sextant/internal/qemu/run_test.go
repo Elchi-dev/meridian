@@ -125,13 +125,24 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 // diskWithLoader writes the real loader onto a disk image.
 func diskWithLoader(t *testing.T, qemuTest bool) string {
 	t.Helper()
-	return diskWithFiles(t, bootFiles(t, qemuTest))
+	var system int64
+	if qemuTest {
+		system = image.TestSystem
+	}
+	return diskWith(t, bootFiles(t, qemuTest), system)
 }
 
 func diskWithFiles(t *testing.T, files map[string][]byte) string {
 	t.Helper()
+	return diskWith(t, files, 0)
+}
+
+// diskWith writes a disk with files on its EFI system partition and a
+// Meridian system partition of system bytes when that is not 0.
+func diskWith(t *testing.T, files map[string][]byte, system int64) string {
+	t.Helper()
 	disk := filepath.Join(t.TempDir(), "meridian.img")
-	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: files}
+	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: files, System: system}
 	if err := image.Disk(disk, contents); err != nil {
 		t.Fatal(err)
 	}

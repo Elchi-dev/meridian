@@ -702,6 +702,13 @@ fn directories_list_their_entries() -> Outcome {
 }
 
 fn writes_on_the_console() -> Outcome {
+    // The first piece would end inside the last character. Spaces, since
+    // they take the console no time to draw.
+    let long = alloc::format!("{}\u{e4}\n", " ".repeat(abi::WRITE_BYTES - 1));
+    expect(
+        write(&long) == Ok(()),
+        "a text longer than one call takes should go in pieces cut between characters",
+    )?;
     expect(
         write("hello on the console\n") == Ok(()),
         "a line should go to the console",

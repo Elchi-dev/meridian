@@ -13,14 +13,14 @@ use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
     Ended, Error, Handle, Info, channel, close, info, key, list, log, map, open, raw, read,
-    receive, send, spawn, spawn_restricted, token, unmap, wait, write,
+    receive, send, sleep, spawn, spawn_restricted, terminate, token, unmap, wait, write,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 26] = [
+const CHECKS: [(&str, Check); 27] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -39,6 +39,7 @@ const CHECKS: [(&str, Check); 26] = [
     ("spawn", child_exits_with_what_it_was_sent),
     ("spawn.fault", child_runs_out_of_stack),
     ("spawn.missing", no_such_program),
+    ("terminate", child_ended_from_outside),
     ("wait.other", wait_for_no_process),
     ("token", own_token),
     ("spawn.token", child_gets_no_more),
@@ -387,6 +388,52 @@ fn child_runs_out_of_stack() -> Outcome {
     expect(
         wait(child) == Ok(Ended::Faulted(14)),
         "a child that runs out of stack should end by a page fault",
+    )?;
+    expect(
+        close(child) == Ok(()) && close(end) == Ok(()),
+        "the handles should close",
+    )
+}
+
+fn child_ended_from_outside() -> Outcome {
+    let (child, end) = exitwith()?;
+    expect(
+        terminate(child, 77) == Ok(()),
+        "a child should be asked to end",
+    )?;
+    expect(
+        wait(child) == Ok(Ended::Exited(77)),
+        "and end with the code it was asked to end with",
+    )?;
+    expect(
+        terminate(child, 78) == Ok(()) && wait(child) == Ok(Ended::Exited(77)),
+        "a child that ended should stay as it ended",
+    )?;
+    expect(
+        send(end, b"late", None) == Err(Error::Closed),
+        "and its end of the channel should be closed",
+    )?;
+    let (spinning, its) = exitwith()?;
+    expect(
+        send(its, b"", None) == Ok(()),
+        "the child should be told to spin",
+    )?;
+    sleep(2);
+    expect(
+        terminate(spinning, 79) == Ok(()) && wait(spinning) == Ok(Ended::Exited(79)),
+        "a child that never calls the kernel should still end at the next interrupt",
+    )?;
+    expect(
+        close(spinning) == Ok(()) && close(its) == Ok(()),
+        "its handles should close",
+    )?;
+    expect(
+        terminate(end, 1) == Err(Error::Denied),
+        "a channel is no process to end",
+    )?;
+    expect(
+        terminate(Handle(0x7777_0042), 1) == Err(Error::BadHandle),
+        "nor is a handle never given",
     )?;
     expect(
         close(child) == Ok(()) && close(end) == Ok(()),

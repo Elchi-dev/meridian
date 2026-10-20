@@ -65,6 +65,11 @@ pub const WRITE: u64 = 18;
 /// Answers the next key the keyboard sent: its USB HID usage in the low
 /// 16 bits, and 1 << 16 when it went down. Empty when none waits.
 pub const KEY: u64 = 19;
+/// Ends the process of handle rdi, which has to allow writing, with the
+/// exit code rsi, at its next way back to ring 3: once a call it is in is
+/// over, or at the next interrupt. A process that ended already stays as
+/// it ended.
+pub const TERMINATE: u64 = 20;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -267,6 +272,10 @@ pub enum Call {
         at: u64,
     },
     Key,
+    Terminate {
+        handle: u64,
+        code: u64,
+    },
     Unknown(u64),
 }
 
@@ -317,6 +326,7 @@ impl Call {
             } => (LIST, [handle, at, room, index]),
             Call::Write { len, at } => (WRITE, [len, at, 0, 0]),
             Call::Key => (KEY, [0; 4]),
+            Call::Terminate { handle, code } => (TERMINATE, [handle, code, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -387,6 +397,10 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             at: second,
         },
         KEY => Call::Key,
+        TERMINATE => Call::Terminate {
+            handle: first,
+            code: second,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -459,16 +473,23 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(20, [1, 2, 3, 0]), Call::Unknown(20));
+        assert_eq!(decode(21, [1, 2, 3, 0]), Call::Unknown(21));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
                 EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT, TOKEN, OPEN, READ, INFO, LIST, WRITE, KEY
+                WAIT, TOKEN, OPEN, READ, INFO, LIST, WRITE, KEY, TERMINATE
             ],
             [
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ]
+        );
+        assert_eq!(
+            decode(TERMINATE, [0x5_0001, 77, 3, 4]),
+            Call::Terminate {
+                handle: 0x5_0001,
+                code: 77
+            }
         );
     }
 
@@ -685,7 +706,11 @@ mod tests {
                 at: 0x40_5000,
             },
             Call::Key,
-            Call::Unknown(20),
+            Call::Terminate {
+                handle: 0x4_0002,
+                code: u64::MAX,
+            },
+            Call::Unknown(21),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -720,6 +745,7 @@ mod tests {
             (LIST, 4),
             (WRITE, 2),
             (KEY, 0),
+            (TERMINATE, 2),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -740,7 +766,11 @@ mod tests {
     fn the_calls_are_numbered_without_gaps() {
         for number in 0..64 {
             let call = decode(number, [0; 4]);
-            assert_eq!(call == Call::Unknown(number), number > KEY, "call {number}");
+            assert_eq!(
+                call == Call::Unknown(number),
+                number > TERMINATE,
+                "call {number}"
+            );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
         }
         for error in ERRORS {
@@ -788,6 +818,11 @@ mod tests {
         let write = Call::Write { len: 18, at: 19 };
         assert_eq!(write.encode(), (WRITE, [18, 19, 0, 0]));
         assert_eq!(Call::Key.encode(), (KEY, [0; 4]));
+        let terminate = Call::Terminate {
+            handle: 20,
+            code: 21,
+        };
+        assert_eq!(terminate.encode(), (TERMINATE, [20, 21, 0, 0]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 

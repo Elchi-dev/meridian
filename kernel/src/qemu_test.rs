@@ -2061,6 +2061,7 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::LIST,
         abi::WRITE,
         abi::KEY,
+        abi::TERMINATE,
         abi::EXIT,
     ];
     report.check(
@@ -2297,9 +2298,9 @@ fn user_checks<W: Write>(report: &mut Report<'_, W>) {
             && (10..200).contains(&turns),
         "a program that never gives way should still lose the processor at every tick",
     );
+    let other = raw::smp::others().next().unwrap_or(0);
     // Three programs keep their argument at the same address at once, two
     // on this core and one on another; each finds its own again.
-    let other = raw::smp::others().next().unwrap_or(0);
     let keepers = [(0, 11), (0, 22), (other, 33)]
         .map(|(core, argument)| user::start(core, &probe::KEEP, argument));
     let all_ended = (0..100).any(|_| {

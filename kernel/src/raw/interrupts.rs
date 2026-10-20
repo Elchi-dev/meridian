@@ -230,7 +230,8 @@ pub fn fault_stack() -> core::ops::Range<u64> {
 }
 
 /// Where the stubs bring every exception and interrupt. A timer tick is
-/// counted and acknowledged; a spurious interrupt needs nothing.
+/// counted and acknowledged; a spurious interrupt needs nothing. On the way
+/// back to ring 3, a program asked to end does.
 extern "sysv64" fn exception(frame: &mut Frame) {
     if frame.vector == u64::from(TIMER) {
         if this_core() == 0 {
@@ -238,34 +239,28 @@ extern "sysv64" fn exception(frame: &mut Frame) {
         }
         x86::raw::end_of_interrupt();
         super::thread::tick();
-        return;
-    }
-    if frame.vector == u64::from(KEYBOARD) {
+    } else if frame.vector == u64::from(KEYBOARD) {
         super::ps2::interrupt();
         x86::raw::end_of_interrupt();
-        return;
-    }
-    if frame.vector == u64::from(WAKE) {
+    } else if frame.vector == u64::from(WAKE) {
         #[cfg(feature = "qemu-test")]
         WOKEN.fetch_add(1, Ordering::AcqRel);
         x86::raw::end_of_interrupt();
-        return;
-    }
-    if frame.vector == u64::from(SPURIOUS) {
-        return;
-    }
-    if frame.vector == u64::from(SYSCALL) {
+    } else if frame.vector == u64::from(SYSCALL) {
         super::user::system_call(frame);
-        return;
-    }
-    #[cfg(feature = "qemu-test")]
-    if expected::resume(frame) {
-        return;
+    } else if frame.vector != u64::from(SPURIOUS) {
+        #[cfg(feature = "qemu-test")]
+        if expected::resume(frame) {
+            return;
+        }
+        if frame.cs & 3 == 3 {
+            super::user::fault(frame);
+        }
+        super::crash_from_exception(frame.vector, frame.error, x86::raw::cr2(), frame.rip)
     }
     if frame.cs & 3 == 3 {
-        super::user::fault(frame);
+        super::user::back_to_ring_3();
     }
-    super::crash_from_exception(frame.vector, frame.error, x86::raw::cr2(), frame.rip)
 }
 
 /// Saves the registers, passes the frame to `exception`, puts the

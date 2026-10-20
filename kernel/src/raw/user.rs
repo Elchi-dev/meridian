@@ -48,8 +48,9 @@ struct Process {
 /// The processes handles can stand for: those programs spawned.
 static OBJECTS: Spin<kernel::process::Table<THREADS>> = Spin::new(kernel::process::Table::new());
 
-/// The rights a program has to a process it spawned.
-const SPAWNED: Rights = Rights(Rights::READ.0 | Rights::TRANSFER.0);
+/// The rights a program has to a process it spawned: to wait for it, to
+/// end it and to hand the handle on.
+const SPAWNED: Rights = Rights(Rights::READ.0 | Rights::WRITE.0 | Rights::TRANSFER.0);
 
 /// The most of a program's name the kernel keeps.
 const NAME: usize = 32;
@@ -353,6 +354,7 @@ pub fn system_call(frame: &mut Frame) {
             Err(e) => e,
         },
         Call::Write { len, at } => write(len, at).map_or_else(|e| e, |()| 0),
+        Call::Terminate { handle, code } => terminate(handle, code).map_or_else(|e| e, |()| 0),
         Call::Key => super::ps2::next().map_or(syscall::EMPTY, |e| {
             u64::from(e.key.0) | u64::from(e.pressed) << 16
         }),
@@ -365,6 +367,32 @@ pub fn system_call(frame: &mut Frame) {
         },
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
+}
+
+/// Asks the process the handle `handle` stands for to end with `code`; a
+/// process that ended already, or was asked before, stays as it is.
+fn terminate(handle: u64, code: u64) -> Result<(), u64> {
+    let Some(Object::Process { slot }) = Object::from_number(object(handle, Rights::WRITE)?) else {
+        return Err(syscall::DENIED);
+    };
+    OBJECTS.lock().ask_to_end(slot, code);
+    Ok(())
+}
+
+/// Called on every way back to ring 3: ends the running program, when it
+/// was asked to, with the code it was asked to end with.
+pub fn back_to_ring_3() {
+    let object = PROCESSES
+        .lock()
+        .get(thread::current())
+        .and_then(|p| p.as_ref()?.object);
+    let asked = object.and_then(|slot| OBJECTS.lock().asked(slot));
+    if let Some(code) = asked {
+        ended(format_args!("was stopped, with {code}"));
+        #[cfg(feature = "qemu-test")]
+        seen::exited(code);
+        finish(Outcome::Exited(code))
+    }
 }
 
 /// Writes to the log how the running program ended, under its name.
@@ -1426,7 +1454,6 @@ pub mod probe {
     pub static YIELDER: Program = Program { code: yielder };
     pub static UNMAPPED_LOG: Program = Program { code: unmapped_log };
     pub static SPINNER: Program = Program { code: spinner };
-
     fn keep() -> &'static [u8] {
         bytes(
             &raw const meridian_keep_start,

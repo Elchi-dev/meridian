@@ -193,6 +193,22 @@ pub fn write(text: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Ends the process `process` stands for with the exit code `code`, at its
+/// next way back to ring 3. One that ended already stays as it ended.
+///
+/// # Errors
+///
+/// When the handle stands for no process, or may not end it.
+pub fn terminate(process: Handle, code: u64) -> Result<(), Error> {
+    done(
+        raw::call(Call::Terminate {
+            handle: process.0,
+            code,
+        })
+        .0,
+    )
+}
+
 /// The next key the keyboard sent, when one waits.
 #[must_use]
 pub fn key() -> Option<KeyEvent> {

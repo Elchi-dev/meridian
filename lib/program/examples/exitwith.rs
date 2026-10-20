@@ -1,6 +1,7 @@
 //! A program for the test image: it takes eight bytes from the channel end
-//! it is handed and exits with the number they hold. Any other message
-//! makes it run out of stack, so it ends by a page fault instead.
+//! it is handed and exits with the number they hold. An empty message
+//! makes it spin without calling the kernel again, until it is ended, and
+//! any other runs it out of stack, so it ends by a page fault instead.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -15,6 +16,9 @@ fn exitwith(end: Handle) -> u64 {
     loop {
         match program::receive(end, &mut room) {
             Ok((8, _)) => return u64::from_le_bytes(room),
+            Ok((0, _)) => loop {
+                core::hint::spin_loop();
+            },
             Ok(_) => return deeper(0),
             Err(Error::Empty) => program::sleep(1),
             Err(_) => return 0xbad,

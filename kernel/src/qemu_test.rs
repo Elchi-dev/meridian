@@ -881,7 +881,7 @@ fn keep_screen<W: Write>(report: &mut Report<'_, W>, name: &str) -> bool {
 /// The shell, on the console, typed at with keys sextant presses: echo
 /// shows its words, ls lists a directory with its subdirectories marked,
 /// or booted from a CD says there is none, a command it does not know is
-/// named as one, and exit ends it.
+/// named as one, a program's name runs it from its file, and exit ends it.
 fn shell_checks<W: Write>(
     report: &mut Report<'_, W>,
     info: &BootInfo,
@@ -939,6 +939,13 @@ fn shell_checks<W: Write>(
     };
     typed(&["n", "o", "p", "e", "ret"]);
     let refused = waited_for("nope: no such command");
+    // exitwith, given no channel, ends with 0xbad.
+    typed(&["e", "x", "i", "t", "w", "i", "t", "h", "ret"]);
+    let ran = if disk {
+        waited_for("exitwith ended with 2989")
+    } else {
+        waited_for("exitwith: no such command")
+    };
     typed(&["e", "x", "i", "t", "ret"]);
     let ended = started.is_ok_and(|slot| {
         let start = x86::raw::tsc();
@@ -949,8 +956,8 @@ fn shell_checks<W: Write>(
     });
     report.check(
         "kernel.shell",
-        greeted && echoed && listed && refused && ended,
-        "the shell should greet, echo, list a directory, name a command it does not know, and end at exit",
+        greeted && echoed && listed && refused && ran && ended,
+        "the shell should greet, echo, list a directory, name a command it does not know, run a program from its file and say how it ended, and end at exit",
     );
 }
 

@@ -1,6 +1,7 @@
 //! The shell: it reads keys, shows what they type on the console, and runs
 //! the line typed once Enter goes down. It knows help, echo, ls, cat,
-//! clear and exit, and reads paths through the tree of files.
+//! clear and exit, reads paths through the tree of files, and starts any
+//! other word as a program, waiting until it ended.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -10,7 +11,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 
-use program::{Error, Handle, KeyEvent, abi::file, layout};
+use program::{Ended, Error, Handle, KeyEvent, abi::file, layout};
 
 program::main!(shell);
 
@@ -69,12 +70,16 @@ enum Command<'a> {
     Clear,
     Exit,
     Empty,
-    Unknown(&'a str),
+    /// A program, by its name in [`PROGRAMS`] or by its path.
+    Program(&'a str),
     Missing(&'a str),
 }
 
 /// Where `ls` looks without a path.
 const HOME: &str = "/System/Boot";
+
+/// Where a program named without a path is.
+const PROGRAMS: &str = "/System/Boot/meridian/programs";
 
 fn parse(line: &str) -> Command<'_> {
     let line = line.trim();
@@ -90,7 +95,27 @@ fn parse(line: &str) -> Command<'_> {
         "cat" => Command::Show(rest),
         "clear" => Command::Clear,
         "exit" => Command::Exit,
-        other => Command::Unknown(other),
+        other => Command::Program(other),
+    }
+}
+
+/// The file the program `word` names: the path itself, or for a name the
+/// program of that name in [`PROGRAMS`].
+fn program_path(word: &str) -> String {
+    if word.starts_with('/') {
+        word.into()
+    } else {
+        format!("{PROGRAMS}/{word}.mexec")
+    }
+}
+
+/// What the shell says once the program `word` ended so: nothing when it
+/// exited with 0.
+fn ending(word: &str, ended: Ended) -> Option<String> {
+    match ended {
+        Ended::Exited(0) => None,
+        Ended::Exited(code) => Some(format!("{word} ended with {code}\n")),
+        Ended::Faulted(vector) => Some(format!("{word} stopped by exception {vector}\n")),
     }
 }
 
@@ -103,6 +128,7 @@ fn trouble(path: &str, e: Error) -> String {
         Error::Denied => "not allowed",
         Error::BadArgument => "not a path from the root",
         Error::TooLong => "too long a path",
+        Error::NotAProgram => "not a program",
         _ => "could not be read",
     };
     format!("{path}: {why}\n")
@@ -137,17 +163,37 @@ fn shell(_: Handle) -> u64 {
 #[cfg_attr(test, allow(dead_code))]
 fn run(line: &str) -> bool {
     let _ = match parse(line) {
-        Command::Help => program::write("help, echo TEXT, ls [PATH], cat PATH, clear, exit\n"),
+        Command::Help => {
+            program::write("help, echo TEXT, ls [PATH], cat PATH, clear, exit, or a program\n")
+        }
         Command::Echo(text) => program::write(&format!("{text}\n")),
         Command::List(path) => list(path),
         Command::Show(path) => show(path),
         Command::Clear => program::write("\u{c}"),
         Command::Exit => return false,
         Command::Empty => Ok(()),
-        Command::Unknown(word) => program::write(&format!("{word}: no such command\n")),
+        Command::Program(word) => start(word),
         Command::Missing(word) => program::write(&format!("{word} needs a path\n")),
     };
     true
+}
+
+/// Starts the program `word` names and waits until it ended.
+#[cfg_attr(test, allow(dead_code))]
+fn start(word: &str) -> Result<(), Error> {
+    let child = match program::spawn(&program_path(word), None) {
+        Ok(child) => child,
+        Err(Error::NotFound) if !word.starts_with('/') => {
+            return program::write(&format!("{word}: no such command\n"));
+        }
+        Err(e) => return program::write(&trouble(word, e)),
+    };
+    let ended = program::wait(child);
+    let _ = program::close(child);
+    match ended {
+        Ok(ended) => ending(word, ended).map_or(Ok(()), |line| program::write(&line)),
+        Err(e) => program::write(&trouble(word, e)),
+    }
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -324,11 +370,46 @@ mod tests {
             (parse("clear"), parse("exit"), parse("   ")),
             (Command::Clear, Command::Exit, Command::Empty)
         );
-        assert_eq!(parse("rm -rf /"), Command::Unknown("rm"));
+        assert_eq!(parse("rm -rf /"), Command::Program("rm"));
         assert_eq!(
             parse("Help"),
-            Command::Unknown("Help"),
+            Command::Program("Help"),
             "commands are lower case"
+        );
+        assert_eq!(
+            parse(" /System/Boot/meridian/programs/hello.mexec "),
+            Command::Program("/System/Boot/meridian/programs/hello.mexec")
+        );
+    }
+
+    #[test]
+    fn a_program_is_found_by_its_name_or_its_path() {
+        assert_eq!(
+            program_path("hello"),
+            "/System/Boot/meridian/programs/hello.mexec"
+        );
+        assert_eq!(program_path("/a/b.mexec"), "/a/b.mexec");
+        assert_eq!(
+            program_path("a/b"),
+            "/System/Boot/meridian/programs/a/b.mexec"
+        );
+        assert_eq!(PROGRAMS, "/System/Boot/meridian/programs");
+    }
+
+    #[test]
+    fn a_program_that_ended_well_says_nothing() {
+        assert_eq!(ending("hello", Ended::Exited(0)), None);
+        assert_eq!(
+            ending("exitwith", Ended::Exited(2989)).as_deref(),
+            Some("exitwith ended with 2989\n")
+        );
+        assert_eq!(
+            ending("deep", Ended::Faulted(14)).as_deref(),
+            Some("deep stopped by exception 14\n")
+        );
+        assert_eq!(
+            ending("one", Ended::Exited(1)).as_deref(),
+            Some("one ended with 1\n")
         );
     }
 
@@ -349,6 +430,7 @@ mod tests {
             "a: not a path from the root\n"
         );
         assert_eq!(trouble("/a", Error::TooLong), "/a: too long a path\n");
+        assert_eq!(trouble("/a", Error::NotAProgram), "/a: not a program\n");
         assert_eq!(trouble("/a", Error::Unreadable), "/a: could not be read\n");
     }
 }

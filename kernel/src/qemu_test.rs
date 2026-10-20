@@ -856,6 +856,7 @@ fn console_checks<W: Write>(report: &mut Report<'_, W>, display: Option<Display<
         waiting && typed && erased && one && edge,
         "the cursor should be a block of sun in the cell the next character goes to, in its row alone, in the last column while it waits at the edge, and a backspace should leave the dark behind",
     );
+    console_cell_checks(report, shape);
     let rows = shape.map_or(0, |((_, rows), _)| rows);
     raw::console::write("\u{c}");
     let cleared = raw::console::row(0).as_deref() == Some("");
@@ -868,6 +869,42 @@ fn console_checks<W: Write>(report: &mut Report<'_, W>, display: Option<Display<
         "a form feed should clear the console, and lines past its last row move the rows up",
     );
     let _ = keep_screen(report, "console");
+}
+
+/// Each character in its own cell: an M far to the right looks exactly as
+/// one in the first column, and a character is rasterized once, however
+/// often it is drawn.
+fn console_cell_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    shape: Option<((usize, usize), (usize, usize))>,
+) {
+    use canvas::palette::NIGHT;
+    let Some(((columns, _), (width, height))) = shape else {
+        return;
+    };
+    let far = columns.min(101) - 1;
+    raw::console::write(&alloc::format!("\u{c}M{}M", " ".repeat(far - 1)));
+    let cell = |column: usize| {
+        (0..height).flat_map(move |dy| {
+            (0..width).map(move |dx| raw::console::pixel(16 + column * width + dx, 16 + dy))
+        })
+    };
+    let alike = cell(0).eq(cell(far));
+    let inked = cell(0).filter(|&p| p.is_some_and(|p| p != NIGHT)).count();
+    report.check(
+        "kernel.console.cells",
+        far > 50 && alike && inked > 10,
+        "an M in a column far to the right should look exactly as one in the first",
+    );
+    let before = raw::console::rasterized();
+    raw::console::write("\u{a7}\u{a7}\u{a7}\n");
+    let once = raw::console::rasterized();
+    raw::console::write("\u{a7}");
+    report.check(
+        "kernel.console.glyphs",
+        once == before + 1 && raw::console::rasterized() == once,
+        "a character should be rasterized once, however often it is drawn",
+    );
 }
 
 /// Asks sextant to keep a picture of the screen as `name`, and says whether

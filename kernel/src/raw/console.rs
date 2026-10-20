@@ -1,14 +1,16 @@
 //! The text console on the screen: what programs write goes into a grid
 //! of characters, which is drawn a changed row at a time in `JetBrains
-//! Mono`, light on dark, the cursor a block of sun. Once a crash takes the
-//! screen, the console draws no more.
+//! Mono`, light on dark, the cursor a block of sun, each character in its
+//! own cell from a glyph rasterized once. Once a crash takes the screen,
+//! the console draws no more.
 
+#[cfg(feature = "qemu-test")]
 use alloc::string::String;
 
 use canvas::palette::{NIGHT, SUN, TEXT};
 use canvas::{Scratch, Style};
 use font::Font;
-use kernel::console::{Grid, cell_pixels, fit};
+use kernel::console::{Glyph, Glyphs, Grid, cell_pixels, fit};
 use kernel::display::Display;
 
 use super::memory::Spin;
@@ -35,6 +37,9 @@ static CONSOLE: Spin<Option<Console>> = Spin::new(None);
 /// The room glyphs are drawn in, too big for a stack, taken while the
 /// console draws.
 static SCRATCH: Spin<Scratch> = Spin::new(Scratch::new());
+
+/// The glyphs drawn so far.
+static GLYPHS: Spin<Glyphs> = Spin::new(Glyphs::new());
 
 fn style() -> Option<Style<'static>> {
     Some(Style {
@@ -79,6 +84,18 @@ pub fn write(text: &str) {
     }
 }
 
+/// `c`'s glyph in `style`, rasterized in `scratch`; none for a character
+/// that draws nothing or could not be rasterized.
+fn glyph(style: &Style<'_>, c: char, scratch: &mut Scratch) -> Option<Glyph> {
+    let (p, coverage) = canvas::rasterize(style, c, scratch).ok()??;
+    Some(Glyph {
+        left: p.left,
+        top: p.top,
+        width: p.width,
+        coverage: coverage.to_vec(),
+    })
+}
+
 /// Draws the rows that changed and the cursor where it is now. A cursor
 /// that waits past the right edge is drawn in the last column, under the
 /// character there.
@@ -94,14 +111,14 @@ fn draw(console: &mut Console) {
         }
     }
     let (cell_width, cell_height) = console.cell;
+    let width = console.grid.columns() * cell_width;
+    let at = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+    let mut scratch = SCRATCH.lock();
+    let mut glyphs = GLYPHS.lock();
     for row in rows {
         let top = MARGIN + row * cell_height;
-        let line: String = console.grid.row(row).iter().collect();
-        let baseline = top + console.baseline;
-        let width = console.grid.columns() * cell_width;
-        let mut scratch = SCRATCH.lock();
+        let baseline = at(top + console.baseline);
         let grid = &console.grid;
-        let at = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
         console
             .display
             .update(at(MARGIN), at(top), width, cell_height, |c| {
@@ -115,16 +132,22 @@ fn draw(console: &mut Console) {
                         SUN,
                     );
                 }
-                let _ = c.text(
-                    &style,
-                    at(MARGIN),
-                    at(baseline),
-                    line.trim_end(),
-                    &mut scratch,
-                );
+                for (column, &ch) in grid.row(row).iter().enumerate() {
+                    if let Some(g) = glyphs.get(ch, |ch| glyph(&style, ch, &mut scratch)) {
+                        let pen = at(MARGIN + column * cell_width);
+                        c.coverage(pen + g.left, baseline + g.top, g.width, &g.coverage, TEXT);
+                    }
+                }
             });
     }
     console.drawn_cursor = cursor;
+}
+
+/// How many glyphs the console rasterized so far. Only the test image
+/// asks.
+#[cfg(feature = "qemu-test")]
+pub fn rasterized() -> usize {
+    GLYPHS.lock().made()
 }
 
 /// The characters of the console's row `row`, when there is a console.

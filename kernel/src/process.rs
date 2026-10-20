@@ -20,6 +20,72 @@ pub enum State {
     Ended(Outcome),
 }
 
+/// A program's threads, for the one that leaves last: how many run, and
+/// how the program ends once one of them ended it for all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Threads {
+    running: usize,
+    ending: Option<Outcome>,
+}
+
+impl Default for Threads {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Threads {
+    /// A program's first thread, which runs.
+    #[must_use]
+    pub const fn new() -> Threads {
+        Threads {
+            running: 1,
+            ending: None,
+        }
+    }
+
+    /// Another thread is to start, and says whether it may: not once the
+    /// program is ending.
+    pub fn start(&mut self) -> bool {
+        if self.ending.is_some() {
+            return false;
+        }
+        self.running += 1;
+        true
+    }
+
+    /// A thread that was to start could not.
+    pub fn not_started(&mut self) {
+        self.running = self.running.saturating_sub(1).max(1);
+    }
+
+    /// The whole program is to end as `outcome`, unless it is ending
+    /// already: its threads leave one by one.
+    pub fn end(&mut self, outcome: Outcome) {
+        self.ending.get_or_insert(outcome);
+    }
+
+    /// How the program ends, once it is ending.
+    #[must_use]
+    pub fn ending(&self) -> Option<Outcome> {
+        self.ending
+    }
+
+    /// A thread leaves, having ended with `code` when it ended on its own,
+    /// and answers how the program ended when it was the last: as it was
+    /// ended for all, or else with that last thread's code.
+    pub fn leave(&mut self, code: u64) -> Option<Outcome> {
+        self.running = self.running.saturating_sub(1);
+        (self.running == 0).then(|| self.ending.unwrap_or(Outcome::Exited(code)))
+    }
+
+    /// How many of its threads run.
+    #[must_use]
+    pub fn running(&self) -> usize {
+        self.running
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
     state: State,
@@ -217,6 +283,51 @@ mod tests {
         );
         t.ask_to_end(9, 1);
         assert_eq!(t.asked(9), None);
+    }
+
+    #[test]
+    fn a_program_ends_with_its_last_thread() {
+        let mut t = Threads::new();
+        assert!(t.start() && t.start());
+        assert_eq!(t.running(), 3);
+        assert_eq!(t.leave(1), None);
+        assert_eq!(t.leave(2), None);
+        assert_eq!(
+            t.leave(3),
+            Some(Outcome::Exited(3)),
+            "with the last one's code"
+        );
+        assert_eq!(t.running(), 0);
+        assert_eq!(Threads::default().leave(0), Some(Outcome::Exited(0)));
+    }
+
+    #[test]
+    fn a_program_ended_for_all_ends_as_it_was_ended() {
+        let mut t = Threads::new();
+        assert!(t.start());
+        t.end(Outcome::Faulted(14));
+        t.end(Outcome::Exited(9));
+        assert_eq!(
+            t.ending(),
+            Some(Outcome::Faulted(14)),
+            "the first end counts"
+        );
+        assert!(!t.start(), "no thread starts in a program that ends");
+        assert_eq!(t.running(), 2);
+        assert_eq!(t.leave(5), None);
+        assert_eq!(t.leave(6), Some(Outcome::Faulted(14)));
+        assert_eq!(Threads::new().ending(), None);
+    }
+
+    #[test]
+    fn a_thread_that_could_not_start_is_not_counted() {
+        let mut t = Threads::new();
+        assert!(t.start());
+        t.not_started();
+        assert_eq!(t.running(), 1);
+        t.not_started();
+        assert_eq!(t.running(), 1, "the one that asked still runs");
+        assert_eq!(t.leave(4), Some(Outcome::Exited(4)));
     }
 
     #[test]

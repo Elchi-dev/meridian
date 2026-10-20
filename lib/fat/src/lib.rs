@@ -32,6 +32,12 @@ pub enum Error {
     Full,
     /// A file would grow past the 4 GiB less a byte FAT32 sizes hold.
     TooLarge,
+    /// An entry has the name already.
+    Exists,
+    /// A directory to remove still holds entries.
+    NotEmpty,
+    /// A name with no letter in it, or longer than 255 UTF-16 units.
+    BadName,
 }
 
 /// The geometry of a FAT32 volume, from its boot sector.
@@ -319,7 +325,11 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
 
     /// Hands every sector of the chain from `first` on to `each`, in order,
     /// with its number, until it answers false or the chain ends.
-    fn walk(&mut self, first: u32, mut each: impl FnMut(u64, &[u8]) -> bool) -> Result<(), Error> {
+    pub(crate) fn walk(
+        &mut self,
+        first: u32,
+        mut each: impl FnMut(u64, &[u8]) -> bool,
+    ) -> Result<(), Error> {
         let size = self.volume.sector_size as usize;
         let mut room = [0u8; 4096];
         let mut cluster = first;

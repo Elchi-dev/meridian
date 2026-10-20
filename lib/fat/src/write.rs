@@ -1,8 +1,16 @@
 //! Writing FAT32: clusters taken and given back, in every copy of the
-//! FAT, with the free count and the next free cluster `FSInfo` keeps, and
-//! files written into their chains, which grow as they need.
+//! FAT, with the free count and the next free cluster `FSInfo` keeps,
+//! files written into their chains, which grow as they need, and entries
+//! made with their long names and removed.
 
-use crate::{Entry, Error, Fat, Place, u32_at};
+use crate::{Entry, Error, Fat, Place, name, u32_at};
+
+/// The most entries one name takes: 20 for its long name and the short.
+const MOST: usize = 21;
+
+/// When entries are made, as FAT dates and times count: 1 January 1980,
+/// the first day they can say, until there is a clock to ask.
+const DATE: u16 = 0x21;
 
 /// What a writer puts in the entry of a chain's last cluster.
 const LAST: u32 = 0x0fff_ffff;
@@ -246,6 +254,204 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
         Ok(())
     }
 
+    /// Makes an entry called `name` in the directory whose first cluster is
+    /// `directory`, for an empty file or, when `directory_too`, a directory
+    /// that holds its `.` and `..`, and answers it with where its short
+    /// entry lies. The directory grows when it has no room for it.
+    ///
+    /// # Errors
+    ///
+    /// When an entry has the name already, the name is empty or too long,
+    /// no cluster is left, or the volume cannot be read or written.
+    pub fn create(
+        &mut self,
+        directory: u32,
+        name: &str,
+        directory_too: bool,
+    ) -> Result<(Entry, Place), Error> {
+        match self.fat.lookup(directory, name) {
+            Ok(_) => return Err(Error::Exists),
+            Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        let mut scan = Ok(());
+        let (short, needs_long) = name::short_for(name, |candidate| {
+            let found = self.taken(directory, candidate);
+            let taken = found.unwrap_or(true);
+            scan = scan.and(found.map(|_| ()));
+            taken
+        })
+        .ok_or(Error::Exists)?;
+        scan?;
+        let mut entries = [[0u8; 32]; MOST];
+        let mut longs = [[0u8; 32]; 20];
+        let count = if needs_long {
+            name::long_entries(name, &short, &mut longs).ok_or(Error::BadName)?
+        } else {
+            0
+        };
+        entries[..count].copy_from_slice(&longs[..count]);
+        let first = if directory_too {
+            self.take_zeroed()?
+        } else {
+            0
+        };
+        let attributes = if directory_too { 0x10 } else { 0x20 };
+        entries[count] = short_entry(&short, attributes, first);
+        let mut places = [Place {
+            sector: 0,
+            index: 0,
+        }; MOST];
+        self.free_run(directory, count + 1, &mut places)?;
+        for (place, entry) in places.iter().zip(&entries[..=count]) {
+            self.put_entry(*place, entry)?;
+        }
+        if directory_too {
+            let parent = if directory == self.fat.volume.root {
+                0
+            } else {
+                directory
+            };
+            let sector = self.fat.volume.first_sector(first).ok_or(Error::BadChain)?;
+            self.put_entry(
+                Place { sector, index: 0 },
+                &short_entry(b".          ", 0x10, first),
+            )?;
+            self.put_entry(
+                Place { sector, index: 1 },
+                &short_entry(b"..         ", 0x10, parent),
+            )?;
+        }
+        let entry = Entry {
+            first,
+            size: 0,
+            directory: directory_too,
+        };
+        Ok((entry, places[count]))
+    }
+
+    /// Whether a short entry of the directory at `directory` has the name
+    /// `short`.
+    fn taken(&mut self, directory: u32, short: &[u8; 11]) -> Result<bool, Error> {
+        let mut found = false;
+        self.fat.walk(directory, |_, sector| {
+            for e in sector.as_chunks::<32>().0 {
+                if e[0] == 0 {
+                    return false;
+                }
+                found |= e[0] != 0xe5 && e[11] & 0x3f != 0x0f && e[..11] == short[..];
+            }
+            !found
+        })?;
+        Ok(found)
+    }
+
+    /// Finds `need` free entries one after another in the directory at
+    /// `directory`, growing it by a zeroed cluster while it has none, and
+    /// puts where they lie into `places`.
+    fn free_run(
+        &mut self,
+        directory: u32,
+        need: usize,
+        places: &mut [Place; MOST],
+    ) -> Result<(), Error> {
+        for _ in 0..=MOST {
+            let mut run = 0;
+            self.fat.walk(directory, |sector, bytes| {
+                for (index, e) in bytes.as_chunks::<32>().0.iter().enumerate() {
+                    if e[0] == 0 || e[0] == 0xe5 {
+                        places[run] = Place { sector, index };
+                        run += 1;
+                        if run == need {
+                            return false;
+                        }
+                    } else {
+                        run = 0;
+                    }
+                }
+                true
+            })?;
+            if run == need {
+                return Ok(());
+            }
+            let mut last = directory;
+            while let Some(next) = self.fat.next(last)? {
+                last = next;
+            }
+            let grown = self.take_zeroed()?;
+            self.set(last, grown)?;
+        }
+        Err(Error::Full)
+    }
+
+    /// Writes the 32 bytes of `entry` at `place`.
+    fn put_entry(&mut self, place: Place, entry: &[u8; 32]) -> Result<(), Error> {
+        let size = self.fat.volume.sector_size as usize;
+        let mut room = [0u8; 4096];
+        self.fat.sector(place.sector, &mut room[..size])?;
+        room[place.index * 32..place.index * 32 + 32].copy_from_slice(entry);
+        self.put(place.sector, &room[..size])
+    }
+
+    /// Removes the entry called `name` from the directory whose first
+    /// cluster is `directory`, its long name with it, and gives its
+    /// clusters back. A directory has to hold nothing.
+    ///
+    /// # Errors
+    ///
+    /// When no entry has the name, it is a directory that holds entries,
+    /// its chain is broken, or the volume cannot be read or written.
+    pub fn remove(&mut self, directory: u32, name: &str) -> Result<(), Error> {
+        let (entry, place) = self.fat.lookup_at(directory, name)?;
+        if entry.directory {
+            let mut holds = false;
+            self.fat.entries(entry.first, |_, _| {
+                holds = true;
+                false
+            })?;
+            if holds {
+                return Err(Error::NotEmpty);
+            }
+        }
+        let mut longs = [Place {
+            sector: 0,
+            index: 0,
+        }; 20];
+        let mut count = 0;
+        let mut found = false;
+        self.fat.walk(directory, |sector, bytes| {
+            for (index, e) in bytes.as_chunks::<32>().0.iter().enumerate() {
+                let here = Place { sector, index };
+                if here == place {
+                    found = true;
+                    return false;
+                }
+                if e[0] != 0xe5 && e[11] & 0x3f == 0x0f && count < 20 {
+                    longs[count] = here;
+                    count += 1;
+                } else {
+                    count = 0;
+                }
+            }
+            true
+        })?;
+        for at in longs[..count]
+            .iter()
+            .chain(core::iter::once(&place))
+            .filter(|_| found)
+        {
+            let size = self.fat.volume.sector_size as usize;
+            let mut room = [0u8; 4096];
+            self.fat.sector(at.sector, &mut room[..size])?;
+            room[at.index * 32] = 0xe5;
+            self.put(at.sector, &room[..size])?;
+        }
+        if entry.first != 0 {
+            self.give_back(entry.first)?;
+        }
+        Ok(())
+    }
+
     /// Gives back every cluster of the chain from `first` on, and answers
     /// how many.
     ///
@@ -267,6 +473,21 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
         self.count(-i64::from(given), None)?;
         Ok(given)
     }
+}
+
+/// A short entry called `short` with `attributes`, whose first cluster is
+/// `first`, empty, made on [`DATE`].
+fn short_entry(short: &[u8; 11], attributes: u8, first: u32) -> [u8; 32] {
+    let mut e = [0u8; 32];
+    e[..11].copy_from_slice(short);
+    e[11] = attributes;
+    let first = first.to_le_bytes();
+    e[20..22].copy_from_slice(&first[2..4]);
+    e[26..28].copy_from_slice(&first[..2]);
+    for at in [16, 18, 24] {
+        e[at..at + 2].copy_from_slice(&DATE.to_le_bytes());
+    }
+    e
 }
 
 #[cfg(test)]
@@ -531,6 +752,173 @@ mod tests {
         assert_eq!(w.write_at(&mut entry, u64::MAX, b"x"), Err(Error::TooLarge));
         assert_eq!(w.write_at(&mut entry, 1 << 32, &[]), Err(Error::TooLarge));
         assert_eq!(*image.borrow(), before, "and nothing was written");
+    }
+
+    /// What mdir lists for `directory` on the volume `image`, bare names
+    /// only.
+    fn listed(image: &[u8], name: &str, directory: &str) -> Vec<String> {
+        let path = scratch(name);
+        std::fs::write(&path, image).unwrap();
+        let out = Command::new("mdir")
+            .args(["-b", "-i"])
+            .arg(&path)
+            .arg(format!("::{directory}"))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let l = l.trim_end_matches('/');
+                l.rsplit('/').next().unwrap_or(l).to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_file_made_with_a_long_name_holds_what_was_written() {
+        let Some(image) = formatted("create") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut entry, place) = w.create(root, "services.meri", false).unwrap();
+        let text = b"service shell {\n    program = shell\n}\n";
+        w.write_at(&mut entry, 0, text).unwrap();
+        w.save(place, &entry).unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(typed(&now, "create", "services.meri"), text);
+        assert_eq!(listed(&now, "create", "/"), ["services.meri"]);
+        assert_eq!(w.fat.find("services.meri").map(|e| e.size), Ok(38));
+        assert_eq!(
+            w.create(root, "SERVICES.MERI", false),
+            Err(Error::Exists),
+            "names in any case are one"
+        );
+        assert!(sound(&now, "create"));
+    }
+
+    #[test]
+    fn a_directory_made_holds_a_file_made_in_it() {
+        let Some(image) = formatted("directory") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (folder, _) = w.create(root, "Programs", true).unwrap();
+        assert!(folder.directory && folder.first >= 3);
+        let (inner, _) = w.create(folder.first, "inner", true).unwrap();
+        let (mut file, place) = w.create(inner.first, "hello.mexec", false).unwrap();
+        w.write_at(&mut file, 0, &pattern(2000, 1)).unwrap();
+        w.save(place, &file).unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(
+            typed(&now, "directory", "Programs/inner/hello.mexec"),
+            pattern(2000, 1)
+        );
+        assert_eq!(listed(&now, "directory", "/Programs"), ["inner"]);
+        assert!(
+            sound(&now, "directory"),
+            "with their . and .. as they should be"
+        );
+        let found = w.fat.find("programs/INNER/Hello.mexec").unwrap();
+        assert_eq!((found.size, found.directory), (2000, false));
+    }
+
+    #[test]
+    fn a_full_directory_grows_for_more_entries() {
+        let Some(image) = formatted("many") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let names: Vec<String> = (0..40).map(|i| format!("a file called {i}.txt")).collect();
+        for name in &names {
+            w.create(root, name, false).unwrap();
+        }
+        let now = image.borrow().clone();
+        let mut want = names.clone();
+        want.sort();
+        let mut got = listed(&now, "many", "/");
+        got.sort();
+        assert_eq!(
+            got, want,
+            "forty names of three entries each, past ten clusters' worth"
+        );
+        assert!(sound(&now, "many"));
+    }
+
+    #[test]
+    fn short_names_do_not_meet() {
+        let Some(image) = formatted("short") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (_, first) = w.create(root, "readme.txt", false).unwrap();
+        let (_, other) = w.create(root, "readme.text", false).unwrap();
+        assert_eq!(
+            w.create(root, "README.TXT", false),
+            Err(Error::Exists),
+            "README.TXT is readme.txt"
+        );
+        let bytes = image.borrow().clone();
+        let short = |p: Place| bytes[entry_bytes(p)][..11].to_vec();
+        assert_eq!(short(first), b"README~1TXT");
+        assert_eq!(short(other), b"README~1TEX");
+        let (_, second) = w.create(root, "readme!.txt", false).unwrap();
+        assert_eq!(image.borrow()[entry_bytes(second)][..11], *b"README~2TXT");
+        assert!(sound(&image.borrow(), "short"));
+        assert_eq!(w.create(root, &"y".repeat(256), false), Err(Error::BadName));
+    }
+
+    #[test]
+    fn a_removed_file_gives_its_clusters_back() {
+        let Some(image) = holding(
+            "remove",
+            &[
+                ("keep.txt", b"kept"),
+                ("long file name.bin", &pattern(5000, 2)),
+            ],
+        ) else {
+            return;
+        };
+        let free = fsinfo(&image).0;
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        assert_eq!(w.remove(root, "long file name.bin"), Ok(()));
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "remove", "/"), ["keep.txt"]);
+        assert_eq!(fsinfo(&now).0, free + 10, "its ten clusters back");
+        assert_eq!(typed(&now, "remove", "keep.txt"), b"kept");
+        assert!(sound(&now, "remove"), "no long name left over");
+        assert_eq!(w.remove(root, "long file name.bin"), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn only_an_empty_directory_is_removed() {
+        let Some(image) = formatted("rmdir") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (folder, _) = w.create(root, "folder", true).unwrap();
+        w.create(folder.first, "inside", false).unwrap();
+        assert_eq!(w.remove(root, "folder"), Err(Error::NotEmpty));
+        assert_eq!(w.remove(folder.first, "inside"), Ok(()));
+        assert_eq!(w.remove(root, "folder"), Ok(()));
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "rmdir", "/"), Vec::<String>::new());
+        assert_eq!(fsinfo(&now).0, 80_627, "every cluster back");
+        assert!(sound(&now, "rmdir"));
     }
 
     #[test]

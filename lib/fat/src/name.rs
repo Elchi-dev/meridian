@@ -15,7 +15,7 @@ fn allowed(c: u8) -> bool {
 /// The short name `name` gets in a directory where `taken` says which
 /// short names are in use already, and whether its long name has to go
 /// with it: none when it gets no number from 1 to 999999 that is free.
-pub fn short_for(name: &str, taken: impl Fn(&[u8; 11]) -> bool) -> Option<([u8; 11], bool)> {
+pub fn short_for(name: &str, mut taken: impl FnMut(&[u8; 11]) -> bool) -> Option<([u8; 11], bool)> {
     let trimmed = name.trim_start_matches(['.', ' ']);
     // The basis takes what comes before the first period, the extension
     // what comes after the last.

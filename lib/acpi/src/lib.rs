@@ -151,6 +151,74 @@ pub fn each_processor(madt: &[u8], mut each: impl FnMut(Processor)) -> Result<()
     })
 }
 
+/// An I/O APIC, which turns the interrupts of devices into messages to the
+/// processors: its id, where its registers are, and the first global
+/// interrupt number it takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IoApic {
+    pub id: u8,
+    pub address: u64,
+    pub first: u32,
+}
+
+/// Calls `each` with every I/O APIC in the MADT, in the table's order.
+///
+/// # Errors
+///
+/// [`Error::Truncated`] when an entry is cut short or its length points
+/// past the table.
+pub fn each_io_apic(madt: &[u8], mut each: impl FnMut(IoApic)) -> Result<(), Error> {
+    walk_madt(madt, |kind, entry| {
+        if kind == 1 {
+            each(IoApic {
+                id: *entry.get(2).ok_or(Error::Truncated)?,
+                address: u64::from(u32_at(entry, 4).ok_or(Error::Truncated)?),
+                first: u32_at(entry, 8).ok_or(Error::Truncated)?,
+            });
+        }
+        Ok(())
+    })
+}
+
+/// Where the interrupt of an ISA device arrives: its global interrupt
+/// number, and whether it is active low and level triggered rather than
+/// active high and edge triggered as ISA's own are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub interrupt: u32,
+    pub active_low: bool,
+    pub level: bool,
+}
+
+/// Where ISA interrupt `irq` arrives: as an override in the MADT moves it,
+/// or else at the same number, active high and edge triggered. Where an
+/// override leaves the polarity or the trigger to the bus, ISA's holds.
+///
+/// # Errors
+///
+/// [`Error::Truncated`] when an entry is cut short or its length points
+/// past the table.
+pub fn isa_route(madt: &[u8], irq: u8) -> Result<Route, Error> {
+    let mut route = Route {
+        interrupt: u32::from(irq),
+        active_low: false,
+        level: false,
+    };
+    walk_madt(madt, |kind, entry| {
+        if kind == 2 && *entry.get(3).ok_or(Error::Truncated)? == irq {
+            let flags = entry.get(8..10).ok_or(Error::Truncated)?;
+            let flags = u16::from_le_bytes([flags[0], flags[1]]);
+            route = Route {
+                interrupt: u32_at(entry, 4).ok_or(Error::Truncated)?,
+                active_low: flags & 0b11 == 0b11,
+                level: flags >> 2 & 0b11 == 0b11,
+            };
+        }
+        Ok(())
+    })?;
+    Ok(route)
+}
+
 /// Calls `entry` with the type and bytes of every entry of the MADT.
 fn walk_madt(
     madt: &[u8],
@@ -555,6 +623,107 @@ mod tests {
         let over = vec![2, 10, 0, 0, 2, 0, 0, 0, 0, 0];
         let t = madt(&[io_apic, lapic(0, 1), over, lapic(1, 1)]);
         assert_eq!(processors(&t).map(|p| (p.listed, p.usable)), Ok((2, 2)));
+    }
+
+    /// The MADT entries QEMU's q35 machine has besides its processors: one
+    /// I/O APIC, the timer moved to 2, and the interrupts of PCI devices
+    /// level triggered.
+    fn q35() -> Vec<Vec<u8>> {
+        let io_apic = vec![1, 12, 0, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0];
+        let over = |irq: u8, gsi: u32, flags: u16| {
+            let mut e = vec![2, 10, 0, irq];
+            e.extend(gsi.to_le_bytes());
+            e.extend(flags.to_le_bytes());
+            e
+        };
+        vec![
+            io_apic,
+            over(0, 2, 0),
+            over(5, 5, 0xd),
+            over(9, 9, 0xd),
+            over(10, 10, 0xd),
+            over(11, 11, 0xd),
+        ]
+    }
+
+    #[test]
+    fn io_apics_are_found_where_the_table_puts_them() {
+        let mut found = Vec::new();
+        each_io_apic(&madt(&q35()), |a| found.push(a)).unwrap();
+        assert_eq!(
+            found,
+            [IoApic {
+                id: 0,
+                address: 0xfec0_0000,
+                first: 0
+            }]
+        );
+        let second = vec![1, 12, 9, 0, 0, 0x10, 0xc0, 0xfe, 24, 0, 0, 0];
+        let mut two = q35();
+        two.push(lapic(0, 1));
+        two.push(second);
+        found.clear();
+        each_io_apic(&madt(&two), |a| found.push(a)).unwrap();
+        assert_eq!(
+            found[1],
+            IoApic {
+                id: 9,
+                address: 0xfec0_1000,
+                first: 24
+            }
+        );
+        let short = vec![1, 8, 0, 0, 0, 0, 0xc0, 0xfe];
+        assert_eq!(each_io_apic(&madt(&[short]), |_| {}), Err(Error::Truncated));
+    }
+
+    #[test]
+    fn an_isa_interrupt_arrives_where_an_override_moves_it() {
+        let t = madt(&q35());
+        assert_eq!(
+            isa_route(&t, 1),
+            Ok(Route {
+                interrupt: 1,
+                active_low: false,
+                level: false
+            }),
+            "the keyboard, left where ISA puts it"
+        );
+        assert_eq!(
+            isa_route(&t, 0).map(|r| r.interrupt),
+            Ok(2),
+            "the timer, moved"
+        );
+        assert_eq!(
+            isa_route(&t, 9),
+            Ok(Route {
+                interrupt: 9,
+                active_low: false,
+                level: true
+            }),
+            "0xd: active high, level"
+        );
+        let low = vec![2, 10, 0, 7, 20, 0, 0, 0, 0xf, 0];
+        assert_eq!(
+            isa_route(&madt(&[low]), 7),
+            Ok(Route {
+                interrupt: 20,
+                active_low: true,
+                level: true
+            })
+        );
+        let bus_default = vec![2, 10, 0, 4, 4, 0, 0, 0, 0b0110, 0];
+        assert_eq!(
+            isa_route(&madt(&[bus_default]), 4),
+            Ok(Route {
+                interrupt: 4,
+                active_low: false,
+                level: false
+            }),
+            "01 and 01 are ISA's own"
+        );
+        let cut = vec![2, 8, 0, 1, 1, 0, 0, 0];
+        assert_eq!(isa_route(&madt(&[cut]), 1), Err(Error::Truncated));
+        assert_eq!(isa_route(&madt(&[]), 3).map(|r| r.interrupt), Ok(3));
     }
 
     #[test]

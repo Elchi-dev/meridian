@@ -288,6 +288,16 @@ pub fn describe(
     }
 }
 
+/// The name of the shell's file among the programs the loader read. An
+/// image that carries it starts the console and the shell on it.
+pub const SHELL: &[u8] = b"shell.mexec";
+
+/// Whether the program named `name` is the shell.
+#[must_use]
+pub fn is_shell(name: &[u8]) -> bool {
+    name == SHELL
+}
+
 /// Writes which of the threads' floating point and vector registers are
 /// kept, and with what.
 ///
@@ -839,6 +849,20 @@ mod tests {
             out,
             "Cores: not listed in the ACPI tables\nTime stamp counter: not measured, neither the ACPI timer nor the HPET could be used\n"
         );
+    }
+
+    #[test]
+    fn the_shell_is_known_by_its_name() {
+        assert!(is_shell(b"shell.mexec"));
+        assert!(!is_shell(b"hello.mexec"));
+        assert!(
+            !is_shell(b"Shell.mexec"),
+            "names are as the loader read them"
+        );
+        assert!(!is_shell(b"shell.mexe"));
+        assert!(!is_shell(b"shell.mexec2"));
+        assert!(!is_shell(b""));
+        assert_eq!(SHELL, b"shell.mexec");
     }
 
     #[test]

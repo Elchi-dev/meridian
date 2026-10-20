@@ -200,7 +200,7 @@ fn finish(
     let timer = raw::timer::start(tsc_hz);
     let _ = kernel::waiting(serial, timer);
     raw::thread::start();
-    let shell = raw::modules(info, regions).any(|(m, _)| m.name() == b"shell.mexec");
+    let shell = raw::modules(info, regions).any(|(m, _)| kernel::is_shell(m.name()));
     if shell && let Some(screen) = display.take() {
         let _ = raw::console::start(screen);
     }

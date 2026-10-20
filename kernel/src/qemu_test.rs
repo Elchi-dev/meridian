@@ -877,7 +877,7 @@ fn shell_checks<W: Write>(
     tsc_hz: Option<u64>,
 ) {
     use raw::user::{self, seen};
-    let Some((_, file)) = raw::modules(info, regions).find(|(m, _)| m.name() == b"shell.mexec")
+    let Some((_, file)) = raw::modules(info, regions).find(|(m, _)| kernel::is_shell(m.name()))
     else {
         report.check("kernel.shell", false, "every image should carry the shell");
         return;

@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 abi = { path = "../abi" }
 heap = { path = "../heap" }
+meri = { path = "../meri" }
 security = { path = "../security" }
 
 # Built as a test on the host, the way the kernel is, and for Meridian
@@ -33,6 +34,10 @@ test = true
 
 [[example]]
 name = "threads"
+test = true
+
+[[example]]
+name = "init"
 test = true
 
 [features]

@@ -25,13 +25,18 @@ static PENDING: AtomicU64 = AtomicU64::new(0);
 /// SHOOTDOWN interrupt, and while a core waits to start a shootdown.
 pub fn serve() {
     let bit = 1u64 << this_core();
+    #[cfg(feature = "qemu-test")]
+    seen::looked(this_core());
     if PENDING.load(Ordering::Acquire) & bit == 0 {
         return;
     }
     if x86::raw::read_cr3() & !0xfff == ROOT.load(Ordering::Acquire) {
         let start = START.load(Ordering::Acquire);
         for page in 0..PAGES.load(Ordering::Acquire) {
-            x86::raw::invalidate_page(start + page * 4096);
+            let at = start + page * 4096;
+            x86::raw::invalidate_page(at);
+            #[cfg(feature = "qemu-test")]
+            seen::forgot(this_core(), at);
         }
     }
     PENDING.fetch_and(!bit, Ordering::AcqRel);
@@ -64,4 +69,47 @@ pub fn shoot_down(root: u64, start: u64, pages: u64) {
         core::hint::spin_loop();
     }
     BUSY.store(false, Ordering::Release);
+}
+
+/// What each core did for shootdowns. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub mod seen {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use kernel::CORES;
+
+    /// How often each core looked for a shootdown to serve, how many pages
+    /// it forgot, and the sum of their addresses, which tells them apart.
+    static LOOKED: [AtomicU64; CORES] = [const { AtomicU64::new(0) }; CORES];
+    static FORGOTTEN: [AtomicU64; CORES] = [const { AtomicU64::new(0) }; CORES];
+    static SUM: [AtomicU64; CORES] = [const { AtomicU64::new(0) }; CORES];
+
+    pub(super) fn looked(core: usize) {
+        LOOKED[core].fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn forgot(core: usize, page: u64) {
+        FORGOTTEN[core].fetch_add(1, Ordering::AcqRel);
+        SUM[core].fetch_add(page, Ordering::AcqRel);
+    }
+
+    /// How often core `core` looked, how many pages it forgot, and the sum
+    /// of their addresses, wrapping.
+    pub fn of(core: usize) -> (u64, u64, u64) {
+        (
+            LOOKED[core].load(Ordering::Acquire),
+            FORGOTTEN[core].load(Ordering::Acquire),
+            SUM[core].load(Ordering::Acquire),
+        )
+    }
+
+    /// The cores the running shootdown still waits for, a bit each.
+    pub fn pending() -> u64 {
+        super::PENDING.load(Ordering::Acquire)
+    }
+
+    /// Whether a shootdown holds the right to run.
+    pub fn busy() -> bool {
+        super::BUSY.load(Ordering::Acquire)
+    }
 }

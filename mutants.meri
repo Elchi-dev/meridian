@@ -254,3 +254,10 @@ allow {
     mutation = "+ to -"
     reason = "the device feature select register lies at offset 0 of the common configuration, so adding its offset or taking it away is the same"
 }
+
+allow {
+    file = "kernel/src/raw/tlb.rs"
+    line = "if PENDING.load(Ordering::Acquire) & bit == 0 {"
+    mutation = "& to |"
+    reason = "only cores a shootdown asks get its interrupt; a core that serves one anyway while it waits to start its own only forgets pages of that address space once more and clears a bit that was clear, which changes nothing it reads"
+}

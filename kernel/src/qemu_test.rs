@@ -2709,6 +2709,145 @@ fn program_thread_checks<W: Write>(report: &mut Report<'_, W>) {
             && seen::fault_address() == kernel::program::HEAP_START,
         "a page one thread gives back should be gone at once for its other thread, which reads it on another core",
     );
+    shootdown_checks(report);
+    shootdown_wait_checks(report);
+}
+
+/// Whether the thread that keeps an address space busy on another core
+/// goes on, and the core it last found itself on.
+static BUSY_GOES_ON: AtomicBool = AtomicBool::new(false);
+static BUSY_ON: AtomicU64 = AtomicU64::new(u64::MAX);
+
+extern "C" fn keep_busy(_: u64) {
+    while BUSY_GOES_ON.load(Ordering::Acquire) {
+        BUSY_ON.store(raw::interrupts::this_core() as u64, Ordering::Release);
+        core::hint::spin_loop();
+    }
+}
+
+/// Whether the thread that keeps interrupts off on its core goes on doing
+/// so, whether it does yet, and whether the thread that gives a page back
+/// meanwhile is done.
+static HOLD_OFF: AtomicBool = AtomicBool::new(false);
+static HOLDING: AtomicBool = AtomicBool::new(false);
+static GIVEN_BACK: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn hold_interrupts(_: u64) {
+    x86::raw::without_interrupts(|| {
+        HOLDING.store(true, Ordering::Release);
+        while HOLD_OFF.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    });
+}
+
+extern "C" fn give_back_page(root: u64) {
+    raw::memory::unmap_pages(root, kernel::program::HEAP_START, 1);
+    GIVEN_BACK.store(true, Ordering::Release);
+}
+
+/// A shootdown waits for a core that keeps interrupts off until it can
+/// answer, and holds the right to run all the while, so no other starts.
+fn shootdown_wait_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::tlb::seen;
+    let root = raw::memory::new_space().filter(|&root| {
+        let flags = paging::Flags::USER | paging::Flags::WRITABLE;
+        raw::memory::map_pages(root, kernel::program::HEAP_START, 1, flags).is_ok()
+    });
+    let me = raw::interrupts::this_core();
+    // The page goes from this core, whose timer lets the check look in
+    // while the shootdown waits for the other core, which holds interrupts
+    // off.
+    let cores = usize::try_from(raw::smp::running().0).unwrap_or(0) + 1;
+    let holder_core = (me + 1) % cores;
+    let soon = |done: &dyn Fn() -> bool| {
+        (0..100).any(|_| {
+            raw::thread::sleep(1);
+            done()
+        })
+    };
+    HOLD_OFF.store(true, Ordering::Release);
+    HOLDING.store(false, Ordering::Release);
+    GIVEN_BACK.store(false, Ordering::Release);
+    let holder = root.and_then(|root| {
+        raw::thread::spawn_in(holder_core, root, hold_interrupts, 0, raw::thread::NORMAL).ok()
+    });
+    let holding = holder.is_some() && soon(&|| HOLDING.load(Ordering::Acquire));
+    let giver = root
+        .filter(|_| holding)
+        .and_then(|root| raw::thread::spawn_on(me, give_back_page, root, raw::thread::NORMAL).ok());
+    let waiting = giver.is_some() && soon(&|| seen::pending() != 0);
+    let held = waiting && seen::busy() && !GIVEN_BACK.load(Ordering::Acquire);
+    HOLD_OFF.store(false, Ordering::Release);
+    let done = soon(&|| {
+        GIVEN_BACK.load(Ordering::Acquire) && holder.is_some_and(|slot| !raw::thread::alive(slot))
+    });
+    if let (Some(root), true) = (root, done) {
+        raw::memory::release_space(root);
+    }
+    report.check(
+        "kernel.tlb.one_at_a_time",
+        cores >= 2 && held && done && !seen::busy() && seen::pending() == 0,
+        "a shootdown should wait for a core that keeps interrupts off, holding the right to run all the while, and let it go once answered",
+    );
+}
+
+/// Pages that go while a thread runs in their address space on another
+/// core: that core alone is asked to forget them, in batches of 64, and
+/// forgets each of them before the call that took them returns.
+fn shootdown_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::tlb::seen;
+    const PAGES: u64 = 70;
+    let at = kernel::program::HEAP_START;
+    let flags = paging::Flags::USER | paging::Flags::WRITABLE;
+    let root = raw::memory::new_space()
+        .filter(|&root| raw::memory::map_pages(root, at, PAGES, flags).is_ok());
+    let me = raw::interrupts::this_core();
+    BUSY_ON.store(u64::MAX, Ordering::Release);
+    BUSY_GOES_ON.store(true, Ordering::Release);
+    let other = usize::from(me == 0);
+    let busy = root.and_then(|root| {
+        raw::thread::spawn_in(other, root, keep_busy, 0, raw::thread::NORMAL).ok()
+    });
+    let running = busy.is_some()
+        && (0..100).any(|_| {
+            raw::thread::sleep(1);
+            BUSY_ON.load(Ordering::Acquire) != u64::MAX
+        });
+    let on = usize::try_from(BUSY_ON.load(Ordering::Acquire)).unwrap_or(0) % kernel::CORES;
+    let before: alloc::vec::Vec<_> = (0..kernel::CORES).map(seen::of).collect();
+    if let Some(root) = root {
+        raw::memory::unmap_pages(root, at, PAGES);
+    }
+    let waiting = seen::pending();
+    let after: alloc::vec::Vec<_> = (0..kernel::CORES).map(seen::of).collect();
+    BUSY_GOES_ON.store(false, Ordering::Release);
+    let ended = (0..100).any(|_| {
+        raw::thread::sleep(1);
+        busy.is_some_and(|slot| !raw::thread::alive(slot))
+    });
+    if let (Some(root), true) = (root, ended) {
+        raw::memory::release_space(root);
+    }
+    let sum = (0..PAGES).fold(0u64, |sum, page| sum.wrapping_add(at + page * 4096));
+    let (looked, forgot, summed) = (
+        after[on].0 - before[on].0,
+        after[on].1 - before[on].1,
+        after[on].2.wrapping_sub(before[on].2),
+    );
+    let others_left_alone = (0..kernel::CORES)
+        .filter(|&core| core != on)
+        .all(|core| after[core] == before[core]);
+    report.check(
+        "kernel.tlb.shootdown",
+        running
+            && on != me
+            && ended
+            && (looked, forgot, summed) == (2, PAGES, sum)
+            && others_left_alone
+            && waiting == 0,
+        "seventy pages that go while a thread runs in their address space on another core should be forgotten there, each once, in two shootdowns that reach no other core and are done before the unmap returns",
+    );
 }
 
 /// Programs in ring 3, each in an address space of its own: the first

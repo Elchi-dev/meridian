@@ -20,7 +20,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 27] = [
+const CHECKS: [(&str, Check); 29] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -40,6 +40,8 @@ const CHECKS: [(&str, Check); 27] = [
     ("spawn.fault", child_runs_out_of_stack),
     ("spawn.missing", no_such_program),
     ("terminate", child_ended_from_outside),
+    ("thread", threads_of_a_child),
+    ("thread.here", a_thread_of_its_own),
     ("wait.other", wait_for_no_process),
     ("token", own_token),
     ("spawn.token", child_gets_no_more),
@@ -458,6 +460,77 @@ fn child_ended_from_outside() -> Outcome {
         close(child) == Ok(()) && close(end) == Ok(()),
         "the handles should close",
     )
+}
+
+/// Starts the threads program, tells it `word`, and answers its process
+/// and the end of the channel it sends on.
+fn threads(word: &[u8]) -> Result<(Handle, Handle), &'static str> {
+    let (mine, theirs) = pair()?;
+    let child = spawn("threads.mexec", Some(theirs)).map_err(|_| "threads should start")?;
+    expect(send(mine, word, None) == Ok(()), "the word should go")?;
+    Ok((child, mine))
+}
+
+fn threads_of_a_child() -> Outcome {
+    let (child, end) = threads(b"sum")?;
+    let mut got = 0;
+    let mut room = [0u8; 8];
+    for _ in 0..1000 {
+        match receive(end, &mut room) {
+            Ok((8, _)) => got |= 1 << u64::from_le_bytes(room),
+            Ok(_) => return Err("each thread should send its number"),
+            Err(_) => sleep(1),
+        }
+        if got == 0b11110 {
+            break;
+        }
+    }
+    expect(got == 0b11110, "four threads should each send their number")?;
+    expect(
+        wait(child) == Ok(Ended::Exited(0)),
+        "and the program exit with 0 once they all did",
+    )?;
+    let ended = |word: &[u8], how: Ended| {
+        threads(word).is_ok_and(|(child, end)| {
+            wait(child) == Ok(how) && close(child).is_ok() && close(end).is_ok()
+        })
+    };
+    expect(
+        ended(b"last", Ended::Exited(7)),
+        "a program should end with its last thread, with that one's code",
+    )?;
+    expect(
+        ended(b"exit", Ended::Exited(9)),
+        "an exit should end every thread of a program",
+    )?;
+    expect(
+        ended(b"fault", Ended::Faulted(14)),
+        "a fault in one thread should end the whole program",
+    )?;
+    expect(
+        close(child) == Ok(()) && close(end) == Ok(()),
+        "the handles should close",
+    )
+}
+
+/// What hello's own second thread found.
+static FOUND: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn found(n: u64) -> u64 {
+    FOUND.store(n * 2, core::sync::atomic::Ordering::Release);
+    0
+}
+
+fn a_thread_of_its_own() -> Outcome {
+    expect(
+        crate::thread(found, 21) == Ok(()),
+        "hello should start a thread of its own",
+    )?;
+    let seen = (0..100).any(|_| {
+        sleep(1);
+        FOUND.load(core::sync::atomic::Ordering::Acquire) == 42
+    });
+    expect(seen, "which should run beside it, in its memory")
 }
 
 fn no_such_program() -> Outcome {

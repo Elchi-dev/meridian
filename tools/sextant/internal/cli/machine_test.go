@@ -230,8 +230,9 @@ func TestOnlyTestImagesCarryTheTestPrograms(t *testing.T) {
 		_, hello := b.programs["hello.mexec"]
 		_, exitWith := b.programs["exitwith.mexec"]
 		_, whoAmI := b.programs["whoami.mexec"]
+		_, threads := b.programs["threads.mexec"]
 		_, shell := b.programs["shell.mexec"]
-		if !hello || !shell || exitWith != v.testMode || whoAmI != v.testMode || len(b.programs) != want {
+		if !hello || !shell || exitWith != v.testMode || whoAmI != v.testMode || threads != v.testMode || len(b.programs) != want {
 			t.Errorf("test mode %v: %v", v.testMode, b.programs)
 		}
 	}

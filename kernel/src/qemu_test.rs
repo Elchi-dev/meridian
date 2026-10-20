@@ -699,11 +699,13 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "hello_again.mexec",
                 "shell.mexec",
                 "shell_again.mexec",
+                "threads.mexec",
+                "threads_again.mexec",
                 "whoami.mexec",
                 "whoami_again.mexec",
             ]
             && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the four programs test images carry, each twice",
+        "the programs' directory should list the five programs test images carry, each twice",
     );
 }
 
@@ -2063,6 +2065,8 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::WRITE,
         abi::KEY,
         abi::TERMINATE,
+        abi::THREAD,
+        abi::END_THREAD,
         abi::EXIT,
     ];
     report.check(

@@ -35,10 +35,13 @@ var (
 	// WhoAmI sends its own security token back, for the test image's
 	// checks of what a program started with less may do.
 	WhoAmI = Part{Package: "program", Target: "x86_64-unknown-none", File: "whoami", Example: "whoami"}
+	// Threads starts threads and ends with them, for the test image's
+	// checks of programs with more than one.
+	Threads = Part{Package: "program", Target: "x86_64-unknown-none", File: "threads", Example: "threads"}
 	// Programs are what every image carries for the kernel to start.
 	Programs = []Part{Hello, Shell}
 	// TestPrograms are what test images carry on top.
-	TestPrograms = []Part{ExitWith, WhoAmI}
+	TestPrograms = []Part{ExitWith, WhoAmI, Threads}
 )
 
 // Build is one build of a part.

@@ -1,9 +1,12 @@
 //! FAT32 (Microsoft's FAT specification, fatgen103), read: the geometry
 //! the boot sector gives, the chains of clusters files lie in, directories
 //! with their long names, and files found by path. The caller reads the
-//! volume's sectors; sectors are counted from the volume's first.
+//! volume's sectors; sectors are counted from the volume's first. [`write`]
+//! writes them too.
 
 #![cfg_attr(not(test), no_std)]
+
+pub mod write;
 
 /// Why something on a volume could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +25,10 @@ pub enum Error {
     NotFound,
     /// A name on the way is a file, not a directory.
     NotADirectory,
+    /// A sector could not be written.
+    Write,
+    /// No cluster is free.
+    Full,
 }
 
 /// The geometry of a FAT32 volume, from its boot sector.
@@ -32,6 +39,8 @@ pub struct Volume {
     reserved: u32,
     fats: u32,
     fat_sectors: u32,
+    /// The sector of `FSInfo`, which counts the free clusters; 0 for none.
+    fsinfo: u32,
     pub root: u32,
     /// How many clusters the data region holds, the first of them number 2.
     pub clusters: u32,
@@ -98,6 +107,7 @@ impl Volume {
             reserved,
             fats,
             fat_sectors,
+            fsinfo: u16_at(boot, 48),
             root: u32_at(boot, 44),
             clusters,
         })
@@ -262,6 +272,15 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
             volume: Volume::read(&boot)?,
             read,
         })
+    }
+
+    /// Reads the volume's sector `at` into `into`, a sector long.
+    pub(crate) fn sector(&mut self, at: u64, into: &mut [u8]) -> Result<(), Error> {
+        if (self.read)(at, into) {
+            Ok(())
+        } else {
+            Err(Error::Read)
+        }
     }
 
     /// The cluster after `cluster` in its chain, or none at its end.

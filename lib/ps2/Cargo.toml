@@ -1,0 +1,12 @@
+[package]
+name = "ps2"
+description = "The PS/2 controller and keyboard without the hardware: commands, and scan codes read as keys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

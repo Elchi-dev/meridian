@@ -129,6 +129,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps2"
+version = "0.0.0"
+
+[[package]]
 name = "qr"
 version = "0.0.0"
 

@@ -55,6 +55,9 @@ type Machine struct {
 	// WithoutX2APIC hides the x2APIC from the processor, so it has only
 	// the older xAPIC, as processors from before about 2013 do.
 	WithoutX2APIC bool
+	// WithoutXSAVE hides XSAVE from the processor, so it keeps its
+	// registers with FXSAVE only, as processors from before about 2008 do.
+	WithoutXSAVE bool
 	// WithoutPS2 leaves the 8042 out, so the keyboard is a USB one behind
 	// an xHCI controller, as on PCs without PS/2 ports.
 	WithoutPS2 bool
@@ -106,7 +109,10 @@ func (m Machine) Args() []string {
 	}
 	cpu := "max"
 	if m.WithoutX2APIC {
-		cpu = "max,-x2apic"
+		cpu += ",-x2apic"
+	}
+	if m.WithoutXSAVE {
+		cpu += ",-xsave"
 	}
 	args := []string{
 		"-machine", board,

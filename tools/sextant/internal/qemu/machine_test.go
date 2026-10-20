@@ -98,6 +98,21 @@ func TestAMachineCanLackTheX2APIC(t *testing.T) {
 	}
 }
 
+func TestAMachineCanLackXSAVE(t *testing.T) {
+	m := fullMachine()
+	m.WithoutXSAVE = true
+	if got := strings.Join(m.Args(), " "); !strings.HasPrefix(got, "-machine q35 -cpu max,-xsave -m ") {
+		t.Fatalf("got %s", got)
+	}
+	m.WithoutX2APIC = true
+	if got := strings.Join(m.Args(), " "); !strings.HasPrefix(got, "-machine q35 -cpu max,-x2apic,-xsave -m ") {
+		t.Fatalf("without either: %s", got)
+	}
+	if got := strings.Join(fullMachine().Args(), " "); strings.Contains(got, "xsave") {
+		t.Fatalf("an ordinary machine keeps XSAVE: %s", got)
+	}
+}
+
 func TestAMachineCanLackPS2(t *testing.T) {
 	m := fullMachine()
 	m.WithoutPS2 = true

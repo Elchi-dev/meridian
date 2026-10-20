@@ -496,7 +496,19 @@ fn child_gets_no_more() -> Outcome {
 const SETTINGS: &[u8] =
     b"boot {\n    timeout = 2500ms\n    default = example\n    verbose = true\n}\n";
 
+/// Whether the boot volume hangs in the tree, as it does whenever the
+/// machine started from a disk; the kernel's own check wants it then.
+fn booted_from_disk() -> bool {
+    open("/System/Boot", 0).is_ok_and(|boot| close(boot).is_ok())
+}
+
 fn settings_read_back() -> Outcome {
+    if !booted_from_disk() {
+        return expect(
+            open("/System/Boot/meridian/boot.meri", abi::file::READ) == Err(Error::NotFound),
+            "booted from a CD, there should be no boot.meri to open",
+        );
+    }
     let file = open("/System/Boot/meridian/boot.meri", abi::file::READ)
         .map_err(|_| "boot.meri should open from the EFI system partition")?;
     expect(
@@ -547,10 +559,6 @@ fn files_that_do_not_open() -> Outcome {
             && open("/System/../..", abi::file::READ) == Err(Error::BadArgument),
         "a path not from the root, or above it, is none",
     )?;
-    expect(
-        open("/System/Boot/meridian/boot.meri", abi::file::WRITE) == Err(Error::Denied),
-        "nothing writes to a volume mounted read only",
-    )?;
     let long = [b'/'; abi::PATH_BYTES + 1];
     let too_long = abi::Call::Open {
         len: long.len() as u64,
@@ -561,9 +569,22 @@ fn files_that_do_not_open() -> Outcome {
         abi::answer(raw::call(too_long).0) == Err(Error::TooLong),
         "a path longer than PATH_BYTES",
     )?;
+    let stranger = Handle(0x7777_0042);
+    let mut room = [0u8; 8];
+    expect(
+        read(stranger, 0, &mut room) == Err(Error::BadHandle)
+            && info(stranger) == Err(Error::BadHandle),
+        "a made up handle is no file to read or ask about",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    expect(
+        open("/System/Boot/meridian/boot.meri", abi::file::WRITE) == Err(Error::Denied),
+        "nothing writes to a volume mounted read only",
+    )?;
     let directory =
         open("/System/Boot/meridian", abi::file::READ).map_err(|_| "a directory should open")?;
-    let mut room = [0u8; 8];
     expect(
         info(directory).is_ok_and(|i| i.directory)
             && read(directory, 0, &mut room) == Err(Error::NotAFile)

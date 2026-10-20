@@ -542,13 +542,26 @@ fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
 /// /System/Boot and reads as AHCI and FAT32 read it straight, SYSTEM and a
 /// token restricted to the low level both open it to read, and an open
 /// file's slot is free again once it is closed, while one file more than
-/// there are slots finds none.
+/// there are slots finds none. Booted from a CD, which the kernel cannot
+/// read yet, nothing hangs there.
 fn vfs_checks<W: Write>(report: &mut Report<'_, W>) {
     use abi::file::READ;
     use raw::vfs::{self, Error};
     use security::{Integrity, Privileges, Restriction, Token};
     let settings = "/System/Boot/meridian/boot.meri";
     let system = Token::system();
+    let disk = raw::ahci::drives()
+        .iter()
+        .flatten()
+        .any(|d| d.attached == ahci::Attached::Disk);
+    if !disk {
+        report.check(
+            "kernel.vfs.read",
+            vfs::open(settings, &system, READ) == Err(Error::NotFound),
+            "booted from a CD, nothing should hang at /System/Boot",
+        );
+        return;
+    }
     let mut by_tree = [0u8; 128];
     let read = vfs::open(settings, &system, READ).ok().and_then(|slot| {
         let len = vfs::read(slot, 0, &mut by_tree).ok();

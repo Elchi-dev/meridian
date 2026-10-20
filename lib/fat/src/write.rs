@@ -416,16 +416,16 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             index: 0,
         }; 20];
         let mut count = 0;
-        let mut found = false;
         self.fat.walk(directory, |sector, bytes| {
             for (index, e) in bytes.as_chunks::<32>().0.iter().enumerate() {
                 let here = Place { sector, index };
                 if here == place {
-                    found = true;
                     return false;
                 }
-                if e[0] != 0xe5 && e[11] & 0x3f == 0x0f && count < 20 {
-                    longs[count] = here;
+                // A long name takes 20 entries at most, so only the last 20
+                // of a run can be its.
+                if e[0] != 0xe5 && e[11] & 0x3f == 0x0f {
+                    longs[count % 20] = here;
                     count += 1;
                 } else {
                     count = 0;
@@ -433,10 +433,9 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             }
             true
         })?;
-        for at in longs[..count]
+        for at in longs[..count.min(20)]
             .iter()
             .chain(core::iter::once(&place))
-            .filter(|_| found)
         {
             let size = self.fat.volume.sector_size as usize;
             let mut room = [0u8; 4096];
@@ -902,6 +901,93 @@ mod tests {
         w.fat = Fat::open(reads).unwrap();
         assert_eq!(w.create(2, "readme.txt", false), Err(Error::Read));
         assert_eq!(*image.borrow(), before);
+    }
+
+    /// Every entry's place in the directory at `directory`, in order.
+    fn places(w: &mut Writer<Reads, Writes>, directory: u32) -> Vec<Place> {
+        let mut all = Vec::new();
+        w.fat
+            .walk(directory, |sector, bytes| {
+                all.extend((0..bytes.len() / 32).map(|index| Place { sector, index }));
+                true
+            })
+            .unwrap();
+        all
+    }
+
+    #[test]
+    fn a_long_name_goes_with_its_entry_wherever_it_lies() {
+        let Some(image) = formatted("spread") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let names: Vec<String> = (0..10).map(|i| format!("a file called {i}.txt")).collect();
+        let shorts: Vec<Place> = names
+            .iter()
+            .map(|n| w.create(root, n, false).unwrap().1)
+            .collect();
+        let all = places(&mut w, root);
+        assert_eq!(
+            all.len(),
+            32,
+            "the label and ten names of three entries take two clusters"
+        );
+        // The second lies in the first cluster, the last in the second.
+        for gone in [1, 9] {
+            w.remove(root, &names[gone]).unwrap();
+            let at = all.iter().position(|p| *p == shorts[gone]).unwrap();
+            for p in &all[at - 2..=at] {
+                assert_eq!(image.borrow()[entry_bytes(*p)][0], 0xe5, "{gone}");
+            }
+        }
+        let now = image.borrow().clone();
+        assert!(
+            sound(&now, "spread"),
+            "no long name is left without its entry"
+        );
+        let mut want: Vec<_> = names
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| ![1, 9].contains(i))
+            .map(|(_, n)| n.clone())
+            .collect();
+        want.sort();
+        let mut got = listed(&now, "spread", "/");
+        got.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn only_the_last_twenty_long_entries_before_one_can_be_its() {
+        let Some(image) = formatted("twenty-long") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (_, a) = w.create(root, "aaaaaaaaaaaaa", false).unwrap();
+        // Its short entry made to look like a long one, as on a volume
+        // something broke.
+        let mut odd = [0u8; 32];
+        odd[0] = 0x01;
+        odd[11] = 0x0f;
+        w.put_entry(a, &odd).unwrap();
+        let long = "b".repeat(255);
+        let (_, b) = w.create(root, &long, false).unwrap();
+        let all = places(&mut w, root);
+        let at = all.iter().position(|p| *p == b).unwrap();
+        assert_eq!(
+            at,
+            1 + 2 + 20,
+            "the label, two of a's and twenty of b's before it"
+        );
+        w.remove(root, &long).unwrap();
+        let bytes = image.borrow();
+        for (i, p) in all[..=at].iter().enumerate() {
+            assert_eq!(bytes[entry_bytes(*p)][0] == 0xe5, i > 2, "entry {i}");
+        }
     }
 
     #[test]

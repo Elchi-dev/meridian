@@ -76,7 +76,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
     fn fsinfo(&mut self, room: &mut [u8; 4096]) -> Result<Option<u64>, Error> {
         let v = self.fat.volume;
         let size = v.sector_size as usize;
-        if v.fsinfo == 0 || size < 512 {
+        if v.fsinfo == 0 {
             return Ok(None);
         }
         let at = u64::from(v.fsinfo);

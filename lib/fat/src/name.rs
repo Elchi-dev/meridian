@@ -103,9 +103,9 @@ pub fn long_entries(name: &str, short: &[u8; 11], into: &mut [[u8; 32]; 20]) -> 
     for (room, unit) in all.iter_mut().zip(name.encode_utf16()) {
         *room = unit;
     }
-    if units < parts * 13 {
-        all[units] = 0;
-    }
+    // A zero ends the name. When the name fills its last entry, the zero
+    // lands past it, where no entry reads.
+    all[units] = 0;
     for (slot, part) in into.iter_mut().zip((1..=parts).rev()) {
         let mut e = [0u8; 32];
         e[0] = u8::try_from(part).unwrap_or(0) | if part == parts { 0x40 } else { 0 };

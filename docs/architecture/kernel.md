@@ -239,7 +239,12 @@ reserved CPU time and memory, so input stays smooth even with every core at
 100 %.
 
 What exists: kernel threads on every core. Each core has its own run
-queue, and a thread stays on the core it was started on. `lib/sched` keeps
+queue. A core with nothing else to run takes the waiting thread of the
+highest priority from a core that is busy, but never one started for a
+core of its choosing, an idle thread, the one that started the kernel, or
+one its core is still switching away from, whose stack pointer is not
+kept yet. Programs' threads may move; the kernel's own ones started for a
+core stay there. `lib/sched` keeps
 the threads that are ready in 32 queues, one per priority, with a bit for every
 queue that holds one; the highest goes first and threads of one priority
 take turns. Each thread has a 32 KiB stack at `kernel::thread::STACKS`
@@ -267,7 +272,8 @@ time while a lower thread keeps the processor busy, the guard below a
 thread's stack, that every thread that can be started at once starts, ends
 and frees its number, and on the other cores that a thread runs on the
 core it was started on, loses the processor there at that core's tick, and
-wakes there on time.
+wakes there on time, and that of two threads that never give way on one
+core, one moves to a core with nothing to run.
 
 ## IPC (M3)
 

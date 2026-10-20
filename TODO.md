@@ -99,7 +99,7 @@ Loader and UEFI:
 - [x] Kernel threads on the first core: 32 priority levels (`lib/sched`), a switch when one gives way, sleeping on the timer, an idle thread
 - [x] Preemption: at every tick the timer hands the processor to a ready thread of the same or a higher priority, and wakes the sleepers; spin locks keep interrupts off while held
 - [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
-- [ ] Threads move between cores when one is busier than another
+- [x] Threads move between cores: a core with nothing to run takes a waiting thread from a busy one, unless it was started for its core
 - [ ] Each thread's FPU and SSE registers kept across switches, before programs use them: Meridian's own build without SSE, Windows programs will not
 - [ ] Threads in programs, and with them TLB shootdowns: a page one thread unmaps must not stay cached on another core
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program

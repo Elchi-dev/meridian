@@ -4,7 +4,9 @@
 //! a higher priority is ready there; the tick also wakes the core's
 //! sleepers whose time has come. Each core has an idle thread that runs
 //! when nothing else is ready there: on the first core one of its own, on
-//! the others the loop that also runs their jobs.
+//! the others the loop that also runs their jobs. A core with nothing to
+//! run takes a thread that waits on a busier one, unless it was started
+//! for a core of its choosing.
 
 use core::arch::naked_asm;
 
@@ -37,9 +39,9 @@ pub fn join(core: usize) -> bool {
 }
 
 /// Starts `entry(argument)` as a thread of its own at `priority` on
-/// `core`, ready to run once that core's running thread gives way, wakes
-/// that core for it, and returns its number. It ends when the entry
-/// returns.
+/// `core`, where it stays, ready to run once that core's running thread
+/// gives way, wakes that core for it, and returns its number. It ends when
+/// the entry returns.
 ///
 /// # Errors
 ///
@@ -51,11 +53,12 @@ pub fn spawn_on(
     argument: u64,
     priority: u8,
 ) -> Result<usize, Error> {
-    spawn_in(core, 0, entry, argument, priority)
+    start_thread(core, 0, entry, argument, priority, true)
 }
 
 /// Starts a thread as [`spawn_on`] does, in the address space whose level
-/// 4 table is at `root`, or the kernel's for 0.
+/// 4 table is at `root`, or the kernel's for 0. It starts on `core`, but
+/// may move to a core that has nothing else to run.
 ///
 /// # Errors
 ///
@@ -67,6 +70,17 @@ pub fn spawn_in(
     argument: u64,
     priority: u8,
 ) -> Result<usize, Error> {
+    start_thread(core, root, entry, argument, priority, false)
+}
+
+fn start_thread(
+    core: usize,
+    root: u64,
+    entry: extern "C" fn(u64),
+    argument: u64,
+    priority: u8,
+    pinned: bool,
+) -> Result<usize, Error> {
     // The new thread starts with interrupts as its maker has them.
     let flags = if x86::raw::interrupts_enabled() {
         0x202
@@ -77,6 +91,9 @@ pub fn spawn_in(
         let mut threads = THREADS.lock();
         threads.can_start(core, priority)?;
         let slot = make(&mut threads, core, root, entry, argument, priority, flags)?;
+        if pinned {
+            threads.pin(slot);
+        }
         threads.queue(slot);
         Ok(slot)
     })?;

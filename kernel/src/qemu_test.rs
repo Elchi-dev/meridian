@@ -1708,9 +1708,26 @@ extern "C" fn sleeper(_: u64) {
     SLEPT.store(raw::interrupts::ticks() - at, Ordering::Release);
 }
 
+/// The cores each of two busy threads found itself on, a bit for each.
+static RAN_ON: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// Keeps the processor for 20 ticks without giving way, noting every core
+/// it finds itself running on.
+extern "C" fn busy_noting_cores(me: u64) {
+    let until = raw::interrupts::ticks() + 20;
+    while raw::interrupts::ticks() < until {
+        if let Some(cores) = usize::try_from(me).ok().and_then(|me| RAN_ON.get(me)) {
+            cores.fetch_or(1 << raw::interrupts::this_core(), Ordering::AcqRel);
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Threads on the other cores: each runs on the core it was started on, a
 /// thread there that never gives way loses the processor at that core's
-/// own tick, and a sleeper there wakes on time.
+/// own tick, and a sleeper there wakes on time. Of two threads that never
+/// give way, started on one core without being kept there, one moves to a
+/// core that has nothing else to run.
 fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     use raw::thread::{self, NORMAL};
     let mut others = raw::smp::others();
@@ -1798,6 +1815,23 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
         "kernel.thread.slept_elsewhere",
         slept.is_some_and(|s| s.is_ok()) && (3..=5).contains(&SLEPT.load(Ordering::Acquire)),
         "a thread sleeping on another core should wake there on time",
+    );
+    for cores in &RAN_ON {
+        cores.store(0, Ordering::Release);
+    }
+    let started =
+        (0..2).all(|me| thread::spawn_in(first, 0, busy_noting_cores, me, NORMAL).is_ok());
+    thread::sleep(30);
+    let both = RAN_ON
+        .iter()
+        .all(|cores| cores.load(Ordering::Acquire) != 0);
+    let elsewhere = RAN_ON
+        .iter()
+        .any(|cores| cores.load(Ordering::Acquire) & !(1 << first) != 0);
+    report.check(
+        "kernel.thread.moved",
+        started && both && elsewhere,
+        "of two threads that never give way on one core, one should move to a core with nothing to run",
     );
 }
 

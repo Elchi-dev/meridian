@@ -80,15 +80,19 @@ struct Thread {
     mapped: bool,
     /// The level 4 table of its address space, or 0 for the kernel's.
     root: u64,
+    /// Whether it stays on its core, as idle threads and threads started
+    /// for a core of their choosing do.
+    pinned: bool,
 }
 
 struct Core {
     queue: RunQueue<THREADS>,
     current: usize,
     idle: usize,
-    /// A thread that ended and is switched away from, to be freed once
-    /// the switch is over.
-    retiring: usize,
+    /// The thread the core is switching away from, until it arrived in the
+    /// next: its stack pointer is not kept yet, so no other core may take
+    /// it, and when it ended it is freed then.
+    leaving: usize,
 }
 
 /// A core going from one thread to another.
@@ -122,11 +126,13 @@ impl<const CORES: usize> Table<CORES> {
             stack: 0,
             mapped: false,
             root: 0,
+            pinned: false,
         };
         let mut all = [free; THREADS];
         all[0] = Thread {
             state: State::Running,
             priority: NORMAL,
+            pinned: true,
             ..free
         };
         let mut cores = [const {
@@ -134,7 +140,7 @@ impl<const CORES: usize> Table<CORES> {
                 queue: RunQueue::new(),
                 current: NOBODY,
                 idle: NOBODY,
-                retiring: NOBODY,
+                leaving: NOBODY,
             }
         }; CORES];
         cores[0].current = 0;
@@ -169,6 +175,7 @@ impl<const CORES: usize> Table<CORES> {
             priority: 0,
             core,
             root: 0,
+            pinned: true,
             ..self.all[slot]
         };
         self.cores[core].current = slot;
@@ -194,7 +201,8 @@ impl<const CORES: usize> Table<CORES> {
     /// Makes free thread `slot` ready on `core` at `priority`, in the
     /// address space whose level 4 table is at `root`, or the kernel's for
     /// 0. Its stack is mapped now for good, and its stack pointer is at
-    /// `stack`. It waits in no queue yet.
+    /// `stack`. It waits in no queue yet, and may move to another core
+    /// unless it is pinned.
     pub fn prepare(&mut self, slot: usize, core: usize, priority: u8, root: u64, stack: u64) {
         self.all[slot] = Thread {
             state: State::Ready,
@@ -203,7 +211,13 @@ impl<const CORES: usize> Table<CORES> {
             stack,
             mapped: true,
             root,
+            pinned: false,
         };
+    }
+
+    /// Keeps thread `slot` on the core it is on.
+    pub fn pin(&mut self, slot: usize) {
+        self.all[slot].pinned = true;
     }
 
     /// Puts ready thread `slot` at the end of its priority's queue on its
@@ -224,14 +238,17 @@ impl<const CORES: usize> Table<CORES> {
     pub fn make_idle(&mut self, slot: usize) {
         let core = self.all[slot].core;
         self.cores[core].idle = slot;
+        self.pin(slot);
     }
 
     /// Puts the thread running on `core` into `becomes`, wakes the core's
     /// sleepers whose time has come by `now`, and picks the next: the
     /// first thread of the highest priority ready there, or when there is
-    /// none, the running one if it can go on, or else the idle thread.
-    /// Answers the switch when another thread runs next. An ending thread
-    /// is freed once the core arrived in the next one.
+    /// none, the running one if it can go on and is not the idle thread,
+    /// or else one taken from a busier core, or else the running one if it
+    /// can go on, or the idle thread. Answers the switch when another
+    /// thread runs next. An ending thread is freed once the core arrived in
+    /// the next one.
     pub fn give_way(&mut self, core: usize, becomes: State, now: u64) -> Option<Switch> {
         let current = self.cores[core].current;
         let idle = self.cores[core].idle;
@@ -250,30 +267,60 @@ impl<const CORES: usize> Table<CORES> {
                 self.queue(slot);
             }
         }
+        let ready = self.all[current].state == State::Ready;
         let next = match self.cores[core].queue.pop() {
             Some((next, _)) => next,
-            None if self.all[current].state == State::Ready || idle == NOBODY => current,
-            None => idle,
+            None if ready && current != idle => current,
+            None => match self.take_for(core) {
+                Some(taken) => taken,
+                None if ready || idle == NOBODY => current,
+                None => idle,
+            },
         };
         self.all[next].state = State::Running;
         if next == current {
             return None;
         }
         self.cores[core].current = next;
-        if becomes == State::Ending {
-            self.cores[core].retiring = current;
-        }
+        self.cores[core].leaving = current;
         Some(Switch {
             from: current,
             to: next,
         })
     }
 
+    /// Takes a thread for `core`, which has nothing else to run, from a
+    /// core that runs something else than its idle thread and has more
+    /// waiting: the first of the highest priority that may move and is
+    /// not being switched away from.
+    fn take_for(&mut self, core: usize) -> Option<usize> {
+        let mut best: Option<usize> = None;
+        for slot in 0..THREADS {
+            let t = &self.all[slot];
+            let from = &self.cores[t.core];
+            let free_to_go = t.state == State::Ready
+                && !t.pinned
+                && from.current != from.idle
+                && self.cores.iter().all(|c| c.leaving != slot);
+            if free_to_go && best.is_none_or(|b| self.all[b].priority < t.priority) {
+                best = Some(slot);
+            }
+        }
+        let taken = best?;
+        let from = self.all[taken].core;
+        self.cores[from].queue.remove(taken).ok()?;
+        self.all[taken].core = core;
+        Some(taken)
+    }
+
     /// Frees the thread `core` just switched away from, if it ended, now
-    /// that nothing runs on its stack any more.
+    /// that nothing runs on its stack any more, and lets other cores take
+    /// it if it is ready.
     pub fn arrived(&mut self, core: usize) {
-        let retiring = core::mem::replace(&mut self.cores[core].retiring, NOBODY);
-        if let Some(t) = self.all.get_mut(retiring) {
+        let leaving = core::mem::replace(&mut self.cores[core].leaving, NOBODY);
+        if let Some(t) = self.all.get_mut(leaving)
+            && t.state == State::Ending
+        {
             t.state = State::Ended;
         }
     }
@@ -569,6 +616,162 @@ mod tests {
         assert_eq!(t.give_way(0, State::Sleeping(10), 0), None);
         assert_eq!(t.current(0), 0);
         assert!(t.alive(0));
+    }
+
+    /// A table where the first core runs `a` and has `b` and thread 0
+    /// waiting, while the second core idles.
+    fn busy_first_core() -> (Box<Two>, usize, usize) {
+        let mut t = two();
+        let a = spawn(&mut t, 0, NORMAL);
+        let b = spawn(&mut t, 0, NORMAL);
+        assert_eq!(
+            t.give_way(0, State::Ready, 0),
+            Some(Switch { from: 0, to: a })
+        );
+        t.arrived(0);
+        (t, a, b)
+    }
+
+    #[test]
+    fn an_idle_core_takes_a_thread_a_busy_one_has_waiting() {
+        let (mut t, a, b) = busy_first_core();
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            Some(Switch { from: 2, to: b })
+        );
+        assert_eq!(t.all[b].core, 1, "it is the second core's now");
+        assert_eq!(t.current(1), b);
+        assert_eq!(
+            t.give_way(0, State::Ready, 0),
+            Some(Switch { from: a, to: 0 }),
+            "the first core has only thread 0 left waiting"
+        );
+        t.arrived(0);
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            None,
+            "b goes on where it is"
+        );
+    }
+
+    #[test]
+    fn a_core_that_idles_keeps_what_it_has_waiting() {
+        let mut t = two();
+        assert_eq!(
+            t.give_way(0, State::Sleeping(100), 0),
+            Some(Switch { from: 0, to: 1 })
+        );
+        t.arrived(0);
+        let waiting = spawn(&mut t, 0, NORMAL);
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            None,
+            "the first core takes it itself"
+        );
+        assert_eq!(
+            t.give_way(0, State::Ready, 0),
+            Some(Switch {
+                from: 1,
+                to: waiting
+            })
+        );
+    }
+
+    #[test]
+    fn a_pinned_thread_stays_where_it_was_started() {
+        let (mut t, _, b) = busy_first_core();
+        t.pin(b);
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            None,
+            "neither b nor thread 0 moves"
+        );
+        assert_eq!(t.all[b].core, 0);
+        assert!(
+            t.all[0].pinned && t.all[1].pinned && t.all[2].pinned,
+            "thread 0 and the idle ones"
+        );
+    }
+
+    #[test]
+    fn a_thread_is_not_taken_while_its_core_switches_away_from_it() {
+        let (mut t, a, b) = busy_first_core();
+        assert_eq!(
+            t.give_way(0, State::Ready, 0),
+            Some(Switch { from: a, to: b })
+        );
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            None,
+            "a's stack pointer is not kept yet"
+        );
+        t.arrived(0);
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            Some(Switch { from: 2, to: a })
+        );
+    }
+
+    #[test]
+    fn the_highest_priority_waiting_is_taken_first() {
+        let (mut t, _, b) = busy_first_core();
+        let low = spawn(&mut t, 0, 2);
+        let high = spawn(&mut t, 0, 20);
+        let also_high = spawn(&mut t, 0, 20);
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            Some(Switch { from: 2, to: high })
+        );
+        t.arrived(1);
+        assert_eq!(
+            t.give_way(1, State::Ending, 0),
+            Some(Switch {
+                from: high,
+                to: also_high
+            }),
+            "then the next of it"
+        );
+        t.arrived(1);
+        assert_eq!(
+            t.give_way(1, State::Ending, 0),
+            Some(Switch {
+                from: also_high,
+                to: b
+            })
+        );
+        t.arrived(1);
+        assert_eq!(
+            t.give_way(1, State::Ending, 0),
+            Some(Switch { from: b, to: low })
+        );
+    }
+
+    #[test]
+    fn a_thread_that_moved_sleeps_on_its_new_core() {
+        let (mut t, a, b) = busy_first_core();
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            Some(Switch { from: 2, to: b })
+        );
+        t.arrived(1);
+        assert_eq!(
+            t.give_way(1, State::Sleeping(5), 0),
+            Some(Switch { from: b, to: 2 })
+        );
+        t.arrived(1);
+        assert_eq!(
+            t.give_way(0, State::Ready, 10),
+            Some(Switch { from: a, to: 0 })
+        );
+        assert_eq!(
+            t.all[b].state,
+            State::Sleeping(5),
+            "the first core leaves it alone"
+        );
+        assert_eq!(
+            t.give_way(1, State::Ready, 10),
+            Some(Switch { from: 2, to: b })
+        );
     }
 
     #[test]

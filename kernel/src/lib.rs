@@ -777,6 +777,7 @@ mod tests {
             ecam: None,
             io_apic: None,
             keyboard: None,
+            i8042: None,
         };
         let measured = |hz, against| Some(machine::Measured { hz, against });
         describe(
@@ -829,6 +830,7 @@ mod tests {
             ecam: None,
             io_apic: None,
             keyboard: None,
+            i8042: None,
         };
         assert!(describe(&mut Broken, &known, None).is_err());
     }

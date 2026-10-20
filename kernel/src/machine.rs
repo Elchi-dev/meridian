@@ -21,6 +21,9 @@ pub struct Machine {
     pub io_apic: Option<acpi::IoApic>,
     /// Where the keyboard's interrupt, ISA's first, arrives at it.
     pub keyboard: Option<acpi::Route>,
+    /// Whether the FADT says there is an 8042, the PS/2 controller. Some
+    /// firmware says no where there is one, so the kernel looks anyway.
+    pub i8042: Option<bool>,
 }
 
 /// A clock the time stamp counter is measured against: how often it ticks
@@ -73,10 +76,12 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
         first
     });
     let keyboard = madt.and_then(|t| acpi::isa_route(t, 1).ok());
-    let pm_timer = acpi::find(memory, xsdt, b"FACP")
+    let fadt = acpi::find(memory, xsdt, b"FACP")
         .and_then(|at| acpi::table(memory, at, b"FACP"))
-        .ok()
-        .and_then(|fadt| Some((acpi::pm_timer_port(fadt)?, acpi::pm_timer_bits(fadt))));
+        .ok();
+    let pm_timer =
+        fadt.and_then(|fadt| Some((acpi::pm_timer_port(fadt)?, acpi::pm_timer_bits(fadt))));
+    let i8042 = fadt.and_then(acpi::has_8042);
     let hpet = acpi::find(memory, xsdt, b"HPET")
         .and_then(|at| acpi::table(memory, at, b"HPET"))
         .ok()
@@ -92,6 +97,7 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
         ecam,
         io_apic,
         keyboard,
+        i8042,
     }
 }
 
@@ -277,6 +283,7 @@ mod tests {
                 ecam: None,
                 io_apic: None,
                 keyboard: Some(ISA_FIRST),
+                i8042: None,
             }
         );
     }
@@ -293,6 +300,7 @@ mod tests {
                 ecam: None,
                 io_apic: None,
                 keyboard: Some(ISA_FIRST),
+                i8042: None,
             }
         );
         let ram = tables(&[fadt(0x408, 0)]);
@@ -305,10 +313,26 @@ mod tests {
                 ecam: None,
                 io_apic: None,
                 keyboard: None,
+                i8042: None,
             }
         );
         let ram = tables(&[fadt(0, 0)]);
         assert_eq!(read(&ram, 0x1000).pm_timer, None, "an FADT without a timer");
+    }
+
+    #[test]
+    fn the_fadt_says_whether_there_is_a_ps2_controller() {
+        let with = |revision: u8, boot: u8| {
+            let mut t = fadt(0x608, 0);
+            t[8] = revision;
+            t[109] = boot;
+            fix(&mut t, 9);
+            read(&tables(&[t]), 0x1000).i8042
+        };
+        assert_eq!(with(3, 0b10), Some(true), "as q35 has it");
+        assert_eq!(with(3, 0), Some(false), "and as it has it with i8042=off");
+        assert_eq!(with(1, 0b10), None, "too old a FADT to say");
+        assert_eq!(read(&tables(&[madt(1)]), 0x1000).i8042, None, "no FADT");
     }
 
     fn hpet(address: u64) -> Vec<u8> {

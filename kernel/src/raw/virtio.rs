@@ -106,8 +106,9 @@ fn halves(value: u64) -> (u32, u32) {
 /// A 64-bit register, written as two halves, the low one first.
 fn write64(at: u64, value: u64) {
     let (low, high) = halves(value);
-    write32(at, low);
-    write32(at + 4, high);
+    let [low_at, high_at] = virtio::halves(at);
+    write32(low_at, low);
+    write32(high_at, high);
 }
 
 /// Maps the page that holds `region` of the device whose header is `h`,
@@ -116,8 +117,8 @@ fn map(h: &Header, region: Region, skip: u64, virt: u64) -> Option<u64> {
     let Bar::Memory { address, .. } = h.bar(usize::from(region.bar)) else {
         return None;
     };
-    let physical = address + u64::from(region.offset) + skip;
-    memory::map_registers(virt, physical & !0xfff, 1).then_some(virt + (physical & 0xfff))
+    let (page, at) = virtio::window(region.at(address, skip), virt);
+    memory::map_registers(virt, page, 1).then_some(at)
 }
 
 /// Waits until `done` holds, reading no more than [`PATIENCE`] times.
@@ -157,13 +158,19 @@ pub fn start(at: Address, h: &Header) -> Option<Drive> {
         write8(status_at, status::FAILED);
         return None;
     }
-    let queue = start_queue(base, h, &layout)?;
+    let (frame, size, notify) = start_queue(base, h, &layout)?;
     write8(status_at, read8(status_at) | status::DRIVER_OK);
     let drive = Drive {
         sectors: capacity(base, device),
-        read_only: taken & virtio::features::BLOCK_READ_ONLY != 0,
+        read_only: virtio::read_only(taken),
     };
-    *QUEUE.lock() = Some(Queue { drive, ..queue });
+    *QUEUE.lock() = Some(Queue {
+        drive,
+        frame,
+        size,
+        notify,
+        sent: 0,
+    });
     Some(drive)
 }
 
@@ -172,46 +179,29 @@ pub fn start(at: Address, h: &Header) -> Option<Drive> {
 fn capacity(base: u64, device: u64) -> u64 {
     loop {
         let before = read8(base + 0x15);
-        let low = u64::from(read32(device));
-        let high = u64::from(read32(device + 4));
+        let [low, high] = virtio::halves(device).map(read32);
         if read8(base + 0x15) == before {
-            return high << 32 | low;
+            return x86::join(high, low);
         }
     }
 }
 
 /// Sets the first queue up in a frame of its own, as large as the device
-/// and [`virtio::QUEUE_SIZE`] allow, and enables it.
-fn start_queue(base: u64, h: &Header, layout: &virtio::Layout) -> Option<Queue> {
+/// and [`virtio::QUEUE_SIZE`] allow, and enables it. Answers the frame, the
+/// size and where the queue is rung.
+fn start_queue(base: u64, h: &Header, layout: &virtio::Layout) -> Option<(u64, u16, u64)> {
     write16(base + common::QUEUE_SELECT, 0);
-    let size = read16(base + common::QUEUE_SIZE).min(virtio::QUEUE_SIZE);
-    if size < 3 {
-        return None;
-    }
+    let size = virtio::queue_size(read16(base + common::QUEUE_SIZE))?;
     write16(base + common::QUEUE_SIZE, size);
     let frame = memory::device_frame()?;
     let rings = virtio::rings(size);
     write64(base + common::QUEUE_DESC, frame);
     write64(base + common::QUEUE_DRIVER, frame + rings.available as u64);
     write64(base + common::QUEUE_DEVICE, frame + rings.used as u64);
-    let off = u64::from(read16(base + common::QUEUE_NOTIFY_OFF));
-    let notify = map(
-        h,
-        layout.notify,
-        off * u64::from(layout.notify_multiplier),
-        NOTIFY,
-    )?;
+    let skip = layout.notify_skip(read16(base + common::QUEUE_NOTIFY_OFF));
+    let notify = map(h, layout.notify, skip, NOTIFY)?;
     write16(base + common::QUEUE_ENABLE, 1);
-    Some(Queue {
-        drive: Drive {
-            sectors: 0,
-            read_only: false,
-        },
-        frame,
-        size,
-        notify,
-        sent: 0,
-    })
+    Some((frame, size, notify))
 }
 
 /// What the block device the kernel drives is like, once it started. Only
@@ -235,8 +225,9 @@ pub fn read(sector: u64, into: &mut [u8]) -> Result<(), Error> {
     span(queue, sector, into.len())?;
     let data = memory::device_frame().ok_or(Error::NoMemory)?;
     let mut answer = Ok(());
-    for (i, chunk) in (0..).zip(into.chunks_mut(4096)) {
-        let header = virtio::read_header(sector + i * 8);
+    for (first, part) in block::parts(sector, into.len()) {
+        let chunk = &mut into[part];
+        let header = virtio::read_header(first);
         answer = request(queue, &header, false, data, chunk.len());
         if answer.is_err() {
             break;
@@ -268,7 +259,8 @@ pub fn write(sector: u64, from: &[u8]) -> Result<(), Error> {
     span(queue, sector, from.len())?;
     let data = memory::device_frame().ok_or(Error::NoMemory)?;
     let mut answer = Ok(());
-    for (i, chunk) in (0..).zip(from.chunks(4096)) {
+    for (first, part) in block::parts(sector, from.len()) {
+        let chunk = &from[part];
         // SAFETY: the frame is the kernel's alone, in the direct map, and a
         // chunk is no longer than it.
         unsafe {
@@ -278,7 +270,7 @@ pub fn write(sector: u64, from: &[u8]) -> Result<(), Error> {
                 chunk.len(),
             );
         };
-        let header = virtio::write_header(sector + i * 8);
+        let header = virtio::write_header(first);
         answer = request(queue, &header, true, data, chunk.len());
         if answer.is_err() {
             break;
@@ -314,22 +306,24 @@ fn request(
     let frame = HHDM_BASE + queue.frame;
     let rings = virtio::rings(queue.size);
     let length = u32::try_from(length).map_err(|_| Error::OutOfRange)?;
+    let (header_at, status_at) = (queue.frame + HEADER, queue.frame + STATUS);
     let chain = if out {
-        virtio::write_chain(queue.frame + HEADER, data, length, queue.frame + STATUS)
+        virtio::write_chain(header_at, data, length, status_at)
     } else {
-        virtio::read_chain(queue.frame + HEADER, data, length, queue.frame + STATUS)
+        virtio::read_chain(header_at, data, length, status_at)
     };
-    let slot = queue.sent % queue.size;
+    let status = (HHDM_BASE + status_at) as *mut u8;
     // SAFETY: the queue's frame is the kernel's and the device's alone, in
     // the direct map; the device reads the descriptors and the request only
     // once the driver's ring says so below, and with one request at a time
-    // it is done with the earlier one.
+    // it is done with the earlier one. Every entry of the driver's ring
+    // names descriptor 0, the head of the only chain, as the zeroed frame
+    // had it from the start.
     unsafe {
         core::ptr::copy_nonoverlapping(chain.as_ptr().cast::<u8>(), frame as *mut u8, 48);
-        core::ptr::copy_nonoverlapping(header.as_ptr(), (frame + HEADER) as *mut u8, 16);
-        core::ptr::write_volatile((frame + STATUS) as *mut u8, 0xff);
+        core::ptr::copy_nonoverlapping(header.as_ptr(), (HHDM_BASE + header_at) as *mut u8, 16);
+        core::ptr::write_volatile(status, 0xff);
         let ring = frame + rings.available as u64;
-        core::ptr::write_volatile((ring + 4 + 2 * u64::from(slot)) as *mut u16, 0);
         fence(Ordering::SeqCst);
         core::ptr::write_volatile((ring + 2) as *mut u16, queue.sent.wrapping_add(1));
     }
@@ -345,7 +339,7 @@ fn request(
     }
     fence(Ordering::SeqCst);
     // SAFETY: as above; the device wrote the status before its ring.
-    match unsafe { core::ptr::read_volatile((frame + STATUS) as *const u8) } {
+    match unsafe { core::ptr::read_volatile(status) } {
         block::OK => Ok(()),
         other => Err(Error::Failed(other)),
     }

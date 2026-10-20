@@ -360,22 +360,27 @@ pub fn ask(kind: u32) -> Result<(), Error> {
     answer
 }
 
-/// The device's status and the features agreed on, as the device reads
-/// them back, and the size and state of its first queue. Only the test
-/// image asks.
+/// The device's status, the features it offers and those agreed on, as
+/// the device reads them back, and the size and state of its first queue.
+/// Only the test image asks.
 #[cfg(feature = "qemu-test")]
-pub fn agreed() -> Option<(u8, u64, u16, u16)> {
+pub fn agreed() -> Option<(u8, u64, u64, u16, u16)> {
     let guard = QUEUE.lock();
     guard.as_ref()?;
-    let half = |select: u32| {
-        write32(COMMON + common::DRIVER_FEATURE_SELECT, select);
-        u64::from(read32(COMMON + common::DRIVER_FEATURE))
+    let features = |select_at: u64, at: u64| {
+        let half = |select: u32| {
+            write32(COMMON + select_at, select);
+            read32(COMMON + at)
+        };
+        x86::join(half(1), half(0))
     };
-    let features = half(0) | half(1) << 32;
+    let offered = features(common::DEVICE_FEATURE_SELECT, common::DEVICE_FEATURE);
+    let taken = features(common::DRIVER_FEATURE_SELECT, common::DRIVER_FEATURE);
     write16(COMMON + common::QUEUE_SELECT, 0);
     Some((
         read8(COMMON + common::DEVICE_STATUS),
-        features,
+        offered,
+        taken,
         read16(COMMON + common::QUEUE_SIZE),
         read16(COMMON + common::QUEUE_ENABLE),
     ))

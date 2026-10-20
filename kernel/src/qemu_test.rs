@@ -559,6 +559,7 @@ fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
 /// across frames, up to its last and no further.
 fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::virtio::{Error, read};
+    use virtio::status::{ACKNOWLEDGE, DRIVER, DRIVER_OK, FEATURES_OK};
     let drives = raw::ahci::drives();
     let disk = drives
         .iter()
@@ -574,10 +575,11 @@ fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
         return;
     };
     let sectors = disk.identity.map_or(0, |i| i.sectors);
+    let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
     report.check(
         "kernel.virtio.found",
-        drive.is_some_and(|d| d.sectors == sectors && d.read_only),
-        "the virtio disk should hold as many sectors as the AHCI disk, and say it only reads",
+        drive.is_some_and(|d| d.sectors == sectors && d.read_only == virtio::read_only(offered)),
+        "the virtio disk should hold as many sectors as the AHCI disk, and only read where it says so",
     );
     let ahci_read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
     let mut by_virtio = alloc::vec![0u8; 25 * 512];
@@ -607,18 +609,15 @@ fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
         spanning && each && end && refused,
         "virtio should read the same sectors as AHCI, up to the disk's last and no further",
     );
-    let ready = virtio::status::DRIVER_OK | virtio::status::FEATURES_OK;
-    let wrong = virtio::status::FAILED | virtio::status::NEEDS_RESET;
-    let taken = virtio::features::VERSION_1 | virtio::features::BLOCK_READ_ONLY;
+    let wanted = virtio::features::VERSION_1 | offered & virtio::features::BLOCK_READ_ONLY;
     report.check(
         "kernel.virtio.ready",
-        raw::virtio::agreed().is_some_and(|(status, features, size, enabled)| {
-            status & ready == ready
-                && status & wrong == 0
-                && features == taken
+        raw::virtio::agreed().is_some_and(|(status, _, taken, size, enabled)| {
+            status == ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK
+                && taken == wanted
                 && (size, enabled) == (virtio::QUEUE_SIZE, 1)
         }),
-        "the virtio disk should be ready, with version 1 and read only agreed on, and its first queue of 8 entries on",
+        "the virtio disk should be acknowledged, driven and ready, with version 1 and its only reading agreed on, and its first queue of 8 entries on",
     );
     report.check(
         "kernel.virtio.unsupported",
@@ -668,17 +667,15 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
     let through_nvme = back(&|lba, into| raw::nvme::read(lba, into).is_ok());
     let through_virtio = back(&|lba, into| raw::virtio::read(lba, into).is_ok());
     let sectors = disk.identity.map_or(0, |i| i.sectors);
-    let refused = matches!(
-        raw::nvme::write(at, &written[..512]),
-        Err(raw::nvme::Error::Failed(_))
-    ) && raw::virtio::write(at, &written[..512]) == Err(raw::virtio::Error::ReadOnly)
-        && raw::ahci::write(port, sectors, &written[..512]) == Err(raw::ahci::Error::OutOfRange)
+    let refused = raw::ahci::write(port, sectors, &written[..512])
+        == Err(raw::ahci::Error::OutOfRange)
         && raw::ahci::write_sectors(port, at, &written[..100]) == Err(raw::ahci::Error::OutOfRange);
     report.check(
         "kernel.disk.write",
         wrote && through_ahci && through_nvme && through_virtio && refused,
-        "sectors AHCI wrote should read back as written through AHCI, NVMe and virtio, which hold the disk read only and refuse to write",
+        "sectors AHCI wrote should read back as written through AHCI, NVMe and virtio, and none past the disk or short of a sector go",
     );
+    copy_write_checks(report, port, &system);
     write_place_checks(report, port, &system, &written);
     write_refusal_checks(report, port, sectors);
 }
@@ -732,6 +729,57 @@ fn write_place_checks<W: Write>(
         "kernel.disk.write_direction",
         out && back,
         "the command header should tell the controller that a write's data goes to the disk and a read's comes from it",
+    );
+}
+
+/// Where the machine lets its NVM Express and virtio disks write, into
+/// copies of the disk QEMU keeps, as the virtio disk's features tell, each
+/// reads its own writes back, sixteen frames of them at once, and the AHCI
+/// disk never sees them. Elsewhere both refuse to write.
+fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, system: &gpt::Partition) {
+    let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
+    let sector = [0u8; 512];
+    if virtio::read_only(offered) {
+        let refused = matches!(
+            raw::nvme::write(system.first, &sector),
+            Err(raw::nvme::Error::Failed(_))
+        ) && raw::virtio::write(system.first, &sector)
+            == Err(raw::virtio::Error::ReadOnly);
+        report.check(
+            "kernel.disk.copies",
+            refused,
+            "NVMe and virtio disks that only read should refuse to write",
+        );
+        return;
+    }
+    let large = |salt: u8| -> alloc::vec::Vec<u8> {
+        (0..16 * 4096)
+            .map(|i: usize| i.to_le_bytes()[1] ^ i.to_le_bytes()[0] ^ salt)
+            .collect()
+    };
+    let (nvme_at, virtio_at) = (system.first + 512, system.first + 1024);
+    let before = |at| {
+        let mut sector = [0u8; 512];
+        raw::ahci::read(port, at, &mut sector)
+            .is_ok()
+            .then_some(sector)
+    };
+    let (nvme_before, virtio_before) = (before(nvme_at), before(virtio_at));
+    let mut back = alloc::vec![0u8; 16 * 4096];
+    let nvme = raw::nvme::write(nvme_at, &large(0x11)).is_ok()
+        && raw::nvme::read(nvme_at, &mut back).is_ok()
+        && back == large(0x11);
+    let by_virtio = raw::virtio::write(virtio_at, &large(0x22)).is_ok()
+        && raw::virtio::read(virtio_at, &mut back).is_ok()
+        && back == large(0x22);
+    let apart = nvme_before.is_some()
+        && before(nvme_at) == nvme_before
+        && virtio_before.is_some()
+        && before(virtio_at) == virtio_before;
+    report.check(
+        "kernel.disk.copies",
+        nvme && by_virtio && apart,
+        "NVMe and virtio disks that write to copies should read sixteen frames of their own writes back, which the AHCI disk never sees",
     );
 }
 

@@ -126,7 +126,7 @@ Loader and UEFI:
 - [x] AHCI: SATA disks read with READ DMA EXT, by polling (`lib/ahci`)
 - [x] NVMe: the first namespace read through one pair of queues, by polling (`lib/nvme`)
 - [x] AHCI ports started again after a command fails
-- [ ] virtio-blk
+- [x] virtio-blk: version 1 over PCI, one queue, polled reads (`lib/virtio`)
 - [ ] Interrupts for disks instead of polling
 - [ ] Reads of more than one sector at a time: FAT32 reads a file a sector per command, so a debug build of a program took over a second to start from its file
 - [x] GPT in the kernel (`lib/gpt`)

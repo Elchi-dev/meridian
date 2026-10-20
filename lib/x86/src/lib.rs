@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod fpu;
 #[cfg(feature = "qemu-test")]
 pub mod qemu_test;
 #[allow(unsafe_code)]
@@ -13,12 +14,28 @@ pub mod tables;
 
 /// Bits of CR0, from the Intel SDM, volume 3, section 2.5.
 pub mod cr0 {
+    /// WAIT and FWAIT fault too while `TASK_SWITCHED` is set.
+    pub const MONITOR_COPROCESSOR: u64 = 1 << 1;
+    /// There is no x87 unit: its instructions fault, and SSE's do too.
+    pub const EMULATION: u64 = 1 << 2;
+    /// The next x87 or SSE instruction faults, for systems that keep those
+    /// registers only once a thread uses them.
+    pub const TASK_SWITCHED: u64 = 1 << 3;
+    /// x87 errors come as exception 16, not through the PC's old line.
+    pub const NUMERIC_ERROR: u64 = 1 << 5;
     /// Read-only pages stay read-only for the kernel too.
     pub const WRITE_PROTECT: u64 = 1 << 16;
 }
 
 /// Bits of CR4, from the Intel SDM, volume 3, section 2.5.
 pub mod cr4 {
+    /// SSE instructions run, and FXSAVE and FXRSTOR keep their registers.
+    pub const OSFXSR: u64 = 1 << 9;
+    /// SSE floating point errors come as exception 19, not as an invalid
+    /// opcode.
+    pub const OSXMMEXCPT: u64 = 1 << 10;
+    /// XSAVE, XRSTOR, XGETBV and XSETBV can be used.
+    pub const OSXSAVE: u64 = 1 << 18;
     /// The kernel faults when it runs code from a page of ring 3.
     pub const SMEP: u64 = 1 << 20;
     /// The kernel faults when it touches a page of ring 3, unless the AC

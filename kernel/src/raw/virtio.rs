@@ -57,6 +57,10 @@ pub enum Error {
     TimedOut,
     /// It answered with this status.
     Failed(u8),
+    /// It only reads.
+    // Only the test image writes yet, until files can be written.
+    #[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
+    ReadOnly,
 }
 
 fn read8(at: u64) -> u8 {
@@ -228,20 +232,12 @@ pub fn drive() -> Option<Drive> {
 pub fn read(sector: u64, into: &mut [u8]) -> Result<(), Error> {
     let mut guard = QUEUE.lock();
     let queue = guard.as_mut().ok_or(Error::NoDrive)?;
-    let count = (into.len() as u64).div_ceil(block::SECTOR);
-    let whole = !into.is_empty() && (into.len() as u64).is_multiple_of(block::SECTOR);
-    if !whole
-        || sector
-            .checked_add(count)
-            .is_none_or(|end| end > queue.drive.sectors)
-    {
-        return Err(Error::OutOfRange);
-    }
+    span(queue, sector, into.len())?;
     let data = memory::device_frame().ok_or(Error::NoMemory)?;
     let mut answer = Ok(());
     for (i, chunk) in (0..).zip(into.chunks_mut(4096)) {
         let header = virtio::read_header(sector + i * 8);
-        answer = request(queue, &header, data, chunk.len());
+        answer = request(queue, &header, false, data, chunk.len());
         if answer.is_err() {
             break;
         }
@@ -255,17 +251,74 @@ pub fn read(sector: u64, into: &mut [u8]) -> Result<(), Error> {
     answer
 }
 
-/// Sends the request `header` with the `length` bytes of the frame `data`
-/// for the device to write, and waits for the answer.
-fn request(queue: &mut Queue, header: &[u8; 16], data: u64, length: usize) -> Result<(), Error> {
+/// Writes `from`, a whole number of sectors, from `sector` on, a frame at
+/// a time.
+///
+/// # Errors
+///
+/// As for [`read`], and when the device only reads.
+// Only the test image writes yet, until files can be written.
+#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
+pub fn write(sector: u64, from: &[u8]) -> Result<(), Error> {
+    let mut guard = QUEUE.lock();
+    let queue = guard.as_mut().ok_or(Error::NoDrive)?;
+    if queue.drive.read_only {
+        return Err(Error::ReadOnly);
+    }
+    span(queue, sector, from.len())?;
+    let data = memory::device_frame().ok_or(Error::NoMemory)?;
+    let mut answer = Ok(());
+    for (i, chunk) in (0..).zip(from.chunks(4096)) {
+        // SAFETY: the frame is the kernel's alone, in the direct map, and a
+        // chunk is no longer than it.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                chunk.as_ptr(),
+                (HHDM_BASE + data) as *mut u8,
+                chunk.len(),
+            );
+        };
+        let header = virtio::write_header(sector + i * 8);
+        answer = request(queue, &header, true, data, chunk.len());
+        if answer.is_err() {
+            break;
+        }
+    }
+    memory::give_back(data);
+    answer
+}
+
+/// Whether the `len` bytes from `sector` on are a whole number of sectors,
+/// all on the device.
+fn span(queue: &Queue, sector: u64, len: usize) -> Result<(), Error> {
+    let len = len as u64;
+    let whole = len > 0 && len.is_multiple_of(block::SECTOR);
+    let end = sector.checked_add(len / block::SECTOR);
+    if whole && end.is_some_and(|end| end <= queue.drive.sectors) {
+        Ok(())
+    } else {
+        Err(Error::OutOfRange)
+    }
+}
+
+/// Sends the request `header` with the `length` bytes of the frame `data`,
+/// for the device to read when `out` and to write otherwise, and waits for
+/// the answer.
+fn request(
+    queue: &mut Queue,
+    header: &[u8; 16],
+    out: bool,
+    data: u64,
+    length: usize,
+) -> Result<(), Error> {
     let frame = HHDM_BASE + queue.frame;
     let rings = virtio::rings(queue.size);
-    let chain = virtio::read_chain(
-        queue.frame + HEADER,
-        data,
-        u32::try_from(length).map_err(|_| Error::OutOfRange)?,
-        queue.frame + STATUS,
-    );
+    let length = u32::try_from(length).map_err(|_| Error::OutOfRange)?;
+    let chain = if out {
+        virtio::write_chain(queue.frame + HEADER, data, length, queue.frame + STATUS)
+    } else {
+        virtio::read_chain(queue.frame + HEADER, data, length, queue.frame + STATUS)
+    };
     let slot = queue.sent % queue.size;
     // SAFETY: the queue's frame is the kernel's and the device's alone, in
     // the direct map; the device reads the descriptors and the request only
@@ -308,7 +361,7 @@ pub fn ask(kind: u32) -> Result<(), Error> {
     let data = memory::device_frame().ok_or(Error::NoMemory)?;
     let mut header = virtio::read_header(0);
     header[..4].copy_from_slice(&kind.to_le_bytes());
-    let answer = request(queue, &header, data, 512);
+    let answer = request(queue, &header, false, data, 512);
     memory::give_back(data);
     answer
 }

@@ -245,28 +245,11 @@ pub fn drive() -> Option<Drive> {
 pub fn read(lba: u64, into: &mut [u8]) -> Result<(), Error> {
     let mut guard = DRIVE.lock();
     let drive = guard.as_mut().ok_or(Error::NoDrive)?;
-    let size = usize::try_from(drive.namespace.block_size).map_err(|_| Error::OutOfRange)?;
-    let count = u64::try_from(into.len() / size.max(1)).map_err(|_| Error::OutOfRange)?;
-    let whole = !into.is_empty() && into.len().is_multiple_of(size);
-    if !whole
-        || lba
-            .checked_add(count)
-            .is_none_or(|end| end > drive.namespace.blocks)
-    {
-        return Err(Error::OutOfRange);
-    }
+    let per_chunk = span(drive, lba, into.len())?;
     let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
-    let per_chunk = u64::try_from(4096 / size).map_err(|_| Error::OutOfRange)?;
     let mut answer = Ok(());
     for (i, chunk) in (0..).zip(into.chunks_mut(4096)) {
-        let blocks = u32::try_from(chunk.len() / size).map_err(|_| Error::OutOfRange)?;
-        let id = drive.next;
-        drive.next = drive.next.wrapping_add(1).max(1);
-        let Some(command) = nvme::read(id, 1, lba + i * per_chunk, blocks, buffer) else {
-            answer = Err(Error::OutOfRange);
-            break;
-        };
-        answer = submit(&drive.capabilities, &mut drive.io, &command, id);
+        answer = transfer(drive, nvme::read, lba + i * per_chunk, chunk.len(), buffer);
         if answer.is_err() {
             break;
         }
@@ -281,4 +264,70 @@ pub fn read(lba: u64, into: &mut [u8]) -> Result<(), Error> {
     }
     memory::give_back(buffer);
     answer
+}
+
+/// Writes `from`, which takes any whole number of blocks, to the first
+/// namespace from `lba` on, a frame's worth at a time.
+///
+/// # Errors
+///
+/// As for [`read`].
+// Only the test image writes yet, until files can be written.
+#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
+pub fn write(lba: u64, from: &[u8]) -> Result<(), Error> {
+    let mut guard = DRIVE.lock();
+    let drive = guard.as_mut().ok_or(Error::NoDrive)?;
+    let per_chunk = span(drive, lba, from.len())?;
+    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
+    let mut answer = Ok(());
+    for (i, chunk) in (0..).zip(from.chunks(4096)) {
+        // SAFETY: the frame is the kernel's alone, in the direct map, and
+        // a chunk is no longer than it.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                chunk.as_ptr(),
+                (HHDM_BASE + buffer) as *mut u8,
+                chunk.len(),
+            );
+        };
+        answer = transfer(drive, nvme::write, lba + i * per_chunk, chunk.len(), buffer);
+        if answer.is_err() {
+            break;
+        }
+    }
+    memory::give_back(buffer);
+    answer
+}
+
+/// How many blocks a frame holds, once the `len` bytes from `lba` on are
+/// found to be a whole number of blocks of the namespace, all on it.
+fn span(drive: &Drive, lba: u64, len: usize) -> Result<u64, Error> {
+    let size = usize::try_from(drive.namespace.block_size).map_err(|_| Error::OutOfRange)?;
+    let count = u64::try_from(len / size.max(1)).map_err(|_| Error::OutOfRange)?;
+    let whole = len > 0 && len.is_multiple_of(size);
+    if !whole
+        || lba
+            .checked_add(count)
+            .is_none_or(|end| end > drive.namespace.blocks)
+    {
+        return Err(Error::OutOfRange);
+    }
+    u64::try_from(4096 / size).map_err(|_| Error::OutOfRange)
+}
+
+/// Sends the command `build` makes for the `len` bytes from `lba` on and
+/// the frame `buffer`, and waits for its answer.
+fn transfer(
+    drive: &mut Drive,
+    build: fn(u16, u32, u64, u32, u64) -> Option<nvme::Command>,
+    lba: u64,
+    len: usize,
+    buffer: u64,
+) -> Result<(), Error> {
+    let size = usize::try_from(drive.namespace.block_size).map_err(|_| Error::OutOfRange)?;
+    let blocks = u32::try_from(len / size.max(1)).map_err(|_| Error::OutOfRange)?;
+    let id = drive.next;
+    drive.next = drive.next.wrapping_add(1).max(1);
+    let command = build(id, 1, lba, blocks, buffer).ok_or(Error::OutOfRange)?;
+    submit(&drive.capabilities, &mut drive.io, &command, id)
 }

@@ -281,6 +281,7 @@ fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions:
     nvme_checks(report);
     virtio_checks(report);
     virtio_file_checks(report, info, regions);
+    write_checks(report);
     fat_checks(report, info, regions);
     vfs_checks(report, info.boot_partition);
 }
@@ -624,6 +625,125 @@ fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
         raw::virtio::ask(0x7f) == Err(Error::Failed(virtio::block::UNSUPPORTED))
             && read(0, &mut room[..512]).is_ok(),
         "a request of a type no device knows should come back unsupported, and reads go on",
+    );
+}
+
+/// Writing, on the test disk's Meridian system partition: twelve sectors
+/// through AHCI, more than a frame, of bytes no run wrote before, which
+/// AHCI, NVM Express and virtio then read back as written; the last two
+/// hold the disk read only and refuse to write, and AHCI writes nothing
+/// past the disk's end.
+fn write_checks<W: Write>(report: &mut Report<'_, W>) {
+    let drives = raw::ahci::drives();
+    let Some(disk) = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk)
+    else {
+        return;
+    };
+    let port = disk.port;
+    let mut read = |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
+    let Some(system) =
+        kernel::disk::Table::read(&mut read).and_then(|t| t.first_of(gpt::MERIDIAN_SYSTEM))
+    else {
+        report.check(
+            "kernel.disk.write",
+            false,
+            "a test disk should have a Meridian system partition",
+        );
+        return;
+    };
+    let salt = x86::raw::tsc().to_le_bytes();
+    let written: alloc::vec::Vec<u8> = (0..12 * 512)
+        .map(|i: usize| salt[i % 8] ^ (i / 8).to_le_bytes()[0])
+        .collect();
+    let at = system.first + 3;
+    let wrote = raw::ahci::write(port, at, &written).is_ok();
+    let back = |read: &dyn Fn(u64, &mut [u8]) -> bool| {
+        let mut bytes = alloc::vec![0u8; written.len()];
+        read(at, &mut bytes) && bytes == written
+    };
+    let through_ahci = back(&|lba, into| raw::ahci::read(port, lba, into).is_ok());
+    let through_nvme = back(&|lba, into| raw::nvme::read(lba, into).is_ok());
+    let through_virtio = back(&|lba, into| raw::virtio::read(lba, into).is_ok());
+    let sectors = disk.identity.map_or(0, |i| i.sectors);
+    let refused = matches!(
+        raw::nvme::write(at, &written[..512]),
+        Err(raw::nvme::Error::Failed(_))
+    ) && raw::virtio::write(at, &written[..512]) == Err(raw::virtio::Error::ReadOnly)
+        && raw::ahci::write(port, sectors, &written[..512]) == Err(raw::ahci::Error::OutOfRange)
+        && raw::ahci::write_sectors(port, at, &written[..100]) == Err(raw::ahci::Error::OutOfRange);
+    report.check(
+        "kernel.disk.write",
+        wrote && through_ahci && through_nvme && through_virtio && refused,
+        "sectors AHCI wrote should read back as written through AHCI, NVMe and virtio, which hold the disk read only and refuse to write",
+    );
+    write_place_checks(report, port, &system, &written);
+    write_refusal_checks(report, port, sectors);
+}
+
+/// Where AHCI's writes go: each of the twelve sectors at its own place,
+/// one sector overwritten among them alone, the partition's last sector,
+/// and sixteen frames at once, read back in one go.
+fn write_place_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    port: usize,
+    system: &gpt::Partition,
+    written: &[u8],
+) {
+    use raw::ahci::{read, read_sectors, write, write_sectors};
+    let at = system.first + 3;
+    let mut sector = [0u8; 512];
+    let each = written
+        .chunks(512)
+        .zip(at..)
+        .all(|(want, lba)| read_sectors(port, lba, &mut sector).is_ok() && sector == want);
+    let one = [0x5a; 512];
+    let mut after = written.to_vec();
+    after[5 * 512..6 * 512].copy_from_slice(&one);
+    let mut read_back = alloc::vec![0u8; written.len()];
+    let alone = write_sectors(port, at + 5, &one).is_ok()
+        && read(port, at, &mut read_back).is_ok()
+        && read_back == after;
+    let last = system.first + system.sectors() - 1;
+    let mut end = [0u8; 512];
+    let edge = write(port, last, &[0xa5; 512]).is_ok()
+        && raw::virtio::read(last, &mut end).is_ok()
+        && end == [0xa5; 512];
+    let large: alloc::vec::Vec<u8> = (0..16 * 4096)
+        .map(|i: usize| i.to_le_bytes()[1] ^ 0x3c)
+        .collect();
+    let mut by_virtio = alloc::vec![0u8; large.len()];
+    let many = write(port, at, &large).is_ok()
+        && raw::virtio::read(at, &mut by_virtio).is_ok()
+        && by_virtio == large;
+    report.check(
+        "kernel.disk.write_places",
+        each && alone && edge && many,
+        "each sector AHCI writes should land where it was meant to, one overwritten alone, the partition's last too, and sixteen frames at once",
+    );
+}
+
+/// What no driver writes: nothing, part of a sector, more than a frame at
+/// once where one frame is all a command takes, past the disk's end, or
+/// to a port without a disk.
+fn write_refusal_checks<W: Write>(report: &mut Report<'_, W>, port: usize, sectors: u64) {
+    use raw::ahci::{Error, write, write_sectors};
+    let room = [0u8; 8192];
+    let ahci = write_sectors(port, 0, &[]) == Err(Error::OutOfRange)
+        && write_sectors(port, 0, &room[..513]) == Err(Error::OutOfRange)
+        && write_sectors(port, 0, &room[..4608]) == Err(Error::OutOfRange)
+        && write(port, sectors - 1, &room[..1024]) == Err(Error::OutOfRange)
+        && write(port, u64::MAX, &room[..512]) == Err(Error::OutOfRange)
+        && write(31, 0, &room[..512]) == Err(Error::NoDisk);
+    let nvme = raw::nvme::write(0, &[]) == Err(raw::nvme::Error::OutOfRange)
+        && raw::nvme::write(0, &room[..100]) == Err(raw::nvme::Error::OutOfRange)
+        && raw::nvme::write(sectors, &room[..512]) == Err(raw::nvme::Error::OutOfRange);
+    report.check(
+        "kernel.disk.write_refused",
+        ahci && nvme,
+        "no write should go out for nothing, part of a sector, too much at once, past the end, or to a port without a disk",
     );
 }
 

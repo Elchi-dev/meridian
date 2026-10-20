@@ -2138,8 +2138,8 @@ fn given_back_checks<W: Write>(report: &mut Report<'_, W>) {
     report.check(
         "kernel.user.spawn_names",
         ended_with(ran(&probe::SPAWN_LONGEST, 0), abi::BAD_ADDRESS)
-            && ended_with(ran(&probe::SPAWN_TOO_LONG, 0), abi::NO_SUCH_PROGRAM),
-        "a name of 32 bytes may be spawned and is read from the program's memory; one of 33 is no file's",
+            && ended_with(ran(&probe::SPAWN_TOO_LONG, 0), abi::TOO_LONG),
+        "a name or path of 512 bytes may be spawned and is read from the program's memory; one of 513 is too long",
     );
     let stale = ran(&probe::STALE, 0);
     report.check(

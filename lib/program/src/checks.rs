@@ -20,7 +20,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 25] = [
+const CHECKS: [(&str, Check); 26] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -45,6 +45,7 @@ const CHECKS: [(&str, Check); 25] = [
     ("file", settings_read_back),
     ("file.refused", files_that_do_not_open),
     ("file.list", directories_list_their_entries),
+    ("spawn.file", child_from_its_file),
     ("console", writes_on_the_console),
 ];
 
@@ -502,6 +503,48 @@ const SETTINGS: &[u8] =
 /// machine started from a disk; the kernel's own check wants it then.
 fn booted_from_disk() -> bool {
     open("/System/Boot", 0).is_ok_and(|boot| close(boot).is_ok())
+}
+
+fn child_from_its_file() -> Outcome {
+    let exitwith = "/System/Boot/meridian/programs/exitwith.mexec";
+    if !booted_from_disk() {
+        return expect(
+            spawn(exitwith, None) == Err(Error::NotFound),
+            "booted from a CD, there should be no file to start",
+        );
+    }
+    let (mine, theirs) = pair()?;
+    let child = spawn(exitwith, Some(theirs)).map_err(|_| "exitwith should start from its file")?;
+    expect(
+        send(mine, &7u64.to_le_bytes(), None) == Ok(()),
+        "the number should go to the child",
+    )?;
+    expect(
+        wait(child) == Ok(Ended::Exited(7)),
+        "the child started from its file should exit with the number it was sent",
+    )?;
+    expect(
+        close(child) == Ok(()) && close(mine) == Ok(()),
+        "the handles should close",
+    )?;
+    expect(
+        spawn("/System/Boot/meridian/programs", None) == Err(Error::NotAFile),
+        "a directory is no program",
+    )?;
+    expect(
+        spawn("/System/Boot/meridian/boot.meri", None) == Err(Error::NotAProgram),
+        "nor are the loader's settings",
+    )?;
+    expect(
+        spawn("/System/Boot/meridian/programs/nothing.mexec", None) == Err(Error::NotFound),
+        "a path to no file starts nothing",
+    )?;
+    let longest = alloc::format!("/{}", "a".repeat(abi::PATH_BYTES - 1));
+    expect(
+        spawn(&longest, None) == Err(Error::NotFound)
+            && spawn(&alloc::format!("{longest}b"), None) == Err(Error::TooLong),
+        "a path as long as a path may be is looked for, and one longer refused",
+    )
 }
 
 fn settings_read_back() -> Outcome {

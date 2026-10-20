@@ -393,14 +393,21 @@ pub fn close_object(object: u64) {
 
 /// Starts the program whose file is named by the `len` bytes at `at`, as
 /// a process of its own the running program holds a handle to, handing it
-/// the handle `carry` unless that is 0, and answers the handle. It gets
-/// the running program's token, restricted by the word `restriction`
-/// unless that is 0.
+/// the handle `carry` unless that is 0, and answers the handle. The name is
+/// a program's the loader read, or a path from the root to a file the
+/// running program's token may run. The program gets that token,
+/// restricted by the word `restriction` unless that is 0.
 fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64, u64> {
-    let mut name = [0u8; bootinfo::Module::NAME];
-    let name = copy_in(at, len, &mut name, syscall::NO_SUCH_PROGRAM)?;
-    let file = super::module(name).ok_or(syscall::NO_SUCH_PROGRAM)?;
+    let mut name = [0u8; syscall::PATH_BYTES];
+    let name = copy_in(at, len, &mut name, syscall::TOO_LONG)?;
     let mut token = with_process(|p| Ok(p.token))?;
+    let read: Vec<u8>;
+    let file = if name.first() == Some(&b'/') {
+        read = read_program(name, &token)?;
+        &read
+    } else {
+        super::module(name).ok_or(syscall::NO_SUCH_PROGRAM)?
+    };
     if restriction != 0 {
         let restriction = Restriction::from_word(restriction).ok_or(syscall::BAD_ARGUMENT)?;
         token = token.restricted(restriction);
@@ -447,6 +454,30 @@ fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64,
         with_handles(|t| t.close(handle_of(carry)?).map_err(|_| syscall::BAD_HANDLE))?;
     }
     Ok(u64::from(handle.0))
+}
+
+/// The file at the path `path`, read whole, once `token` may run it.
+fn read_program(path: &[u8], token: &Token) -> Result<Vec<u8>, u64> {
+    let path = core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)?;
+    let slot = super::vfs::open(path, token, syscall::file::RUN).map_err(file_answer)?;
+    let read = read_whole(slot);
+    super::vfs::close(slot);
+    read
+}
+
+/// Every byte of the open file in `slot`.
+fn read_whole(slot: usize) -> Result<Vec<u8>, u64> {
+    let (size, directory) = super::vfs::info(slot).ok_or(syscall::NOT_FOUND)?;
+    if directory {
+        return Err(syscall::NOT_A_FILE);
+    }
+    let mut file = Vec::new();
+    let size = usize::try_from(size).map_err(|_| syscall::NO_ROOM)?;
+    file.try_reserve_exact(size).map_err(|_| syscall::NO_ROOM)?;
+    file.resize(size, 0);
+    let len = super::vfs::read(slot, 0, &mut file).map_err(file_answer)?;
+    file.truncate(len);
+    Ok(file)
 }
 
 /// Waits until the process the handle `handle` stands for ended, and
@@ -986,7 +1017,7 @@ pub mod probe {
         // memory that is not its own, and ends with the answer.
         ".global meridian_spawn_longest_start",
         "meridian_spawn_longest_start:",
-        "mov edi, 32",
+        "mov edi, 512",
         "mov esi, 0x900000",
         "xor edx, edx",
         "mov eax, {spawn}",
@@ -998,7 +1029,7 @@ pub mod probe {
         // The same with a name one byte too long.
         ".global meridian_spawn_too_long_start",
         "meridian_spawn_too_long_start:",
-        "mov edi, 33",
+        "mov edi, 513",
         "mov esi, 0x900000",
         "xor edx, edx",
         "mov eax, {spawn}",

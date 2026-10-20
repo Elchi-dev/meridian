@@ -34,9 +34,11 @@ pub const MAP: u64 = 9;
 /// Gives back the rsi pages at rdi that [`MAP`] gave.
 pub const UNMAP: u64 = 10;
 /// Starts the program whose file is named by the rdi bytes at rsi, handing
-/// it handle rdx unless rdx is 0, and answers a handle to its process. It
-/// runs with the caller's security token, or with less when r10 is not 0
-/// but a restriction as `lib/security` packs one into a word.
+/// it handle rdx unless rdx is 0, and answers a handle to its process. The
+/// name is a program's the loader read, or a path from the root, at most
+/// [`PATH_BYTES`] long, to a file the caller's token may run. It runs with
+/// the caller's security token, or with less when r10 is not 0 but a
+/// restriction as `lib/security` packs one into a word.
 pub const SPAWN: u64 = 11;
 /// Waits until the process of handle rdi ended, and answers its exit code,
 /// with rdx 0, or the vector of the exception that ended it, with rdx 1.

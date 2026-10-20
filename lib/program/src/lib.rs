@@ -14,6 +14,8 @@ use core::fmt;
 pub use abi;
 pub use abi::Error;
 use abi::{Call, LOG_BYTES, answer};
+pub use security;
+use security::{Restriction, Token};
 
 #[cfg(feature = "qemu-test")]
 pub mod checks;
@@ -148,7 +150,43 @@ pub enum Ended {
 /// not the program's or may not be handed over, or there is no room for
 /// the process.
 pub fn spawn(name: &str, carry: Option<Handle>) -> Result<Handle, Error> {
-    answer(raw::call(spawn_call(name, carry)).0).map(Handle)
+    answer(raw::call(spawn_call(name, carry, 0)).0).map(Handle)
+}
+
+/// Starts the program as [`spawn`] does, with no more than `restriction`
+/// leaves of the program's own security token.
+///
+/// # Errors
+///
+/// As for [`spawn`].
+pub fn spawn_restricted(
+    name: &str,
+    carry: Option<Handle>,
+    restriction: Restriction,
+) -> Result<Handle, Error> {
+    answer(raw::call(spawn_call(name, carry, restriction.word())).0).map(Handle)
+}
+
+/// The program's security token; none only when the kernel and this
+/// runtime disagree on how one is written.
+#[must_use]
+pub fn token() -> Option<Token> {
+    let mut room = [0u8; Token::MAX_SIZE];
+    let rax = raw::call(token_call(&mut room)).0;
+    token_from(rax, &room)
+}
+
+fn token_call(room: &mut [u8]) -> Call {
+    Call::Token {
+        room: room.len() as u64,
+        at: room.as_mut_ptr() as u64,
+    }
+}
+
+/// The token TOKEN answered with `rax` wrote into `room`.
+fn token_from(rax: u64, room: &[u8]) -> Option<Token> {
+    let len = usize::try_from(answer(rax).ok()?).ok()?;
+    Token::read(room.get(..len)?)
 }
 
 /// Waits until the process `process` ended, and says how.
@@ -161,11 +199,12 @@ pub fn wait(process: Handle) -> Result<Ended, Error> {
     ended(rax, rdx)
 }
 
-fn spawn_call(name: &str, carry: Option<Handle>) -> Call {
+fn spawn_call(name: &str, carry: Option<Handle>, restriction: u64) -> Call {
     Call::Spawn {
         len: name.len() as u64,
         at: name.as_ptr() as u64,
         carry: carry.map_or(0, |h| h.0),
+        restriction,
     }
 }
 
@@ -393,21 +432,50 @@ mod tests {
     fn a_program_is_spawned_by_its_name() {
         let name = "hello.mexec";
         assert_eq!(
-            spawn_call(name, None),
+            spawn_call(name, None, 0),
             Call::Spawn {
                 len: 11,
                 at: name.as_ptr() as u64,
-                carry: 0
+                carry: 0,
+                restriction: 0
             }
         );
+        let low = Restriction {
+            integrity: security::Integrity::Low,
+            keep: security::Privileges::NONE,
+        };
         assert_eq!(
-            spawn_call(&name[..5], Some(Handle(0x2_0003))),
+            spawn_call(&name[..5], Some(Handle(0x2_0003)), low.word()),
             Call::Spawn {
                 len: 5,
                 at: name.as_ptr() as u64,
-                carry: 0x2_0003
+                carry: 0x2_0003,
+                restriction: 0x8000_0001_0000_0000
             }
         );
+    }
+
+    #[test]
+    fn the_token_is_read_from_the_room_it_was_written_to() {
+        let mut room = [0u8; Token::MAX_SIZE];
+        assert_eq!(
+            token_call(&mut room),
+            Call::Token {
+                room: Token::MAX_SIZE as u64,
+                at: room.as_ptr() as u64
+            }
+        );
+        let system = Token::system();
+        let len = system.write(&mut room).unwrap();
+        assert_eq!(token_from(len as u64, &room), Some(system));
+        assert_eq!(token_from(len as u64 - 1, &room), None, "one byte short");
+        assert_eq!(
+            token_from(Token::MAX_SIZE as u64 + 1, &room),
+            None,
+            "more than there is room"
+        );
+        assert_eq!(token_from(abi::TOO_SMALL, &room), None);
+        assert_eq!(token_from(abi::BAD_ADDRESS, &room), None);
     }
 
     #[test]

@@ -34,11 +34,16 @@ pub const MAP: u64 = 9;
 /// Gives back the rsi pages at rdi that [`MAP`] gave.
 pub const UNMAP: u64 = 10;
 /// Starts the program whose file is named by the rdi bytes at rsi, handing
-/// it handle rdx unless rdx is 0, and answers a handle to its process.
+/// it handle rdx unless rdx is 0, and answers a handle to its process. It
+/// runs with the caller's security token, or with less when r10 is not 0
+/// but a restriction as `lib/security` packs one into a word.
 pub const SPAWN: u64 = 11;
 /// Waits until the process of handle rdi ended, and answers its exit code,
 /// with rdx 0, or the vector of the exception that ended it, with rdx 1.
 pub const WAIT: u64 = 12;
+/// Writes the caller's security token, in the form `lib/security` reads,
+/// into the rdi bytes at rsi, and answers how many bytes it took.
+pub const TOKEN: u64 = 13;
 
 /// Why a call failed. Each error is an answer counting down from the top
 /// of the range, so no address, length or handle is mistaken for one.
@@ -73,9 +78,11 @@ pub enum Error {
     NoSuchProgram,
     /// The file is no `.mexec` file this kernel runs.
     NotAProgram,
+    /// A value the call does not take, such as a restriction that is none.
+    BadArgument,
 }
 
-const ERRORS: [Error; 13] = [
+const ERRORS: [Error; 14] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -89,6 +96,7 @@ const ERRORS: [Error; 13] = [
     Error::BadSize,
     Error::NoSuchProgram,
     Error::NotAProgram,
+    Error::BadArgument,
 ];
 
 impl Error {
@@ -124,6 +132,7 @@ pub const NO_ROOM: u64 = Error::NoRoom.code();
 pub const BAD_SIZE: u64 = Error::BadSize.code();
 pub const NO_SUCH_PROGRAM: u64 = Error::NoSuchProgram.code();
 pub const NOT_A_PROGRAM: u64 = Error::NotAProgram.code();
+pub const BAD_ARGUMENT: u64 = Error::BadArgument.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -177,8 +186,13 @@ pub enum Call {
         len: u64,
         at: u64,
         carry: u64,
+        restriction: u64,
     },
     Wait(u64),
+    Token {
+        room: u64,
+        at: u64,
+    },
     Unknown(u64),
 }
 
@@ -205,8 +219,14 @@ impl Call {
             Call::Close(handle) => (CLOSE, [handle, 0, 0, 0]),
             Call::Map(pages) => (MAP, [pages, 0, 0, 0]),
             Call::Unmap { at, pages } => (UNMAP, [at, pages, 0, 0]),
-            Call::Spawn { len, at, carry } => (SPAWN, [len, at, carry, 0]),
+            Call::Spawn {
+                len,
+                at,
+                carry,
+                restriction,
+            } => (SPAWN, [len, at, carry, restriction]),
             Call::Wait(handle) => (WAIT, [handle, 0, 0, 0]),
+            Call::Token { room, at } => (TOKEN, [room, at, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -247,8 +267,13 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             len: first,
             at: second,
             carry: third,
+            restriction: fourth,
         },
         WAIT => Call::Wait(first),
+        TOKEN => Call::Token {
+            room: first,
+            at: second,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -305,23 +330,59 @@ mod tests {
             }
         );
         assert_eq!(
-            decode(SPAWN, [11, 0x40_2000, 0x1_0003, 9]),
+            decode(SPAWN, [11, 0x40_2000, 0x1_0003, 0x8000_0001_0000_0002]),
             Call::Spawn {
                 len: 11,
                 at: 0x40_2000,
-                carry: 0x1_0003
+                carry: 0x1_0003,
+                restriction: 0x8000_0001_0000_0002
             }
         );
         assert_eq!(decode(WAIT, [0x2_0001, 2, 3, 0]), Call::Wait(0x2_0001));
-        assert_eq!(decode(13, [1, 2, 3, 0]), Call::Unknown(13));
+        assert_eq!(
+            decode(TOKEN, [1200, 0x7f_e000, 3, 4]),
+            Call::Token {
+                room: 1200,
+                at: 0x7f_e000
+            }
+        );
+        assert_eq!(decode(14, [1, 2, 3, 0]), Call::Unknown(14));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
                 EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT
+                WAIT, TOKEN
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
+    }
+
+    #[test]
+    fn spawn_hands_its_restriction_over_bit_for_bit() {
+        for word in [0, 1, 1 << 63, 0x8000_0004_ffff_ffff, u64::MAX] {
+            let Call::Spawn { restriction, .. } = decode(SPAWN, [1, 2, 3, word]) else {
+                panic!("SPAWN should read as a spawn");
+            };
+            assert_eq!(restriction, word);
+        }
+    }
+
+    #[test]
+    fn token_takes_its_room_first_as_log_takes_its_length() {
+        let Call::Log { len, at } = decode(LOG, [64, 0x7f_e000, 0, 0]) else {
+            panic!("LOG should read as a log line");
+        };
+        assert_eq!(
+            decode(TOKEN, [64, 0x7f_e000, 0, 0]),
+            Call::Token { room: len, at }
+        );
+    }
+
+    #[test]
+    fn the_newest_error_comes_last_so_the_others_keep_their_codes() {
+        assert_eq!(NOT_A_PROGRAM, u64::MAX - 12);
+        assert_eq!(BAD_ARGUMENT, u64::MAX - 13);
+        assert_eq!(ERRORS.last(), Some(&Error::BadArgument));
     }
 
     #[test]
@@ -340,6 +401,7 @@ mod tests {
             BAD_SIZE,
             NO_SUCH_PROGRAM,
             NOT_A_PROGRAM,
+            BAD_ARGUMENT,
         ];
         for (i, &e) in errors.iter().enumerate() {
             assert_eq!(
@@ -387,9 +449,14 @@ mod tests {
                 len: 5,
                 at: 0x40_3000,
                 carry: 0x3_0002,
+                restriction: 0x8000_0000_0000_0000,
             },
             Call::Wait(0x4_0001),
-            Call::Unknown(13),
+            Call::Token {
+                room: 64,
+                at: 0x7f_e000,
+            },
+            Call::Unknown(14),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -415,8 +482,9 @@ mod tests {
             (CLOSE, 1),
             (MAP, 1),
             (UNMAP, 2),
-            (SPAWN, 3),
+            (SPAWN, 4),
             (WAIT, 1),
+            (TOKEN, 2),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -439,7 +507,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > WAIT,
+                number > TOKEN,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -474,8 +542,11 @@ mod tests {
             len: 9,
             at: 10,
             carry: 11,
+            restriction: 0,
         };
         assert_eq!(spawn.encode(), (SPAWN, [9, 10, 11, 0]));
+        let token = Call::Token { room: 12, at: 13 };
+        assert_eq!(token.encode(), (TOKEN, [12, 13, 0, 0]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 
@@ -486,9 +557,10 @@ mod tests {
         }
         assert_eq!(answer(u64::MAX), Err(Error::NoSuchCall));
         assert_eq!(answer(NOT_A_PROGRAM), Err(Error::NotAProgram));
+        assert_eq!(answer(BAD_ARGUMENT), Err(Error::BadArgument));
         assert_eq!(
-            answer(NOT_A_PROGRAM - 1),
-            Ok(NOT_A_PROGRAM - 1),
+            answer(BAD_ARGUMENT - 1),
+            Ok(BAD_ARGUMENT - 1),
             "just below them"
         );
         assert_eq!(answer(0), Ok(0));
@@ -522,6 +594,7 @@ mod tests {
             (Error::BadSize, BAD_SIZE),
             (Error::NoSuchProgram, NO_SUCH_PROGRAM),
             (Error::NotAProgram, NOT_A_PROGRAM),
+            (Error::BadArgument, BAD_ARGUMENT),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

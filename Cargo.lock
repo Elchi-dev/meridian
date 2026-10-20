@@ -99,6 +99,7 @@ dependencies = [
  "pci",
  "qr",
  "sched",
+ "security",
  "x86",
 ]
 
@@ -124,6 +125,7 @@ version = "0.0.0"
 dependencies = [
  "abi",
  "heap",
+ "security",
 ]
 
 [[package]]

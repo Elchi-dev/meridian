@@ -22,6 +22,7 @@ use kernel::program::{self, Refusal, STACK_PAGES};
 use kernel::syscall::{self, Call};
 use kernel::thread::THREADS;
 use paging::Flags;
+use security::{Restriction, Token};
 
 use super::interrupts::Frame;
 use super::memory::{self, Spin};
@@ -40,6 +41,8 @@ struct Process {
     /// The slot of the process object a handle of whoever spawned it
     /// stands for, which learns how it ended.
     object: Option<usize>,
+    /// Who it runs as, and what it may do.
+    token: Token,
 }
 
 /// The processes handles can stand for: those programs spawned.
@@ -52,12 +55,13 @@ const SPAWNED: Rights = Rights(Rights::READ.0 | Rights::TRANSFER.0);
 const NAME: usize = 32;
 
 impl Process {
-    fn new() -> Box<Process> {
+    fn new(token: &Token) -> Box<Process> {
         Box::new(Process {
             handles: Table::new(),
             heap: program::Heap::new(),
             name: Vec::new(),
             object: None,
+            token: *token,
         })
     }
 }
@@ -105,20 +109,21 @@ pub enum Error {
 /// start.
 #[cfg(feature = "qemu-test")]
 pub fn start(core: usize, program: &'static Program, argument: u64) -> Result<usize, Error> {
-    launch(core, program, argument, Process::new())
+    launch(core, program, argument, Process::new(&Token::system()))
 }
 
 /// Starts the program in the ELF file `file` in ring 3 with `argument` in
 /// rdi, in an address space and a thread of its own on `core`, and returns
 /// the thread's number. Each page of its image goes where [`program::place`] says, as
-/// [`program::page_flags`] allows.
+/// [`program::page_flags`] allows. It runs as SYSTEM, as everything the
+/// kernel starts itself does.
 ///
 /// # Errors
 ///
 /// When the file is no program Meridian runs, no memory is left for its
 /// address space, or its thread cannot start.
 pub fn start_file(core: usize, file: &[u8], argument: u64) -> Result<usize, Error> {
-    start_file_as(core, file, argument, Process::new())
+    start_file_as(core, file, argument, Process::new(&Token::system()))
 }
 
 /// Starts the program in `file` as [`start_file`] does, as `process`.
@@ -164,7 +169,7 @@ pub fn start_holding(
     objects: &[u64],
     rights: Rights,
 ) -> Result<usize, Error> {
-    let mut process = Process::new();
+    let mut process = Process::new(&Token::system());
     let mut first = 0;
     for (i, &object) in objects.iter().enumerate() {
         let handle = process
@@ -313,7 +318,12 @@ pub fn system_call(frame: &mut Frame) {
         },
         Call::Close(handle) => close(handle).map_or_else(|e| e, |()| 0),
         Call::Map(pages) => map(pages).unwrap_or_else(|e| e),
-        Call::Spawn { len, at, carry } => spawn_program(len, at, carry).unwrap_or_else(|e| e),
+        Call::Spawn {
+            len,
+            at,
+            carry,
+            restriction,
+        } => spawn_program(len, at, carry, restriction).unwrap_or_else(|e| e),
         Call::Wait(handle) => match wait(handle) {
             Ok((value, faulted)) => {
                 frame.rdx = faulted;
@@ -322,6 +332,7 @@ pub fn system_call(frame: &mut Frame) {
             Err(e) => e,
         },
         Call::Unmap { at, pages } => unmap(at, pages).map_or_else(|e| e, |()| 0),
+        Call::Token { room, at } => token(room, at).unwrap_or_else(|e| e),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
 }
@@ -351,8 +362,10 @@ pub fn close_object(object: u64) {
 
 /// Starts the program whose file is named by the `len` bytes at `at`, as
 /// a process of its own the running program holds a handle to, handing it
-/// the handle `carry` unless that is 0, and answers the handle.
-fn spawn_program(len: u64, at: u64, carry: u64) -> Result<u64, u64> {
+/// the handle `carry` unless that is 0, and answers the handle. It gets
+/// the running program's token, restricted by the word `restriction`
+/// unless that is 0.
+fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64, u64> {
     let count = usize::try_from(len)
         .ok()
         .filter(|&n| n <= bootinfo::Module::NAME)
@@ -367,7 +380,12 @@ fn spawn_program(len: u64, at: u64, carry: u64) -> Result<u64, u64> {
         core::ptr::copy_nonoverlapping(at as *const u8, name.as_mut_ptr(), count);
     });
     let file = super::module(&name[..count]).ok_or(syscall::NO_SUCH_PROGRAM)?;
-    let mut child = Process::new();
+    let mut token = with_process(|p| Ok(p.token))?;
+    if restriction != 0 {
+        let restriction = Restriction::from_word(restriction).ok_or(syscall::BAD_ARGUMENT)?;
+        token = token.restricted(restriction);
+    }
+    let mut child = Process::new(&token);
     let mut argument = 0;
     if carry != 0 {
         let handle = handle_of(carry)?;
@@ -576,6 +594,27 @@ fn receive(handle: u64, at: u64, room: u64) -> Result<(u64, u64), u64> {
         ),
     };
     Ok((len as u64, handle))
+}
+
+/// Writes the running program's token into the `room` bytes at `at`, and
+/// answers how many bytes it took.
+fn token(room: u64, at: u64) -> Result<u64, u64> {
+    let token = with_process(|p| Ok(p.token))?;
+    let mut bytes = [0u8; Token::MAX_SIZE];
+    let len = token.write(&mut bytes).ok_or(syscall::TOO_SMALL)?;
+    let size = len as u64;
+    if room < size {
+        return Err(syscall::TOO_SMALL);
+    }
+    if !memory::user_writable(at, size) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    // SAFETY: user_writable found each of the bytes mapped writable for
+    // ring 3 in this program's address space, which only this thread runs.
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
+    });
+    Ok(size)
 }
 
 /// Closes `handle`, and the channel end it stood for.

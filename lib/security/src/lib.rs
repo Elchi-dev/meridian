@@ -320,6 +320,9 @@ pub struct Token {
 impl Token {
     /// The most groups a token holds.
     pub const MAX_GROUPS: usize = 16;
+    /// The most bytes [`Token::write`] takes: a user and 16 groups, each
+    /// with as many numbers as a SID has room for.
+    pub const MAX_SIZE: usize = 8 + 68 + Token::MAX_GROUPS * (1 + 68);
 
     /// The token of `user` in `groups`, or none for more than
     /// [`Token::MAX_GROUPS`] of them.
@@ -941,6 +944,17 @@ mod tests {
         assert_eq!(u[u.len() - 17], 1, "the administrators only count against");
         let mut short = vec![0u8; system.len() - 1];
         assert_eq!(Token::system().write(&mut short), None);
+    }
+
+    #[test]
+    fn the_largest_token_fits_the_room_for_one() {
+        let longest = Sid::new(Sid::MAX_AUTHORITY, &[u32::MAX; 15]).unwrap();
+        let groups = [Group::of(longest); Token::MAX_GROUPS];
+        let t = Token::new(longest, &groups, Privileges::ALL, Integrity::System).unwrap();
+        assert_eq!(t.size(), Token::MAX_SIZE);
+        let mut room = [0u8; Token::MAX_SIZE];
+        assert_eq!(t.write(&mut room), Some(Token::MAX_SIZE));
+        assert_eq!(Token::read(&room), Some(t));
     }
 
     #[test]

@@ -36,6 +36,7 @@ nvme = { path = "../lib/nvme" }
 paging = { path = "../lib/paging" }
 pci = { path = "../lib/pci" }
 sched = { path = "../lib/sched" }
+security = { path = "../lib/security" }
 qr = { path = "../lib/qr" }
 x86 = { path = "../lib/x86" }
 

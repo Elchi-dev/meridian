@@ -154,6 +154,26 @@ pub fn kind(class: u8, subclass: u8, interface: u8) -> &'static str {
     }
 }
 
+/// The capabilities the configuration space `config` lists: the id of
+/// each and where it starts, following the pointer at 0x34 when bit 4 of
+/// the status register says there is a list. A pointer below the header's
+/// 64 bytes or past `config` ends the list, and so do 48 capabilities, the
+/// most 192 bytes hold, so a list that loops ends too.
+pub fn capabilities(config: &[u8]) -> impl Iterator<Item = (u8, usize)> + '_ {
+    let listed = config.get(6).is_some_and(|status| status & 1 << 4 != 0);
+    let mut at = config
+        .get(0x34)
+        .filter(|_| listed)
+        .map(|&p| usize::from(p & 0xfc));
+    let mut left = 48;
+    core::iter::from_fn(move || {
+        let here = at.filter(|&a| left > 0 && a >= 0x40 && a + 1 < config.len())?;
+        left -= 1;
+        at = Some(usize::from(config[here + 1] & 0xfc));
+        Some((config[here], here))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +381,63 @@ mod tests {
                 "{class:#x} {subclass:#x} {interface:#x}"
             );
         }
+    }
+
+    /// Configuration space with the status bit for a list, the list
+    /// starting at `first`, and each `(at, id, next)` written.
+    fn listing(first: u8, caps: &[(usize, u8, u8)]) -> [u8; 256] {
+        let mut config = [0u8; 256];
+        config[6] = 1 << 4;
+        config[0x34] = first;
+        for &(at, id, next) in caps {
+            config[at] = id;
+            config[at + 1] = next;
+        }
+        config
+    }
+
+    #[test]
+    fn capabilities_are_followed_from_the_pointer_on() {
+        let config = listing(
+            0x40,
+            &[(0x40, 0x09, 0x50), (0x50, 0x11, 0x84), (0x84, 0x05, 0)],
+        );
+        let found: Vec<_> = capabilities(&config).collect();
+        assert_eq!(found, [(0x09, 0x40), (0x11, 0x50), (0x05, 0x84)]);
+        let low_bits = listing(0x43, &[(0x40, 0x09, 0x53), (0x50, 0x01, 0)]);
+        assert_eq!(
+            capabilities(&low_bits).collect::<Vec<_>>(),
+            [(0x09, 0x40), (0x01, 0x50)],
+            "the low two bits of a pointer do not count"
+        );
+    }
+
+    #[test]
+    fn a_list_needs_the_status_bit_and_pointers_into_the_rest() {
+        let mut config = listing(0x40, &[(0x40, 0x09, 0)]);
+        config[6] = 0;
+        assert_eq!(capabilities(&config).count(), 0, "no list without the bit");
+        assert_eq!(
+            capabilities(&listing(0x3c, &[(0x3c, 9, 0)])).count(),
+            0,
+            "not in the header"
+        );
+        assert_eq!(capabilities(&listing(0, &[])).count(), 0);
+        let cut = listing(0x40, &[(0x40, 0x09, 0x80)]);
+        assert_eq!(
+            capabilities(&cut[..0x81]).count(),
+            1,
+            "one past the end stops"
+        );
+        assert_eq!(capabilities(&cut[..0x41]).count(), 0);
+        assert_eq!(capabilities(&[]).count(), 0);
+    }
+
+    #[test]
+    fn a_list_that_loops_ends() {
+        let config = listing(0x40, &[(0x40, 0x09, 0x44), (0x44, 0x0a, 0x40)]);
+        let found: Vec<_> = capabilities(&config).collect();
+        assert_eq!(found.len(), 48, "as many as 192 bytes could hold");
+        assert_eq!(&found[..3], [(0x09, 0x40), (0x0a, 0x44), (0x09, 0x40)]);
     }
 }

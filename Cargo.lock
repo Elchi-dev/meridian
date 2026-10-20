@@ -151,5 +151,12 @@ name = "uefi"
 version = "0.0.0"
 
 [[package]]
+name = "virtio"
+version = "0.0.0"
+dependencies = [
+ "pci",
+]
+
+[[package]]
 name = "x86"
 version = "0.0.0"

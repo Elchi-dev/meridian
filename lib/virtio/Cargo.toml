@@ -1,0 +1,15 @@
+[package]
+name = "virtio"
+description = "virtio over PCI without the hardware: where a device's structures lie, its features, split virtqueues and block requests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pci = { path = "../pci" }
+
+[lints]
+workspace = true

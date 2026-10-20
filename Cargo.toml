@@ -29,3 +29,11 @@ panic = "abort"
 panic = "abort"
 codegen-units = 1
 lto = true
+
+# Programs go onto images and are read from disk, where debug info is only
+# weight: a debug build of exitwith is 1.7 MB with it and 46 KB without.
+[profile.dev.package.program]
+strip = "debuginfo"
+
+[profile.release.package.program]
+strip = "debuginfo"

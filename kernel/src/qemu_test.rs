@@ -1390,6 +1390,46 @@ fn protection_checks<W: Write>(report: &mut Report<'_, W>) {
         }),
         "reading a page of ring 3 should fault, except inside with_user_access, which clears AC again",
     );
+    user_copy_checks(report);
+}
+
+/// A copy to or from a program stops at a page that is not there, as when
+/// another of its threads gave the page back meanwhile, and answers how
+/// much it did not copy instead of crashing the kernel.
+fn user_copy_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::user::{copy_without_looking as copy, seen};
+    let faults = seen::copy_faults();
+    let tried = raw::memory::with_user_page(|page| {
+        let mut room = [0u8; 8];
+        let whole = copy(&mut room, page);
+        let first = room[0];
+        let short = copy(&mut room, page + 4096 - 4);
+        let none = copy(&mut room, page + 2 * 4096);
+        (whole, short, none, first, x86::raw::user_access())
+    });
+    report.check(
+        "kernel.user.copy_stops",
+        tried.is_some_and(|(whole, short, none, first, open)| {
+            whole == 0 && short > 0 && none == 8 && first == 0xc3 && !open
+        }) && seen::copy_faults() == faults + 2,
+        "a copy from a program should stop where its pages do, say how much it left, and close the program's pages again",
+    );
+    let looked = raw::memory::with_user_page(|page| {
+        let mut room = [0u8; 4];
+        let kernels = room.as_ptr() as u64;
+        let read = raw::user::copy_from_user(page, &mut room) && room[0] == 0xc3;
+        let gap = raw::user::copy_from_user(page + 4096 - 2, &mut room);
+        let kernel = raw::user::copy_from_user(kernels, &mut room);
+        let written = raw::user::copy_to_user(page, &[1, 2]);
+        let kept = raw::user::copy_from_user(page, &mut room) && room[..2] == [0xc3, 0];
+        let empty = raw::user::copy_from_user(page + 2 * 4096, &mut []);
+        (read, gap, kernel, written, kept, empty)
+    });
+    report.check(
+        "kernel.user.copy_looks",
+        looked == Some((true, false, false, false, true, true)) && seen::copy_faults() == faults + 2,
+        "a system call's copy should take a program's bytes, refuse a gap, the kernel's half and bytes ring 3 may not write before anything faults, and copy nothing from nowhere",
+    );
 }
 
 /// The kernel's own tables are loaded, and each exception a check asks for

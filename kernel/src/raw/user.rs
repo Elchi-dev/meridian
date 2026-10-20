@@ -11,7 +11,6 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-#[cfg(feature = "qemu-test")]
 use core::arch::global_asm;
 use core::fmt::Write;
 
@@ -738,11 +737,9 @@ fn send(handle: u64, at: u64, len: u64, carry: u64) -> Result<(), u64> {
         }
     };
     let mut message = [0u8; MESSAGE];
-    // SAFETY: user_readable found every byte mapped for ring 3 in this
-    // program's address space, which only this thread runs.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(at as *const u8, message.as_mut_ptr(), count);
-    });
+    if !copy_from_user(at, &mut message[..count]) {
+        return Err(syscall::BAD_ADDRESS);
+    }
     ipc::send(end, &message[..count], carried).map_err(answer)?;
     if carried.is_some() {
         with_handles(|t| t.close(handle_of(carry)?).map_err(|_| syscall::BAD_HANDLE))?;
@@ -769,11 +766,14 @@ fn receive(handle: u64, at: u64, room: u64) -> Result<(u64, u64), u64> {
     let room = usize::try_from(room).unwrap_or(MESSAGE).min(MESSAGE);
     let mut message = [0u8; MESSAGE];
     let (len, brought) = ipc::receive(end, &mut message[..room]).map_err(answer)?;
-    // SAFETY: user_writable found every byte of the room mapped writable
-    // for ring 3 in this program's address space, and len fits in it.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(message.as_ptr(), at as *mut u8, len);
-    });
+    // Another thread of the program may have given the room back since;
+    // what the message brought goes then, as the message did.
+    if !copy_to_user(at, &message[..len]) {
+        if let Some(a) = brought {
+            close_object(a.object);
+        }
+        return Err(syscall::BAD_ADDRESS);
+    }
     let handle = match brought {
         None => 0,
         Some(a) => with_handles(|t| Ok(t.insert(a.object, Rights(a.rights)).ok()))?.map_or_else(
@@ -797,14 +797,9 @@ fn token(room: u64, at: u64) -> Result<u64, u64> {
     if room < size {
         return Err(syscall::TOO_SMALL);
     }
-    if !memory::user_writable(at, size) {
+    if !copy_to_user(at, &bytes[..len]) {
         return Err(syscall::BAD_ADDRESS);
     }
-    // SAFETY: user_writable found each of the bytes mapped writable for
-    // ring 3 in this program's address space, which only this thread runs.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
-    });
     Ok(size)
 }
 
@@ -861,11 +856,9 @@ fn read(handle: u64, at: u64, room: u64, offset: u64) -> Result<u64, u64> {
     let room = usize::try_from(room).unwrap_or(READ_MAX).min(READ_MAX);
     let mut bytes = [0u8; READ_MAX];
     let len = super::vfs::read(slot, offset, &mut bytes[..room]).map_err(file_answer)?;
-    // SAFETY: user_writable found every byte of the room mapped writable
-    // for ring 3 in this program's address space, and len fits in it.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
-    });
+    if !copy_to_user(at, &bytes[..len]) {
+        return Err(syscall::BAD_ADDRESS);
+    }
     Ok(len as u64)
 }
 
@@ -885,15 +878,9 @@ fn copy_in(at: u64, len: u64, into: &mut [u8], too_long: u64) -> Result<&[u8], u
         .ok()
         .filter(|&n| n <= into.len())
         .ok_or(too_long)?;
-    if !memory::user_readable(at, len) {
+    if !copy_from_user(at, &mut into[..count]) {
         return Err(syscall::BAD_ADDRESS);
     }
-    // SAFETY: user_readable found every byte mapped for ring 3 in this
-    // program's address space, which only this thread runs, so nothing
-    // unmaps them while they are copied, and they fit `into`.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(at as *const u8, into.as_mut_ptr(), count);
-    });
     Ok(&into[..count])
 }
 
@@ -915,11 +902,9 @@ fn list(handle: u64, at: u64, room: u64, index: u64) -> Result<(u64, bool), u64>
     let mut bytes = [0u8; NAME_MAX];
     let (len, directory) =
         super::vfs::list(slot, index, &mut bytes[..room]).map_err(file_answer)?;
-    // SAFETY: user_writable found every byte of the room mapped writable
-    // for ring 3 in this program's address space, and len fits in it.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
-    });
+    if !copy_to_user(at, &bytes[..len]) {
+        return Err(syscall::BAD_ADDRESS);
+    }
     Ok((len as u64, directory))
 }
 
@@ -946,17 +931,11 @@ fn log(at: u64, len: u64) -> u64 {
     let Some(count) = kernel::log::line_len(len) else {
         return syscall::TOO_LONG;
     };
-    if !memory::user_readable(at, len) {
-        return syscall::BAD_ADDRESS;
-    }
     let mut text = [0u8; syscall::LOG_BYTES];
     let text = &mut text[..count];
-    // SAFETY: user_readable found every byte mapped for ring 3 in the
-    // address space this thread runs on, and only this thread runs the
-    // program, so nothing unmaps them while they are copied.
-    x86::raw::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(at as *const u8, text.as_mut_ptr(), text.len());
-    });
+    if !copy_from_user(at, text) {
+        return syscall::BAD_ADDRESS;
+    }
     let mut serial = super::serial::already_open();
     let _ = serial.write_str("user: ");
     for &byte in text.iter() {
@@ -966,6 +945,91 @@ fn log(at: u64, len: u64) -> u64 {
     #[cfg(feature = "qemu-test")]
     seen::keep_log(text);
     0
+}
+
+// Every copy between the kernel and a program's memory is this one `rep
+// movsb`. Another thread of the program may give the pages back between
+// the look a system call takes at them and the copy, so a page fault right
+// at it is no crash: the handler goes on at the end, where the count of
+// bytes not copied is answered.
+global_asm!(
+    ".globl meridian_user_copy",
+    "meridian_user_copy:",
+    "mov rcx, rdx",
+    ".globl meridian_user_copy_faults",
+    "meridian_user_copy_faults:",
+    "rep movsb",
+    ".globl meridian_user_copy_ends",
+    "meridian_user_copy_ends:",
+    "mov rax, rcx",
+    "ret",
+);
+
+unsafe extern "C" {
+    fn meridian_user_copy(to: *mut u8, from: *const u8, len: usize) -> usize;
+    static meridian_user_copy_faults: u8;
+    static meridian_user_copy_ends: u8;
+}
+
+/// Copies `len` bytes from `from` to `to` with the program's pages open to
+/// the kernel, and answers how many it did not get to.
+///
+/// # Safety
+///
+/// Both have to be valid for `len` bytes, apart from pages of the user
+/// half that are not mapped, where the copy stops.
+pub(crate) unsafe fn user_copy(to: *mut u8, from: *const u8, len: usize) -> usize {
+    // SAFETY: as the caller promised; a page fault in the copy goes to
+    // copy_faulted, which ends it.
+    x86::raw::with_user_access(|| unsafe { meridian_user_copy(to, from, len) })
+}
+
+/// Copies the bytes at `at` of the running program into `into`; false
+/// when they are not all mapped for ring 3, or a page of them went while
+/// they were copied.
+pub fn copy_from_user(at: u64, into: &mut [u8]) -> bool {
+    memory::user_readable(at, into.len() as u64)
+        // SAFETY: `into` is the kernel's to write, and every byte at `at`
+        // lay in the user half and was mapped for ring 3; since then a page
+        // may only have gone, for another thread of the program gave it
+        // back.
+        && unsafe { user_copy(into.as_mut_ptr(), at as *const u8, into.len()) } == 0
+}
+
+/// Copies `from` into the bytes at `at` of the running program; false when
+/// they are not all mapped for ring 3 to write, or a page of them went
+/// while they were written.
+pub fn copy_to_user(at: u64, from: &[u8]) -> bool {
+    memory::user_writable(at, from.len() as u64)
+        // SAFETY: as in copy_from_user, with the pages mapped writable.
+        && unsafe { user_copy(at as *mut u8, from.as_ptr(), from.len()) } == 0
+}
+
+/// Copies the bytes at `from` in the user half into `into` without looking
+/// at their pages first, and answers how many it did not get to. Only the
+/// test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn copy_without_looking(into: &mut [u8], from: u64) -> usize {
+    if !kernel::syscall::in_user_half(from, into.len() as u64) {
+        return into.len();
+    }
+    // SAFETY: `into` is the kernel's to write, and the bytes at `from` lie
+    // in the user half, where what is mapped may be read and what is not
+    // stops the copy.
+    unsafe { user_copy(into.as_mut_ptr(), from as *const u8, into.len()) }
+}
+
+/// Sends a page fault inside a copy to or from a program on to the copy's
+/// end, which answers that it stopped short; false for any other fault.
+pub fn copy_faulted(frame: &mut Frame) -> bool {
+    let faults = &raw const meridian_user_copy_faults as u64;
+    if frame.vector != 14 || frame.cs & 3 != 0 || frame.rip != faults {
+        return false;
+    }
+    frame.rip = &raw const meridian_user_copy_ends as u64;
+    #[cfg(feature = "qemu-test")]
+    seen::copy_faulted();
+    true
 }
 
 /// A fault in ring 3: the program ends, and the kernel goes on.
@@ -1925,6 +1989,18 @@ pub mod seen {
 
     /// How often each call was made since the last program started.
     static CALLS: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+
+    /// How many copies to or from a program met a page that had gone.
+    static COPY_FAULTS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn copy_faulted() {
+        COPY_FAULTS.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How many copies to or from a program met a page that had gone.
+    pub fn copy_faults() -> u64 {
+        COPY_FAULTS.load(Ordering::Acquire)
+    }
 
     pub(super) fn called_from(cs: u64, number: u64) {
         if let Some(count) = usize::try_from(number).ok().and_then(|n| CALLS.get(n)) {

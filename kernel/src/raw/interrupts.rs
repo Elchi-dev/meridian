@@ -264,6 +264,9 @@ extern "sysv64" fn exception(frame: &mut Frame) {
         if frame.cs & 3 == 3 {
             super::user::fault(frame);
         }
+        if super::user::copy_faulted(frame) {
+            return;
+        }
         super::crash_from_exception(frame.vector, frame.error, x86::raw::cr2(), frame.rip)
     }
     if frame.cs & 3 == 3 {

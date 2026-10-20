@@ -377,36 +377,65 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
     /// When its chain ends before its size does, goes on past it, or
     /// cannot be read.
     pub fn read_file(&mut self, entry: &Entry, into: &mut [u8]) -> Result<usize, Error> {
-        let want = into.len().min(entry.size as usize);
-        if want == 0 {
-            return Ok(0);
-        }
-        let size = self.volume.sector_size as usize;
-        let mut room = [0u8; 4096];
-        let mut done = 0;
-        let mut cluster = entry.first;
-        loop {
-            let start = self.volume.first_sector(cluster).ok_or(Error::BadChain)?;
-            for sector in start..start + u64::from(self.volume.sectors_per_cluster) {
-                if !(self.read)(sector, &mut room[..size]) {
-                    return Err(Error::Read);
-                }
-                let n = size.min(want - done);
-                into[done..done + n].copy_from_slice(&room[..n]);
-                done += n;
-                if done == want {
-                    break;
-                }
-            }
-            if done == want {
-                break;
-            }
-            cluster = self.next(cluster)?.ok_or(Error::BadChain)?;
-        }
-        if want == entry.size as usize && self.next(cluster)?.is_some() {
+        let (done, last) = self.read_from(entry, 0, into)?;
+        if done > 0 && done == entry.size as usize && self.next(last)?.is_some() {
             return Err(Error::BadChain);
         }
         Ok(done)
+    }
+
+    /// Reads the file `entry` stands for from byte `offset` on into
+    /// `into`, as much as fits and the file still has, and returns how many
+    /// bytes that is: 0 from its end on.
+    ///
+    /// # Errors
+    ///
+    /// When its chain ends before the bytes asked for, or cannot be read.
+    pub fn read_at(&mut self, entry: &Entry, offset: u64, into: &mut [u8]) -> Result<usize, Error> {
+        self.read_from(entry, offset, into).map(|(done, _)| done)
+    }
+
+    /// As [`Fat::read_at`], and the cluster it read last.
+    fn read_from(
+        &mut self,
+        entry: &Entry,
+        offset: u64,
+        into: &mut [u8],
+    ) -> Result<(usize, u32), Error> {
+        let left = u64::from(entry.size).saturating_sub(offset);
+        let want = usize::try_from(left).map_or(into.len(), |left| left.min(into.len()));
+        let mut cluster = entry.first;
+        if want == 0 {
+            return Ok((0, cluster));
+        }
+        let size = self.volume.sector_size as usize;
+        let per_cluster = u64::from(self.volume.sectors_per_cluster);
+        let skipped = offset / size as u64;
+        for _ in 0..skipped / per_cluster {
+            cluster = self.next(cluster)?.ok_or(Error::BadChain)?;
+        }
+        let mut sector = skipped % per_cluster;
+        let mut skip = usize::try_from(offset % size as u64).unwrap_or(0);
+        let mut room = [0u8; 4096];
+        let mut done = 0;
+        loop {
+            let start = self.volume.first_sector(cluster).ok_or(Error::BadChain)?;
+            while sector < per_cluster {
+                if !(self.read)(start + sector, &mut room[..size]) {
+                    return Err(Error::Read);
+                }
+                let n = (size - skip).min(want - done);
+                into[done..done + n].copy_from_slice(&room[skip..skip + n]);
+                done += n;
+                skip = 0;
+                sector += 1;
+                if done == want {
+                    return Ok((done, cluster));
+                }
+            }
+            sector = 0;
+            cluster = self.next(cluster)?.ok_or(Error::BadChain)?;
+        }
     }
 }
 
@@ -805,6 +834,108 @@ mod tests {
         assert_eq!(&small[..], &big[..700]);
         let empty = fat.find("EMPTY").unwrap();
         assert_eq!(fat.read_file(&empty, &mut room), Ok(0));
+    }
+
+    #[test]
+    fn a_file_is_read_from_any_byte_on() {
+        let (disk, big) = volume();
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        let entry = fat.find(&format!("long-name-{}", "x".repeat(244))).unwrap();
+        for (offset, len) in [
+            (0, 10),
+            (5, 10),
+            (510, 4),
+            (512, 512),
+            (700, 800),
+            (1023, 2),
+            (1499, 1),
+        ] {
+            let mut room = vec![0u8; len];
+            assert_eq!(
+                fat.read_at(&entry, offset as u64, &mut room),
+                Ok(len),
+                "{offset}"
+            );
+            assert_eq!(
+                room,
+                &big[offset..offset + len],
+                "from byte {offset}, across its scattered clusters"
+            );
+        }
+        let mut room = [0u8; 100];
+        assert_eq!(
+            fat.read_at(&entry, 1450, &mut room),
+            Ok(50),
+            "only what is left"
+        );
+        assert_eq!(&room[..50], &big[1450..]);
+        assert_eq!(
+            fat.read_at(&entry, 1500, &mut room),
+            Ok(0),
+            "from the end on"
+        );
+        assert_eq!(fat.read_at(&entry, u64::MAX, &mut room), Ok(0));
+        assert_eq!(fat.read_at(&entry, 3, &mut []), Ok(0));
+        let empty = fat.find("EMPTY").unwrap();
+        assert_eq!(fat.read_at(&empty, 0, &mut room), Ok(0));
+    }
+
+    #[test]
+    fn a_file_is_read_from_inside_a_cluster_of_several_sectors() {
+        let (disk, bytes) = wide();
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        let entry = fat.find("wide file.bin").unwrap();
+        for (offset, len) in [
+            (4095, 2),
+            (4096, 4096),
+            (1000, 7000),
+            (5000, 5000),
+            (8191, 1809),
+        ] {
+            let mut room = vec![0u8; len];
+            assert_eq!(
+                fat.read_at(&entry, offset as u64, &mut room),
+                Ok(len),
+                "{offset}"
+            );
+            assert_eq!(room, &bytes[offset..offset + len], "from byte {offset}");
+        }
+    }
+
+    #[test]
+    fn reading_from_an_offset_stops_where_the_chain_does() {
+        let (disk, _) = volume();
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        let readme = fat.find("README.TXT").unwrap();
+        let too_big = Entry {
+            size: 2000,
+            ..readme
+        };
+        let mut room = [0u8; 64];
+        assert_eq!(
+            fat.read_at(&too_big, 3, &mut room[..4]),
+            Ok(4),
+            "within the one cluster there is"
+        );
+        assert_eq!(&room[..4], b"d me");
+        assert_eq!(
+            fat.read_at(&too_big, 600, &mut room),
+            Err(Error::BadChain),
+            "a cluster past its end"
+        );
+        assert_eq!(
+            fat.read_at(&too_big, 500, &mut room),
+            Err(Error::BadChain),
+            "running into its end"
+        );
+        let mut boot_only = |lba, into: &mut [u8]| {
+            lba == 0 && {
+                into.copy_from_slice(&disk.sectors[&0][..into.len()]);
+                true
+            }
+        };
+        let mut blind = Fat::open(&mut boot_only).unwrap();
+        assert_eq!(blind.read_at(&readme, 0, &mut room), Err(Error::Read));
     }
 
     #[test]

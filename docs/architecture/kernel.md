@@ -218,6 +218,18 @@ and `WaitForMultipleObjects` need. Every process carries a security token.
 The handle table is also what makes "who lock" possible: the System monitor
 and Files can ask which process holds a handle to a given file.
 
+What exists: security tokens, as ADR 0014 decided. `lib/security` has
+SIDs in Windows' binary and text forms, integrity levels, privileges with
+their Windows names, and tokens of a user, up to 16 groups, privileges and
+a level, with the access check for when files and named objects arrive.
+Every process keeps a token. What the kernel starts itself runs as
+SYSTEM, with every privilege and the system level; a program started with
+SPAWN gets its parent's token, or with a restriction in r10 a copy at a
+lower level with fewer privileges, never more. TOKEN hands a program its
+own. In the test image hello checks it runs as SYSTEM, and starts
+`whoami`, which sends its token back, once as it is and once restricted
+to the low level and one privilege.
+
 ## Scheduling (M3)
 
 Desktop responsiveness first: the window under the mouse never stutters

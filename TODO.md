@@ -100,11 +100,14 @@ Loader and UEFI:
 - [x] Preemption: at every tick the timer hands the processor to a ready thread of the same or a higher priority, and wakes the sleepers; spin locks keep interrupts off while held
 - [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
 - [ ] Threads move between cores when one is busier than another
+- [ ] Each thread's FPU and SSE registers kept across switches, before programs use them: Meridian's own build without SSE, Windows programs will not
+- [ ] Threads in programs, and with them TLB shootdowns: a page one thread unmaps must not stay cached on another core
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
 - [x] An address space of its own for every program, given back whole when it ends; the kernel's half shared by all
 - [x] Handles with access masks, in a table per program, with generations so a closed handle reaches nothing (`lib/handles`)
 - [x] Processes as objects: SPAWN by file name with a handle handed over, WAIT for the exit code or the exception (`kernel::process`)
-- [ ] Security tokens
+- [x] Security tokens: SIDs, privileges and integrity levels; SYSTEM for what the kernel starts, a restricted copy through SPAWN, TOKEN to read one (`lib/security`, ADR 0014)
+- [ ] The access check put to use once there are files and named objects
 - [x] One lock for the serial port, so lines from threads on different cores or a preempted thread cannot run into each other
 - [x] `.mexec` loader: ELF files carrying Meridian's version note, named in their name note ([format](docs/formats/mexec.md)); `main!` writes both
 - [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)

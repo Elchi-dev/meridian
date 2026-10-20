@@ -78,6 +78,7 @@ func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
 		"meridian/licences/jetbrains_mono.txt": "ofl too",
 		"meridian/kernel":                      "elf",
 		"meridian/boot.meri":                   Settings,
+		"meridian/services.meri":               Services,
 		"meridian/programs/hello.mexec":        "hi",
 		"meridian/programs/init.mexec":         "first",
 	}
@@ -99,8 +100,8 @@ func TestTestImagesCarryAnExampleSystem(t *testing.T) {
 		string(got[KernelPath]) != "elf" || string(got[LoaderPath]) != "efi" || string(got[FirmwarePath]) != "shim" {
 		t.Fatalf("got %v", got)
 	}
-	if string(got[SettingsPath]) != testSettings {
-		t.Fatal("test images carry settings of their own")
+	if string(got[SettingsPath]) != testSettings || string(got[ServicesPath]) != testServices {
+		t.Fatal("test images carry settings and services of their own")
 	}
 }
 
@@ -176,6 +177,44 @@ func TestTheSettingsFilesSayWhatTheyShould(t *testing.T) {
 		}
 		if timeout != c.timeout || start != c.start || verbose != c.verbose {
 			t.Errorf("%s: timeout %v, default %q, verbose %v", c.name, timeout, start, verbose)
+		}
+	}
+}
+
+// init is a Rust program, so this reads its source to make sure it reads
+// the list where BootFiles puts it.
+func TestInitReadsTheServicesWhereTheyGo(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "lib", "program", "examples", "init.rs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `const LIST: &str = "/System/Boot/` + ServicesPath + `";`
+	if !strings.Contains(string(src), want) {
+		t.Errorf("init.rs should say %s", want)
+	}
+}
+
+func TestTheServicesListsNameTheirPrograms(t *testing.T) {
+	for _, c := range []struct {
+		name, src string
+		services  []string
+	}{
+		{"services.meri", Services, []string{"shell"}},
+		{"test services.meri", testServices, []string{"whoami", "shell"}},
+	} {
+		doc, err := meri.Parse(c.name, []byte(c.src))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		blocks := doc.Blocks("service")
+		if len(blocks) != len(c.services) {
+			t.Fatalf("%s: the services are %v", c.name, blocks)
+		}
+		for i, b := range blocks {
+			program, err := b.String("program", "")
+			if !b.Labelled || b.Label != c.services[i] || err != nil || program != c.services[i] {
+				t.Errorf("%s: service %q runs %q, %v", c.name, b.Label, program, err)
+			}
 		}
 	}
 }

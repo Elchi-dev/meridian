@@ -204,7 +204,9 @@ fn finish(
     if shell && let Some(screen) = display.take() {
         let _ = raw::console::start(screen);
     }
-    for (module, file) in raw::modules(info, regions) {
+    let init = raw::modules(info, regions).any(|(m, _)| kernel::is_init(m.name()));
+    let started = raw::modules(info, regions).filter(|(m, _)| kernel::starts(m.name(), init));
+    for (module, file) in started {
         if let Err(e) = raw::user::start_file(0, file, 0) {
             let name = core::str::from_utf8(module.name()).unwrap_or("?");
             let _ = writeln!(serial, "kernel: {name} did not start: {e:?}");

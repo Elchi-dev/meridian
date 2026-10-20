@@ -298,6 +298,24 @@ pub fn is_shell(name: &[u8]) -> bool {
     name == SHELL
 }
 
+/// The name of init's file among the programs the loader read. An image
+/// that carries it has the kernel start init alone, which starts the rest.
+pub const INIT: &[u8] = b"init.mexec";
+
+/// Whether the program named `name` is init.
+#[must_use]
+pub fn is_init(name: &[u8]) -> bool {
+    name == INIT
+}
+
+/// Whether the kernel starts the program named `name` itself, on an image
+/// that carries init or not: init alone when there is one, every program
+/// when there is not.
+#[must_use]
+pub fn starts(name: &[u8], init: bool) -> bool {
+    !init || is_init(name)
+}
+
 /// Writes which of the threads' floating point and vector registers are
 /// kept, and with what.
 ///
@@ -863,6 +881,17 @@ mod tests {
         assert!(!is_shell(b"shell.mexec2"));
         assert!(!is_shell(b""));
         assert_eq!(SHELL, b"shell.mexec");
+    }
+
+    #[test]
+    fn with_init_the_kernel_starts_init_alone() {
+        assert!(is_init(b"init.mexec"));
+        assert!(!is_init(b"Init.mexec") && !is_init(b"init.mexe") && !is_init(b"shell.mexec"));
+        assert_eq!(INIT, b"init.mexec");
+        assert!(starts(b"init.mexec", true));
+        assert!(!starts(b"shell.mexec", true), "init starts it");
+        assert!(starts(b"shell.mexec", false), "no init, so the kernel does");
+        assert!(starts(b"hello.mexec", false));
     }
 
     #[test]

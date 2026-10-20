@@ -697,6 +697,8 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "exitwith_again.mexec",
                 "hello.mexec",
                 "hello_again.mexec",
+                "init.mexec",
+                "init_again.mexec",
                 "shell.mexec",
                 "shell_again.mexec",
                 "threads.mexec",
@@ -705,7 +707,7 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "whoami_again.mexec",
             ]
             && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the five programs test images carry, each twice",
+        "the programs' directory should list the six programs test images carry, each twice",
     );
 }
 
@@ -1014,6 +1016,54 @@ fn shell_checks<W: Write>(
         "kernel.shell",
         greeted && echoed && listed && shown && refused && ran && ended,
         "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, run a program from its file and say how it ended, and end at exit",
+    );
+}
+
+/// init, handed a channel end: of the services the test image lists, it
+/// starts whoami, which ends at once there, again and again but waiting
+/// longer each time, and the shell once, and once the channel's other end
+/// closes, it ends them and itself, so every frame they took comes back.
+/// Booted from a CD it has no list, so it starts the shell alone.
+fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
+    use handles::Rights;
+    use raw::user::{self, seen};
+    let Some((_, file)) = raw::modules(info, regions).find(|(m, _)| kernel::is_init(m.name()))
+    else {
+        report.check("kernel.init", false, "every image should carry init");
+        return;
+    };
+    let disk = esp_of_disk().is_some();
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let before = free();
+    seen::forget();
+    let channel = raw::ipc::create();
+    let started = channel.and_then(|(_, theirs)| {
+        user::start_file_holding(0, file, &[theirs], Rights::READ | Rights::WRITE).ok()
+    });
+    raw::thread::sleep(60);
+    let spawns = seen::calls(abi::SPAWN);
+    let ran = if disk {
+        (5..=11).contains(&spawns) && seen::logged(b"init: whoami ended with 1")
+    } else {
+        spawns == 1
+    };
+    if let Some((ours, _)) = channel {
+        raw::ipc::close(ours);
+    }
+    let ended = ended_with(started, 0);
+    let back = (0..100).any(|_| {
+        raw::thread::sleep(1);
+        free() == before
+    });
+    report.check(
+        "kernel.init",
+        ran && ended && back,
+        "init should start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
     );
 }
 
@@ -1479,6 +1529,7 @@ fn timer_checks<W: Write>(
     );
     keyboard_checks(report, machine, tsc_hz);
     shell_checks(report, info, regions, machine, tsc_hz);
+    init_checks(report, info, regions);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);

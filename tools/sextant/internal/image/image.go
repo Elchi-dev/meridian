@@ -148,6 +148,31 @@ boot {
 }
 `
 
+// ServicesPath is where init reads the services it starts.
+const ServicesPath = "meridian/services.meri"
+
+// Services is the list every image starts with: the shell, on the
+// console.
+const Services = `# The services init starts, and starts again when one ends. A program
+# is named as among meridian/programs, without .mexec, or by its path.
+
+service shell {
+    program = shell
+}
+`
+
+// testServices is the list of test images: whoami, which ends at once
+// there, so the test image sees init start it again and again, and the
+// shell, which runs until init ends it.
+const testServices = `service whoami {
+    program = whoami
+}
+
+service shell {
+    program = shell
+}
+`
+
 // testSettings are the settings of test images, which the test image
 // checks it read: every value differs from its default.
 const testSettings = `boot {
@@ -169,6 +194,7 @@ func BootFiles(b Boot) map[string][]byte {
 		CertificatePath:  b.Certificate,
 		KernelPath:       b.Kernel,
 		SettingsPath:     []byte(Settings),
+		ServicesPath:     []byte(Services),
 	}
 	for name, data := range b.Programs {
 		files[ProgramsPath+"/"+name] = data
@@ -204,6 +230,7 @@ func TestFiles(b Boot) map[string][]byte {
 	files[ExamplePath] = b.Loader
 	files[FirmwareExamplePath] = b.Loader
 	files[SettingsPath] = []byte(testSettings)
+	files[ServicesPath] = []byte(testServices)
 	files[LongName] = []byte("long name\n")
 	for name, data := range b.Programs {
 		files[ProgramsPath+"/"+strings.TrimSuffix(name, ProgramExt)+AgainSuffix+ProgramExt] = data

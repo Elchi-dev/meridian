@@ -184,6 +184,32 @@ pub fn start_holding(
     rights: Rights,
 ) -> Result<usize, Error> {
     let mut process = Process::new(&Token::system());
+    let first = hold(&mut process, objects, rights)?;
+    launch(core, program, first, process)
+}
+
+/// Starts the program in `file` as [`start_file`] does, holding handles as
+/// [`start_holding`] does. Only the test image does this yet.
+///
+/// # Errors
+///
+/// As for [`start_file`], and when the handles do not fit its table.
+#[cfg(feature = "qemu-test")]
+pub fn start_file_holding(
+    core: usize,
+    file: &[u8],
+    objects: &[u64],
+    rights: Rights,
+) -> Result<usize, Error> {
+    let mut process = Process::new(&Token::system());
+    let first = hold(&mut process, objects, rights)?;
+    start_file_as(core, file, first, process)
+}
+
+/// Gives `process` a handle with `rights` to each of `objects`, and
+/// answers the first one's.
+#[cfg(feature = "qemu-test")]
+fn hold(process: &mut Process, objects: &[u64], rights: Rights) -> Result<u64, Error> {
     let mut first = 0;
     for (i, &object) in objects.iter().enumerate() {
         let handle = process
@@ -194,7 +220,7 @@ pub fn start_holding(
             first = u64::from(handle.0);
         }
     }
-    launch(core, program, first, process)
+    Ok(first)
 }
 
 #[cfg(feature = "qemu-test")]

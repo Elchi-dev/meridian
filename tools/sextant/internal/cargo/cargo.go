@@ -29,6 +29,8 @@ var (
 	Hello = Part{Package: "program", Target: "x86_64-unknown-none", File: "hello", Example: "hello"}
 	// Shell reads keys and runs commands on the console.
 	Shell = Part{Package: "program", Target: "x86_64-unknown-none", File: "shell", Example: "shell"}
+	// Init starts the services and starts each again when it ends.
+	Init = Part{Package: "program", Target: "x86_64-unknown-none", File: "init", Example: "init"}
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
@@ -39,7 +41,7 @@ var (
 	// checks of programs with more than one.
 	Threads = Part{Package: "program", Target: "x86_64-unknown-none", File: "threads", Example: "threads"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell}
+	Programs = []Part{Hello, Shell, Init}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads}
 )

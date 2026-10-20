@@ -12,15 +12,15 @@ use abi::{LOG_BYTES, MESSAGE_BYTES};
 use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
-    Ended, Error, Handle, channel, close, log, map, raw, receive, send, spawn, spawn_restricted,
-    token, unmap, wait,
+    Ended, Error, Handle, Info, channel, close, info, log, map, open, raw, read, receive, send,
+    spawn, spawn_restricted, token, unmap, wait,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 21] = [
+const CHECKS: [(&str, Check); 23] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -42,6 +42,8 @@ const CHECKS: [(&str, Check); 21] = [
     ("wait.other", wait_for_no_process),
     ("token", own_token),
     ("spawn.token", child_gets_no_more),
+    ("file", settings_read_back),
+    ("file.refused", files_that_do_not_open),
 ];
 
 /// Runs every check and answers how many failed.
@@ -487,6 +489,92 @@ fn child_gets_no_more() -> Outcome {
     expect(
         abi::answer(raw::call(bad).0) == Err(Error::BadArgument),
         "a word that holds no restriction should start nothing",
+    )
+}
+
+/// The settings sextant writes into test images.
+const SETTINGS: &[u8] =
+    b"boot {\n    timeout = 2500ms\n    default = example\n    verbose = true\n}\n";
+
+fn settings_read_back() -> Outcome {
+    let file = open("/System/Boot/meridian/boot.meri", abi::file::READ)
+        .map_err(|_| "boot.meri should open from the EFI system partition")?;
+    expect(
+        info(file)
+            == Ok(Info {
+                size: SETTINGS.len() as u64,
+                directory: false,
+            }),
+        "its size should be the one sextant wrote",
+    )?;
+    let mut room = [0u8; 128];
+    expect(
+        read(file, 0, &mut room) == Ok(SETTINGS.len()) && room[..SETTINGS.len()] == *SETTINGS,
+        "it should read as sextant wrote it",
+    )?;
+    expect(
+        read(file, 11, &mut room[..7]) == Ok(7) && room[..7] == *b"timeout",
+        "from a byte in the middle on",
+    )?;
+    expect(
+        read(file, SETTINGS.len() as u64, &mut room) == Ok(0),
+        "and nothing from its end on",
+    )?;
+    expect(close(file) == Ok(()), "the file should close")?;
+    let again = open("/system/BOOT/Meridian/BOOT.MERI", abi::file::READ)
+        .map_err(|_| "a path in other capitals should name the same file")?;
+    expect(
+        read(again, 0, &mut room) == Ok(SETTINGS.len()) && close(again) == Ok(()),
+        "and read the same",
+    )
+}
+
+fn files_that_do_not_open() -> Outcome {
+    expect(
+        open("/System/Boot/meridian/nothing", abi::file::READ) == Err(Error::NotFound),
+        "a name no file has should open nothing",
+    )?;
+    expect(
+        open("/System/Boot/meridian/boot.meri/inside", abi::file::READ) == Err(Error::NotFound),
+        "nor a name inside a file",
+    )?;
+    expect(
+        open("/Nowhere/x", abi::file::READ) == Err(Error::NotFound),
+        "nor a path no volume hangs at",
+    )?;
+    expect(
+        open("meridian/boot.meri", abi::file::READ) == Err(Error::BadArgument)
+            && open("/System/../..", abi::file::READ) == Err(Error::BadArgument),
+        "a path not from the root, or above it, is none",
+    )?;
+    expect(
+        open("/System/Boot/meridian/boot.meri", abi::file::WRITE) == Err(Error::Denied),
+        "nothing writes to a volume mounted read only",
+    )?;
+    let long = [b'/'; abi::PATH_BYTES + 1];
+    let too_long = abi::Call::Open {
+        len: long.len() as u64,
+        at: long.as_ptr() as u64,
+        wanted: u64::from(abi::file::READ),
+    };
+    expect(
+        abi::answer(raw::call(too_long).0) == Err(Error::TooLong),
+        "a path longer than PATH_BYTES",
+    )?;
+    let directory =
+        open("/System/Boot/meridian", abi::file::READ).map_err(|_| "a directory should open")?;
+    let mut room = [0u8; 8];
+    expect(
+        info(directory).is_ok_and(|i| i.directory)
+            && read(directory, 0, &mut room) == Err(Error::NotAFile)
+            && close(directory) == Ok(()),
+        "a directory should say it is one, and have no bytes to read",
+    )?;
+    let blind =
+        open("/System/Boot/meridian/boot.meri", 0).map_err(|_| "a file should open for nothing")?;
+    expect(
+        read(blind, 0, &mut room) == Err(Error::Denied) && close(blind) == Ok(()),
+        "a handle opened without the right to read should not read",
     )
 }
 

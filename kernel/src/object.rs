@@ -10,11 +10,14 @@ pub enum Object {
     ChannelEnd { slot: usize, end: End },
     /// The process in slot `slot`.
     Process { slot: usize },
+    /// The open file in slot `slot`.
+    File { slot: usize },
 }
 
 /// The top byte of each kind's number.
 const CHANNEL_END: u64 = 1;
 const PROCESS: u64 = 2;
+const FILE: u64 = 3;
 
 impl Object {
     /// The number a handle table keeps for the object.
@@ -29,6 +32,7 @@ impl Object {
                 CHANNEL_END << 56 | (slot as u64) << 1 | side
             }
             Object::Process { slot } => PROCESS << 56 | slot as u64,
+            Object::File { slot } => FILE << 56 | slot as u64,
         }
     }
 
@@ -43,6 +47,9 @@ impl Object {
                 Some(Object::ChannelEnd { slot, end })
             }
             PROCESS => Some(Object::Process {
+                slot: usize::try_from(number & 0xff_ffff_ffff_ffff).ok()?,
+            }),
+            FILE => Some(Object::File {
                 slot: usize::try_from(number & 0xff_ffff_ffff_ffff).ok()?,
             }),
             _ => None,
@@ -101,8 +108,23 @@ mod tests {
     }
 
     #[test]
+    fn open_files_keep_their_slot() {
+        for slot in [0, 1, 63, (1 << 56) - 1] {
+            let o = Object::File { slot };
+            assert_eq!(Object::from_number(o.number()), Some(o), "{slot}");
+            assert_eq!(o.number() >> 56, 3);
+        }
+        assert_eq!(Object::File { slot: 5 }.number(), 3 << 56 | 5);
+        assert_ne!(
+            Object::File { slot: 5 }.number(),
+            Object::Process { slot: 5 }.number(),
+            "kinds never share a number"
+        );
+    }
+
+    #[test]
     fn numbers_of_no_kind_stand_for_nothing() {
-        for number in [0, 7, 3 << 56, u64::MAX, 0xff << 56 | 1] {
+        for number in [0, 7, 4 << 56, u64::MAX, 0xff << 56 | 1] {
             assert_eq!(Object::from_number(number), None, "{number:#x}");
         }
     }

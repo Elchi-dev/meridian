@@ -44,6 +44,15 @@ pub const WAIT: u64 = 12;
 /// Writes the caller's security token, in the form `lib/security` reads,
 /// into the rdi bytes at rsi, and answers how many bytes it took.
 pub const TOKEN: u64 = 13;
+/// Opens the file at the path of the rdi bytes at rsi for the rights rdx,
+/// those of [`file`], and answers a handle to it.
+pub const OPEN: u64 = 14;
+/// Reads at most rdx bytes of the file of handle rdi, from its byte r10
+/// on, into the room at rsi, and answers how many it read: 0 at its end.
+pub const READ: u64 = 15;
+/// Answers the size of the file of handle rdi, with rdx 1 when it is a
+/// directory and 0 when not.
+pub const INFO: u64 = 16;
 
 /// The rights to a file, as Windows numbers them.
 pub mod file {
@@ -88,9 +97,15 @@ pub enum Error {
     NotAProgram,
     /// A value the call does not take, such as a restriction that is none.
     BadArgument,
+    /// No file has this path.
+    NotFound,
+    /// The handle stands for a directory, which has no bytes to read.
+    NotAFile,
+    /// The disk a file is on could not be read.
+    Unreadable,
 }
 
-const ERRORS: [Error; 14] = [
+const ERRORS: [Error; 17] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -105,6 +120,9 @@ const ERRORS: [Error; 14] = [
     Error::NoSuchProgram,
     Error::NotAProgram,
     Error::BadArgument,
+    Error::NotFound,
+    Error::NotAFile,
+    Error::Unreadable,
 ];
 
 impl Error {
@@ -141,6 +159,9 @@ pub const BAD_SIZE: u64 = Error::BadSize.code();
 pub const NO_SUCH_PROGRAM: u64 = Error::NoSuchProgram.code();
 pub const NOT_A_PROGRAM: u64 = Error::NotAProgram.code();
 pub const BAD_ARGUMENT: u64 = Error::BadArgument.code();
+pub const NOT_FOUND: u64 = Error::NotFound.code();
+pub const NOT_A_FILE: u64 = Error::NotAFile.code();
+pub const UNREADABLE: u64 = Error::Unreadable.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -204,6 +225,18 @@ pub enum Call {
         room: u64,
         at: u64,
     },
+    Open {
+        len: u64,
+        at: u64,
+        wanted: u64,
+    },
+    Read {
+        handle: u64,
+        at: u64,
+        room: u64,
+        offset: u64,
+    },
+    Info(u64),
     Unknown(u64),
 }
 
@@ -238,6 +271,14 @@ impl Call {
             } => (SPAWN, [len, at, carry, restriction]),
             Call::Wait(handle) => (WAIT, [handle, 0, 0, 0]),
             Call::Token { room, at } => (TOKEN, [room, at, 0, 0]),
+            Call::Open { len, at, wanted } => (OPEN, [len, at, wanted, 0]),
+            Call::Read {
+                handle,
+                at,
+                room,
+                offset,
+            } => (READ, [handle, at, room, offset]),
+            Call::Info(handle) => (INFO, [handle, 0, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -285,6 +326,18 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             room: first,
             at: second,
         },
+        OPEN => Call::Open {
+            len: first,
+            at: second,
+            wanted: third,
+        },
+        READ => Call::Read {
+            handle: first,
+            at: second,
+            room: third,
+            offset: fourth,
+        },
+        INFO => Call::Info(first),
         other => Call::Unknown(other),
     }
 }
@@ -357,14 +410,32 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(14, [1, 2, 3, 0]), Call::Unknown(14));
+        assert_eq!(
+            decode(OPEN, [30, 0x7f_e000, 1, 4]),
+            Call::Open {
+                len: 30,
+                at: 0x7f_e000,
+                wanted: 1
+            }
+        );
+        assert_eq!(
+            decode(READ, [0x3_0001, 0x7f_d000, 4096, 512]),
+            Call::Read {
+                handle: 0x3_0001,
+                at: 0x7f_d000,
+                room: 4096,
+                offset: 512
+            }
+        );
+        assert_eq!(decode(INFO, [0x3_0001, 2, 3, 4]), Call::Info(0x3_0001));
+        assert_eq!(decode(17, [1, 2, 3, 0]), Call::Unknown(17));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             [
                 EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT, TOKEN
+                WAIT, TOKEN, OPEN, READ, INFO
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
     }
 
@@ -375,6 +446,16 @@ mod tests {
                 panic!("SPAWN should read as a spawn");
             };
             assert_eq!(restriction, word);
+        }
+    }
+
+    #[test]
+    fn read_takes_its_offset_whole_from_r10() {
+        for offset in [0, 1, 4096, 1 << 32, u64::MAX] {
+            let Call::Read { offset: read, .. } = decode(READ, [1, 2, 3, offset]) else {
+                panic!("READ should read as a read");
+            };
+            assert_eq!(read, offset);
         }
     }
 
@@ -393,7 +474,9 @@ mod tests {
     fn the_newest_error_comes_last_so_the_others_keep_their_codes() {
         assert_eq!(NOT_A_PROGRAM, u64::MAX - 12);
         assert_eq!(BAD_ARGUMENT, u64::MAX - 13);
-        assert_eq!(ERRORS.last(), Some(&Error::BadArgument));
+        assert_eq!(NOT_A_FILE, u64::MAX - 15);
+        assert_eq!(UNREADABLE, u64::MAX - 16);
+        assert_eq!(ERRORS.last(), Some(&Error::Unreadable));
     }
 
     #[test]
@@ -421,6 +504,9 @@ mod tests {
             NO_SUCH_PROGRAM,
             NOT_A_PROGRAM,
             BAD_ARGUMENT,
+            NOT_FOUND,
+            NOT_A_FILE,
+            UNREADABLE,
         ];
         for (i, &e) in errors.iter().enumerate() {
             assert_eq!(
@@ -475,7 +561,19 @@ mod tests {
                 room: 64,
                 at: 0x7f_e000,
             },
-            Call::Unknown(14),
+            Call::Open {
+                len: 9,
+                at: 0x40_4000,
+                wanted: 0x21,
+            },
+            Call::Read {
+                handle: 0x3_0004,
+                at: 0x7f_c000,
+                room: 512,
+                offset: 1 << 40,
+            },
+            Call::Info(0x3_0004),
+            Call::Unknown(17),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -504,6 +602,9 @@ mod tests {
             (SPAWN, 4),
             (WAIT, 1),
             (TOKEN, 2),
+            (OPEN, 3),
+            (READ, 4),
+            (INFO, 1),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -526,7 +627,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > TOKEN,
+                number > INFO,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -566,6 +667,13 @@ mod tests {
         assert_eq!(spawn.encode(), (SPAWN, [9, 10, 11, 0]));
         let token = Call::Token { room: 12, at: 13 };
         assert_eq!(token.encode(), (TOKEN, [12, 13, 0, 0]));
+        let open = Call::Open {
+            len: 14,
+            at: 15,
+            wanted: 16,
+        };
+        assert_eq!(open.encode(), (OPEN, [14, 15, 16, 0]));
+        assert_eq!(Call::Info(17).encode(), (INFO, [17, 0, 0, 0]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 
@@ -577,9 +685,12 @@ mod tests {
         assert_eq!(answer(u64::MAX), Err(Error::NoSuchCall));
         assert_eq!(answer(NOT_A_PROGRAM), Err(Error::NotAProgram));
         assert_eq!(answer(BAD_ARGUMENT), Err(Error::BadArgument));
+        assert_eq!(answer(NOT_FOUND), Err(Error::NotFound));
+        assert_eq!(answer(NOT_A_FILE), Err(Error::NotAFile));
+        assert_eq!(answer(UNREADABLE), Err(Error::Unreadable));
         assert_eq!(
-            answer(BAD_ARGUMENT - 1),
-            Ok(BAD_ARGUMENT - 1),
+            answer(UNREADABLE - 1),
+            Ok(UNREADABLE - 1),
             "just below them"
         );
         assert_eq!(answer(0), Ok(0));
@@ -614,6 +725,9 @@ mod tests {
             (Error::NoSuchProgram, NO_SUCH_PROGRAM),
             (Error::NotAProgram, NOT_A_PROGRAM),
             (Error::BadArgument, BAD_ARGUMENT),
+            (Error::NotFound, NOT_FOUND),
+            (Error::NotAFile, NOT_A_FILE),
+            (Error::Unreadable, UNREADABLE),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

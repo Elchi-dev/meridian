@@ -12,6 +12,7 @@ mod qemu_test;
 #[allow(unsafe_code)]
 mod raw;
 
+use alloc::boxed::Box;
 use core::fmt::Write;
 
 use bootinfo::{BootInfo, MemoryRegion};
@@ -98,6 +99,7 @@ fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Serial) {
             let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
             let mut read = |lba, into: &mut [u8]| raw::nvme::read(lba, into).is_ok();
             let _ = kernel::disk::describe(serial, &"NVMe", &mut read);
+            mount_boot(serial, &"NVMe", read);
         }
     }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
@@ -106,10 +108,37 @@ fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Serial) {
         for drive in raw::ahci::drives().iter().flatten() {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
-            let mut read = |lba, into: &mut [u8]| raw::ahci::read(drive.port, lba, into).is_ok();
-            let name = format_args!("AHCI port {}", drive.port);
+            let port = drive.port;
+            let mut read = move |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
+            let name = format_args!("AHCI port {port}");
             let _ = kernel::disk::describe(serial, &name, &mut read);
+            mount_boot(serial, &name, read);
         }
+    }
+}
+
+/// Hangs the first EFI system partition of the disk `disk`, which `read`
+/// reads, at /System/Boot, read only, unless a volume hangs there already.
+/// Until the loader says which partition it came from, the first found is
+/// the one booted from.
+fn mount_boot(
+    serial: &mut Serial,
+    disk: &dyn core::fmt::Display,
+    mut read: impl FnMut(u64, &mut [u8]) -> bool + Copy + Send + 'static,
+) {
+    let Some(esp) = kernel::disk::Table::read(&mut read).and_then(|t| t.first_of(gpt::EFI_SYSTEM))
+    else {
+        return;
+    };
+    let first = esp.first;
+    if raw::vfs::mount(
+        "/System/Boot",
+        Box::new(move |lba, into| read(first + lba, into)),
+    ) {
+        let _ = writeln!(
+            serial,
+            "kernel: {disk}'s EFI system partition hangs at /System/Boot, read only"
+        );
     }
 }
 

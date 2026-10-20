@@ -167,6 +167,70 @@ pub fn spawn_restricted(
     answer(raw::call(spawn_call(name, carry, restriction.word())).0).map(Handle)
 }
 
+/// What INFO says about a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Info {
+    pub size: u64,
+    pub directory: bool,
+}
+
+/// Opens the file at `path` for the rights `wanted`, those of
+/// [`abi::file`], and returns a handle to it.
+///
+/// # Errors
+///
+/// When the path is none or too long, no file has it, the program's token
+/// may not open it so, or the disk cannot be read.
+pub fn open(path: &str, wanted: u32) -> Result<Handle, Error> {
+    answer(raw::call(open_call(path, wanted)).0).map(Handle)
+}
+
+/// Reads the file `file` from its byte `offset` on into `room`, as much as
+/// one call reads, and returns how many bytes it read: 0 at its end.
+///
+/// # Errors
+///
+/// When the handle is not the program's, may not read, or stands for a
+/// directory, or the disk cannot be read.
+pub fn read(file: Handle, offset: u64, room: &mut [u8]) -> Result<usize, Error> {
+    let len = answer(raw::call(read_call(file, offset, room)).0)?;
+    Ok(usize::try_from(len).unwrap_or(usize::MAX))
+}
+
+/// How big the file `file` is, and whether it is a directory.
+///
+/// # Errors
+///
+/// When the handle is not the program's or stands for no file.
+pub fn info(file: Handle) -> Result<Info, Error> {
+    let (rax, rdx) = raw::call(Call::Info(file.0));
+    info_from(rax, rdx)
+}
+
+fn open_call(path: &str, wanted: u32) -> Call {
+    Call::Open {
+        len: path.len() as u64,
+        at: path.as_ptr() as u64,
+        wanted: u64::from(wanted),
+    }
+}
+
+fn read_call(file: Handle, offset: u64, room: &mut [u8]) -> Call {
+    Call::Read {
+        handle: file.0,
+        at: room.as_mut_ptr() as u64,
+        room: room.len() as u64,
+        offset,
+    }
+}
+
+fn info_from(rax: u64, rdx: u64) -> Result<Info, Error> {
+    Ok(Info {
+        size: answer(rax)?,
+        directory: rdx != 0,
+    })
+}
+
 /// The program's security token; none only when the kernel and this
 /// runtime disagree on how one is written.
 #[must_use]
@@ -453,6 +517,44 @@ mod tests {
                 restriction: 0x8000_0001_0000_0000
             }
         );
+    }
+
+    #[test]
+    fn a_file_is_opened_by_its_path_and_read_where_asked() {
+        let path = "/System/Boot/meridian/boot.meri";
+        assert_eq!(
+            open_call(path, abi::file::READ | abi::file::RUN),
+            Call::Open {
+                len: 31,
+                at: path.as_ptr() as u64,
+                wanted: 0x21
+            }
+        );
+        let mut room = [0u8; 100];
+        assert_eq!(
+            read_call(Handle(0x3_0001), 4096, &mut room[10..]),
+            Call::Read {
+                handle: 0x3_0001,
+                at: room[10..].as_ptr() as u64,
+                room: 90,
+                offset: 4096
+            }
+        );
+        assert_eq!(
+            info_from(64, 0),
+            Ok(Info {
+                size: 64,
+                directory: false
+            })
+        );
+        assert_eq!(
+            info_from(0, 1),
+            Ok(Info {
+                size: 0,
+                directory: true
+            })
+        );
+        assert_eq!(info_from(abi::BAD_HANDLE, 1), Err(Error::BadHandle));
     }
 
     #[test]

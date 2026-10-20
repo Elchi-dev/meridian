@@ -275,6 +275,7 @@ fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions:
     ahci_checks(report);
     nvme_checks(report);
     fat_checks(report, info, regions);
+    vfs_checks(report);
 }
 
 /// PCI through the MCFG's ECAM region: q35's host bridge at 00:00.0 and its
@@ -534,6 +535,88 @@ fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.nvme.read",
         spanning && each && end && refused,
         "NVMe should read the same sectors as AHCI, up to the disk's last and no further",
+    );
+}
+
+/// The tree of files, from inside the kernel: the boot volume hangs at
+/// /System/Boot and reads as AHCI and FAT32 read it straight, SYSTEM and a
+/// token restricted to the low level both open it to read, and an open
+/// file's slot is free again once it is closed, while one file more than
+/// there are slots finds none.
+fn vfs_checks<W: Write>(report: &mut Report<'_, W>) {
+    use abi::file::READ;
+    use raw::vfs::{self, Error};
+    use security::{Integrity, Privileges, Restriction, Token};
+    let settings = "/System/Boot/meridian/boot.meri";
+    let system = Token::system();
+    let mut by_tree = [0u8; 128];
+    let read = vfs::open(settings, &system, READ).ok().and_then(|slot| {
+        let len = vfs::read(slot, 0, &mut by_tree).ok();
+        let size = vfs::info(slot);
+        vfs::close(slot);
+        len.zip(size)
+    });
+    let drives = raw::ahci::drives();
+    let straight = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk)
+        .and_then(|disk| {
+            let port = disk.port;
+            let mut read = |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
+            let esp = kernel::disk::Table::read(&mut read)?.first_of(gpt::EFI_SYSTEM)?;
+            let mut volume = fat::Fat::open(|lba, into: &mut [u8]| {
+                raw::ahci::read(port, esp.first + lba, into).is_ok()
+            })
+            .ok()?;
+            let entry = volume.find("meridian/boot.meri").ok()?;
+            let mut bytes = [0u8; 128];
+            let len = volume.read_file(&entry, &mut bytes).ok()?;
+            Some((bytes, len))
+        });
+    report.check(
+        "kernel.vfs.read",
+        read.zip(straight)
+            .is_some_and(|((len, (size, directory)), (bytes, straight_len))| {
+                len == straight_len
+                    && size == len as u64
+                    && !directory
+                    && by_tree[..len] == bytes[..len]
+            }),
+        "boot.meri should read through /System/Boot as AHCI and FAT32 read it straight",
+    );
+    let low = system.restricted(Restriction {
+        integrity: Integrity::Low,
+        keep: Privileges::NONE,
+    });
+    let opened_low = vfs::open(settings, &low, READ)
+        .inspect(|&slot| vfs::close(slot))
+        .is_ok();
+    let again = (0..100).all(|_| {
+        vfs::open(settings, &system, READ)
+            .inspect(|&slot| vfs::close(slot))
+            .is_ok()
+    });
+    let mut held = alloc::vec::Vec::new();
+    while let Ok(slot) = vfs::open(settings, &system, READ) {
+        held.push(slot);
+        if held.len() > 64 {
+            break;
+        }
+    }
+    let full = held.len() == 64 && vfs::open(settings, &system, READ) == Err(Error::NoRoom);
+    for slot in held {
+        vfs::close(slot);
+    }
+    report.check(
+        "kernel.vfs.slots",
+        opened_low
+            && again
+            && full
+            && vfs::open(settings, &system, READ)
+                .inspect(|&slot| vfs::close(slot))
+                .is_ok(),
+        "a closed file's slot should be free again, and the 65th file open at once find none",
     );
 }
 
@@ -1398,6 +1481,9 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::SPAWN,
         abi::WAIT,
         abi::TOKEN,
+        abi::OPEN,
+        abi::READ,
+        abi::INFO,
         abi::EXIT,
     ];
     report.check(

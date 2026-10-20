@@ -333,6 +333,20 @@ pub fn system_call(frame: &mut Frame) {
         },
         Call::Unmap { at, pages } => unmap(at, pages).map_or_else(|e| e, |()| 0),
         Call::Token { room, at } => token(room, at).unwrap_or_else(|e| e),
+        Call::Open { len, at, wanted } => open(len, at, wanted).unwrap_or_else(|e| e),
+        Call::Read {
+            handle,
+            at,
+            room,
+            offset,
+        } => read(handle, at, room, offset).unwrap_or_else(|e| e),
+        Call::Info(handle) => match info(handle) {
+            Ok((size, directory)) => {
+                frame.rdx = u64::from(directory);
+                size
+            }
+            Err(e) => e,
+        },
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
 }
@@ -356,6 +370,7 @@ pub fn close_object(object: u64) {
     match Object::from_number(object) {
         Some(Object::ChannelEnd { .. }) => ipc::close(object),
         Some(Object::Process { slot }) => OBJECTS.lock().close(slot),
+        Some(Object::File { slot }) => super::vfs::close(slot),
         None => {}
     }
 }
@@ -615,6 +630,85 @@ fn token(room: u64, at: u64) -> Result<u64, u64> {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
     });
     Ok(size)
+}
+
+/// A file error as the answer to a system call.
+fn file_answer(e: super::vfs::Error) -> u64 {
+    use super::vfs::Error;
+    match e {
+        Error::BadPath => syscall::BAD_ARGUMENT,
+        Error::NotFound => syscall::NOT_FOUND,
+        Error::NotAFile => syscall::NOT_A_FILE,
+        Error::Refused(_) => syscall::DENIED,
+        Error::NoRoom => syscall::NO_ROOM,
+        Error::Read => syscall::UNREADABLE,
+    }
+}
+
+/// Opens the file at the path of the `len` bytes at `at` for the rights
+/// `wanted`, as the running program's token may, and answers a handle to
+/// it that may read it when that was asked for, and be handed on.
+fn open(len: u64, at: u64, wanted: u64) -> Result<u64, u64> {
+    let count = usize::try_from(len)
+        .ok()
+        .filter(|&n| n <= syscall::PATH_BYTES)
+        .ok_or(syscall::TOO_LONG)?;
+    if !memory::user_readable(at, len) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let mut bytes = [0u8; syscall::PATH_BYTES];
+    // SAFETY: user_readable found every byte mapped for ring 3 in this
+    // program's address space, which only this thread runs.
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(at as *const u8, bytes.as_mut_ptr(), count);
+    });
+    let path = core::str::from_utf8(&bytes[..count]).map_err(|_| syscall::BAD_ARGUMENT)?;
+    let wanted = u32::try_from(wanted).map_err(|_| syscall::BAD_ARGUMENT)?;
+    let token = with_process(|p| Ok(p.token))?;
+    let slot = super::vfs::open(path, &token, wanted).map_err(file_answer)?;
+    let mut rights = Rights::TRANSFER;
+    if wanted & syscall::file::READ != 0 {
+        rights = Rights(rights.0 | Rights::READ.0);
+    }
+    with_handles(|t| {
+        t.insert(Object::File { slot }.number(), rights)
+            .map_err(|_| syscall::NO_ROOM)
+    })
+    .map(|handle| u64::from(handle.0))
+    .inspect_err(|_| super::vfs::close(slot))
+}
+
+/// The most bytes one READ reads.
+const READ_MAX: usize = 4096;
+
+/// Reads at most `room` bytes, and no more than [`READ_MAX`], of the file
+/// `handle` stands for from its byte `offset` on into the room at `at`,
+/// and answers how many it read.
+fn read(handle: u64, at: u64, room: u64, offset: u64) -> Result<u64, u64> {
+    let Some(Object::File { slot }) = Object::from_number(object(handle, Rights::READ)?) else {
+        return Err(syscall::DENIED);
+    };
+    if !memory::user_writable(at, room) {
+        return Err(syscall::BAD_ADDRESS);
+    }
+    let room = usize::try_from(room).unwrap_or(READ_MAX).min(READ_MAX);
+    let mut bytes = [0u8; READ_MAX];
+    let len = super::vfs::read(slot, offset, &mut bytes[..room]).map_err(file_answer)?;
+    // SAFETY: user_writable found every byte of the room mapped writable
+    // for ring 3 in this program's address space, and len fits in it.
+    x86::raw::with_user_access(|| unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), at as *mut u8, len);
+    });
+    Ok(len as u64)
+}
+
+/// The size of the file `handle` stands for, and whether it is a
+/// directory.
+fn info(handle: u64) -> Result<(u64, bool), u64> {
+    let Some(Object::File { slot }) = Object::from_number(object(handle, Rights(0))?) else {
+        return Err(syscall::DENIED);
+    };
+    super::vfs::info(slot).ok_or(syscall::BAD_HANDLE)
 }
 
 /// Closes `handle`, and the channel end it stood for.
@@ -1423,7 +1517,7 @@ pub mod seen {
     static ENDED: Kept = Kept::new();
 
     /// How often each call was made since the last program started.
-    static CALLS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+    static CALLS: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
 
     pub(super) fn called_from(cs: u64, number: u64) {
         if let Some(count) = usize::try_from(number).ok().and_then(|n| CALLS.get(n)) {

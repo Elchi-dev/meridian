@@ -404,6 +404,13 @@ pub const AHCI_REGISTERS: u64 = APIC_PAGE + (2 << 20);
 /// doorbells of the queues Meridian makes.
 pub const NVME_REGISTERS: u64 = APIC_PAGE + (4 << 20);
 
+/// Where an I/O APIC's select register is once its page, which holds the
+/// physical `address`, is mapped at [`IO_APIC_PAGE`].
+#[must_use]
+pub fn io_apic_select(address: u64) -> u64 {
+    IO_APIC_PAGE + address % 4096
+}
+
 /// The input of the I/O APIC `io_apic`, which has `inputs` of them, that
 /// the line `line` arrives at; none when it arrives at another one.
 #[must_use]
@@ -924,6 +931,17 @@ mod tests {
             "AHCI port 2: nothing\n"
         );
         assert!(drive_line(&mut Full, 0, ahci::Attached::Optical, None).is_err());
+    }
+
+    #[test]
+    fn an_io_apics_registers_are_where_its_address_falls_in_its_page() {
+        assert_eq!(
+            io_apic_select(0xfec0_0000),
+            IO_APIC_PAGE,
+            "at the start of a page, as q35's"
+        );
+        assert_eq!(io_apic_select(0xfec0_0400), IO_APIC_PAGE + 0x400);
+        assert_eq!(io_apic_select(0xfec0_1fff), IO_APIC_PAGE + 0xfff);
     }
 
     #[test]

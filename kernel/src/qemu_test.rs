@@ -721,6 +721,7 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         routed,
         "the keyboard's input of the I/O APIC should be let through as its vector, edge triggered and active high",
     );
+    let held = x86::ioapic::entry(0, 0, false, false, true);
     let held_back = machine
         .keyboard
         .zip(machine.io_apic)
@@ -728,12 +729,18 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
             let keyboard = line.interrupt - io.first;
             (0..24)
                 .filter(|&input| input != keyboard)
-                .all(|input| raw::ioapic::entry(input) & 1 << 16 != 0)
+                .all(|input| raw::ioapic::entry(input) == held)
         });
+    // An input nothing drives, held back still, sent to another APIC for a
+    // moment: its destination is in the entry's high half.
+    let elsewhere = x86::ioapic::entry(0x30, 2, true, true, true);
+    raw::ioapic::route(23, elsewhere);
+    let read_back = raw::ioapic::entry(23) == elsewhere;
+    raw::ioapic::route(23, held);
     report.check(
         "kernel.ioapic.held_back",
-        held_back,
-        "every other input of the I/O APIC should be held back, as nothing drives it yet",
+        held_back && read_back && raw::ioapic::entry(23) == held,
+        "every other input of the I/O APIC should be held back and nothing else, and an entry read back as written, its destination too",
     );
     let wanted = ps2::config::FIRST_INTERRUPT | ps2::config::TRANSLATION;
     let unwanted = ps2::config::FIRST_CLOCK_OFF | ps2::config::SECOND_INTERRUPT;

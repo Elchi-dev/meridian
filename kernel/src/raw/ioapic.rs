@@ -43,7 +43,7 @@ pub fn start(address: u64) -> Option<u32> {
     if !memory::map_registers(kernel::IO_APIC_PAGE, address & !0xfff, 1) {
         return None;
     }
-    SELECT.store(kernel::IO_APIC_PAGE + (address & 0xfff), Ordering::Release);
+    SELECT.store(kernel::io_apic_select(address), Ordering::Release);
     let inputs = ioapic::inputs(read(ioapic::VERSION));
     for input in 0..inputs {
         route(input, ioapic::entry(0, 0, false, false, true));

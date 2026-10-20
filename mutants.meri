@@ -219,3 +219,31 @@ allow {
     mutation = "|| to &&"
     reason = "QEMU's controller never fails as it comes up, so a controller that answered in time is always ready there"
 }
+
+allow {
+    file = "kernel/src/raw/ps2.rs"
+    line = ".any(|_| status() & status::OUTPUT_FULL != 0)"
+    mutation = "& to |"
+    reason = "QEMU's controller has its answer waiting by the time the status is first read, so taking it at once takes the same byte"
+}
+
+allow {
+    file = "kernel/src/raw/ps2.rs"
+    line = "if status() & status::OUTPUT_FULL != 0 {"
+    mutation = "& to |"
+    reason = "OVMF leaves nothing waiting in the controller, and with nothing to take, reading the data port changes nothing"
+}
+
+allow {
+    file = "kernel/src/raw/ps2.rs"
+    line = "if status() & status::OUTPUT_FULL != 0 {"
+    mutation = "!= to =="
+    reason = "as above: with nothing waiting, taking or leaving it is the same"
+}
+
+allow {
+    file = "kernel/src/raw/ps2.rs"
+    line = "if status() & status::OUTPUT_FULL == 0 {"
+    mutation = "& to |"
+    reason = "the keyboard's interrupt only comes once a byte waits, so the look before taking it always finds one"
+}

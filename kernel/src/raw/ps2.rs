@@ -2,7 +2,7 @@
 //! at each of its interrupts and read as keys, which wait until something
 //! takes them.
 
-use ps2::{Decoder, Keys, command, config, port, status};
+use ps2::{Decoder, Keys, Step, port, status};
 
 use super::memory::Spin;
 
@@ -11,10 +11,6 @@ static KEYS: Spin<Keys<64>> = Spin::new(Keys::new());
 
 /// How often the status is read while waiting for the controller.
 const PATIENCE: u32 = 100_000;
-
-/// The keyboard's command to send keys, and what it answers commands with.
-const ENABLE_SCANNING: u8 = 0xf4;
-const ACKNOWLEDGE: u8 = 0xfa;
 
 fn status() -> u8 {
     // SAFETY: the status register only reads.
@@ -45,40 +41,37 @@ fn receive() -> Option<u8> {
         .then(take)
 }
 
-/// Sets the controller up for the keyboard on its first port, with the
-/// keyboard's interrupt on and translation to scan code set 1, and has the
-/// keyboard send keys. Says whether it all answered; a machine without
-/// PS/2 answers nothing.
+/// Sets the controller up for the keyboard on its first port, step by
+/// step as [`ps2::SETUP`] lists them, and says whether every step went
+/// through; a machine without PS/2 answers nothing.
 pub fn start() -> bool {
-    let quiet =
-        give(port::COMMAND, command::DISABLE_FIRST) && give(port::COMMAND, command::DISABLE_SECOND);
-    if !quiet {
-        return false;
-    }
-    for _ in 0..16 {
-        if status() & status::OUTPUT_FULL == 0 {
-            break;
+    let mut old = None;
+    for step in ps2::SETUP {
+        let done = match step {
+            Step::Command(c) => give(port::COMMAND, c),
+            Step::Data(d) => give(port::DATA, d),
+            Step::Flush => {
+                for _ in 0..16 {
+                    if status() & status::OUTPUT_FULL != 0 {
+                        let _ = take();
+                    }
+                }
+                true
+            }
+            Step::ReadConfig => {
+                old = receive();
+                old.is_some()
+            }
+            Step::WriteConfig { quiet } => {
+                old.is_some_and(|o| give(port::DATA, ps2::config_to_write(o, quiet)))
+            }
+            Step::Expect(byte) => receive() == Some(byte),
+        };
+        if !done {
+            return false;
         }
-        let _ = take();
     }
-    let Some(old) = give(port::COMMAND, command::READ_CONFIG)
-        .then(receive)
-        .flatten()
-    else {
-        return false;
-    };
-    let wanted = ps2::keyboard_config(old);
-    let tested = give(port::COMMAND, command::WRITE_CONFIG)
-        && give(port::DATA, wanted & !config::FIRST_INTERRUPT)
-        && give(port::COMMAND, command::SELF_TEST)
-        && receive() == Some(ps2::TEST_PASSED);
-    // Some controllers forget their configuration in the self test.
-    tested
-        && give(port::COMMAND, command::WRITE_CONFIG)
-        && give(port::DATA, wanted)
-        && give(port::COMMAND, command::ENABLE_FIRST)
-        && give(port::DATA, ENABLE_SCANNING)
-        && receive() == Some(ACKNOWLEDGE)
+    true
 }
 
 /// Takes the byte the keyboard's interrupt says waits, and keeps the key
@@ -96,7 +89,7 @@ pub fn interrupt() {
 /// The controller's configuration byte. Only the test image asks.
 #[cfg(feature = "qemu-test")]
 pub fn configuration() -> Option<u8> {
-    give(port::COMMAND, command::READ_CONFIG)
+    give(port::COMMAND, ps2::command::READ_CONFIG)
         .then(receive)
         .flatten()
 }

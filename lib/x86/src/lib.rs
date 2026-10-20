@@ -307,9 +307,102 @@ pub fn brand() -> CpuText<48> {
     CpuText::from_registers([a, b, c].as_flattened())
 }
 
+/// An I/O APIC, whose registers are reached through a select register and
+/// a window onto the one it selects.
+pub mod ioapic {
+    /// Where the select register and the window lie in its page.
+    pub const SELECT: u64 = 0x00;
+    pub const WINDOW: u64 = 0x10;
+    /// The register that says how many redirection entries it has.
+    pub const VERSION: u32 = 0x01;
+
+    /// The low half of the redirection entry of input `n`; the high half
+    /// is the register after it.
+    #[must_use]
+    pub fn redirection(n: u32) -> u32 {
+        0x10 + 2 * n
+    }
+
+    /// How many inputs it has, from its version register.
+    #[must_use]
+    pub fn inputs(version: u32) -> u32 {
+        (version >> 16 & 0xff) + 1
+    }
+
+    /// The redirection entry that sends an input as interrupt `vector` to
+    /// the processor whose APIC id is `destination`, fixed and physically
+    /// addressed, active low or high and level or edge triggered as the
+    /// device's line is, and held back while `masked`.
+    #[must_use]
+    pub fn entry(vector: u8, destination: u8, active_low: bool, level: bool, masked: bool) -> u64 {
+        u64::from(destination) << 56
+            | u64::from(masked) << 16
+            | u64::from(level) << 15
+            | u64::from(active_low) << 13
+            | u64::from(vector)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_io_apic_input_is_redirected_as_its_line_asks() {
+        assert_eq!(
+            ioapic::entry(0x22, 0, false, false, false),
+            0x22,
+            "fixed, physical, edge, active high"
+        );
+        assert_eq!(ioapic::entry(0x22, 3, false, false, false), 3 << 56 | 0x22);
+        assert_eq!(ioapic::entry(0x40, 0, true, false, false), 1 << 13 | 0x40);
+        assert_eq!(ioapic::entry(0x40, 0, false, true, false), 1 << 15 | 0x40);
+        assert_eq!(ioapic::entry(0x40, 0, false, false, true), 1 << 16 | 0x40);
+        assert_eq!(
+            ioapic::entry(0xff, 0xff, true, true, true),
+            0xff00_0000_0001_a0ff
+        );
+    }
+
+    #[test]
+    fn io_apics_of_real_chips_say_their_inputs() {
+        let chips = [
+            (0x0017_0011, 24, "82093AA, the first I/O APIC"),
+            (0x0017_0020, 24, "an Intel chipset's, as QEMU's q35 has it"),
+            (0x0017_0021, 24, "an AMD southbridge's"),
+            (0x0037_0020, 56, "a server's second one"),
+            (0x0077_0020, 120, "one of the largest"),
+        ];
+        for (version, inputs, chip) in chips {
+            assert_eq!(ioapic::inputs(version), inputs, "{chip}");
+        }
+        assert_eq!(
+            ioapic::redirection(119),
+            0xfe,
+            "the last input of the largest"
+        );
+        assert_eq!(
+            ioapic::redirection(239),
+            0x1ee,
+            "as far as eight bits of entries reach"
+        );
+    }
+
+    #[test]
+    fn an_io_apic_says_how_many_inputs_it_has() {
+        assert_eq!(
+            ioapic::inputs(0x0017_0020),
+            24,
+            "QEMU's: 23 is the last entry"
+        );
+        assert_eq!(ioapic::inputs(0x00ff_0011), 256);
+        assert_eq!(ioapic::inputs(0), 1);
+        assert_eq!(ioapic::redirection(0), 0x10);
+        assert_eq!(ioapic::redirection(1), 0x12);
+        assert_eq!(ioapic::redirection(23), 0x3e);
+        assert_eq!([ioapic::SELECT, ioapic::WINDOW], [0, 0x10]);
+        assert_eq!(ioapic::VERSION, 1);
+    }
 
     #[test]
     fn rdrand_is_bit_30_of_leaf_1() {

@@ -536,6 +536,35 @@ pub unsafe fn read_port_u32(port: u16) -> u32 {
     value
 }
 
+/// Reads a byte from I/O port `port`.
+///
+/// # Safety
+///
+/// The port must belong to a device the caller drives, and reading it must
+/// do what the caller expects, such as taking a byte the device sent.
+#[must_use]
+pub unsafe fn read_port_u8(port: u16) -> u8 {
+    let value: u8;
+    // SAFETY: the caller drives the device and expects what reading does.
+    unsafe {
+        asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+/// Writes `value` to I/O port `port`.
+///
+/// # Safety
+///
+/// The port must belong to a device the caller drives, and writing
+/// `value` there must do what the caller expects.
+pub unsafe fn write_port_u8(port: u16, value: u8) {
+    // SAFETY: the caller drives the device and expects what writing does.
+    unsafe {
+        asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// Whether [`enable_x2apic`] turned the x2APIC on, so its registers exist.
 static X2APIC_ON: AtomicBool = AtomicBool::new(false);
 

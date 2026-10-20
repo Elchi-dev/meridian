@@ -5,6 +5,7 @@
 pub mod ahci;
 pub mod apic;
 pub mod console;
+pub mod fpu;
 pub mod hpet;
 pub mod interrupts;
 pub mod ioapic;
@@ -63,6 +64,7 @@ extern "sysv64" fn kernel_start(info: *const BootInfo) -> ! {
     save_screen(&info.framebuffer);
     interrupts::install();
     x86::raw::protect(x86::Protections::detect());
+    fpu::start(x86::fpu::Saving::detect());
     crate::run(info, regions, &mut serial)
 }
 

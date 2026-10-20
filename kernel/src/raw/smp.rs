@@ -397,6 +397,7 @@ extern "sysv64" fn ap_main(number: u64) -> ! {
     let number = usize::try_from(number).unwrap_or(0);
     super::interrupts::load_on_another_core(number);
     x86::raw::protect(x86::Protections::detect());
+    super::fpu::start(super::fpu::saving());
     let _ = super::apic::enable();
     x86::raw::set_spurious_vector(SPURIOUS);
     #[cfg(feature = "qemu-test")]

@@ -25,6 +25,9 @@ pub fn start() {
         if threads.has_idle(0) {
             return;
         }
+        if !map_registers(&threads, 0) {
+            return;
+        }
         // The idle thread halts with interrupts on, waiting for the next.
         if let Ok(slot) = make(&mut threads, 0, 0, idle, 0, 0, 0x202) {
             threads.make_idle(slot);
@@ -32,10 +35,28 @@ pub fn start() {
     });
 }
 
+/// Maps the page thread `slot` keeps its registers in, for a thread that
+/// runs on a stack of its own already, and says whether it is mapped. The
+/// page gets fresh registers too: XSAVE writes only part of the header
+/// XRSTOR reads, and a page from anywhere may hold anything there.
+fn map_registers(threads: &Table<CORES>, slot: usize) -> bool {
+    let mapped = threads.has_stack(slot)
+        || super::memory::map_stack(thread::registers_at(slot) + 4096, 1).is_ok();
+    if mapped {
+        super::fpu::fresh(slot);
+    }
+    mapped
+}
+
 /// Makes the running code on another core that core's idle thread, so
 /// threads can be started there. Returns false when no thread is left.
 pub fn join(core: usize) -> bool {
-    x86::raw::without_interrupts(|| THREADS.lock().join(core).is_ok())
+    x86::raw::without_interrupts(|| {
+        let mut threads = THREADS.lock();
+        threads
+            .join(core)
+            .is_ok_and(|slot| map_registers(&threads, slot))
+    })
 }
 
 /// Starts `entry(argument)` as a thread of its own at `priority` on
@@ -104,8 +125,8 @@ fn start_thread(
 }
 
 /// Takes a free thread, gives it a stack whose first switch lands in
-/// `entry(argument)` with `flags`, and makes it ready on `core` in the
-/// address space at `root` without queueing it.
+/// `entry(argument)` with `flags` and fresh registers above it, and makes
+/// it ready on `core` in the address space at `root` without queueing it.
 fn make(
     threads: &mut Table<CORES>,
     core: usize,
@@ -118,8 +139,10 @@ fn make(
     let slot = threads.free().ok_or(Error::Full)?;
     let top = thread::stack_top(slot);
     if !threads.has_stack(slot) {
-        super::memory::map_stack(top, STACK_PAGES).map_err(|_| Error::NoStack)?;
+        super::memory::map_stack(thread::registers_at(slot) + 4096, STACK_PAGES + 1)
+            .map_err(|_| Error::NoStack)?;
     }
+    super::fpu::fresh(slot);
     let at = thread::first_frame_at(top);
     let start = thread_start as *const () as usize as u64;
     let frame = thread::first_frame(flags, entry as usize as u64, argument, start);
@@ -194,10 +217,11 @@ fn give_way(becomes: State) {
                         // where this code and every thread's kernel stack are.
                         unsafe { x86::raw::load_cr3(root) };
                     }
-                    (threads.stack_at(from), threads.stack(to))
+                    (from, to, threads.stack_at(from), threads.stack(to))
                 })
         };
-        if let Some((from, to)) = next {
+        if let Some((from_slot, to_slot, from, to)) = next {
+            super::fpu::switch(from_slot, to_slot);
             // SAFETY: interrupts are off and only this core switches the
             // threads that run on it, so nothing touches either between
             // the lock and the switch; `to` is where the next thread's

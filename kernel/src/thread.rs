@@ -22,6 +22,14 @@ pub fn stack_top(slot: usize) -> u64 {
     STACKS + (slot as u64 + 1) * 2 * STACK_PAGES * 4096
 }
 
+/// Where thread `slot` keeps its floating point and vector registers
+/// while it does not run: the page right above its stack, at the bottom of
+/// the next slot's guard, which keeps 28 KiB of it.
+#[must_use]
+pub fn registers_at(slot: usize) -> u64 {
+    stack_top(slot)
+}
+
 /// The words a new thread's stack starts with, lowest first, in the order
 /// a switch takes them back: its flags, the six registers a switch keeps,
 /// with `entry` in r12 and `argument` in r13, and `start`, where the
@@ -819,6 +827,24 @@ mod tests {
         );
         assert_eq!((stack_top(THREADS - 1) - 1) >> 39 & 0x1ff, 505);
         assert!(stack_top(THREADS - 1) <= crate::APIC_PAGE);
+    }
+
+    #[test]
+    fn each_threads_registers_have_a_page_between_its_stack_and_the_guard() {
+        assert_eq!(registers_at(0), 0xffff_fc80_0001_0000);
+        assert_eq!(registers_at(255), 0xffff_fc80_0100_0000);
+        for slot in 0..THREADS {
+            let page = registers_at(slot);
+            assert_eq!(page, stack_top(slot), "right above the stack");
+            let next_stack = stack_top(slot + 1) - STACK_PAGES * 4096;
+            assert_eq!(next_stack - (page + 4096), 0x7000, "28 KiB of guard");
+        }
+        assert_eq!(
+            (registers_at(THREADS - 1) + 4095) >> 39 & 0x1ff,
+            505,
+            "the last one in the same slot of the root table"
+        );
+        assert!(registers_at(THREADS - 1) + 4096 <= crate::APIC_PAGE);
     }
 
     #[test]

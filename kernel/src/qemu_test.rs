@@ -1387,6 +1387,7 @@ fn timer_checks<W: Write>(
         "a halted processor should wake at the next tick",
     );
     thread_checks(report, tsc_hz.unwrap_or(0));
+    fpu_checks(report);
     user_checks(report);
     entry_checks(report);
     given_back_checks(report);
@@ -1618,6 +1619,166 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
         "every thread there can be should start and end, and an ended one's number should be used again",
     );
     other_core_checks(report, tsc_hz);
+}
+
+/// CR0, CR4 and XCR0 of each core, as `note_fpu` found them there.
+static FPU_SEEN: [[AtomicU64; 3]; 8] = [const { [const { AtomicU64::new(0) }; 3] }; 8];
+
+/// Keeps CR0, CR4 and XCR0 of the core it runs on under its argument.
+extern "C" fn note_fpu(slot: u64) {
+    if let Some(seen) = usize::try_from(slot).ok().and_then(|s| FPU_SEEN.get(s)) {
+        seen[0].store(x86::raw::read_cr0(), Ordering::Release);
+        seen[1].store(x86::raw::read_cr4(), Ordering::Release);
+        seen[2].store(raw::fpu::xcr0().unwrap_or(0), Ordering::Release);
+    }
+}
+
+/// How often each of two threads paints its registers and looks again.
+const ROUNDS: u64 = 64;
+
+/// The rounds each of them found its registers as it painted them.
+static KEPT: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// Whether a thread found the registers a new one should start with.
+static FRESH: AtomicBool = AtomicBool::new(false);
+
+/// Where XSAVE puts the upper halves of the YMM registers: leaf 0xD of
+/// CPUID, subleaf 2, says.
+fn avx_at() -> usize {
+    usize::try_from(core::arch::x86_64::__cpuid_count(0xd, 2).ebx).unwrap_or(0)
+}
+
+/// The XMM registers in an image, and with `avx` the upper halves of the
+/// YMM registers after them.
+fn vectors(image: &raw::fpu::Image, avx: bool) -> [u8; 512] {
+    let mut all = [0; 512];
+    all[..256].copy_from_slice(&image.0[160..416]);
+    if avx {
+        all[256..].copy_from_slice(&image.0[avx_at()..avx_at() + 256]);
+    }
+    all
+}
+
+/// Paints `image` for thread `me` in round `round`: the x87 control word
+/// and MXCSR each with a rounding of their own, and vector registers with
+/// values no other thread or round has. Returns the two controls.
+fn paint(image: &mut raw::fpu::Image, me: u64, round: u64, avx: bool) -> (u16, u32) {
+    image.0.fill(0);
+    let turn = u16::try_from((me + round) % 4).unwrap_or(0);
+    let control = x86::fpu::FRESH_CONTROL | turn << 10;
+    let mxcsr = x86::fpu::FRESH_MXCSR | u32::from(turn) << 13;
+    image.0[..2].copy_from_slice(&control.to_le_bytes());
+    image.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+    for (i, n) in (1..=32u128).enumerate() {
+        let value = u128::from(me + 1) << 96 | u128::from(round) << 64 | n;
+        let at = if i < 16 {
+            160 + 16 * i
+        } else {
+            avx_at() + 16 * (i - 16)
+        };
+        if i < 16 || avx {
+            image.0[at..at + 16].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let avx_part = if avx { x86::fpu::parts::AVX } else { 0 };
+    let used = x86::fpu::parts::X87 | x86::fpu::parts::SSE | avx_part;
+    image.0[512..520].copy_from_slice(&used.to_le_bytes());
+    (control, mxcsr)
+}
+
+/// Paints its registers anew in every round, gives way or waits for the
+/// timer to take the processor, and counts the rounds it finds them as it
+/// painted them.
+extern "C" fn keeps_its_registers(me: u64) {
+    let parts = raw::fpu::xcr0();
+    let avx = parts.is_some_and(|p| p & x86::fpu::parts::AVX != 0);
+    let mut painted = raw::fpu::Image([0; 4096]);
+    let mut seen = raw::fpu::Image([0; 4096]);
+    let Some(kept) = usize::try_from(me).ok().and_then(|me| KEPT.get(me)) else {
+        return;
+    };
+    for round in 0..ROUNDS {
+        let controls = paint(&mut painted, me, round, avx);
+        raw::fpu::load(&painted, parts);
+        if round % 16 == 0 {
+            let tick = raw::interrupts::ticks();
+            while raw::interrupts::ticks() == tick {
+                core::hint::spin_loop();
+            }
+        } else {
+            raw::thread::yield_now();
+        }
+        seen.0.fill(0);
+        raw::fpu::dump(&mut seen, parts);
+        if raw::fpu::controls() != controls || vectors(&seen, avx) != vectors(&painted, avx) {
+            return;
+        }
+        kept.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Looks at the registers it started with.
+extern "C" fn finds_fresh_registers(_: u64) {
+    let parts = raw::fpu::xcr0();
+    let avx = parts.is_some_and(|p| p & x86::fpu::parts::AVX != 0);
+    let mut seen = raw::fpu::Image([0; 4096]);
+    raw::fpu::dump(&mut seen, parts);
+    let fresh = raw::fpu::controls() == (x86::fpu::FRESH_CONTROL, x86::fpu::FRESH_MXCSR)
+        && vectors(&seen, avx) == [0; 512];
+    FRESH.store(fresh, Ordering::Release);
+}
+
+/// The floating point and vector registers: on on every core, with XSAVE
+/// of every part the processor has where it has XSAVE, each of two threads
+/// on one core finding its own however often they take turns, by giving
+/// way or at the timer's tick, and a thread started where one of them was
+/// starting with the registers power on gives.
+fn fpu_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::thread::{self, NORMAL};
+    use x86::cr0::{EMULATION, MONITOR_COPROCESSOR, NUMERIC_ERROR, TASK_SWITCHED};
+    let saving = x86::fpu::Saving::detect();
+    let parts = match saving {
+        x86::fpu::Saving::Fx => 0,
+        x86::fpu::Saving::X(on) => on,
+    };
+    note_fpu(0);
+    let asked = raw::smp::others()
+        .all(|core| thread::spawn_on(core, note_fpu, core as u64, NORMAL).is_ok());
+    thread::sleep(3);
+    let cores = 1 + raw::smp::others().count();
+    let on = (0..cores).all(|core| {
+        FPU_SEEN.get(core).is_some_and(|[cr0, cr4, xcr0]| {
+            let cr0 = cr0.load(Ordering::Acquire);
+            cr0 & (EMULATION | TASK_SWITCHED) == 0
+                && cr0 & (MONITOR_COPROCESSOR | NUMERIC_ERROR)
+                    == MONITOR_COPROCESSOR | NUMERIC_ERROR
+                && cr4.load(Ordering::Acquire) & saving.cr4_bits() == saving.cr4_bits()
+                && xcr0.load(Ordering::Acquire) == parts
+        })
+    });
+    report.check(
+        "kernel.fpu.on",
+        asked && on,
+        "every core should have the x87 unit and SSE on, and XSAVE with every part the processor has where it has XSAVE",
+    );
+    let core = raw::smp::others().last().unwrap_or(0);
+    let painters = [0, 1].map(|me| thread::spawn_on(core, keeps_its_registers, me, NORMAL));
+    let start = x86::raw::tsc();
+    while painters.iter().any(|p| p.is_ok_and(thread::alive)) && x86::raw::tsc() - start < 1 << 34 {
+        thread::sleep(1);
+    }
+    report.check(
+        "kernel.fpu.kept",
+        KEPT.iter().all(|k| k.load(Ordering::Acquire) == ROUNDS),
+        "each of two threads on one core should find its registers as it left them, after giving way and after the timer took the processor",
+    );
+    let fresh = thread::spawn_on(core, finds_fresh_registers, 0, NORMAL);
+    thread::sleep(3);
+    report.check(
+        "kernel.fpu.fresh",
+        fresh.is_ok_and(|slot| painters.contains(&Ok(slot))) && FRESH.load(Ordering::Acquire),
+        "a thread started where an earlier one painted its registers should start with the registers power on gives",
+    );
 }
 
 /// Runs `program` in ring 3 on the first core with `argument`, waits up

@@ -289,6 +289,16 @@ pub fn pm_timer_bits(fadt: &[u8]) -> u32 {
     }
 }
 
+/// Whether the FADT says the machine has an 8042, the PS/2 controller at
+/// ports 0x60 and 0x64: bit 1 of the boot architecture flags at 109.
+/// `None` when the FADT is too short or older than revision 3, which
+/// brought that flag.
+#[must_use]
+pub fn has_8042(fadt: &[u8]) -> Option<bool> {
+    let flags = *fadt.get(109)?;
+    (*fadt.get(8)? >= 3).then_some(flags & 1 << 1 != 0)
+}
+
 /// The frequency of the power management timer, in ticks per second.
 pub const PM_TIMER_HZ: u64 = 3_579_545;
 
@@ -806,6 +816,26 @@ mod tests {
         t[112..116].copy_from_slice(&(!(1u32 << 8)).to_le_bytes());
         assert_eq!(pm_timer_bits(&t), 24, "only bit 8 matters");
         assert_eq!(pm_timer_bits(&t[..100]), 24, "a short FADT");
+    }
+
+    #[test]
+    fn the_fadt_says_whether_there_is_an_8042() {
+        let mut t = fadt(0x608, None);
+        t[8] = 3;
+        t[109] = 0b10;
+        assert_eq!(has_8042(&t), Some(true), "as q35 has it");
+        t[109] = 0b01;
+        assert_eq!(has_8042(&t), Some(false), "legacy devices, but no 8042");
+        t[109] = 0;
+        t[110] = 0xff;
+        assert_eq!(has_8042(&t), Some(false), "the flag is in the low byte");
+        t[109] = 0b10;
+        t[8] = 2;
+        assert_eq!(has_8042(&t), None, "revision 2 had no such flag");
+        t[8] = 6;
+        assert_eq!(has_8042(&t), Some(true));
+        assert_eq!(has_8042(&t[..109]), None, "too short");
+        assert_eq!(has_8042(&t[..110]), Some(true));
     }
 
     #[test]

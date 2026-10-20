@@ -278,15 +278,9 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             Err(Error::NotFound) => {}
             Err(e) => return Err(e),
         }
-        let mut scan = Ok(());
-        let (short, needs_long) = name::short_for(name, |candidate| {
-            let found = self.taken(directory, candidate);
-            let taken = found.unwrap_or(true);
-            scan = scan.and(found.map(|_| ()));
-            taken
-        })
-        .ok_or(Error::Exists)?;
-        scan?;
+        let (short, needs_long) =
+            name::short_for(name, |candidate| self.taken(directory, candidate))?
+                .ok_or(Error::Exists)?;
         let mut entries = [[0u8; 32]; MOST];
         let mut longs = [[0u8; 32]; 20];
         let count = if needs_long {
@@ -885,6 +879,29 @@ mod tests {
             assert_eq!(w.create(root, bad, false), Err(Error::BadName), "{bad}");
         }
         assert_eq!(*image.borrow(), before, "and nothing was written");
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_read_again_takes_nothing_new() {
+        let Some(image) = formatted("unread") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let before = image.borrow().clone();
+        let mut w = writer(&image);
+        let root = w.fat.volume.first_sector(w.fat.volume.root).unwrap();
+        let from = Rc::clone(&image);
+        let mut root_reads = 0;
+        // The root reads once, for the lookup, and never after.
+        let reads: Reads = Box::new(move |at, into: &mut [u8]| {
+            root_reads += usize::from(at == root);
+            let start = usize::try_from(at).unwrap() * 512;
+            into.copy_from_slice(&from.borrow()[start..start + into.len()]);
+            at != root || root_reads == 1
+        });
+        w.fat = Fat::open(reads).unwrap();
+        assert_eq!(w.create(2, "readme.txt", false), Err(Error::Read));
+        assert_eq!(*image.borrow(), before);
     }
 
     #[test]

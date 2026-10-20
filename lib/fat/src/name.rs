@@ -28,10 +28,17 @@ fn allowed(c: u8) -> bool {
 /// short names are in use already, and whether its long name has to go
 /// with it: none when it gets no number from 1 to 999999 that is free,
 /// or is only periods and spaces.
-pub fn short_for(name: &str, mut taken: impl FnMut(&[u8; 11]) -> bool) -> Option<([u8; 11], bool)> {
+///
+/// # Errors
+///
+/// What `taken` answers when it cannot say, which ends the search.
+pub fn short_for<E>(
+    name: &str,
+    mut taken: impl FnMut(&[u8; 11]) -> Result<bool, E>,
+) -> Result<Option<([u8; 11], bool)>, E> {
     let trimmed = name.trim_start_matches(['.', ' ']);
     if trimmed.is_empty() {
-        return None;
+        return Ok(None);
     }
     // The basis takes what comes before the first period, the extension
     // what comes after the last.
@@ -58,8 +65,8 @@ pub fn short_for(name: &str, mut taken: impl FnMut(&[u8; 11]) -> bool) -> Option
     let base_len = fold(base, &mut short[..8]);
     fold(ext, &mut short[8..]);
     lossy |= base.contains(' ') || ext.contains(' ');
-    if !lossy && !taken(&short) {
-        return Some((short, false));
+    if !lossy && !taken(&short)? {
+        return Ok(Some((short, false)));
     }
     for n in 1u32..=999_999 {
         let mut tail = [0u8; 7];
@@ -69,11 +76,11 @@ pub fn short_for(name: &str, mut taken: impl FnMut(&[u8; 11]) -> bool) -> Option
         candidate[keep] = b'~';
         candidate[keep + 1..keep + 1 + digits.len()].copy_from_slice(digits);
         candidate[keep + 1 + digits.len()..8].fill(b' ');
-        if !taken(&candidate) {
-            return Some((candidate, true));
+        if !taken(&candidate)? {
+            return Ok(Some((candidate, true)));
         }
     }
-    None
+    Ok(None)
 }
 
 /// `n` in decimal digits, written into `room`.
@@ -127,6 +134,25 @@ mod tests {
         false
     }
 
+    /// The short name `name` gets where `taken` always knows.
+    fn short(name: &str, taken: impl Fn(&[u8; 11]) -> bool) -> Option<([u8; 11], bool)> {
+        short_for(name, |s| Ok::<_, ()>(taken(s))).unwrap()
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_looked_up_ends_the_search() {
+        let mut asked = 0;
+        let answer = short_for("x.tar.gz", |_| {
+            asked += 1;
+            if asked == 3 {
+                Err("unreadable")
+            } else {
+                Ok(true)
+            }
+        });
+        assert_eq!((answer, asked), (Err("unreadable"), 3));
+    }
+
     #[test]
     fn long_names_may_hold_most_but_not_everything() {
         let fine = [
@@ -157,7 +183,7 @@ mod tests {
     #[test]
     fn a_name_of_only_periods_and_spaces_has_no_short_name() {
         for name in ["", "...", " . "] {
-            assert_eq!(short_for(name, none_taken), None, "{name:?}");
+            assert_eq!(short(name, none_taken), None, "{name:?}");
         }
     }
 
@@ -169,55 +195,49 @@ mod tests {
             ("MY FILE.TXT", *b"MYFILE~1TXT"),
             ("FILE.T T", *b"FILE~1  TT "),
         ];
-        for (name, short) in cases {
-            assert_eq!(short_for(name, none_taken), Some((short, true)), "{name}");
+        for (name, wanted) in cases {
+            assert_eq!(short(name, none_taken), Some((wanted, true)), "{name}");
         }
     }
 
     #[test]
     fn a_name_that_fits_eight_and_three_in_capitals_is_its_own_short_name() {
         assert_eq!(
-            short_for("README.TXT", none_taken),
+            short("README.TXT", none_taken),
             Some((*b"README  TXT", false))
         );
-        assert_eq!(
-            short_for("KERNEL", none_taken),
-            Some((*b"KERNEL     ", false))
-        );
-        assert_eq!(
-            short_for("A1$_~.X", none_taken),
-            Some((*b"A1$_~   X  ", false))
-        );
+        assert_eq!(short("KERNEL", none_taken), Some((*b"KERNEL     ", false)));
+        assert_eq!(short("A1$_~.X", none_taken), Some((*b"A1$_~   X  ", false)));
     }
 
     #[test]
     fn other_names_get_a_number_and_their_long_name() {
         assert_eq!(
-            short_for("readme.txt", none_taken),
+            short("readme.txt", none_taken),
             Some((*b"README~1TXT", true)),
             "small letters"
         );
         assert_eq!(
-            short_for("services.meri", none_taken),
+            short("services.meri", none_taken),
             Some((*b"SERVIC~1MER", true))
         );
         assert_eq!(
-            short_for("a b+c.txt", none_taken),
+            short("a b+c.txt", none_taken),
             Some((*b"AB_C~1  TXT", true)),
             "a space left out, a plus not allowed"
         );
         assert_eq!(
-            short_for(".profile", none_taken),
+            short(".profile", none_taken),
             Some((*b"PROFIL~1   ", true)),
             "leading dots go"
         );
         assert_eq!(
-            short_for("x.tar.gz", none_taken),
+            short("x.tar.gz", none_taken),
             Some((*b"X~1     GZ ", true)),
             "the basis up to the first period, the extension after the last"
         );
         assert_eq!(
-            short_for("\u{e4}pfel", none_taken),
+            short("\u{e4}pfel", none_taken),
             Some((*b"_PFEL~1    ", true))
         );
     }
@@ -225,23 +245,20 @@ mod tests {
     #[test]
     fn a_number_taken_already_makes_way_for_the_next() {
         let taken = |s: &[u8; 11]| s == b"SERVIC~1MER" || s == b"SERVIC~2MER";
-        assert_eq!(
-            short_for("services.meri", taken),
-            Some((*b"SERVIC~3MER", true))
-        );
+        assert_eq!(short("services.meri", taken), Some((*b"SERVIC~3MER", true)));
         let own = |s: &[u8; 11]| s == b"README  TXT";
         assert_eq!(
-            short_for("README.TXT", own),
+            short("README.TXT", own),
             Some((*b"README~1TXT", true)),
             "a short name in use is no one's twice"
         );
         let ten = |s: &[u8; 11]| (1..=9).any(|n| s[..8] == *format!("SERVIC~{n}").as_bytes());
         assert_eq!(
-            short_for("services.meri", ten),
+            short("services.meri", ten),
             Some((*b"SERVI~10MER", true)),
             "more digits, fewer letters"
         );
-        assert_eq!(short_for("x", |_| true), None, "every number taken");
+        assert_eq!(short("x", |_| true), None, "every number taken");
     }
 
     #[test]

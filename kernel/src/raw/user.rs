@@ -1491,10 +1491,10 @@ pub mod probe {
         "jmp 2b",
         // Maps a page to read and one for flags, and starts a second thread
         // that reads the first page over and over and notes the core it
-        // runs on. Once that is another core than its own, it gives the
-        // page back and says so: the second thread's next read has to
-        // fault, and ends with 77 if it still finds the page. 55 when the
-        // two never ran apart.
+        // runs on. Once that is another core than the one it finds itself
+        // on, it gives the page back and says so: the second thread's next
+        // read has to fault, and ends with 77 if it still finds the page.
+        // 55 when the two never ran apart.
         ".global meridian_stale_threads_start",
         "meridian_stale_threads_start:",
         "mov edi, 2",
@@ -1502,8 +1502,6 @@ pub mod probe {
         "int 0x2e",
         "mov r12, rax",
         "lea r13, [rax + 4096]",
-        "rdtscp",
-        "mov r15, rcx",
         "lea rdi, [rip + 3f]",
         "mov rsi, {lower_stack}",
         "mov rdx, r12",
@@ -1511,6 +1509,8 @@ pub mod probe {
         "int 0x2e",
         "mov r14, {patience}",
         "2:",
+        "rdtscp",
+        "mov r15, rcx",
         "mov rax, [r13 + 24]",
         "test rax, rax",
         "jz 4f",

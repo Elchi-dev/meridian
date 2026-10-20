@@ -101,6 +101,7 @@ dependencies = [
  "qr",
  "sched",
  "security",
+ "virtio",
  "x86",
 ]
 

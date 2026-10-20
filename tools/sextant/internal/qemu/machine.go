@@ -160,10 +160,12 @@ func (m Machine) Args() []string {
 		)
 		if m.Disk != "" {
 			args = append(args,
-				// The disk is open for writing already; this second look at
-				// it only reads, so it does not ask for the lock.
+				// The disk is open for writing already; these looks at it
+				// only read, so they do not ask for the lock.
 				"-drive", "if=none,id=meridian.nvme,format=raw,readonly=on,file.locking=off,file="+escape(m.Disk),
 				"-device", "nvme,serial=meridian,drive=meridian.nvme",
+				"-drive", "if=none,id=meridian.virtio,format=raw,readonly=on,file.locking=off,file="+escape(m.Disk),
+				"-device", "virtio-blk-pci,drive=meridian.virtio",
 			)
 		}
 	}

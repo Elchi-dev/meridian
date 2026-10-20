@@ -279,6 +279,8 @@ fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions:
     pci_checks(report);
     ahci_checks(report);
     nvme_checks(report);
+    virtio_checks(report);
+    virtio_file_checks(report, info, regions);
     fat_checks(report, info, regions);
     vfs_checks(report, info.boot_partition);
 }
@@ -540,6 +542,108 @@ fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.nvme.read",
         spanning && each && end && refused,
         "NVMe should read the same sectors as AHCI, up to the disk's last and no further",
+    );
+}
+
+/// The virtio block device, which test machines with a disk have, holding
+/// the same disk once more, read only: as large as the AHCI disk, saying
+/// it only reads, and reading the same sectors, a frame at a time and
+/// across frames, up to its last and no further.
+fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
+    use raw::virtio::{Error, read};
+    let drives = raw::ahci::drives();
+    let disk = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk);
+    let drive = raw::virtio::drive();
+    let Some(disk) = disk else {
+        report.check(
+            "kernel.virtio.found",
+            drive.is_none(),
+            "booted from a CD, the machine should have no virtio disk",
+        );
+        return;
+    };
+    let sectors = disk.identity.map_or(0, |i| i.sectors);
+    report.check(
+        "kernel.virtio.found",
+        drive.is_some_and(|d| d.sectors == sectors && d.read_only),
+        "the virtio disk should hold as many sectors as the AHCI disk, and say it only reads",
+    );
+    let ahci_read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
+    let mut by_virtio = alloc::vec![0u8; 25 * 512];
+    let mut by_ahci = by_virtio.clone();
+    let spanning = read(2040, &mut by_virtio).is_ok()
+        && ahci_read(2040, &mut by_ahci)
+        && by_virtio == by_ahci
+        && by_virtio[8 * 512 + 510..8 * 512 + 512] == [0x55, 0xaa];
+    let mut one_by_one = alloc::vec![0u8; 20 * 512];
+    let mut whole = one_by_one.clone();
+    let each = (0..20)
+        .zip(one_by_one.chunks_mut(512))
+        .all(|(lba, block)| read(lba, block).is_ok())
+        && ahci_read(0, &mut whole)
+        && one_by_one == whole
+        && whole[512..520] == *b"EFI PART";
+    let mut last = [0u8; 512];
+    let end = read(sectors.saturating_sub(1), &mut last).is_ok() && last[..8] == *b"EFI PART";
+    let mut room = [0u8; 1024];
+    let refused = read(sectors, &mut room[..512]) == Err(Error::OutOfRange)
+        && read(sectors.saturating_sub(1), &mut room) == Err(Error::OutOfRange)
+        && read(u64::MAX, &mut room[..512]) == Err(Error::OutOfRange)
+        && read(0, &mut room[..100]) == Err(Error::OutOfRange)
+        && read(0, &mut []) == Err(Error::OutOfRange);
+    report.check(
+        "kernel.virtio.read",
+        spanning && each && end && refused,
+        "virtio should read the same sectors as AHCI, up to the disk's last and no further",
+    );
+    let ready = virtio::status::DRIVER_OK | virtio::status::FEATURES_OK;
+    let wrong = virtio::status::FAILED | virtio::status::NEEDS_RESET;
+    let taken = virtio::features::VERSION_1 | virtio::features::BLOCK_READ_ONLY;
+    report.check(
+        "kernel.virtio.ready",
+        raw::virtio::agreed().is_some_and(|(status, features, size, enabled)| {
+            status & ready == ready
+                && status & wrong == 0
+                && features == taken
+                && (size, enabled) == (virtio::QUEUE_SIZE, 1)
+        }),
+        "the virtio disk should be ready, with version 1 and read only agreed on, and its first queue of 8 entries on",
+    );
+    report.check(
+        "kernel.virtio.unsupported",
+        raw::virtio::ask(0x7f) == Err(Error::Failed(virtio::block::UNSUPPORTED))
+            && read(0, &mut room[..512]).is_ok(),
+        "a request of a type no device knows should come back unsupported, and reads go on",
+    );
+}
+
+/// FAT32 on the virtio disk: hello, read through its EFI system
+/// partition, is byte for byte what the loader read through the firmware.
+fn virtio_file_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+) {
+    let Some((_, esp)) = esp_of_disk() else {
+        return;
+    };
+    let read = |sector, into: &mut [u8]| raw::virtio::read(esp.first + sector, into).is_ok();
+    let hello = fat::Fat::open(read).ok().and_then(|mut volume| {
+        let entry = volume.find("meridian/programs/hello.mexec").ok()?;
+        let mut bytes = alloc::vec![0u8; entry.size as usize];
+        volume.read_file(&entry, &mut bytes).ok()?;
+        Some(bytes)
+    });
+    let loaded = raw::modules(info, regions).find(|(m, _)| m.name() == b"hello.mexec");
+    report.check(
+        "kernel.virtio.file",
+        hello
+            .zip(loaded)
+            .is_some_and(|(read, (_, file))| read.len() > 4096 && read == file),
+        "hello read through FAT32 on the virtio disk should be what the loader read",
     );
 }
 

@@ -15,11 +15,18 @@ use gpt::{Header, Partition};
 pub struct Controllers {
     pub ahci: Option<(pci::Address, pci::Bar)>,
     pub nvme: Option<(pci::Address, pci::Bar)>,
+    pub virtio: Option<(pci::Address, pci::Header)>,
 }
 
 impl Controllers {
     /// Takes note of the function at `at` when it is the first of its kind.
     pub fn saw(&mut self, at: pci::Address, h: &pci::Header) {
+        if h.vendor == virtio::VENDOR
+            && matches!(h.device, virtio::BLOCK | virtio::BLOCK_TRANSITIONAL)
+        {
+            self.virtio.get_or_insert((at, *h));
+            return;
+        }
         let (first, registers) = match (h.class, h.subclass, h.interface) {
             (0x01, 0x06, 0x01) => (&mut self.ahci, 5),
             (0x01, 0x08, 0x02) => (&mut self.nvme, 0),
@@ -338,6 +345,35 @@ mod tests {
         };
         assert_eq!(found.ahci, Some((at(0, 0x1f, 2), memory(0xfebd_5000))));
         assert_eq!(found.nvme, Some((at(0, 3, 0), memory(0x1_febd_0000))));
+    }
+
+    #[test]
+    fn the_first_virtio_block_device_is_driven() {
+        let virtio = |device: u16| {
+            let mut h = function((0x01, 0x00, 0x00), [0; 6]);
+            h.vendor = virtio::VENDOR;
+            h.device = device;
+            h
+        };
+        let rng = virtio(0x1044);
+        let mut found = Controllers::default();
+        found.saw(at(1, 0, 0), &rng);
+        assert_eq!(
+            found,
+            Controllers::default(),
+            "a random number generator is no disk"
+        );
+        let mut other = virtio(virtio::BLOCK);
+        other.vendor = 0x8086;
+        found.saw(at(0, 2, 0), &other);
+        assert_eq!(found.virtio, None, "nor is another vendor's device 0x1042");
+        found.saw(at(0, 4, 0), &virtio(virtio::BLOCK));
+        found.saw(at(0, 5, 0), &virtio(virtio::BLOCK_TRANSITIONAL));
+        assert_eq!(found.virtio, Some((at(0, 4, 0), virtio(virtio::BLOCK))));
+        let mut older = Controllers::default();
+        older.saw(at(0, 5, 0), &virtio(virtio::BLOCK_TRANSITIONAL));
+        assert_eq!(older.virtio.map(|(a, _)| a), Some(at(0, 5, 0)));
+        assert_eq!((older.ahci, older.nvme), (None, None));
     }
 
     /// A FAT32 boot sector for a volume of `total` sectors of 512 bytes,

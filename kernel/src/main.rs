@@ -97,6 +97,15 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
             mount_boot(serial, &"NVMe", boot, read);
         }
     }
+    if let Some((at, header)) = found.virtio {
+        raw::pci::enable(at);
+        if let Some(drive) = raw::virtio::start(at, &header) {
+            let _ = kernel::virtio_line(serial, drive.sectors, drive.read_only);
+            let mut read = |sector, into: &mut [u8]| raw::virtio::read(sector, into).is_ok();
+            let _ = kernel::disk::describe(serial, &"virtio", &mut read);
+            mount_boot(serial, &"virtio", boot, read);
+        }
+    }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
         raw::pci::enable(at);
         raw::ahci::start(address);

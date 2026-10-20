@@ -93,6 +93,19 @@ pub fn set_buses(at: Address, secondary: u8, subordinate: u8) -> Option<(u8, u8)
     }
 }
 
+/// The first 256 bytes of the configuration space of the function at
+/// `at`: its header and the capabilities it lists.
+pub fn config_bytes(at: Address) -> Option<[u8; 256]> {
+    let virt = config(at)?;
+    let mut bytes = [0u8; 256];
+    for (i, word) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        // SAFETY: as in header.
+        let value = unsafe { core::ptr::read_volatile((virt + 4 * i as u64) as *const u32) };
+        *word = value.to_le_bytes();
+    }
+    Some(bytes)
+}
+
 /// The header of the function at `at`, or none where no function is.
 pub fn header(at: Address) -> Option<Header> {
     let virt = config(at)?;

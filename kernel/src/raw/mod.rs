@@ -21,6 +21,7 @@ pub mod timer;
 pub mod tlb;
 pub mod user;
 pub mod vfs;
+pub mod virtio;
 
 #[cfg(not(test))]
 use core::cell::UnsafeCell;

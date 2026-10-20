@@ -423,6 +423,20 @@ pub fn partition_line(
     )
 }
 
+/// Writes the line the kernel logs for a virtio block device of `sectors`
+/// sectors of 512 bytes, which only reads or not.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn virtio_line(out: &mut impl Write, sectors: u64, read_only: bool) -> fmt::Result {
+    let only = if read_only { ", read only" } else { "" };
+    writeln!(
+        out,
+        "kernel: virtio block device, {sectors} sectors of 512 bytes{only}"
+    )
+}
+
 /// Writes the line the kernel logs for an NVM Express controller and its
 /// first namespace.
 ///
@@ -483,6 +497,11 @@ pub fn input_of(io_apic: &acpi::IoApic, inputs: u32, line: &acpi::Route) -> Opti
 /// Where the first I/O APIC's registers are mapped, uncached: the page
 /// 6 MiB into the slot for devices' registers.
 pub const IO_APIC_PAGE: u64 = APIC_PAGE + (6 << 20);
+
+/// Where a virtio block device's structures are mapped, uncached: the
+/// common one, the device's and its queue's notification address, a page
+/// each, 8 MiB into the slot for devices' registers.
+pub const VIRTIO_REGISTERS: u64 = APIC_PAGE + (8 << 20);
 
 /// Where the configuration space of PCI's segment 0 is mapped, uncached,
 /// page by page as the kernel reads it: in the slot for devices'
@@ -884,6 +903,23 @@ mod tests {
     }
 
     #[test]
+    fn a_virtio_disk_is_logged_with_its_size() {
+        let line = |sectors, read_only| {
+            let mut out = String::new();
+            virtio_line(&mut out, sectors, read_only).unwrap();
+            out
+        };
+        assert_eq!(
+            line(135_168, true),
+            "kernel: virtio block device, 135168 sectors of 512 bytes, read only\n"
+        );
+        assert_eq!(
+            line(8, false),
+            "kernel: virtio block device, 8 sectors of 512 bytes\n"
+        );
+    }
+
+    #[test]
     fn with_init_the_kernel_starts_init_alone() {
         assert!(is_init(b"init.mexec"));
         assert!(!is_init(b"Init.mexec") && !is_init(b"init.mexe") && !is_init(b"shell.mexec"));
@@ -1111,6 +1147,18 @@ mod tests {
     fn the_io_apics_page_lies_past_nvmes() {
         assert_eq!(IO_APIC_PAGE >> 39 & 0x1ff, 506);
         const { assert!(IO_APIC_PAGE >= NVME_REGISTERS + 0x2000 && IO_APIC_PAGE + 0x1000 <= PCI_CONFIG) };
+    }
+
+    #[test]
+    fn virtio_registers_lie_past_the_io_apics_page() {
+        assert_eq!(VIRTIO_REGISTERS >> 39 & 0x1ff, 506);
+        const {
+            assert!(
+                VIRTIO_REGISTERS >= IO_APIC_PAGE + 0x1000
+                    && VIRTIO_REGISTERS + 0x3000 <= PCI_CONFIG
+            );
+        };
+        assert_eq!(VIRTIO_REGISTERS % 4096, 0);
     }
 
     #[test]

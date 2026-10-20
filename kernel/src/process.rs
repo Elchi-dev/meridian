@@ -73,10 +73,12 @@ impl Threads {
 
     /// A thread leaves, having ended with `code` when it ended on its own,
     /// and answers how the program ended when it was the last: as it was
-    /// ended for all, or else with that last thread's code.
+    /// ended for all, or else with that last thread's code. Once none
+    /// runs, the program ended already, and nothing more is answered.
     pub fn leave(&mut self, code: u64) -> Option<Outcome> {
-        self.running = self.running.saturating_sub(1);
-        (self.running == 0).then(|| self.ending.unwrap_or(Outcome::Exited(code)))
+        let was = self.running;
+        self.running = was.saturating_sub(1);
+        (was == 1).then(|| self.ending.unwrap_or(Outcome::Exited(code)))
     }
 
     /// How many of its threads run.
@@ -317,6 +319,33 @@ mod tests {
         assert_eq!(t.leave(5), None);
         assert_eq!(t.leave(6), Some(Outcome::Faulted(14)));
         assert_eq!(Threads::new().ending(), None);
+    }
+
+    #[test]
+    fn a_program_ends_once() {
+        let mut t = Threads::new();
+        assert_eq!(t.leave(2), Some(Outcome::Exited(2)));
+        assert_eq!(t.leave(3), None, "no thread was left to leave");
+        assert_eq!(t.running(), 0);
+        assert!(t.start(), "nothing ended it for all");
+        assert_eq!(t.leave(4), Some(Outcome::Exited(4)));
+    }
+
+    #[test]
+    fn a_process_in_a_slot_given_again_was_asked_nothing() {
+        let mut t = Table::<1>::new();
+        let slot = t.create().unwrap();
+        t.ask_to_end(slot, 9);
+        t.end(slot, Outcome::Exited(9));
+        t.close(slot);
+        assert_eq!(t.create(), Some(slot), "the slot is given again");
+        assert_eq!(t.asked(slot), None, "and the new process was asked nothing");
+        assert_eq!(t.state(slot), Some(State::Running));
+        t.ask_to_end(slot, 10);
+        assert_eq!(t.asked(slot), Some(10));
+        t.end(slot, Outcome::Exited(10));
+        t.close(slot);
+        assert!(t.is_empty(), "with one handle, as any new process has");
     }
 
     #[test]

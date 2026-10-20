@@ -1,8 +1,10 @@
 //! GUID partition tables (UEFI 2.10, chapter 5), read: the header with
 //! every check the specification asks for, and the partitions its array
-//! lists. Reading the sectors is the caller's.
+//! lists. Reading the sectors is the caller's. [`write`] makes new ones.
 
 #![cfg_attr(not(test), no_std)]
+
+pub mod write;
 
 /// A GUID in its on-disk byte order: the first three fields little
 /// endian, the last two as written.
@@ -61,7 +63,13 @@ pub const MERIDIAN_SYSTEM: Guid = Guid::new(
 /// of IEEE 802.3, zlib and PNG.
 #[must_use]
 pub fn crc32(bytes: &[u8]) -> u32 {
-    !bytes.iter().fold(u32::MAX, |crc, &byte| {
+    !crc32_continue(u32::MAX, bytes)
+}
+
+/// The CRC-32 state `crc` after `bytes` more, before it is inverted at
+/// the end, for bytes that come in parts.
+fn crc32_continue(crc: u32, bytes: &[u8]) -> u32 {
+    bytes.iter().fold(crc, |crc, &byte| {
         (0..8).fold(crc ^ u32::from(byte), |c, _| {
             if c & 1 == 1 {
                 c >> 1 ^ 0xedb8_8320
@@ -255,7 +263,7 @@ mod tests {
 
     /// LBA 1 of a test image sextant wrote, 66 MiB with one EFI system
     /// partition.
-    fn sextant_header() -> Vec<u8> {
+    pub(crate) fn sextant_header() -> Vec<u8> {
         let mut sector = hex(concat!(
             "4546492050415254000001005c00000048bb5d44000000000100000000000000",
             "ff0f0200000000002200000000000000de0f0200000000009fa99c6e55fc504b",
@@ -266,7 +274,7 @@ mod tests {
     }
 
     /// The entry array of the same image: its first entry, then 127 unused.
-    fn sextant_entries() -> Vec<u8> {
+    pub(crate) fn sextant_entries() -> Vec<u8> {
         let mut array = hex(concat!(
             "28732ac11ff8d211ba4b00a0c93ec93b281150d06f09494a832e5bd507f44a38",
             "0008000000000000ff07020000000000000000000000000045004600490020",
@@ -279,7 +287,7 @@ mod tests {
     }
 
     /// The last sector of the same image: the header's copy.
-    fn sextant_backup() -> Vec<u8> {
+    pub(crate) fn sextant_backup() -> Vec<u8> {
         let mut sector = hex(concat!(
             "4546492050415254000001005c00000011b2acb000000000ff0f020000000000",
             "01000000000000002200000000000000de0f0200000000009fa99c6e55fc504b",

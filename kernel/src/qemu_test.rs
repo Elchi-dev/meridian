@@ -893,10 +893,15 @@ fn console_cell_checks<W: Write>(
     };
     let alike = cell(0).eq(cell(far));
     let inked = cell(0).filter(|&p| p.is_some_and(|p| p != NIGHT)).count();
+    // An i sits well right of its pen, as narrow letters do in a
+    // monospaced font.
+    raw::console::write("\u{c}i");
+    let placed =
+        raw::console::drawn_alone('i').is_some_and(|alone| cell(0).eq(alone.into_iter().map(Some)));
     report.check(
         "kernel.console.cells",
-        far > 50 && alike && inked > 10,
-        "an M in a column far to the right should look exactly as one in the first",
+        far > 50 && alike && inked > 10 && placed,
+        "an M in a column far to the right should look exactly as one in the first, and an i in its cell as it looks drawn on its own",
     );
     let before = raw::console::rasterized();
     raw::console::write("\u{a7}\u{a7}\u{a7}\n");

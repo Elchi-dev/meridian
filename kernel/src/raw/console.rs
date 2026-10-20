@@ -169,6 +169,33 @@ pub fn shape() -> Option<((usize, usize), (usize, usize))> {
     Some(((c.grid.columns(), c.grid.rows()), c.cell))
 }
 
+/// The pixels of a cell that holds `c`, row by row, as `lib/canvas` draws
+/// the character on its own with the pen at the cell's left edge on its
+/// baseline. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn drawn_alone(c: char) -> Option<alloc::vec::Vec<canvas::Color>> {
+    let console = CONSOLE.lock();
+    let console = console.as_ref()?;
+    let (width, height) = console.cell;
+    let mut pixels = alloc::vec![0u32; width * height];
+    let mut cell = canvas::Canvas::new(&mut pixels, width, height, width, canvas::Format::Bgr)?;
+    cell.fill(NIGHT);
+    let mut room = [0u8; 4];
+    let baseline = i32::try_from(console.baseline).ok()?;
+    cell.text(
+        &style()?,
+        0,
+        baseline,
+        c.encode_utf8(&mut room),
+        &mut SCRATCH.lock(),
+    )
+    .ok()?;
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| cell.pixel(x, y))
+        .collect()
+}
+
 /// The colour of the screen's pixel at `x`, `y`, under the console. Only
 /// the test image asks.
 #[cfg(feature = "qemu-test")]

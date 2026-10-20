@@ -55,6 +55,9 @@ type Machine struct {
 	// WithoutX2APIC hides the x2APIC from the processor, so it has only
 	// the older xAPIC, as processors from before about 2013 do.
 	WithoutX2APIC bool
+	// WithoutPS2 leaves the 8042 out, so the keyboard is a USB one behind
+	// an xHCI controller, as on PCs without PS/2 ports.
+	WithoutPS2 bool
 }
 
 // Exit codes of isa-debug-exit: QEMU exits with (value << 1) | 1, and test
@@ -98,6 +101,9 @@ func (m Machine) Args() []string {
 	if m.SecureBoot {
 		board = "q35,smm=on"
 	}
+	if m.WithoutPS2 {
+		board += ",i8042=off"
+	}
 	cpu := "max"
 	if m.WithoutX2APIC {
 		cpu = "max,-x2apic"
@@ -119,6 +125,9 @@ func (m Machine) Args() []string {
 		"-vga", "std",
 		"-serial", "stdio",
 	)
+	if m.WithoutPS2 {
+		args = append(args, "-device", "qemu-xhci", "-device", "usb-kbd")
+	}
 	if m.SecureBoot {
 		args = append(args, "-global", "driver=cfi.pflash01,property=secure,value=on")
 	}

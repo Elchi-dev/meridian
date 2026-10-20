@@ -98,6 +98,26 @@ func TestAMachineCanLackTheX2APIC(t *testing.T) {
 	}
 }
 
+func TestAMachineCanLackPS2(t *testing.T) {
+	m := fullMachine()
+	m.WithoutPS2 = true
+	got := strings.Join(m.Args(), " ")
+	if !strings.HasPrefix(got, "-machine q35,i8042=off -cpu max -m ") {
+		t.Fatalf("got %s", got)
+	}
+	if !strings.Contains(got, "-serial stdio -device qemu-xhci -device usb-kbd -drive if=pflash") {
+		t.Fatalf("the keyboard should be a USB one: %s", got)
+	}
+	m.SecureBoot = true
+	if got := strings.Join(m.Args(), " "); !strings.HasPrefix(got, "-machine q35,smm=on,i8042=off ") {
+		t.Fatalf("with Secure Boot: %s", got)
+	}
+	plain := strings.Join(fullMachine().Args(), " ")
+	if strings.Contains(plain, "i8042") || strings.Contains(plain, "usb") {
+		t.Fatalf("an ordinary machine keeps its PS/2 keyboard: %s", plain)
+	}
+}
+
 func TestASecondDiskComesAfterTheFirst(t *testing.T) {
 	m := fullMachine()
 	m.SecondDisk = "/out/other,disk.img"

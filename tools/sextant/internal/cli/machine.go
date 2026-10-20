@@ -493,9 +493,10 @@ func runSteps(ctx context.Context, steps []step, stdout, stderr io.Writer) error
 	return nil
 }
 
-// qemuTests boots the QEMU test image twice: on a processor as QEMU gives
-// it, and on one without an x2APIC, so the kernel's xAPIC path is checked
-// as well wherever KVM would pass the x2APIC through.
+// qemuTests boots the QEMU test image twice: on a machine as QEMU gives
+// it, and on one without an x2APIC or a PS/2 controller, so the kernel's
+// xAPIC path is checked as well wherever KVM would pass the x2APIC
+// through, and so is a keyboard that does not answer.
 func (s *session) qemuTests(ctx context.Context) error {
 	v := variant{testMode: true}
 	b, err := s.buildBoot(ctx, v)
@@ -531,15 +532,16 @@ type testPass struct {
 	screens string
 }
 
-// testPasses are the boots of the test image on m: first on a processor
-// as QEMU gives it, keeping its screens in screens, then on one without an
-// x2APIC.
+// testPasses are the boots of the test image on m: first on a machine as
+// QEMU gives it, keeping its screens in screens, then on one without an
+// x2APIC or a PS/2 controller.
 func testPasses(m qemu.Machine, screens string) []testPass {
 	without := m
 	without.WithoutX2APIC = true
+	without.WithoutPS2 = true
 	return []testPass{
 		{title: "== QEMU test image", machine: m, screens: screens},
-		{title: "== QEMU test image without x2APIC", machine: without},
+		{title: "== QEMU test image without x2APIC or PS/2", machine: without},
 	}
 }
 

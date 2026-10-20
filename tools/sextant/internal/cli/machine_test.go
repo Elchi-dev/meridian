@@ -237,20 +237,21 @@ func TestOnlyTestImagesCarryTheTestPrograms(t *testing.T) {
 	}
 }
 
-func TestTheTestImageBootsAgainWithoutAnX2APIC(t *testing.T) {
+func TestTheTestImageBootsAgainWithoutAnX2APICOrPS2(t *testing.T) {
 	m := qemu.Machine{Binary: "qemu-system-x86_64", Memory: 512, CPUs: 4, Accels: []string{"kvm", "tcg"}, Disk: "/build/test.img", DebugExit: true}
 	passes := testPasses(m, "/build/screens")
 	if len(passes) != 2 {
 		t.Fatalf("%d passes, want 2", len(passes))
 	}
 	first, second := passes[0], passes[1]
-	if first.title != "== QEMU test image" || first.machine.WithoutX2APIC || first.screens != "/build/screens" {
+	if first.title != "== QEMU test image" || first.machine.WithoutX2APIC || first.machine.WithoutPS2 || first.screens != "/build/screens" {
 		t.Errorf("first pass: %+v", first)
 	}
-	if second.title != "== QEMU test image without x2APIC" || !second.machine.WithoutX2APIC || second.screens != "" {
-		t.Errorf("the second pass should hide the x2APIC and keep no screens: %+v", second)
+	if second.title != "== QEMU test image without x2APIC or PS/2" || !second.machine.WithoutX2APIC || !second.machine.WithoutPS2 || second.screens != "" {
+		t.Errorf("the second pass should hide the x2APIC and PS/2 and keep no screens: %+v", second)
 	}
 	second.machine.WithoutX2APIC = false
+	second.machine.WithoutPS2 = false
 	if !reflect.DeepEqual(second.machine, m) {
 		t.Errorf("the second machine should differ in nothing else: %+v", second.machine)
 	}

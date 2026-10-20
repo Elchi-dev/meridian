@@ -31,11 +31,11 @@ use uefi::device_path;
 use uefi::guid::{ACPI_20_TABLE, GLOBAL_VARIABLE, MERIDIAN_VARIABLE};
 use uefi::load_option::{self, BOOT_CURRENT, BOOT_NEXT, BOOT_ORDER, LoadOption};
 use uefi::memory::{MemoryType, PAGE_BYTES, PAGE_SIZE};
-use uefi::raw::System;
 use uefi::raw::file::EntryBuffer;
 use uefi::raw::graphics::PixelFormat;
 use uefi::raw::image::PATH_BYTES;
 use uefi::raw::table::ResetType;
+use uefi::raw::{Pages, System};
 use uefi::variable::{
     Attributes, BOOT_TO_FIRMWARE_UI, OS_INDICATIONS, OS_INDICATIONS_SUPPORTED, SECURE_BOOT,
     offers_firmware_ui, u64_value,
@@ -653,7 +653,20 @@ fn back_buffer(system: &System, screen: Option<uefi::raw::graphics::Framebuffer>
 }
 
 /// Loads the kernel, gives it a stack and builds its page tables.
-fn prepare(system: &System) -> Result<Ready, Problem> {
+/// The unique GUID of the partition the loader was started from, as its
+/// GPT entry holds it, or zeros when the firmware does not say.
+fn own_partition(system: &System) -> [u8; 16] {
+    let mut path = [0u8; PATH_BYTES];
+    system
+        .boot_device_path(&mut path)
+        .ok()
+        .and_then(device_path::partition)
+        .unwrap_or([0; 16])
+}
+
+/// Reads the kernel's file into pages of its own, and says how many bytes
+/// it read.
+fn read_kernel(system: &System) -> Result<(Pages<'_>, usize), Problem> {
     let root = system
         .boot_volume()
         .map_err(firmware("opening the boot volume"))?;
@@ -670,6 +683,11 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
     let got = file
         .read_all(buf.bytes())
         .map_err(firmware("reading the kernel file"))?;
+    Ok((buf, got))
+}
+
+fn prepare(system: &System) -> Result<Ready, Problem> {
+    let (mut buf, got) = read_kernel(system)?;
     // A file cut short fails the ELF checks below, so the count read is
     // all that matters here.
     let data: &[u8] = &buf.bytes()[..got];
@@ -751,6 +769,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         framebuffer: handover::framebuffer(screen),
         back_buffer,
         modules,
+        boot_partition: own_partition(system),
         ..BootInfo::new()
     };
     Ok(Ready {

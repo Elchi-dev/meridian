@@ -94,6 +94,19 @@ impl Table {
         self.partitions().map(|(_, p)| p).find(|p| p.kind == kind)
     }
 
+    /// The partition the loader came from, which it names by its unique
+    /// GUID `boot`; when it names none, all zeros, the first EFI system
+    /// partition. None when the partition it names is on another disk.
+    #[must_use]
+    pub fn boot_volume(&self, boot: [u8; 16]) -> Option<Partition> {
+        if boot == [0; 16] {
+            return self.first_of(gpt::EFI_SYSTEM);
+        }
+        self.partitions()
+            .map(|(_, p)| p)
+            .find(|p| p.unique.0 == boot)
+    }
+
     /// The partitions the table lists, each with its number, counted from
     /// 1 as entries are, unused ones left out.
     pub fn partitions(&self) -> impl Iterator<Item = (usize, Partition)> + '_ {
@@ -213,6 +226,42 @@ mod tests {
             Some(2048)
         );
         assert_eq!(table.first_of(gpt::Guid([0x11; 16])), None);
+    }
+
+    #[test]
+    fn the_boot_volume_is_the_one_the_loader_names() {
+        let mut image = disk(
+            8192,
+            &[
+                (0, gpt::EFI_SYSTEM.0, 2048, 3071),
+                (1, gpt::EFI_SYSTEM.0, 3072, 4095),
+            ],
+        );
+        let unique = |slot: usize, id: u8| {
+            let at = 1024 + slot * 128 + 16;
+            (at, [id; 16])
+        };
+        for (at, id) in [unique(0, 0xa1), unique(1, 0xb2)] {
+            image[at..at + 16].copy_from_slice(&id);
+        }
+        let crc = gpt::crc32(&image[1024..1024 + 128 * 128]);
+        image[512 + 88..512 + 92].copy_from_slice(&crc.to_le_bytes());
+        image[512 + 16..512 + 20].fill(0);
+        let crc = gpt::crc32(&image[512..604]);
+        image[528..532].copy_from_slice(&crc.to_le_bytes());
+        let table = Table::read(&mut reader(&image)).unwrap();
+        assert_eq!(
+            table.boot_volume([0xb2; 16]).map(|p| p.first),
+            Some(3072),
+            "the second one, as named"
+        );
+        assert_eq!(table.boot_volume([0xa1; 16]).map(|p| p.first), Some(2048));
+        assert_eq!(
+            table.boot_volume([0; 16]).map(|p| p.first),
+            Some(2048),
+            "no word: the first"
+        );
+        assert_eq!(table.boot_volume([0xc3; 16]), None, "one on another disk");
     }
 
     #[test]

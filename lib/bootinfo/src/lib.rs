@@ -10,7 +10,7 @@
 use core::mem::size_of;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"MERIDIAN");
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Where the direct map of all physical memory starts: the first address of
 /// the higher half. Physical address `p` is at virtual `HHDM_BASE + p`.
@@ -51,6 +51,10 @@ pub struct BootInfo {
     /// kernel's in the memory map.
     pub back_buffer: u64,
     pub modules: Modules,
+    /// The unique GUID of the GPT partition the loader was started from,
+    /// in the bytes its entry holds it in; zeros when the firmware did not
+    /// say.
+    pub boot_partition: [u8; 16],
 }
 
 /// The files the loader read for the kernel from `meridian/programs/` on
@@ -263,6 +267,7 @@ impl BootInfo {
             framebuffer: Framebuffer::default(),
             back_buffer: 0,
             modules: Modules::default(),
+            boot_partition: [0; 16],
         }
     }
 
@@ -299,6 +304,7 @@ impl BootInfo {
         out[128..136].copy_from_slice(&self.back_buffer.to_le_bytes());
         out[136..144].copy_from_slice(&self.modules.list.to_le_bytes());
         out[144..152].copy_from_slice(&self.modules.count.to_le_bytes());
+        out[152..168].copy_from_slice(&self.boot_partition);
         out
     }
 
@@ -350,6 +356,7 @@ mod tests {
             ),
             (0, 0, 0, 0, 0, 0, 0)
         );
+        assert_eq!(b.boot_partition, [0; 16], "no word from the firmware yet");
     }
 
     #[test]
@@ -385,6 +392,13 @@ mod tests {
             "a loader from before modules"
         );
         let mut b = BootInfo::new();
+        b.version = 3;
+        assert_eq!(
+            b.check(),
+            Err(Mismatch::Version(3)),
+            "a loader from before it named its partition"
+        );
+        let mut b = BootInfo::new();
         b.size -= 8;
         assert_eq!(b.check(), Err(Mismatch::Size(b.size)));
         b.size += 16;
@@ -394,7 +408,7 @@ mod tests {
     #[test]
     fn the_magic_spells_meridian() {
         assert_eq!(&MAGIC.to_le_bytes(), b"MERIDIAN");
-        assert_eq!(VERSION, 3);
+        assert_eq!(VERSION, 4);
     }
 
     #[test]
@@ -412,11 +426,12 @@ mod tests {
             (offset_of!(BootInfo, framebuffer), 96),
             (offset_of!(BootInfo, back_buffer), 128),
             (offset_of!(BootInfo, modules), 136),
+            (offset_of!(BootInfo, boot_partition), 152),
         ];
         for (got, want) in offsets {
             assert_eq!(got, want);
         }
-        assert_eq!(size_of::<BootInfo>(), 152);
+        assert_eq!(size_of::<BootInfo>(), 168);
         assert_eq!(offset_of!(Modules, count), 8);
         assert_eq!(size_of::<Module>(), 48);
         assert_eq!(offset_of!(Module, size), 8);
@@ -471,12 +486,14 @@ mod tests {
                 list: 0xffff_8000_0012_3000,
                 count: 3,
             },
+            boot_partition: *b"partition 16 b!!",
             ..BootInfo::new()
         };
         let b = info.to_bytes();
         assert_eq!(&b[0..8], b"MERIDIAN");
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), VERSION);
-        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 152);
+        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 168);
+        assert_eq!(&b[152..168], b"partition 16 b!!");
         let fields = [
             (
                 offset_of!(BootInfo, memory) + offset_of!(MemoryMap, regions),

@@ -29,6 +29,9 @@
   memory, leaving out folders and hidden files such as the ones macOS
   leaves on FAT disks, and lists up to 16 of them in the boot information
   for the kernel to start.
+- **Its own partition.** It names the GPT partition it was started from,
+  by the unique GUID the firmware's device path for it holds, in the boot
+  information, version 4, so the kernel mounts that one and no other.
 - **The kernel's address space** (`handover.rs`, built with `lib/paging`):
   - each kernel segment with the rights it asks for, never writable and
     executable at once

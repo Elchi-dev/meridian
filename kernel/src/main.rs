@@ -43,7 +43,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Serial) -> ! {
     });
     let tsc_hz = tsc.map(|t| t.hz);
     let _ = kernel::describe(serial, &machine, tsc);
-    start_storage(machine.ecam, serial);
+    start_storage(machine.ecam, info.boot_partition, serial);
     raw::keep_modules(info, regions);
     #[cfg(feature = "qemu-test")]
     qemu_test::before_cores();
@@ -83,8 +83,9 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Serial) -> ! {
 }
 
 /// Finds every PCI function, logs it, and starts the first AHCI and the
-/// first NVM Express controller, logging each drive and what it holds.
-fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Serial) {
+/// first NVM Express controller, logging each drive and what it holds,
+/// and hangs the partition `boot` the loader came from in the tree.
+fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) {
     raw::pci::start(ecam);
     let mut found = kernel::disk::Controllers::default();
     raw::pci::each(|at, h| {
@@ -99,7 +100,7 @@ fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Serial) {
             let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
             let mut read = |lba, into: &mut [u8]| raw::nvme::read(lba, into).is_ok();
             let _ = kernel::disk::describe(serial, &"NVMe", &mut read);
-            mount_boot(serial, &"NVMe", read);
+            mount_boot(serial, &"NVMe", boot, read);
         }
     }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
@@ -112,22 +113,22 @@ fn start_storage(ecam: Option<acpi::Ecam>, serial: &mut Serial) {
             let mut read = move |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
             let name = format_args!("AHCI port {port}");
             let _ = kernel::disk::describe(serial, &name, &mut read);
-            mount_boot(serial, &name, read);
+            mount_boot(serial, &name, boot, read);
         }
     }
 }
 
-/// Hangs the first EFI system partition of the disk `disk`, which `read`
-/// reads, at /System/Boot, read only, unless a volume hangs there already.
-/// Until the loader says which partition it came from, the first found is
-/// the one booted from.
+/// Hangs the partition `boot` the loader came from at /System/Boot, read
+/// only, when it is on the disk `disk`, which `read` reads, and no volume
+/// hangs there already. A loader that names none leaves the first EFI
+/// system partition found.
 fn mount_boot(
     serial: &mut Serial,
     disk: &dyn core::fmt::Display,
+    boot: [u8; 16],
     mut read: impl FnMut(u64, &mut [u8]) -> bool + Copy + Send + 'static,
 ) {
-    let Some(esp) = kernel::disk::Table::read(&mut read).and_then(|t| t.first_of(gpt::EFI_SYSTEM))
-    else {
+    let Some(esp) = kernel::disk::Table::read(&mut read).and_then(|t| t.boot_volume(boot)) else {
         return;
     };
     let first = esp.first;
@@ -137,7 +138,7 @@ fn mount_boot(
     ) {
         let _ = writeln!(
             serial,
-            "kernel: {disk}'s EFI system partition hangs at /System/Boot, read only"
+            "kernel: the partition the loader came from, on {disk}, hangs at /System/Boot, read only"
         );
     }
 }

@@ -275,7 +275,7 @@ fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions:
     ahci_checks(report);
     nvme_checks(report);
     fat_checks(report, info, regions);
-    vfs_checks(report);
+    vfs_checks(report, info.boot_partition);
 }
 
 /// PCI through the MCFG's ECAM region: q35's host bridge at 00:00.0 and its
@@ -544,7 +544,7 @@ fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
 /// file's slot is free again once it is closed, while one file more than
 /// there are slots finds none. Booted from a CD, which the kernel cannot
 /// read yet, nothing hangs there.
-fn vfs_checks<W: Write>(report: &mut Report<'_, W>) {
+fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
     use abi::file::READ;
     use raw::vfs::{self, Error};
     use security::{Integrity, Privileges, Restriction, Token};
@@ -562,6 +562,11 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>) {
         );
         return;
     }
+    report.check(
+        "kernel.boot.partition",
+        boot != [0; 16] && esp_of_disk().is_some_and(|(_, esp)| esp.unique.0 == boot),
+        "the loader should name the partition it came from, the EFI system partition sextant wrote",
+    );
     let mut by_tree = [0u8; 128];
     let read = vfs::open(settings, &system, READ).ok().and_then(|slot| {
         let len = vfs::read(slot, 0, &mut by_tree).ok();
@@ -569,24 +574,16 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>) {
         vfs::close(slot);
         len.zip(size)
     });
-    let drives = raw::ahci::drives();
-    let straight = drives
-        .iter()
-        .flatten()
-        .find(|d| d.attached == ahci::Attached::Disk)
-        .and_then(|disk| {
-            let port = disk.port;
-            let mut read = |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
-            let esp = kernel::disk::Table::read(&mut read)?.first_of(gpt::EFI_SYSTEM)?;
-            let mut volume = fat::Fat::open(|lba, into: &mut [u8]| {
-                raw::ahci::read(port, esp.first + lba, into).is_ok()
-            })
-            .ok()?;
-            let entry = volume.find("meridian/boot.meri").ok()?;
-            let mut bytes = [0u8; 128];
-            let len = volume.read_file(&entry, &mut bytes).ok()?;
-            Some((bytes, len))
-        });
+    let straight = esp_of_disk().and_then(|(port, esp)| {
+        let mut volume = fat::Fat::open(|lba, into: &mut [u8]| {
+            raw::ahci::read(port, esp.first + lba, into).is_ok()
+        })
+        .ok()?;
+        let entry = volume.find("meridian/boot.meri").ok()?;
+        let mut bytes = [0u8; 128];
+        let len = volume.read_file(&entry, &mut bytes).ok()?;
+        Some((bytes, len))
+    });
     report.check(
         "kernel.vfs.read",
         read.zip(straight)
@@ -631,6 +628,19 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>) {
                 .is_ok(),
         "a closed file's slot should be free again, and the 65th file open at once find none",
     );
+}
+
+/// The AHCI port of the disk and the EFI system partition on it.
+fn esp_of_disk() -> Option<(usize, gpt::Partition)> {
+    let drives = raw::ahci::drives();
+    let disk = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk)?;
+    let port = disk.port;
+    let mut read = |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
+    let esp = kernel::disk::Table::read(&mut read)?.first_of(gpt::EFI_SYSTEM)?;
+    Some((port, esp))
 }
 
 /// The EFI system partition, read by the kernel itself through AHCI, the

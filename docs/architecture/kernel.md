@@ -325,8 +325,12 @@ medium level, so nothing below writes to it. Whether a token may open a
 file is the access check of `lib/security`; a volume mounted read only
 takes no write at all, and until Strata, every volume is (9.6).
 
-The kernel hangs the first EFI system partition it finds at
-`/System/Boot`, read only. OPEN takes a path and the rights wanted from
+The kernel hangs the partition the loader came from at `/System/Boot`,
+read only: the loader names it in the boot information by the unique
+GUID of its GPT entry, as the firmware's device path for the loader has
+it, so a machine with a Windows or Linux EFI partition beside Meridian's
+never mounts theirs. A loader that names none, as one started from a CD
+does, leaves the first EFI system partition found. OPEN takes a path and the rights wanted from
 `abi::file` and answers a handle that reads only when reading was asked
 for; READ reads up to a page from any byte on; INFO answers the size and
 whether it is a directory. An open file is a kernel object like a

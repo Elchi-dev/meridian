@@ -308,6 +308,33 @@ program hand one end of a channel of its own to a program on another
 core, which takes it and reads what was sent into it, and checks a
 handle nobody took leaves no channel behind.
 
+## Files (M4)
+
+Every file is in one tree, laid out with readable names as QUESTIONS.md
+9.4 has it: `/System`, `/Users`, `/Applications`, `/Volumes`. Names are
+compared ignoring case and kept as they were written, as Windows programs
+expect (9.1).
+
+What exists: `kernel::vfs` reads paths from the root, `.` and `..`
+resolved and never above it, compares names in capitals one character
+for one as Windows does, and finds the volume hanging deepest under a
+path. A volume that keeps no security of its own, as FAT32 keeps none,
+gives each file one descriptor: SYSTEM owns it, everyone may read and
+run it, the administrators may do anything, and it is labelled at the
+medium level, so nothing below writes to it. Whether a token may open a
+file is the access check of `lib/security`; a volume mounted read only
+takes no write at all, and until Strata, every volume is (9.6).
+
+The kernel hangs the first EFI system partition it finds at
+`/System/Boot`, read only. OPEN takes a path and the rights wanted from
+`abi::file` and answers a handle that reads only when reading was asked
+for; READ reads up to a page from any byte on; INFO answers the size and
+whether it is a directory. An open file is a kernel object like a
+process, so its handle can be handed on through a channel. The test
+image reads boot.meri through the tree as AHCI and FAT32 read it
+straight, from inside the kernel and from hello, and checks the files
+and paths that must not open.
+
 ## The screens the kernel draws itself (M1)
 
 - **Status screen.** The CPU cores found in the ACPI MADT, the memory map

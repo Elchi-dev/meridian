@@ -130,7 +130,8 @@ Loader and UEFI:
 - [x] FAT32 read in the kernel (`lib/fat`)
 - [ ] FAT32 written, for the installer
 - [ ] Strata: copy-on-write, checksums, snapshots, case-preserving names, instant locate index, reserved room for transactions, deduplication and expiry
-- [ ] VFS
+- [x] VFS, reading: one tree, paths compared in capitals, mounts, OPEN, READ and INFO, the EFI system partition at /System/Boot (`kernel::vfs`)
+- [ ] VFS: listing directories, writing, and which partition the loader came from
 - [ ] No writes to partitions Meridian did not create
 
 ## M5: Userland

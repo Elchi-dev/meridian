@@ -1,7 +1,7 @@
 //! FAT32 (Microsoft's FAT specification, fatgen103), read: the geometry
 //! the boot sector gives, the chains of clusters files lie in, directories
 //! with their long names, and files found by path. The caller reads the
-//! volume's sectors; sectors are counted from the volume's first. [`write`]
+//! volume's sectors; sectors are counted from the volume's first. [`write`](mod@write)
 //! writes them too, and [`format`] makes new volumes.
 
 #![cfg_attr(not(test), no_std)]

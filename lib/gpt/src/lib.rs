@@ -1,6 +1,6 @@
 //! GUID partition tables (UEFI 2.10, chapter 5), read: the header with
 //! every check the specification asks for, and the partitions its array
-//! lists. Reading the sectors is the caller's. [`write`] makes new ones.
+//! lists. Reading the sectors is the caller's. [`write`](mod@write) makes new ones.
 
 #![cfg_attr(not(test), no_std)]
 

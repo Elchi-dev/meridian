@@ -8,6 +8,7 @@
 //! to the frame allocator.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 #[cfg(feature = "qemu-test")]
@@ -67,8 +68,16 @@ impl Process {
     }
 }
 
-/// Each program's process, by the number of its thread.
-static PROCESSES: Spin<[Option<Box<Process>>; THREADS]> = Spin::new([const { None }; THREADS]);
+/// A process, which each of its threads holds.
+type Shared = Arc<Spin<Process>>;
+
+/// Each program's process, by the number of each of its threads.
+static PROCESSES: Spin<[Option<Shared>; THREADS]> = Spin::new([const { None }; THREADS]);
+
+/// The running program's process.
+fn current_process() -> Option<Shared> {
+    PROCESSES.lock().get(thread::current())?.clone()
+}
 
 /// The rights a program has to the channel ends it holds.
 const ENDS: Rights = Rights(Rights::READ.0 | Rights::WRITE.0 | Rights::TRANSFER.0);
@@ -242,7 +251,7 @@ extern "C" fn run(start: u64) {
     #[cfg(feature = "qemu-test")]
     seen::starting(thread::current());
     if let Some(slot) = PROCESSES.lock().get_mut(thread::current()) {
-        *slot = Some(process);
+        *slot = Some(Arc::new(Spin::new(*process)));
     }
     // SAFETY: spawn mapped the image and the stack for ring 3 in this
     // thread's address space, which the switch to it loaded, every switch
@@ -259,7 +268,8 @@ fn finish(outcome: Outcome) -> ! {
         .lock()
         .get_mut(thread::current())
         .and_then(Option::take);
-    if let Some(mut process) = process {
+    if let Some(process) = process {
+        let mut process = process.lock();
         process.handles.close_all(close_object);
         if let Some(slot) = process.object {
             OBJECTS.lock().end(slot, outcome);
@@ -382,10 +392,7 @@ fn terminate(handle: u64, code: u64) -> Result<(), u64> {
 /// Ends the running program, when it was asked to, with the code it was
 /// asked to end with: on every way back to ring 3, and while it waits.
 pub fn end_if_asked() {
-    let object = PROCESSES
-        .lock()
-        .get(thread::current())
-        .and_then(|p| p.as_ref()?.object);
+    let object = current_process().and_then(|p| p.lock().object);
     let asked = object.and_then(|slot| OBJECTS.lock().asked(slot));
     if let Some(code) = asked {
         ended(format_args!("was stopped, with {code}"));
@@ -531,11 +538,9 @@ fn wait(handle: u64) -> Result<(u64, u64), u64> {
 
 /// Runs `with` on the running program's process.
 fn with_process<R>(with: impl FnOnce(&mut Process) -> Result<R, u64>) -> Result<R, u64> {
-    let mut processes = PROCESSES.lock();
-    let process = processes
-        .get_mut(thread::current())
-        .and_then(Option::as_mut);
-    with(process.ok_or(syscall::BAD_HANDLE)?)
+    let process = current_process().ok_or(syscall::BAD_HANDLE)?;
+    let mut process = process.lock();
+    with(&mut process)
 }
 
 /// Runs `with` on the running program's handle table.

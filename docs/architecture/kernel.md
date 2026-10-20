@@ -276,6 +276,22 @@ core it was started on, loses the processor there at that core's tick, and
 wakes there on time, and that of two threads that never give way on one
 core, one moves to a core with nothing to run.
 
+Each thread has floating point and vector registers of its own. Every
+core turns the x87 unit and SSE on, and where the processor has XSAVE it
+keeps the x87, SSE, AVX and AVX-512 parts it has, as the first core found
+them; otherwise FXSAVE keeps the x87 and SSE registers. The kernel itself
+is built without them, so they only need keeping when a core goes from one
+thread to another: the switch saves the leaving thread's registers in the
+page right above its stack and loads the next thread's from there, every
+time, since a fault at first use would only save work for threads that use
+none and tells another thread when one does. A new thread starts with them
+as power on leaves them, the x87 control word at 0x37F and MXCSR at
+0x1F80. The kernel logs which parts it keeps. The test image wants them
+on on every core, each of two threads on one core to find its own after
+giving way and after the timer took the processor, and a thread started
+where one of them was to find fresh ones; the second test machine has no
+XSAVE, so FXSAVE is checked as well.
+
 ## IPC (M3)
 
 Typed message channels that can carry handles, used by every service and by

@@ -20,7 +20,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 29] = [
+const CHECKS: [(&str, Check); 30] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -42,6 +42,7 @@ const CHECKS: [(&str, Check); 29] = [
     ("terminate", child_ended_from_outside),
     ("thread", threads_of_a_child),
     ("thread.here", a_thread_of_its_own),
+    ("thread.moves", a_thread_takes_what_it_was_given),
     ("wait.other", wait_for_no_process),
     ("token", own_token),
     ("spawn.token", child_gets_no_more),
@@ -531,6 +532,40 @@ fn a_thread_of_its_own() -> Outcome {
         FOUND.load(core::sync::atomic::Ordering::Acquire) == 42
     });
     expect(seen, "which should run beside it, in its memory")
+}
+
+/// What the thread that was given a list found in it.
+static SUMMED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn a_thread_takes_what_it_was_given() -> Outcome {
+    let numbers: Vec<u64> = (1..=100).collect();
+    let (mine, theirs) = pair()?;
+    let started = crate::thread(move || {
+        let sum: u64 = numbers.iter().sum();
+        SUMMED.store(sum, core::sync::atomic::Ordering::Release);
+        let sent = send(theirs, &numbers.len().to_le_bytes(), None);
+        u64::from(sent.is_err())
+    });
+    expect(
+        started == Ok(()),
+        "a thread should start with a list of its own",
+    )?;
+    let mut room = [0u8; 8];
+    let got = (0..100).find_map(|_| {
+        if let Ok((8, _)) = receive(mine, &mut room) {
+            return Some(u64::from_le_bytes(room));
+        }
+        sleep(1);
+        None
+    });
+    expect(
+        got == Some(100) && SUMMED.load(core::sync::atomic::Ordering::Acquire) == 5050,
+        "it should find every number it was given, in the memory it was moved to",
+    )?;
+    expect(
+        close(mine) == Ok(()) && close(theirs) == Ok(()),
+        "the channel's ends should close",
+    )
 }
 
 fn no_such_program() -> Outcome {

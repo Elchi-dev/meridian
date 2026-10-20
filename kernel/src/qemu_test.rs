@@ -1698,15 +1698,19 @@ fn thread_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     other_core_checks(report, tsc_hz);
 }
 
-/// CR0, CR4 and XCR0 of each core, as `note_fpu` found them there.
-static FPU_SEEN: [[AtomicU64; 3]; 8] = [const { [const { AtomicU64::new(0) }; 3] }; 8];
+/// CR0, CR4, XCR0 and the number RDTSCP gives of each core, as `note_fpu`
+/// found them there.
+static FPU_SEEN: [[AtomicU64; 4]; 8] = [const { [const { AtomicU64::new(0) }; 4] }; 8];
 
-/// Keeps CR0, CR4 and XCR0 of the core it runs on under its argument.
+/// Keeps CR0, CR4 and XCR0 of the core it runs on under its argument,
+/// and the number RDTSCP finds for that core.
 extern "C" fn note_fpu(slot: u64) {
     if let Some(seen) = usize::try_from(slot).ok().and_then(|s| FPU_SEEN.get(s)) {
         seen[0].store(x86::raw::read_cr0(), Ordering::Release);
         seen[1].store(x86::raw::read_cr4(), Ordering::Release);
         seen[2].store(raw::fpu::xcr0().unwrap_or(0), Ordering::Release);
+        let number = x86::raw::cpu_number().map_or(u64::MAX, u64::from);
+        seen[3].store(number, Ordering::Release);
     }
 }
 
@@ -1824,7 +1828,7 @@ fn fpu_checks<W: Write>(report: &mut Report<'_, W>) {
     thread::sleep(3);
     let cores = 1 + raw::smp::others().count();
     let on = (0..cores).all(|core| {
-        FPU_SEEN.get(core).is_some_and(|[cr0, cr4, xcr0]| {
+        FPU_SEEN.get(core).is_some_and(|[cr0, cr4, xcr0, _]| {
             let cr0 = cr0.load(Ordering::Acquire);
             cr0 & (EMULATION | TASK_SWITCHED) == 0
                 && cr0 & (MONITOR_COPROCESSOR | NUMERIC_ERROR)
@@ -1837,6 +1841,16 @@ fn fpu_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.fpu.on",
         asked && on,
         "every core should have the x87 unit and SSE on, and XSAVE with every part the processor has where it has XSAVE",
+    );
+    report.check(
+        "kernel.cores.numbered",
+        asked
+            && (0..cores).all(|core| {
+                FPU_SEEN
+                    .get(core)
+                    .is_some_and(|seen| seen[3].load(Ordering::Acquire) == core as u64)
+            }),
+        "RDTSCP should hand each core its own number",
     );
     let core = raw::smp::others().last().unwrap_or(0);
     let painters = [0, 1].map(|me| thread::spawn_on(core, keeps_its_registers, me, NORMAL));

@@ -65,6 +65,7 @@ extern "sysv64" fn kernel_start(info: *const BootInfo) -> ! {
     interrupts::install();
     x86::raw::protect(x86::Protections::detect());
     fpu::start(x86::fpu::Saving::detect());
+    let _ = x86::raw::set_cpu_number(0);
     crate::run(info, regions, &mut serial)
 }
 

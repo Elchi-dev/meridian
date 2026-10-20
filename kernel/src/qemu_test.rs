@@ -704,9 +704,11 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
 /// active high as q35 has it, and each key sextant presses comes as its
 /// events, a shift around the key it shifts and an arrow after its prefix.
 /// The interrupts it comes by need interrupts on, as they are while the
-/// timer runs.
+/// timer runs. On a machine whose FADT says it has no 8042, the keyboard
+/// is a USB one: nothing answers, nothing is let through and no key comes.
 fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
     use ps2::{Event, Key};
+    let present = machine.i8042 != Some(false);
     let routed = machine
         .keyboard
         .zip(machine.io_apic)
@@ -718,8 +720,8 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         });
     report.check(
         "kernel.keyboard.routed",
-        routed,
-        "the keyboard's input of the I/O APIC should be let through as its vector, edge triggered and active high",
+        routed == present,
+        "the keyboard's input of the I/O APIC should be let through as its vector, edge triggered and active high, if there is an 8042",
     );
     let held = x86::ioapic::entry(0, 0, false, false, true);
     let held_back = machine
@@ -728,7 +730,7 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         .is_some_and(|(line, io)| {
             let keyboard = line.interrupt - io.first;
             (0..24)
-                .filter(|&input| input != keyboard)
+                .filter(|&input| input != keyboard || !present)
                 .all(|input| raw::ioapic::entry(input) == held)
         });
     // An input nothing drives, held back still, sent to another APIC for a
@@ -744,12 +746,12 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
     );
     let wanted = ps2::config::FIRST_INTERRUPT | ps2::config::TRANSLATION;
     let unwanted = ps2::config::FIRST_CLOCK_OFF | ps2::config::SECOND_INTERRUPT;
-    let configured = x86::raw::without_interrupts(raw::ps2::configuration)
-        .is_some_and(|c| c & wanted == wanted && c & unwanted == 0);
+    let configuration = x86::raw::without_interrupts(raw::ps2::configuration);
+    let configured = configuration.is_some_and(|c| c & wanted == wanted && c & unwanted == 0);
     report.check(
         "kernel.keyboard.configured",
-        configured,
-        "the controller should give the keyboard its interrupt, its clock and translation, and the second port no interrupt",
+        if present { configured } else { configuration.is_none() },
+        "the controller should give the keyboard its interrupt, its clock and translation, and the second port no interrupt; without an 8042 nothing answers",
     );
     while raw::ps2::next().is_some() {}
     let down = |key| Event { key, pressed: true };
@@ -773,7 +775,8 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         ("kp_enter", alloc::vec![down(Key(0x58)), up(Key(0x58))]),
     ];
     let patience = tsc_hz.unwrap_or(1_000_000_000);
-    let all = presses.iter().all(|(press, wanted)| {
+    let all = presses.iter().all(|(press, events)| {
+        let wanted = if present { events.as_slice() } else { &[] };
         let _ = writeln!(report.out, "PRESS {press}");
         let mut got = alloc::vec::Vec::new();
         let start = x86::raw::tsc();
@@ -787,12 +790,12 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         while let Some(event) = raw::ps2::next() {
             got.push(event);
         }
-        got == *wanted
+        got == wanted
     });
     report.check(
         "kernel.keyboard.keys",
         all,
-        "each key sextant presses should come as the keyboard's events, in order and nothing else",
+        "each key sextant presses should come as the keyboard's events, in order and nothing else, or nothing without an 8042",
     );
 }
 
@@ -870,6 +873,7 @@ fn shell_checks<W: Write>(
     report: &mut Report<'_, W>,
     info: &BootInfo,
     regions: &[MemoryRegion],
+    machine: &Machine,
     tsc_hz: Option<u64>,
 ) {
     use raw::user::{self, seen};
@@ -878,7 +882,8 @@ fn shell_checks<W: Write>(
         report.check("kernel.shell", false, "every image should carry the shell");
         return;
     };
-    if raw::console::shape().is_none() {
+    // Without the 8042 nothing could type at it.
+    if raw::console::shape().is_none() || machine.i8042 == Some(false) {
         return;
     }
     raw::console::write("\u{c}");
@@ -1395,7 +1400,7 @@ fn timer_checks<W: Write>(
         "the line hello writes should show on the console",
     );
     keyboard_checks(report, machine, tsc_hz);
-    shell_checks(report, info, regions, tsc_hz);
+    shell_checks(report, info, regions, machine, tsc_hz);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);

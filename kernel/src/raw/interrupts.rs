@@ -257,15 +257,15 @@ extern "sysv64" fn exception(frame: &mut Frame) {
     } else if frame.vector == u64::from(SYSCALL) {
         super::user::system_call(frame);
     } else if frame.vector != u64::from(SPURIOUS) {
+        if super::user::copy_faulted(frame) {
+            return;
+        }
         #[cfg(feature = "qemu-test")]
         if expected::resume(frame) {
             return;
         }
         if frame.cs & 3 == 3 {
             super::user::fault(frame);
-        }
-        if super::user::copy_faulted(frame) {
-            return;
         }
         super::crash_from_exception(frame.vector, frame.error, x86::raw::cr2(), frame.rip)
     }

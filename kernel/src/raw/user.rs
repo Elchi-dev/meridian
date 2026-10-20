@@ -1023,7 +1023,7 @@ pub fn copy_without_looking(into: &mut [u8], from: u64) -> usize {
 /// end, which answers that it stopped short; false for any other fault.
 pub fn copy_faulted(frame: &mut Frame) -> bool {
     let faults = &raw const meridian_user_copy_faults as u64;
-    if frame.vector != 14 || frame.cs & 3 != 0 || frame.rip != faults {
+    if frame.vector != 14 || frame.rip != faults {
         return false;
     }
     frame.rip = &raw const meridian_user_copy_ends as u64;

@@ -9,13 +9,18 @@ use alloc::vec::Vec;
 
 use abi::{LOG_BYTES, MESSAGE_BYTES};
 
-use crate::{Ended, Error, Handle, channel, close, log, map, receive, send, spawn, unmap, wait};
+use security::{Integrity, Privileges, Restriction, Token};
+
+use crate::{
+    Ended, Error, Handle, channel, close, log, map, raw, receive, send, spawn, spawn_restricted,
+    token, unmap, wait,
+};
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 19] = [
+const CHECKS: [(&str, Check); 21] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -35,6 +40,8 @@ const CHECKS: [(&str, Check); 19] = [
     ("spawn.fault", child_runs_out_of_stack),
     ("spawn.missing", no_such_program),
     ("wait.other", wait_for_no_process),
+    ("token", own_token),
+    ("spawn.token", child_gets_no_more),
 ];
 
 /// Runs every check and answers how many failed.
@@ -398,6 +405,88 @@ fn no_such_program() -> Outcome {
     expect(
         spawn("exitwith.mexec", Some(Handle(0x7777_0042))) == Err(Error::BadHandle),
         "a handle the parent does not hold cannot be handed over",
+    )
+}
+
+fn own_token() -> Outcome {
+    expect(
+        token() == Some(Token::system()),
+        "hello, started by the kernel, should run as SYSTEM with every privilege",
+    )?;
+    let mut room = [0u8; Token::MAX_SIZE];
+    let size = Token::system().size();
+    let short = abi::Call::Token {
+        room: size as u64 - 1,
+        at: room.as_mut_ptr() as u64,
+    };
+    expect(
+        abi::answer(raw::call(short).0) == Err(Error::TooSmall),
+        "a byte too little room should take nothing",
+    )?;
+    let exact = abi::Call::Token {
+        room: size as u64,
+        at: room.as_mut_ptr() as u64,
+    };
+    expect(
+        abi::answer(raw::call(exact).0) == Ok(size as u64)
+            && Token::read(&room[..size]) == Some(Token::system()),
+        "room for the token and no more should do",
+    )?;
+    let kernels = abi::Call::Token {
+        room: size as u64,
+        at: abi::USER_END,
+    };
+    expect(
+        abi::answer(raw::call(kernels).0) == Err(Error::BadAddress),
+        "the kernel's half is no room of the program's",
+    )
+}
+
+/// What whoami, started with `restriction`, sends as its token.
+fn whoami(restriction: Option<Restriction>) -> Result<Token, &'static str> {
+    let (mine, theirs) = pair()?;
+    let child = match restriction {
+        None => spawn("whoami.mexec", Some(theirs)),
+        Some(r) => spawn_restricted("whoami.mexec", Some(theirs), r),
+    }
+    .map_err(|_| "whoami should start")?;
+    let ended = wait(child);
+    let mut room = [0u8; MESSAGE_BYTES];
+    let got = receive(mine, &mut room);
+    let closed = close(child) == Ok(()) && close(mine) == Ok(());
+    match (ended, got, closed) {
+        (Ok(Ended::Exited(0)), Ok((len, None)), true) => {
+            Token::read(&room[..len]).ok_or("whoami's token should read back")
+        }
+        _ => Err("whoami should send its token and exit"),
+    }
+}
+
+fn child_gets_no_more() -> Outcome {
+    expect(
+        whoami(None) == Ok(Token::system()),
+        "a child should get its parent's token as it is",
+    )?;
+    let low = Restriction {
+        integrity: Integrity::Low,
+        keep: Privileges::SHUTDOWN,
+    };
+    let less = whoami(Some(low))?;
+    expect(
+        less.integrity == Integrity::Low
+            && less.privileges == Privileges::SHUTDOWN
+            && less == Token::system().restricted(low),
+        "a restricted child should run low, with only the privilege it kept",
+    )?;
+    let bad = abi::Call::Spawn {
+        len: 12,
+        at: "whoami.mexec".as_ptr() as u64,
+        carry: 0,
+        restriction: 1,
+    };
+    expect(
+        abi::answer(raw::call(bad).0) == Err(Error::BadArgument),
+        "a word that holds no restriction should start nothing",
     )
 }
 

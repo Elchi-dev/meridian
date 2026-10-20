@@ -30,10 +30,13 @@ var (
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
+	// WhoAmI sends its own security token back, for the test image's
+	// checks of what a program started with less may do.
+	WhoAmI = Part{Package: "program", Target: "x86_64-unknown-none", File: "whoami", Example: "whoami"}
 	// Programs are what every image carries for the kernel to start.
 	Programs = []Part{Hello}
 	// TestPrograms are what test images carry on top.
-	TestPrograms = []Part{ExitWith}
+	TestPrograms = []Part{ExitWith, WhoAmI}
 )
 
 // Build is one build of a part.

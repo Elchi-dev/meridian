@@ -1397,6 +1397,7 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::UNMAP,
         abi::SPAWN,
         abi::WAIT,
+        abi::TOKEN,
         abi::EXIT,
     ];
     report.check(

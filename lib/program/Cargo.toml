@@ -23,6 +23,10 @@ test = true
 name = "exitwith"
 test = true
 
+[[example]]
+name = "whoami"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

@@ -512,6 +512,12 @@ mod tests {
     /// A FAT32 volume as mkfs.fat makes it: 40 MiB in sectors of 512
     /// bytes, one to a cluster, which gives 80628 clusters.
     fn formatted(name: &str) -> Option<Vec<u8>> {
+        formatted_as(name, "1", "40960")
+    }
+
+    /// A FAT32 volume as mkfs.fat makes it, of `kib` KiB in sectors of 512
+    /// bytes, `per_cluster` to a cluster.
+    fn formatted_as(name: &str, per_cluster: &str, kib: &str) -> Option<Vec<u8>> {
         if !require_tool("mkfs.fat") {
             return None;
         }
@@ -519,10 +525,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let made = Command::new("mkfs.fat")
             .args([
-                "-F", "32", "-S", "512", "-s", "1", "-n", "TEST", "-i", "12345678", "-C",
+                "-F",
+                "32",
+                "-S",
+                "512",
+                "-s",
+                per_cluster,
+                "-n",
+                "TEST",
+                "-i",
+                "12345678",
+                "-C",
             ])
             .arg(&path)
-            .arg("40960")
+            .arg(kib)
             .output()
             .unwrap();
         assert!(made.status.success(), "{made:?}");
@@ -915,6 +931,18 @@ mod tests {
         all
     }
 
+    /// Twenty files called F00.TXT to F19.TXT in the root, which fill its
+    /// first cluster after the label and start a second, and where each
+    /// short entry lies.
+    fn twenty(image: &Image) -> (Writer<Reads, Writes>, Vec<Place>) {
+        let mut w = writer(image);
+        let root = w.fat.volume.root;
+        let made = (0..20)
+            .map(|i| w.create(root, &format!("F{i:02}.TXT"), false).unwrap().1)
+            .collect();
+        (w, made)
+    }
+
     #[test]
     fn a_long_name_goes_with_its_entry_wherever_it_lies() {
         let Some(image) = formatted("spread") else {
@@ -988,6 +1016,103 @@ mod tests {
         for (i, p) in all[..=at].iter().enumerate() {
             assert_eq!(bytes[entry_bytes(*p)][0] == 0xe5, i > 2, "entry {i}");
         }
+    }
+
+    #[test]
+    fn a_new_entry_takes_the_first_hole_it_fits() {
+        let Some(image) = formatted("hole") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let (mut w, made) = twenty(&image);
+        let root = w.fat.volume.root;
+        w.remove(root, "F03.TXT").unwrap();
+        let free = fsinfo(&image.borrow()).0;
+        let (_, new) = w.create(root, "NEW.TXT", false).unwrap();
+        assert_eq!(new, made[3], "into F03's place");
+        assert_eq!(
+            fsinfo(&image.borrow()).0,
+            free,
+            "the directory took no cluster"
+        );
+        assert!(sound(&image.borrow(), "hole"));
+    }
+
+    #[test]
+    fn names_past_the_end_of_a_directory_are_not_in_it() {
+        let Some(image) = formatted("past-end") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let (mut w, made) = twenty(&image);
+        let root = w.fat.volume.root;
+        // An entry of zeros ends a directory, whatever comes after it.
+        w.put_entry(made[5], &[0; 32]).unwrap();
+        let (_, again) = w.create(root, "F17.TXT", false).unwrap();
+        assert_eq!(image.borrow()[entry_bytes(again)][..11], *b"F17     TXT");
+        assert_eq!(again, made[5], "where the directory ended");
+    }
+
+    #[test]
+    fn a_write_that_ends_on_a_cluster_takes_none_past_it() {
+        let Some(image) = formatted("exact") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let (mut file, place) = w.create(w.fat.volume.root, "exact.bin", false).unwrap();
+        let free = fsinfo(&image.borrow()).0;
+        w.write_at(&mut file, 0, &pattern(1024, 3)).unwrap();
+        w.save(place, &file).unwrap();
+        assert_eq!(
+            fsinfo(&image.borrow()).0,
+            free - 2,
+            "two clusters of 512 bytes"
+        );
+        let second = w.fat.next(file.first).unwrap().unwrap();
+        assert_eq!(w.fat.next(second), Ok(None));
+        let now = image.borrow().clone();
+        assert!(sound(&now, "exact"));
+        assert_eq!(typed(&now, "exact", "exact.bin"), pattern(1024, 3));
+    }
+
+    #[test]
+    fn clusters_of_several_sectors_are_written_sector_by_sector() {
+        // Two sectors to a cluster takes 65 MiB for FAT32's least clusters.
+        let Some(image) = formatted_as("pairs", "2", "66560") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        assert_eq!(w.fat.volume.sectors_per_cluster, 2);
+        let data = w.fat.volume.first_sector(3).unwrap();
+        let from = Rc::clone(&image);
+        let file_reads = Rc::new(core::cell::Cell::new(0));
+        let counted = Rc::clone(&file_reads);
+        let reads: Reads = Box::new(move |at, into: &mut [u8]| {
+            counted.set(counted.get() + usize::from(at >= data));
+            let start = usize::try_from(at).unwrap() * 512;
+            into.copy_from_slice(&from.borrow()[start..start + into.len()]);
+            true
+        });
+        w.fat = Fat::open(reads).unwrap();
+        let (mut file, place) = w.create(w.fat.volume.root, "pairs.bin", false).unwrap();
+        w.write_at(&mut file, 0, &pattern(2048, 5)).unwrap();
+        assert_eq!(
+            file_reads.get(),
+            0,
+            "a sector written whole is not read first"
+        );
+        w.write_at(&mut file, 700, &pattern(3000, 9)).unwrap();
+        w.write_at(&mut file, 1500, &pattern(100, 1)).unwrap();
+        w.save(place, &file).unwrap();
+        let mut want = pattern(2048, 5);
+        want.resize(3700, 0);
+        want[700..3700].copy_from_slice(&pattern(3000, 9));
+        want[1500..1600].copy_from_slice(&pattern(100, 1));
+        let now = image.borrow().clone();
+        assert!(sound(&now, "pairs"));
+        assert_eq!(typed(&now, "pairs", "pairs.bin"), want);
     }
 
     #[test]

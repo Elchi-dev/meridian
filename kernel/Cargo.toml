@@ -34,6 +34,7 @@ handles = { path = "../lib/handles" }
 heap = { path = "../lib/heap" }
 nvme = { path = "../lib/nvme" }
 paging = { path = "../lib/paging" }
+ps2 = { path = "../lib/ps2" }
 pci = { path = "../lib/pci" }
 sched = { path = "../lib/sched" }
 security = { path = "../lib/security" }

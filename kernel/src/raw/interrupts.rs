@@ -80,6 +80,8 @@ pub const TIMER: u8 = 0x20;
 pub const SPURIOUS: u8 = 0xff;
 /// The interrupt that wakes another core for a job.
 pub const WAKE: u8 = 0x21;
+/// The keyboard's interrupt, as the I/O APIC delivers it.
+pub const KEYBOARD: u8 = 0x22;
 /// The system call gate, the one interrupt ring 3 may raise itself.
 pub const SYSCALL: u8 = 0x2e;
 
@@ -142,9 +144,11 @@ pub fn install() {
     let timer: unsafe extern "C" fn() = timer_stub;
     let spurious: unsafe extern "C" fn() = spurious_stub;
     let wake: unsafe extern "C" fn() = wake_stub;
+    let keyboard: unsafe extern "C" fn() = keyboard_stub;
     let syscall: unsafe extern "C" fn() = syscall_stub;
     t.idt[usize::from(TIMER)] = Gate::interrupt(timer as usize as u64, 0);
     t.idt[usize::from(WAKE)] = Gate::interrupt(wake as usize as u64, 0);
+    t.idt[usize::from(KEYBOARD)] = Gate::interrupt(keyboard as usize as u64, 0);
     t.idt[usize::from(SYSCALL)] = Gate::user_interrupt(syscall as usize as u64);
     t.idt[usize::from(SPURIOUS)] = Gate::interrupt(spurious as usize as u64, 0);
     // SAFETY: the tables live in a static, so they stay where they are,
@@ -234,6 +238,11 @@ extern "sysv64" fn exception(frame: &mut Frame) {
         }
         x86::raw::end_of_interrupt();
         super::thread::tick();
+        return;
+    }
+    if frame.vector == u64::from(KEYBOARD) {
+        super::ps2::interrupt();
+        x86::raw::end_of_interrupt();
         return;
     }
     if frame.vector == u64::from(WAKE) {
@@ -351,6 +360,11 @@ unsafe extern "C" fn syscall_stub() {
 #[unsafe(naked)]
 unsafe extern "C" fn wake_stub() {
     naked_asm!("push 0", "push {v}", "jmp {common}", v = const WAKE, common = sym common)
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn keyboard_stub() {
+    naked_asm!("push 0", "push {v}", "jmp {common}", v = const KEYBOARD, common = sym common)
 }
 
 #[unsafe(naked)]

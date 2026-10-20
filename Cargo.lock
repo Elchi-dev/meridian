@@ -97,6 +97,7 @@ dependencies = [
  "nvme",
  "paging",
  "pci",
+ "ps2",
  "qr",
  "sched",
  "security",

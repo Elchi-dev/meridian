@@ -152,7 +152,8 @@ Loader and UEFI:
 ## M7: Horizon
 
 - [ ] CPU compositor with damage tracking; virtio-gpu
-- [ ] PS/2, xHCI and USB HID
+- [x] PS/2 keyboard through the I/O APIC, keys named by their USB HID usage (`lib/ps2`)
+- [ ] PS/2 mouse, xHCI and USB HID
 - [ ] Taskbar, launcher, overview, workspaces, notification and control centres, widgets
 - [ ] Terminal, Files, Settings, System monitor, Image viewer, Clock and calendar
 - [ ] Declarative UI toolkit

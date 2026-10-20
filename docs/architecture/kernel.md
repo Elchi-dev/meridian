@@ -397,6 +397,17 @@ What exists:
   and OVMF boots from that one; the test image reads the same sectors
   through both and compares them, a block at a time until the queues
   have wrapped twice, and at either end.
+- **The keyboard.** `lib/acpi` finds the I/O APIC and where ISA's
+  interrupts arrive in the MADT; the kernel maps the I/O APIC uncached,
+  holds every input back, sets the i8042 up for a keyboard on its first
+  port with translation to scan code set 1, has the keyboard send keys,
+  and then lets its input through to the first core as the keyboard's
+  vector. Each interrupt takes a byte, `lib/ps2` reads it as a key going
+  down or up, named by the USB HID usage of the key in the same place, and
+  the key waits in a queue for the terminal, which takes it once there is
+  one. The test image wants the keyboard's input let through as its
+  vector, and each key sextant presses, `a`, `shift-z` and `up`, to come
+  as exactly its events.
 - **Partitions and FAT32.** `lib/gpt` reads a GPT header with every check
   UEFI asks for, and its entries once their CRC-32 matches; `lib/fat`
   reads FAT32 volumes, long names checked against their short entry,

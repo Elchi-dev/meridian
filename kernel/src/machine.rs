@@ -17,6 +17,10 @@ pub struct Machine {
     pub hpet: Option<u64>,
     /// Where the configuration space of PCI segment 0 lies.
     pub ecam: Option<acpi::Ecam>,
+    /// The first I/O APIC, which takes the interrupts of devices.
+    pub io_apic: Option<acpi::IoApic>,
+    /// Where the keyboard's interrupt, ISA's first, arrives at it.
+    pub keyboard: Option<acpi::Route>,
 }
 
 /// A clock the time stamp counter is measured against: how often it ticks
@@ -56,9 +60,19 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
     let Ok(xsdt) = acpi::xsdt_address(memory, rsdp) else {
         return Machine::default();
     };
-    let cores = madt(memory, rsdp)
+    let madt = madt(memory, rsdp);
+    let cores = madt
         .and_then(|t| acpi::processors(t).ok())
         .map(|p| p.usable);
+    let io_apic = madt.and_then(|t| {
+        let mut first = None;
+        acpi::each_io_apic(t, |a| {
+            first.get_or_insert(a);
+        })
+        .ok()?;
+        first
+    });
+    let keyboard = madt.and_then(|t| acpi::isa_route(t, 1).ok());
     let pm_timer = acpi::find(memory, xsdt, b"FACP")
         .and_then(|at| acpi::table(memory, at, b"FACP"))
         .ok()
@@ -76,6 +90,8 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
         pm_timer,
         hpet,
         ecam,
+        io_apic,
+        keyboard,
     }
 }
 
@@ -194,6 +210,46 @@ mod tests {
         Ram { base, bytes }
     }
 
+    /// Where ISA puts its first interrupt when no override moves it.
+    const ISA_FIRST: acpi::Route = acpi::Route {
+        interrupt: 1,
+        active_low: false,
+        level: false,
+    };
+
+    #[test]
+    fn the_io_apic_and_the_keyboards_line_come_from_the_madt() {
+        let mut body = vec![0, 0, 0xe0, 0xfe, 1, 0, 0, 0];
+        body.extend([0, 8, 0, 0, 1, 0, 0, 0]);
+        body.extend([1, 12, 4, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0]);
+        body.extend([1, 12, 5, 0, 0, 0x10, 0xc0, 0xfe, 24, 0, 0, 0]);
+        body.extend([2, 10, 0, 1, 17, 0, 0, 0, 0x0f, 0]);
+        let ram = tables(&[sdt(*b"APIC", &body)]);
+        let m = read(&ram, 0x1000);
+        assert_eq!(
+            m.io_apic,
+            Some(acpi::IoApic {
+                id: 4,
+                address: 0xfec0_0000,
+                first: 0
+            }),
+            "the first of two"
+        );
+        assert_eq!(
+            m.keyboard,
+            Some(acpi::Route {
+                interrupt: 17,
+                active_low: true,
+                level: true
+            }),
+            "moved by an override"
+        );
+        let mut broken = vec![0, 0, 0xe0, 0xfe, 1, 0, 0, 0];
+        broken.extend([1, 8, 4, 0, 0, 0, 0xc0, 0xfe]);
+        let ram = tables(&[sdt(*b"APIC", &broken)]);
+        assert_eq!(read(&ram, 0x1000).io_apic, None, "an entry cut short");
+    }
+
     fn madt(cores: u8) -> Vec<u8> {
         let mut body = vec![0, 0, 0xe0, 0xfe, 1, 0, 0, 0];
         for id in 0..cores {
@@ -219,6 +275,8 @@ mod tests {
                 pm_timer: Some((0x608, 32)),
                 hpet: None,
                 ecam: None,
+                io_apic: None,
+                keyboard: Some(ISA_FIRST),
             }
         );
     }
@@ -233,6 +291,8 @@ mod tests {
                 pm_timer: None,
                 hpet: None,
                 ecam: None,
+                io_apic: None,
+                keyboard: Some(ISA_FIRST),
             }
         );
         let ram = tables(&[fadt(0x408, 0)]);
@@ -243,6 +303,8 @@ mod tests {
                 pm_timer: Some((0x408, 24)),
                 hpet: None,
                 ecam: None,
+                io_apic: None,
+                keyboard: None,
             }
         );
         let ram = tables(&[fadt(0, 0)]);

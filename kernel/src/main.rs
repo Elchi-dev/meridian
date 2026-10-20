@@ -49,6 +49,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Serial) -> ! {
     qemu_test::before_cores();
     let memory = raw::DirectMap(regions);
     let others = raw::smp::start_others(regions, machine::madt(&memory, info.rsdp), tsc_hz);
+    start_keyboard(&machine, serial);
     let _ = kernel::running(serial, machine.cores, others);
     let screen = raw::screen(&info.framebuffer);
     #[cfg(feature = "qemu-test")]
@@ -116,6 +117,39 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
             mount_boot(serial, &name, boot, read);
         }
     }
+}
+
+/// Sets the PS/2 keyboard up and has the I/O APIC send its interrupt to
+/// this processor, the first, once the keyboard answered. The APIC has to
+/// be on, as it is once the other cores were started.
+fn start_keyboard(machine: &Machine, serial: &mut Serial) {
+    let (Some(io_apic), Some(line)) = (machine.io_apic, machine.keyboard) else {
+        return;
+    };
+    let (Some(inputs), Some(apic)) = (raw::ioapic::start(io_apic.address), x86::raw::apic_id())
+    else {
+        return;
+    };
+    let Some(input) = kernel::input_of(&io_apic, inputs, &line) else {
+        return;
+    };
+    if !raw::ps2::start() {
+        let _ = writeln!(serial, "kernel: no PS/2 keyboard answered");
+        return;
+    }
+    let destination = u8::try_from(apic).unwrap_or(0);
+    let entry = x86::ioapic::entry(
+        raw::interrupts::KEYBOARD,
+        destination,
+        line.active_low,
+        line.level,
+        false,
+    );
+    raw::ioapic::route(input, entry);
+    let _ = writeln!(
+        serial,
+        "kernel: the PS/2 keyboard interrupts on input {input} of the I/O APIC"
+    );
 }
 
 /// Hangs the partition `boot` the loader came from at /System/Boot, read

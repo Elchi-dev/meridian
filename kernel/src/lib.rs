@@ -403,6 +403,19 @@ pub const AHCI_REGISTERS: u64 = APIC_PAGE + (2 << 20);
 /// doorbells of the queues Meridian makes.
 pub const NVME_REGISTERS: u64 = APIC_PAGE + (4 << 20);
 
+/// The input of the I/O APIC `io_apic`, which has `inputs` of them, that
+/// the line `line` arrives at; none when it arrives at another one.
+#[must_use]
+pub fn input_of(io_apic: &acpi::IoApic, inputs: u32, line: &acpi::Route) -> Option<u32> {
+    line.interrupt
+        .checked_sub(io_apic.first)
+        .filter(|&input| input < inputs)
+}
+
+/// Where the first I/O APIC's registers are mapped, uncached: the page
+/// 6 MiB into the slot for devices' registers.
+pub const IO_APIC_PAGE: u64 = APIC_PAGE + (6 << 20);
+
 /// Where the configuration space of PCI's segment 0 is mapped, uncached,
 /// page by page as the kernel reads it: in the slot for devices'
 /// registers, 256 MiB after its start, with room for the 256 MiB of 256
@@ -754,6 +767,8 @@ mod tests {
             pm_timer: Some((0x408, 24)),
             hpet: None,
             ecam: None,
+            io_apic: None,
+            keyboard: None,
         };
         let measured = |hz, against| Some(machine::Measured { hz, against });
         describe(
@@ -804,6 +819,8 @@ mod tests {
             pm_timer: None,
             hpet: None,
             ecam: None,
+            io_apic: None,
+            keyboard: None,
         };
         assert!(describe(&mut Broken, &known, None).is_err());
     }
@@ -906,6 +923,46 @@ mod tests {
             "AHCI port 2: nothing\n"
         );
         assert!(drive_line(&mut Full, 0, ahci::Attached::Optical, None).is_err());
+    }
+
+    #[test]
+    fn a_line_arrives_at_the_input_of_its_io_apic() {
+        let first = acpi::IoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            first: 0,
+        };
+        let second = acpi::IoApic {
+            id: 1,
+            address: 0xfec0_1000,
+            first: 24,
+        };
+        let line = |interrupt| acpi::Route {
+            interrupt,
+            active_low: false,
+            level: false,
+        };
+        assert_eq!(
+            input_of(&first, 24, &line(1)),
+            Some(1),
+            "the keyboard on q35"
+        );
+        assert_eq!(input_of(&first, 24, &line(23)), Some(23), "its last input");
+        assert_eq!(
+            input_of(&first, 24, &line(24)),
+            None,
+            "the next I/O APIC's first"
+        );
+        assert_eq!(input_of(&second, 24, &line(25)), Some(1));
+        assert_eq!(input_of(&second, 24, &line(1)), None, "below its first");
+        assert_eq!(input_of(&second, 24, &line(47)), Some(23));
+        assert_eq!(input_of(&second, 24, &line(48)), None);
+    }
+
+    #[test]
+    fn the_io_apics_page_lies_past_nvmes() {
+        assert_eq!(IO_APIC_PAGE >> 39 & 0x1ff, 506);
+        const { assert!(IO_APIC_PAGE >= NVME_REGISTERS + 0x2000 && IO_APIC_PAGE + 0x1000 <= PCI_CONFIG) };
     }
 
     #[test]

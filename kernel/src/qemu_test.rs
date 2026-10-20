@@ -148,7 +148,7 @@ pub fn run(
     }
 
     device_checks(&mut report, info, regions);
-    timer_checks(&mut report, tsc_hz, info, regions);
+    timer_checks(&mut report, tsc_hz, info, regions, machine);
     exception_checks(&mut report);
     protection_checks(&mut report);
 
@@ -700,6 +700,96 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     );
 }
 
+/// The PS/2 keyboard, through the I/O APIC: the keyboard's input is let
+/// through to this processor as the keyboard's vector, edge triggered and
+/// active high as q35 has it, and each key sextant presses comes as its
+/// events, a shift around the key it shifts and an arrow after its prefix.
+/// The interrupts it comes by need interrupts on, as they are while the
+/// timer runs.
+fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
+    use ps2::{Event, Key};
+    let routed = machine
+        .keyboard
+        .zip(machine.io_apic)
+        .is_some_and(|(line, io)| {
+            let entry = raw::ioapic::entry(line.interrupt - io.first);
+            entry & 0xff == u64::from(raw::interrupts::KEYBOARD)
+                && entry & 1 << 16 == 0
+                && entry & (1 << 13 | 1 << 15) == 0
+        });
+    report.check(
+        "kernel.keyboard.routed",
+        routed,
+        "the keyboard's input of the I/O APIC should be let through as its vector, edge triggered and active high",
+    );
+    let held_back = machine
+        .keyboard
+        .zip(machine.io_apic)
+        .is_some_and(|(line, io)| {
+            let keyboard = line.interrupt - io.first;
+            (0..24)
+                .filter(|&input| input != keyboard)
+                .all(|input| raw::ioapic::entry(input) & 1 << 16 != 0)
+        });
+    report.check(
+        "kernel.ioapic.held_back",
+        held_back,
+        "every other input of the I/O APIC should be held back, as nothing drives it yet",
+    );
+    let wanted = ps2::config::FIRST_INTERRUPT | ps2::config::TRANSLATION;
+    let unwanted = ps2::config::FIRST_CLOCK_OFF | ps2::config::SECOND_INTERRUPT;
+    let configured = x86::raw::without_interrupts(raw::ps2::configuration)
+        .is_some_and(|c| c & wanted == wanted && c & unwanted == 0);
+    report.check(
+        "kernel.keyboard.configured",
+        configured,
+        "the controller should give the keyboard its interrupt, its clock and translation, and the second port no interrupt",
+    );
+    while raw::ps2::next().is_some() {}
+    let down = |key| Event { key, pressed: true };
+    let up = |key| Event {
+        key,
+        pressed: false,
+    };
+    let presses = [
+        ("a", alloc::vec![down(Key::A), up(Key::A)]),
+        (
+            "shift-z",
+            alloc::vec![
+                down(Key::LEFT_SHIFT),
+                down(Key::Z),
+                up(Key::Z),
+                up(Key::LEFT_SHIFT)
+            ],
+        ),
+        ("up", alloc::vec![down(Key::UP), up(Key::UP)]),
+        ("f12", alloc::vec![down(Key::F12), up(Key::F12)]),
+        ("kp_enter", alloc::vec![down(Key(0x58)), up(Key(0x58))]),
+    ];
+    let patience = tsc_hz.unwrap_or(1_000_000_000);
+    let all = presses.iter().all(|(press, wanted)| {
+        let _ = writeln!(report.out, "PRESS {press}");
+        let mut got = alloc::vec::Vec::new();
+        let start = x86::raw::tsc();
+        while got.len() < wanted.len() && x86::raw::tsc() - start < patience {
+            match raw::ps2::next() {
+                Some(event) => got.push(event),
+                None => core::hint::spin_loop(),
+            }
+        }
+        raw::thread::sleep(2);
+        while let Some(event) = raw::ps2::next() {
+            got.push(event);
+        }
+        got == *wanted
+    });
+    report.check(
+        "kernel.keyboard.keys",
+        all,
+        "each key sextant presses should come as the keyboard's events, in order and nothing else",
+    );
+}
+
 /// The AHCI port of the disk and the EFI system partition on it.
 fn esp_of_disk() -> Option<(usize, gpt::Partition)> {
     let drives = raw::ahci::drives();
@@ -797,9 +887,9 @@ fn protection_checks<W: Write>(report: &mut Report<'_, W>) {
 /// The kernel's own tables are loaded, and each exception a check asks for
 /// reaches the handler with the right vector, error code and address.
 fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
-    use crate::raw::interrupts::{SPURIOUS, SYSCALL, TIMER, WAKE};
+    use crate::raw::interrupts::{KEYBOARD, SPURIOUS, SYSCALL, TIMER, WAKE};
     x86::qemu_test::tables(
-        &[TIMER, WAKE, SYSCALL, SPURIOUS],
+        &[TIMER, WAKE, KEYBOARD, SYSCALL, SPURIOUS],
         raw::interrupts::CORES,
         &mut |name, ok, why| {
             report.check(name, ok, why);
@@ -1097,6 +1187,7 @@ fn timer_checks<W: Write>(
     tsc_hz: Option<u64>,
     info: &BootInfo,
     regions: &[MemoryRegion],
+    machine: &Machine,
 ) {
     use crate::raw::interrupts::ticks;
     use crate::raw::timer;
@@ -1150,6 +1241,7 @@ fn timer_checks<W: Write>(
     given_back_checks(report);
     ipc_checks(report);
     program_checks(report, info, regions);
+    keyboard_checks(report, machine, tsc_hz);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);

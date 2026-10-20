@@ -57,6 +57,61 @@ pub fn keyboard_config(old: u8) -> u8 {
     (old | on) & !off
 }
 
+/// The keyboard's command to send keys, and what it answers commands with.
+pub const ENABLE_SCANNING: u8 = 0xf4;
+pub const ACKNOWLEDGE: u8 = 0xfa;
+
+/// One step of setting the controller and its keyboard up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Send this command to the controller.
+    Command(u8),
+    /// Send this byte to the keyboard through the data port.
+    Data(u8),
+    /// Take every byte that waits, as many as a buffer holds.
+    Flush,
+    /// Take the next byte, the controller's configuration.
+    ReadConfig,
+    /// Send [`keyboard_config`] of what was read, with the keyboard's
+    /// interrupt held back while `quiet`.
+    WriteConfig { quiet: bool },
+    /// Take the next byte, which has to be this one.
+    Expect(u8),
+}
+
+/// How the controller and its keyboard are set up: both ports quiet and
+/// what waits taken, the configuration read and written back with the
+/// keyboard's interrupt still held, the controller's self test, the
+/// configuration again in full, since some controllers forget it in the
+/// test, and then the first port on and the keyboard sending keys.
+pub const SETUP: [Step; 14] = [
+    Step::Command(command::DISABLE_FIRST),
+    Step::Command(command::DISABLE_SECOND),
+    Step::Flush,
+    Step::Command(command::READ_CONFIG),
+    Step::ReadConfig,
+    Step::Command(command::WRITE_CONFIG),
+    Step::WriteConfig { quiet: true },
+    Step::Command(command::SELF_TEST),
+    Step::Expect(TEST_PASSED),
+    Step::Command(command::WRITE_CONFIG),
+    Step::WriteConfig { quiet: false },
+    Step::Command(command::ENABLE_FIRST),
+    Step::Data(ENABLE_SCANNING),
+    Step::Expect(ACKNOWLEDGE),
+];
+
+/// The configuration byte [`Step::WriteConfig`] sends, from `old`.
+#[must_use]
+pub fn config_to_write(old: u8, quiet: bool) -> u8 {
+    let wanted = keyboard_config(old);
+    if quiet {
+        wanted & !config::FIRST_INTERRUPT
+    } else {
+        wanted
+    }
+}
+
 /// A key, by its USB HID usage on the keyboard page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key(pub u16);
@@ -84,7 +139,7 @@ pub struct Event {
 /// Events waiting to be taken, the oldest first, at most `N`; one more is
 /// dropped, as a keyboard drops what its own buffer has no room for.
 pub struct Keys<const N: usize> {
-    events: [Event; N],
+    events: [Option<Event>; N],
     first: usize,
     len: usize,
 }
@@ -99,10 +154,7 @@ impl<const N: usize> Keys<N> {
     #[must_use]
     pub const fn new() -> Self {
         Keys {
-            events: [Event {
-                key: Key(0),
-                pressed: false,
-            }; N],
+            events: [None; N],
             first: 0,
             len: 0,
         }
@@ -113,17 +165,14 @@ impl<const N: usize> Keys<N> {
         if self.len == N {
             return false;
         }
-        self.events[(self.first + self.len) % N] = event;
+        self.events[(self.first + self.len) % N] = Some(event);
         self.len += 1;
         true
     }
 
     /// Takes the oldest event.
     pub fn pop(&mut self) -> Option<Event> {
-        if self.len == 0 {
-            return None;
-        }
-        let event = self.events[self.first];
+        let event = self.events[self.first].take()?;
         self.first = (self.first + 1) % N;
         self.len -= 1;
         Some(event)
@@ -188,9 +237,9 @@ pub struct Decoder {
     /// 0xe0 came, so the next code is an extended one.
     extended: bool,
     /// How many bytes of Pause's sequence after its 0xe1 are still to come,
-    /// and whether it is the half that presses it.
+    /// and the first of them, 0x1d in the half that presses it.
     pause: u8,
-    pause_down: bool,
+    pause_first: u8,
 }
 
 impl Decoder {
@@ -199,7 +248,7 @@ impl Decoder {
         Decoder {
             extended: false,
             pause: 0,
-            pause_down: false,
+            pause_first: 0,
         }
     }
 
@@ -210,12 +259,12 @@ impl Decoder {
         if self.pause > 0 {
             self.pause -= 1;
             if self.pause == 1 {
-                self.pause_down = byte == 0x1d;
+                self.pause_first = byte;
                 return None;
             }
             return Some(Event {
                 key: Key::PAUSE,
-                pressed: self.pause_down,
+                pressed: self.pause_first == 0x1d,
             });
         }
         match byte {
@@ -517,6 +566,7 @@ mod tests {
         assert!(keys.is_empty() && keys.pop().is_none());
         assert!(keys.push(down(Key::A)) && keys.push(up(Key::A)));
         assert_eq!(keys.len(), 2);
+        assert!(!keys.is_empty());
         assert_eq!(keys.pop(), Some(down(Key::A)));
         assert!(keys.push(down(Key::Z)) && keys.push(up(Key::Z)));
         assert!(!keys.push(down(Key::UP)), "a fourth finds no room");
@@ -528,6 +578,48 @@ mod tests {
         );
         assert!(keys.push(down(Key::ESCAPE)) && keys.pop() == Some(down(Key::ESCAPE)));
         assert!(Keys::<1>::default().is_empty());
+    }
+
+    #[test]
+    fn the_setup_holds_the_keyboard_back_until_the_test_passed() {
+        let quiet = SETUP
+            .iter()
+            .position(|s| *s == Step::WriteConfig { quiet: true });
+        let test = SETUP
+            .iter()
+            .position(|s| *s == Step::Command(command::SELF_TEST));
+        let full = SETUP
+            .iter()
+            .position(|s| *s == Step::WriteConfig { quiet: false });
+        let scanning = SETUP.iter().position(|s| *s == Step::Data(ENABLE_SCANNING));
+        assert!(quiet < test && test < full && full < scanning, "{SETUP:?}");
+        assert_eq!(
+            SETUP[..2],
+            [
+                Step::Command(command::DISABLE_FIRST),
+                Step::Command(command::DISABLE_SECOND)
+            ]
+        );
+        assert_eq!(SETUP[test.unwrap() + 1], Step::Expect(TEST_PASSED));
+        assert_eq!(SETUP.last(), Some(&Step::Expect(ACKNOWLEDGE)));
+        assert_eq!([ENABLE_SCANNING, ACKNOWLEDGE], [0xf4, 0xfa]);
+        for (i, step) in SETUP.iter().enumerate() {
+            if matches!(step, Step::WriteConfig { .. }) {
+                assert_eq!(
+                    SETUP[i - 1],
+                    Step::Command(command::WRITE_CONFIG),
+                    "the byte after its command"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_configuration_written_holds_the_interrupt_back_while_quiet() {
+        assert_eq!(config_to_write(0, false), 0b0110_0001);
+        assert_eq!(config_to_write(0, true), 0b0110_0000);
+        assert_eq!(config_to_write(0xff, true), 0b1110_1100);
+        assert_eq!(config_to_write(0xff, false), 0b1110_1101);
     }
 
     #[test]

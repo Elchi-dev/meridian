@@ -382,6 +382,21 @@ image reads boot.meri through the tree as AHCI and FAT32 read it
 straight, from inside the kernel and from hello, and checks the files
 and paths that must not open.
 
+## init (M5)
+
+An image that carries `init.mexec` has the kernel start init and nothing
+else. init reads `/System/Boot/meridian/services.meri`, where each
+labelled `service` block names its `program`, by its name among the
+loader's programs or by its path; every image lists the shell. Each
+service runs in a thread of init's own that starts it, waits for it to
+end, logs how it ended and starts it again, waiting first when it ended
+within a second of starting: a tick, then twice as long each time up to
+128. Without the list, as on a CD, the shell is the one service. Handed a
+channel end, init ends every service once the other end closes, and then
+itself. The test image does that with a list of whoami, which ends at
+once there, and the shell: it wants whoami started five to eleven times
+in 60 ticks, and every frame back once init ended.
+
 ## The console (M5)
 
 Until Horizon draws the screen, the kernel has a text console for the

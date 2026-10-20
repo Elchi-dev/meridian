@@ -723,6 +723,16 @@ fn write_place_checks<W: Write>(
         each && alone && edge && many,
         "each sector AHCI writes should land where it was meant to, one overwritten alone, the partition's last too, and sixteen frames at once",
     );
+    // The W bit of the command header: set where data goes to the disk.
+    let towards =
+        |write: bool| raw::ahci::last_header(port).is_some_and(|h| h[0] & 0x40 != 0) == write;
+    let out = write_sectors(port, at + 5, &one).is_ok() && towards(true);
+    let back = read_sectors(port, at + 5, &mut sector).is_ok() && towards(false) && sector == one;
+    report.check(
+        "kernel.disk.write_direction",
+        out && back,
+        "the command header should tell the controller that a write's data goes to the disk and a read's comes from it",
+    );
 }
 
 /// What no driver writes: nothing, part of a sector, more than a frame at

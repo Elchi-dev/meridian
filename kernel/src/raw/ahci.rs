@@ -142,6 +142,26 @@ fn start_port(n: usize, frame: u64) -> bool {
     ready
 }
 
+/// The command header the last command on port `n` went with, which told
+/// the controller among others which way its data went. QEMU goes by the
+/// command instead, real controllers by the header. Only the test image
+/// asks.
+#[cfg(feature = "qemu-test")]
+pub fn last_header(n: usize) -> Option<[u8; 32]> {
+    let frame = DRIVES.lock().get(n)?.as_ref()?.frame;
+    let mut header = [0u8; 32];
+    // SAFETY: the drive's frame is its own, in the direct map, and its
+    // command list starts it; reading it changes nothing.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (HHDM_BASE + frame + COMMAND_LIST) as *const u8,
+            header.as_mut_ptr(),
+            header.len(),
+        );
+    }
+    Some(header)
+}
+
 /// Runs `fis` on `drive`, moving `bytes` between the device and the frame
 /// at physical `data`, and waits for its answer.
 fn issue(

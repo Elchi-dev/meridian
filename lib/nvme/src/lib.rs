@@ -114,6 +114,7 @@ pub mod opcode {
     pub const CREATE_SUBMISSION_QUEUE: u8 = 0x01;
     pub const CREATE_COMPLETION_QUEUE: u8 = 0x05;
     pub const IDENTIFY: u8 = 0x06;
+    pub const WRITE: u8 = 0x01;
     pub const READ: u8 = 0x02;
 }
 
@@ -187,9 +188,27 @@ pub fn create_submission_queue(
 /// page at `page`; none for no blocks or more than a 16-bit count holds.
 #[must_use]
 pub fn read(id: u16, namespace: u32, lba: u64, blocks: u32, page: u64) -> Option<Command> {
+    transfer(opcode::READ, id, namespace, lba, blocks, page)
+}
+
+/// Writes `blocks` blocks from the page at `page` to namespace
+/// `namespace` from `lba` on; none as for [`read`].
+#[must_use]
+pub fn write(id: u16, namespace: u32, lba: u64, blocks: u32, page: u64) -> Option<Command> {
+    transfer(opcode::WRITE, id, namespace, lba, blocks, page)
+}
+
+fn transfer(
+    opcode: u8,
+    id: u16,
+    namespace: u32,
+    lba: u64,
+    blocks: u32,
+    page: u64,
+) -> Option<Command> {
     let count = blocks.checked_sub(1).filter(|&c| c <= 0xffff)?;
     Some(command(
-        opcode::READ,
+        opcode,
         id,
         namespace,
         page,
@@ -564,6 +583,27 @@ mod tests {
         assert_eq!(read(5, 1, 0, 0, 0), None, "no blocks");
         assert_eq!(read(5, 1, 0, 65_536, 0).map(|c| word(&c, 48)), Some(0xffff));
         assert_eq!(read(5, 1, 0, 65_537, 0), None, "more than a count holds");
+    }
+
+    #[test]
+    fn a_write_is_a_read_the_other_way() {
+        let w = write(6, 1, 0x1_2345_6789, 8, 0x9000).unwrap();
+        let r = read(6, 1, 0x1_2345_6789, 8, 0x9000).unwrap();
+        assert_eq!(w[0], opcode::WRITE);
+        assert_eq!(w[1..], r[1..], "the same blocks from the same page");
+        assert_eq!(write(6, 1, 0, 0, 0), None, "no blocks");
+        assert_eq!(write(6, 1, 0, 65_537, 0), None);
+        assert_eq!((opcode::WRITE, opcode::READ), (1, 2));
+        let one = write(0x1234, 2, 7, 1, 0x00ab_c000).unwrap();
+        assert_eq!(u16::from_le_bytes([one[2], one[3]]), 0x1234, "its id");
+        assert_eq!(word(&one, 4), 2, "its namespace");
+        assert_eq!(
+            u64::from_le_bytes(one[24..32].try_into().unwrap()),
+            0x00ab_c000,
+            "the page it comes from"
+        );
+        assert_eq!((word(&one, 40), word(&one, 44), word(&one, 48)), (7, 0, 0));
+        assert!(one[52..].iter().all(|&b| b == 0), "nothing else asked for");
     }
 
     #[test]

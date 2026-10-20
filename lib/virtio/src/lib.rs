@@ -179,8 +179,9 @@ pub fn descriptor(address: u64, length: u32, flags: u16, next: u16) -> [u8; 16] 
 
 /// Block requests and their answers.
 pub mod block {
-    /// A read.
+    /// A read and a write.
     pub const IN: u32 = 0;
+    pub const OUT: u32 = 1;
     /// What the status byte says.
     pub const OK: u8 = 0;
     pub const IO_ERROR: u8 = 1;
@@ -192,8 +193,18 @@ pub mod block {
 /// The header of a request to read from `sector` on.
 #[must_use]
 pub fn read_header(sector: u64) -> [u8; 16] {
+    header(block::IN, sector)
+}
+
+/// The header of a request to write from `sector` on.
+#[must_use]
+pub fn write_header(sector: u64) -> [u8; 16] {
+    header(block::OUT, sector)
+}
+
+fn header(kind: u32, sector: u64) -> [u8; 16] {
     let mut h = [0u8; 16];
-    h[..4].copy_from_slice(&block::IN.to_le_bytes());
+    h[..4].copy_from_slice(&kind.to_le_bytes());
     h[8..].copy_from_slice(&sector.to_le_bytes());
     h
 }
@@ -206,6 +217,17 @@ pub fn read_chain(header: u64, data: u64, length: u32, status: u64) -> [[u8; 16]
     [
         descriptor(header, 16, NEXT, 1),
         descriptor(data, length, NEXT | WRITE, 2),
+        descriptor(status, 1, WRITE, 0),
+    ]
+}
+
+/// The three descriptors of a write, as [`read_chain`] lays out a read:
+/// the device reads the data instead of writing it.
+#[must_use]
+pub fn write_chain(header: u64, data: u64, length: u32, status: u64) -> [[u8; 16]; 3] {
+    [
+        descriptor(header, 16, NEXT, 1),
+        descriptor(data, length, NEXT, 2),
         descriptor(status, 1, WRITE, 0),
     ]
 }
@@ -442,6 +464,22 @@ mod tests {
             [(0x5000, 16, false), (0x6000, 512, true), (0x5010, 1, true)],
             "the device reads the header and writes the data and the status"
         );
+    }
+
+    #[test]
+    fn a_write_hands_the_device_its_data_to_read() {
+        assert_eq!(write_header(9)[..4], 1u32.to_le_bytes());
+        assert_eq!(write_header(9)[4..], read_header(9)[4..]);
+        let chain = write_chain(0x1000, 0x2000, 1024, 0x1010);
+        let flags: Vec<u16> = chain.iter().map(|d| decoded(d).2).collect();
+        assert_eq!(
+            flags,
+            [NEXT, NEXT, WRITE],
+            "only the status for the device to write"
+        );
+        assert_eq!(decoded(&chain[1]), (0x2000, 1024, NEXT, 2));
+        assert_eq!(chain[0], read_chain(0x1000, 0x2000, 1024, 0x1010)[0]);
+        assert_eq!(block::OUT, 1);
     }
 
     #[test]

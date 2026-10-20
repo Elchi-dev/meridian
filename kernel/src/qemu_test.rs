@@ -1114,9 +1114,9 @@ fn protection_checks<W: Write>(report: &mut Report<'_, W>) {
 /// The kernel's own tables are loaded, and each exception a check asks for
 /// reaches the handler with the right vector, error code and address.
 fn exception_checks<W: Write>(report: &mut Report<'_, W>) {
-    use crate::raw::interrupts::{KEYBOARD, SPURIOUS, SYSCALL, TIMER, WAKE};
+    use crate::raw::interrupts::{KEYBOARD, SHOOTDOWN, SPURIOUS, SYSCALL, TIMER, WAKE};
     x86::qemu_test::tables(
-        &[TIMER, WAKE, KEYBOARD, SYSCALL, SPURIOUS],
+        &[TIMER, WAKE, KEYBOARD, SHOOTDOWN, SYSCALL, SPURIOUS],
         raw::interrupts::CORES,
         &mut |name, ok, why| {
             report.check(name, ok, why);
@@ -2291,6 +2291,20 @@ fn program_thread_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.threads.all",
         all.is_some() && seen::ended(b"user: the program ended with 9\n") && back,
         "an exit should end a thread that never calls the kernel too, so the address space comes back whole",
+    );
+    seen::forget();
+    let stale = raw::user::start(0, &probe::STALE_THREADS, 0).ok();
+    let ended = (0..300).any(|_| {
+        raw::thread::sleep(1);
+        stale.is_some_and(|s| !raw::thread::alive(s))
+    });
+    report.check(
+        "kernel.threads.shootdown",
+        ended
+            && !seen::ended(b"user: the program ended with 55\n")
+            && !seen::ended(b"user: the program ended with 77\n")
+            && seen::fault_address() == kernel::program::HEAP_START,
+        "a page one thread gives back should be gone at once for its other thread, which reads it on another core",
     );
 }
 

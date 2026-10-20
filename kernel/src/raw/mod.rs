@@ -18,6 +18,7 @@ pub mod serial;
 pub mod smp;
 pub mod thread;
 pub mod timer;
+pub mod tlb;
 pub mod user;
 pub mod vfs;
 

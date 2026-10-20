@@ -344,6 +344,24 @@ impl<const CORES: usize> Table<CORES> {
         self.cores[core].current
     }
 
+    /// The cores other than `except` whose running thread is in the
+    /// address space at `root`, a bit each: those that may still remember
+    /// where its pages led. None for the kernel's, 0, which every thread
+    /// shares.
+    #[must_use]
+    pub fn cores_in(&self, root: u64, except: usize) -> u64 {
+        if root == 0 {
+            return 0;
+        }
+        (0..CORES)
+            .filter(|&core| core != except)
+            .filter(|&core| {
+                let current = self.cores[core].current;
+                current != NOBODY && self.all[current].root == root
+            })
+            .fold(0, |bits, core| bits | 1 << core)
+    }
+
     /// The level 4 table of thread `slot`'s address space, or 0 for the
     /// kernel's.
     #[must_use]
@@ -437,6 +455,41 @@ mod tests {
             Some(Switch { from: slot, to: 2 })
         );
         assert_eq!(t.current(1), 2, "back in its idle thread");
+    }
+
+    #[test]
+    fn the_cores_running_an_address_space_are_known() {
+        let mut t = two();
+        let root = 0x5000;
+        let a = t.free().unwrap();
+        t.prepare(a, 0, NORMAL, root, 0x1_0000);
+        t.queue(a);
+        let b = t.free().unwrap();
+        t.prepare(b, 1, NORMAL, root, 0x2_0000);
+        t.queue(b);
+        assert_eq!(t.cores_in(root, 2), 0, "none runs there yet");
+        assert_eq!(
+            t.give_way(0, State::Ready, 0),
+            Some(Switch { from: 0, to: a })
+        );
+        t.arrived(0);
+        assert_eq!(t.cores_in(root, 1), 0b01);
+        assert_eq!(t.cores_in(root, 0), 0, "not the core that asks");
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            Some(Switch { from: 2, to: b })
+        );
+        t.arrived(1);
+        assert_eq!(t.cores_in(root, 2), 0b11);
+        assert_eq!(t.cores_in(root, 0), 0b10);
+        assert_eq!(t.cores_in(0x6000, 2), 0, "another address space");
+        assert_eq!(
+            t.give_way(1, State::Ending, 0),
+            Some(Switch { from: b, to: 2 })
+        );
+        t.arrived(1);
+        assert_eq!(t.cores_in(root, 2), 0b01, "back in its idle thread");
+        assert_eq!(t.cores_in(0, 2), 0, "the kernel's is everyone's");
     }
 
     #[test]

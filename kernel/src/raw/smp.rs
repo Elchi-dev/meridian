@@ -204,14 +204,19 @@ fn work(mailbox: &Mailbox) -> ! {
     }
 }
 
+/// Sends core `number` the interrupt `vector`.
+pub fn interrupt(number: usize, vector: u8) {
+    if let Some(mailbox) = MAILBOXES.get(number) {
+        // SAFETY: every core runs on the kernel's IDT, which has a handler
+        // for every vector the kernel sends: WAKE and SHOOTDOWN.
+        unsafe { x86::raw::send_interrupt(mailbox.apic_id.load(Ordering::Acquire), vector) };
+    }
+}
+
 /// Wakes core `number` with an interrupt, so it looks for threads that
 /// became ready there.
 pub fn wake(number: usize) {
-    if let Some(mailbox) = MAILBOXES.get(number) {
-        // SAFETY: every core runs on the kernel's IDT, which has the
-        // handler for WAKE.
-        unsafe { x86::raw::send_interrupt(mailbox.apic_id.load(Ordering::Acquire), WAKE) };
-    }
+    interrupt(number, WAKE);
 }
 
 /// The numbers of the other cores that came into the kernel.

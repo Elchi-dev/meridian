@@ -380,26 +380,31 @@ pub fn map_pages(root: u64, at: u64, pages: u64, flags: Flags) -> Result<(), ()>
 }
 
 /// Takes the `pages` pages from `at` on out of the address space at
-/// `root`, which runs on this processor, and gives their frames back.
+/// `root`, which runs on this processor, and gives their frames back once
+/// no core remembers where they led, a few dozen at a time.
 pub fn unmap_pages(root: u64, at: u64, pages: u64) {
-    for i in 0..pages {
-        let _ = unmap_fresh_in(root, at + i * 4096);
+    const BATCH: u64 = 64;
+    for first in (0..pages).step_by(64) {
+        let count = (pages - first).min(BATCH);
+        let mut taken = [0u64; 64];
+        let mut len = 0;
+        if let Some(frames) = FRAMES.lock().as_mut() {
+            let mut space = AddressSpace::existing(root);
+            for virt in (0..count).map(|i| at + (first + i) * 4096) {
+                if let Ok(frame) = space.unmap(&mut KernelTables(frames), virt) {
+                    x86::raw::invalidate_page(virt);
+                    taken[len] = frame;
+                    len += 1;
+                }
+            }
+        }
+        super::tlb::shoot_down(root, at + first * 4096, count);
+        if let Some(frames) = FRAMES.lock().as_mut() {
+            for &frame in &taken[..len] {
+                let _ = frames.free(frame);
+            }
+        }
     }
-}
-
-/// Takes the 4 KiB page at `virt` out of the address space at `root`,
-/// which runs on this processor, and gives its frame back.
-///
-/// # Errors
-///
-/// Those of [`AddressSpace::unmap`], such as nothing mapped there.
-pub fn unmap_fresh_in(root: u64, virt: u64) -> Result<(), paging::Error> {
-    let mut frames = FRAMES.lock();
-    let frames = frames.as_mut().ok_or(paging::Error::OutOfFrames)?;
-    let frame = AddressSpace::existing(root).unmap(&mut KernelTables(frames), virt)?;
-    x86::raw::invalidate_page(virt);
-    let _ = frames.free(frame);
-    Ok(())
 }
 
 /// Takes the 4 KiB page at `virt` out of the kernel's address space,

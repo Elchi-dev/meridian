@@ -1489,6 +1489,66 @@ pub mod probe {
         "2:",
         "pause",
         "jmp 2b",
+        // Maps a page to read and one for flags, and starts a second thread
+        // that reads the first page over and over and notes the core it
+        // runs on. Once that is another core than its own, it gives the
+        // page back and says so: the second thread's next read has to
+        // fault, and ends with 77 if it still finds the page. 55 when the
+        // two never ran apart.
+        ".global meridian_stale_threads_start",
+        "meridian_stale_threads_start:",
+        "mov edi, 2",
+        "mov eax, {map}",
+        "int 0x2e",
+        "mov r12, rax",
+        "lea r13, [rax + 4096]",
+        "rdtscp",
+        "mov r15, rcx",
+        "lea rdi, [rip + 3f]",
+        "mov rsi, {lower_stack}",
+        "mov rdx, r12",
+        "mov eax, {thread}",
+        "int 0x2e",
+        "mov r14, {patience}",
+        "2:",
+        "mov rax, [r13 + 24]",
+        "test rax, rax",
+        "jz 4f",
+        "dec rax",
+        "cmp rax, r15",
+        "jne 5f",
+        "4:",
+        "pause",
+        "dec r14",
+        "jnz 2b",
+        "mov edi, 55",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
+        "5:",
+        "mov rdi, r12",
+        "mov esi, 1",
+        "mov eax, {unmap}",
+        "int 0x2e",
+        "mov qword ptr [r13 + 8], 1",
+        "6:",
+        "pause",
+        "jmp 6b",
+        "3:",
+        "mov r12, rdi",
+        "lea r13, [rdi + 4096]",
+        "7:",
+        "mov rax, [r12]",
+        "rdtscp",
+        "inc rcx",
+        "mov [r13 + 24], rcx",
+        "cmp qword ptr [r13 + 8], 0",
+        "je 7b",
+        "mov rax, [r12]",
+        "mov edi, 77",
+        "mov eax, {exit}",
+        "int 0x2e",
+        "ud2",
         ".global meridian_probes_end",
         "meridian_probes_end:",
         ".popsection",
@@ -1513,6 +1573,7 @@ pub mod probe {
         past_end = const syscall::USER_END + 16,
         stack_top = const super::STACK_TOP,
         lower_stack = const super::STACK_TOP - 0x8000,
+        patience = const 1u64 << 25,
     );
 
     unsafe extern "C" {
@@ -1547,6 +1608,7 @@ pub mod probe {
         static meridian_thread_no_stack_start: u8;
         static meridian_two_threads_start: u8;
         static meridian_exit_all_start: u8;
+        static meridian_stale_threads_start: u8;
         static meridian_probes_end: u8;
     }
 
@@ -1586,6 +1648,17 @@ pub mod probe {
     };
     pub static TWO_THREADS: Program = Program { code: two_threads };
     pub static EXIT_ALL: Program = Program { code: exit_all };
+
+    fn stale_threads() -> &'static [u8] {
+        bytes(
+            &raw const meridian_stale_threads_start,
+            &raw const meridian_probes_end,
+        )
+    }
+
+    pub static STALE_THREADS: Program = Program {
+        code: stale_threads,
+    };
 
     // Each probe runs to the end of them all; what follows its own code
     // is never reached.

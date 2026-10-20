@@ -193,6 +193,12 @@ pub fn alive(slot: usize) -> bool {
     THREADS.lock().alive(slot)
 }
 
+/// The cores other than `except` that run a thread in the address space
+/// at `root`, a bit each.
+pub fn cores_in(root: u64, except: usize) -> u64 {
+    THREADS.lock().cores_in(root, except)
+}
+
 /// The running thread's number.
 pub fn current() -> usize {
     THREADS.lock().current(this_core())

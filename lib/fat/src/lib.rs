@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod name;
 pub mod write;
 
 /// Why something on a volume could not be read.

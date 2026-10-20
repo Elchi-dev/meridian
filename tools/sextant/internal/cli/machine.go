@@ -186,6 +186,10 @@ func (s *session) bootFiles(v variant, loader, kernel []byte, programs map[strin
 	if err != nil {
 		return nil, err
 	}
+	licences, err := image.ReadFontLicences(s.root)
+	if err != nil {
+		return nil, err
+	}
 	signer, err := s.signer()
 	if err != nil {
 		return nil, err
@@ -194,7 +198,7 @@ func (s *session) bootFiles(v variant, loader, kernel []byte, programs map[strin
 	if err != nil {
 		return nil, fmt.Errorf("sign the loader: %w", err)
 	}
-	b := image.Boot{Loader: signed, Certificate: signer.Cert.Raw, Kernel: kernel, Shim: shim, Programs: programs}
+	b := image.Boot{Loader: signed, Certificate: signer.Cert.Raw, Kernel: kernel, Shim: shim, FontLicences: licences, Programs: programs}
 	if v.testMode {
 		return image.TestFiles(b), nil
 	}

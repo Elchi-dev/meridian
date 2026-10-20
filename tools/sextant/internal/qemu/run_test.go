@@ -103,6 +103,10 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	licences, err := image.ReadFontLicences(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	programs := map[string][]byte{}
 	parts := cargo.Programs
 	if qemuTest {
@@ -111,7 +115,7 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 	for _, part := range parts {
 		programs[part.File+image.ProgramExt] = read(part)
 	}
-	b := image.Boot{Loader: read(cargo.Loader), Kernel: read(cargo.Kernel), Shim: shim, Programs: programs}
+	b := image.Boot{Loader: read(cargo.Loader), Kernel: read(cargo.Kernel), Shim: shim, FontLicences: licences, Programs: programs}
 	if qemuTest {
 		return image.TestFiles(b)
 	}

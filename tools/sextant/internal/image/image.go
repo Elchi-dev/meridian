@@ -52,7 +52,7 @@ const CertificatePath = "meridian.cer"
 
 // ShimLicencesPath carries the licences of the shim and MokManager along
 // with them, as those licences ask.
-const ShimLicencesPath = "meridian/licences/shim.txt"
+const ShimLicencesPath = LicencesPath + "/shim.txt"
 
 // ShimDir is where the repository keeps the shim, MokManager and their
 // licences.
@@ -80,11 +80,40 @@ func ReadShim(root string) (Shim, error) {
 	return s, nil
 }
 
+// FontDir is where the repository keeps the fonts the loader and the
+// kernel carry, and their licences.
+const FontDir = "third-party/fonts"
+
+// FontLicences are those licences, which images carry in LicencesPath
+// since the fonts' licence has to travel with them (decision record
+// 0012): by the name on the image, which a CD can carry too, the file in
+// FontDir.
+var FontLicences = map[string]string{"inter.txt": "Inter-OFL.txt", "jetbrains_mono.txt": "JetBrainsMono-OFL.txt"}
+
+// LicencesPath is the folder of the licences an image carries.
+const LicencesPath = "meridian/licences"
+
+// ReadFontLicences reads the fonts' licences from FontDir in the
+// repository at root, by their names on the image.
+func ReadFontLicences(root string) (map[string][]byte, error) {
+	licences := map[string][]byte{}
+	for name, file := range FontLicences {
+		data, err := os.ReadFile(filepath.Join(root, FontDir, file))
+		if err != nil {
+			return nil, fmt.Errorf("the fonts' licences, as decision record 0012 lists them: %w", err)
+		}
+		licences[name] = data
+	}
+	return licences, nil
+}
+
 // Boot is what an image needs to start Meridian: the signed loader, the
-// certificate of the key that signed it, the kernel, and the shim.
+// certificate of the key that signed it, the kernel, the shim, and the
+// licences of the fonts in the loader and the kernel.
 type Boot struct {
 	Loader, Certificate, Kernel []byte
 	Shim                        Shim
+	FontLicences                map[string][]byte
 	// Programs are the programs for the kernel to start, by file name.
 	Programs map[string][]byte
 }
@@ -128,9 +157,9 @@ const testSettings = `boot {
 }
 `
 
-// BootFiles places the shim, the loader, the kernel, its programs and the
-// settings on the EFI system partition, with what enrolling the loader's
-// key needs.
+// BootFiles places the shim, the loader, the kernel, its programs, the
+// settings and the licences on the EFI system partition, with what
+// enrolling the loader's key needs.
 func BootFiles(b Boot) map[string][]byte {
 	files := map[string][]byte{
 		FirmwarePath:     b.Shim.Shim,
@@ -143,6 +172,9 @@ func BootFiles(b Boot) map[string][]byte {
 	}
 	for name, data := range b.Programs {
 		files[ProgramsPath+"/"+name] = data
+	}
+	for name, data := range b.FontLicences {
+		files[LicencesPath+"/"+name] = data
 	}
 	return files
 }

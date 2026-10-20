@@ -60,23 +60,26 @@ func sum(t *testing.T, path string) [32]byte {
 func bootParts() Boot {
 	return Boot{
 		Loader: []byte("efi"), Certificate: []byte("cer"), Kernel: []byte("elf"),
-		Shim:     Shim{Shim: []byte("shim"), Manager: []byte("mok"), Licences: []byte("bsd")},
-		Programs: map[string][]byte{"hello.mexec": []byte("hi"), "init.mexec": []byte("first")},
+		Shim:         Shim{Shim: []byte("shim"), Manager: []byte("mok"), Licences: []byte("bsd")},
+		FontLicences: map[string][]byte{"inter.txt": []byte("ofl"), "jetbrains_mono.txt": []byte("ofl too")},
+		Programs:     map[string][]byte{"hello.mexec": []byte("hi"), "init.mexec": []byte("first")},
 	}
 }
 
 func TestBootFilesGoWhereFirmwareShimAndLoaderLook(t *testing.T) {
 	got := BootFiles(bootParts())
 	want := map[string]string{
-		"EFI/BOOT/BOOTX64.EFI":          "shim",
-		"EFI/BOOT/grubx64.efi":          "efi",
-		"EFI/BOOT/mmx64.efi":            "mok",
-		"meridian.cer":                  "cer",
-		"meridian/licences/shim.txt":    "bsd",
-		"meridian/kernel":               "elf",
-		"meridian/boot.meri":            Settings,
-		"meridian/programs/hello.mexec": "hi",
-		"meridian/programs/init.mexec":  "first",
+		"EFI/BOOT/BOOTX64.EFI":                 "shim",
+		"EFI/BOOT/grubx64.efi":                 "efi",
+		"EFI/BOOT/mmx64.efi":                   "mok",
+		"meridian.cer":                         "cer",
+		"meridian/licences/shim.txt":           "bsd",
+		"meridian/licences/inter.txt":          "ofl",
+		"meridian/licences/jetbrains_mono.txt": "ofl too",
+		"meridian/kernel":                      "elf",
+		"meridian/boot.meri":                   Settings,
+		"meridian/programs/hello.mexec":        "hi",
+		"meridian/programs/init.mexec":         "first",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d files, want %d", len(got), len(want))
@@ -98,6 +101,26 @@ func TestTestImagesCarryAnExampleSystem(t *testing.T) {
 	}
 	if string(got[SettingsPath]) != testSettings {
 		t.Fatal("test images carry settings of their own")
+	}
+}
+
+func TestTheFontLicencesComeFromTheRepository(t *testing.T) {
+	licences, err := ReadFontLicences(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(licences) != 2 {
+		t.Fatalf("got %d licences", len(licences))
+	}
+	for name, font := range map[string]string{"inter.txt": "The Inter Project Authors", "jetbrains_mono.txt": "The JetBrains Mono Project Authors"} {
+		text := licences[name]
+		if !bytes.Contains(text, []byte("SIL OPEN FONT LICENSE Version 1.1")) || !bytes.Contains(text, []byte(font)) {
+			t.Errorf("%s should be the Open Font License of %s: %.80q", name, font, text)
+		}
+	}
+	_, err = ReadFontLicences(t.TempDir())
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "decision record 0012") {
+		t.Errorf("a repository without the fonts: %v", err)
 	}
 }
 

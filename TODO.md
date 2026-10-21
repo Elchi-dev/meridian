@@ -127,11 +127,14 @@ Loader and UEFI:
 - [x] NVMe: the first namespace read through one pair of queues, by polling (`lib/nvme`)
 - [x] AHCI ports started again after a command fails
 - [x] virtio-blk: version 1 over PCI, one queue, polled reads (`lib/virtio`)
+- [x] Writes on AHCI, NVMe and virtio-blk, checked in QEMU on copies of the disks, with a read-only virtio disk refused
 - [ ] Interrupts for disks instead of polling
 - [ ] Reads of more than one sector at a time: FAT32 reads a file a sector per command, so a debug build of a program took over a second to start from its file
 - [x] GPT in the kernel (`lib/gpt`)
 - [x] FAT32 read in the kernel (`lib/fat`)
-- [ ] FAT32 written, for the installer
+- [x] FAT32 written: files and directories made, written and removed, with long names and their short ones (`lib/fat`)
+- [x] FAT32 volumes and GPT tables made from nothing, read back by `fsck.fat`, `mtools` and `sfdisk` (`lib/fat`, `lib/gpt`)
+- [ ] An installer that lays out a disk with these and copies the system on
 - [ ] Strata: copy-on-write, checksums, snapshots, case-preserving names, instant locate index, reserved room for transactions, deduplication and expiry
 - [x] VFS, reading: one tree, paths compared in capitals, mounts, OPEN, READ and INFO, the EFI system partition at /System/Boot (`kernel::vfs`)
 - [x] VFS: listing directories (LIST), and the partition the loader came from at /System/Boot (`lib/bootinfo` version 4)

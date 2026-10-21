@@ -501,6 +501,8 @@ func TestClassify(t *testing.T) {
 		{"go", testRun{err: failed, output: []byte("FAIL\tm [setup failed]")}, Unviable},
 		{"go", testRun{err: failed, output: []byte("panic: test timed out after 3s")}, TimedOut},
 		{"go", testRun{err: failed, timedOut: true}, TimedOut},
+		{"go", testRun{err: failed, overMemory: true}, OutOfMemory},
+		{"rust", testRun{err: failed, overMemory: true, timedOut: true, output: []byte("error: could not compile")}, OutOfMemory},
 		{"rust", testRun{err: failed, output: []byte("error: could not compile `k` (lib)")}, Unviable},
 		{"rust", testRun{err: failed, output: []byte("test result: FAILED")}, Killed},
 		{"rust", testRun{err: failed, output: []byte("[build failed]")}, Killed},
@@ -515,7 +517,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestOutcomeNames(t *testing.T) {
-	names := map[Outcome]string{Killed: "killed", Survived: "survived", Unviable: "unviable", TimedOut: "timed out", 0: "Outcome(0)", 9: "Outcome(9)"}
+	names := map[Outcome]string{Killed: "killed", Survived: "survived", Unviable: "unviable", TimedOut: "timed out", OutOfMemory: "out of memory", 0: "Outcome(0)", 9: "Outcome(9)"}
 	for o, want := range names {
 		if o.String() != want {
 			t.Errorf("%d: %q, want %q", int(o), o.String(), want)
@@ -639,6 +641,36 @@ func TestTimeoutFor(t *testing.T) {
 	}
 	if got := (&Runner{Timeout: 7 * time.Second}).timeoutFor(10 * time.Second); got != 7*time.Second {
 		t.Errorf("set: %v", got)
+	}
+}
+
+func TestMemoryFor(t *testing.T) {
+	r := &Runner{}
+	for baseline, want := range map[int64]int64{0: 1 << 30, 300 << 20: 1 << 30, 1 << 30: 3 << 30, 5 << 30: 15 << 30} {
+		if got := r.memoryFor(baseline); got != want {
+			t.Errorf("default for %d: %d, want three times that and at least 1 GiB, %d", baseline, got, want)
+		}
+	}
+	if got := (&Runner{MaxMemory: 5 << 20}).memoryFor(1 << 30); got != 5<<20 {
+		t.Errorf("set: %d", got)
+	}
+}
+
+func TestOver(t *testing.T) {
+	cases := []struct {
+		now, most int64
+		want      bool
+	}{
+		{5, 5, false},
+		{6, 5, true},
+		{4, 5, false},
+		{1 << 40, 0, false},
+		{0, 0, false},
+	}
+	for _, c := range cases {
+		if got := over(c.now, c.most); got != c.want {
+			t.Errorf("over(%d, %d) = %v", c.now, c.most, got)
+		}
 	}
 }
 

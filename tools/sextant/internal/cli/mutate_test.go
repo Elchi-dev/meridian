@@ -70,11 +70,12 @@ func TestMutateRunFindsTheSurvivor(t *testing.T) {
 		t.Fatalf("exit %d\nstdout %s\nstderr %s", r.code, r.stdout, r.stderr)
 	}
 	want := "4 mutants in 1 file\n" +
-		"  killed     3\n" +
-		"  timed out  0\n" +
-		"  unviable   0\n" +
-		"  allowed    0\n" +
-		"  survived   1\n" +
+		"  killed         3\n" +
+		"  timed out      0\n" +
+		"  out of memory  0\n" +
+		"  unviable       0\n" +
+		"  allowed        0\n" +
+		"  survived       1\n" +
 		"\nm/less.go:4: < to <=\n" +
 		"allow {\n    file = \"m/less.go\"\n    line = \"return a < b\"\n    mutation = \"< to <=\"\n    reason = \"why this change cannot alter behaviour\"\n}\n"
 	if r.stdout != want {
@@ -96,7 +97,7 @@ func TestMutateCanLeaveTheMachineChecksOut(t *testing.T) {
 		"k/src/lib.rs":       "pub fn less(a: u8, b: u8) -> bool {\n    a < b\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn less() {\n        assert!(super::less(1, 2) && !super::less(3, 2));\n    }\n}\n",
 	})
 	r := runIn(root, "mutate", "--machine=false", "--jobs", "1")
-	if r.code != ExitFailure || !strings.Contains(r.stdout, "k/src/lib.rs:2: < to <=\n") || !strings.Contains(r.stdout, "  survived   1\n") {
+	if r.code != ExitFailure || !strings.Contains(r.stdout, "k/src/lib.rs:2: < to <=\n") || !strings.Contains(r.stdout, "  survived       1\n") {
 		t.Fatalf("exit %d\nstdout %s\nstderr %s", r.code, r.stdout, r.stderr)
 	}
 	bad := runIn(root, "mutate", "--machine=sometimes")
@@ -109,7 +110,7 @@ func TestMutateRunPassesWhenEverySurvivorIsAllowed(t *testing.T) {
 	repo := mutateRepo()
 	repo["mutants.meri"] = lessAllow
 	r := runIn(checkout(t, repo), "mutate", "--jobs", "2")
-	if r.code != ExitOK || !strings.HasPrefix(r.stdout, "4 mutants in 1 file\n") || !strings.Contains(r.stdout, "  allowed    1\n") || !strings.Contains(r.stdout, "  survived   0\n") {
+	if r.code != ExitOK || !strings.HasPrefix(r.stdout, "4 mutants in 1 file\n") || !strings.Contains(r.stdout, "  allowed        1\n") || !strings.Contains(r.stdout, "  survived       0\n") {
 		t.Fatalf("exit %d\nstdout %s\nstderr %s", r.code, r.stdout, r.stderr)
 	}
 }

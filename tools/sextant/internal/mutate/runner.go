@@ -24,6 +24,10 @@ const (
 	Survived
 	Unviable
 	TimedOut
+	// OutOfMemory is a mutant whose tests were stopped for holding more
+	// memory than the runner allows, which counts as killed, like a
+	// timeout.
+	OutOfMemory
 )
 
 func (o Outcome) String() string {
@@ -36,6 +40,8 @@ func (o Outcome) String() string {
 		return "unviable"
 	case TimedOut:
 		return "timed out"
+	case OutOfMemory:
+		return "out of memory"
 	}
 	return fmt.Sprintf("Outcome(%d)", int(o))
 }
@@ -70,6 +76,11 @@ type Runner struct {
 	Scratch string
 	// MaxFileSize caps every file a test run writes, 1 GiB when zero.
 	MaxFileSize int64
+	// MaxMemory caps the memory one test run holds, all of its processes
+	// together, where the system shows that, which is Linux. Zero means
+	// three times the most the run without any mutant held, and never
+	// less than 1 GiB.
+	MaxMemory int64
 	// Done, when set, is called after every mutant from the worker that
 	// ran it, so it must be safe for concurrent use.
 	Done func(Result)
@@ -136,28 +147,28 @@ func (r *Runner) Run(ctx context.Context, mutants []Mutant, targets map[string]T
 		}
 	}
 
-	timeouts := map[string]time.Duration{}
+	limits := map[string]limit{}
 	for key, m := range first {
 		started := time.Now()
-		run := workers[0].test(ctx, m.Path, targets[m.Path], 0)
+		run := workers[0].test(ctx, m.Path, targets[m.Path], limit{})
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		if run.err != nil {
 			return nil, fmt.Errorf("the tests of %s fail before any mutation, fix them first:\n%s", key, tail(run.output, 20))
 		}
-		timeouts[key] = r.timeoutFor(time.Since(started))
+		limits[key] = limit{r.timeoutFor(time.Since(started)), r.memoryFor(run.peak)}
 	}
 	if len(r.Machine) > 0 && slices.ContainsFunc(mutants, func(m Mutant) bool { return targets[m.Path].Machine }) {
 		started := time.Now()
-		run := workers[0].run(ctx, workers[0].dir, r.Machine, 0)
+		run := workers[0].run(ctx, workers[0].dir, r.Machine, limit{})
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		if run.err != nil {
 			return nil, fmt.Errorf("the machine checks fail before any mutation, fix them first:\n%s", tail(run.output, 20))
 		}
-		timeouts[machineKey] = r.timeoutFor(time.Since(started))
+		limits[machineKey] = limit{r.timeoutFor(time.Since(started)), r.memoryFor(run.peak)}
 	}
 
 	results := make([]Result, len(mutants))
@@ -172,7 +183,7 @@ func (r *Runner) Run(ctx context.Context, mutants []Mutant, targets map[string]T
 			for i := range next {
 				m := mutants[i]
 				t := targets[m.Path]
-				outcome, err := w.try(ctx, m, originals[m.Path], t, timeouts[testKey(m.Path, t)], r.Machine, timeouts[machineKey])
+				outcome, err := w.try(ctx, m, originals[m.Path], t, limits[testKey(m.Path, t)], r.Machine, limits[machineKey])
 				if err != nil {
 					mu.Lock()
 					firstErr = firstOf(firstErr, err)
@@ -232,6 +243,15 @@ func (r *Runner) timeoutFor(baseline time.Duration) time.Duration {
 	return 3*baseline + 30*time.Second
 }
 
+// memoryFor is the most memory one mutant's test run may hold, given the
+// most the same tests held without any mutant.
+func (r *Runner) memoryFor(baseline int64) int64 {
+	if r.MaxMemory > 0 {
+		return r.MaxMemory
+	}
+	return max(3*baseline, 1<<30)
+}
+
 func firstOf(first, err error) error {
 	if first != nil {
 		return first
@@ -246,10 +266,21 @@ type worker struct {
 	maxFile int64
 }
 
+// limit bounds one test run: how long it may take and how much memory its
+// processes may hold together. Zero means no bound.
+type limit struct {
+	time   time.Duration
+	memory int64
+}
+
 type testRun struct {
 	err      error
 	output   []byte
 	timedOut bool
+	// overMemory says the run was stopped for holding more than its limit.
+	overMemory bool
+	// peak is the most memory the run was seen holding.
+	peak int64
 }
 
 // try writes the mutant into the worker's copy, tests it, and writes the
@@ -259,14 +290,14 @@ type testRun struct {
 //
 // A mutant that survives the host tests of a component with machine checks
 // meets those too, when the runner has a command for them.
-func (w *worker) try(ctx context.Context, m Mutant, original []byte, t Target, timeout time.Duration, machine []string, machineTimeout time.Duration) (Outcome, error) {
+func (w *worker) try(ctx context.Context, m Mutant, original []byte, t Target, bound limit, machine []string, machineBound limit) (Outcome, error) {
 	file := filepath.Join(w.dir, filepath.FromSlash(m.Path))
 	if err := os.WriteFile(file, m.Apply(original), 0o644); err != nil {
 		return 0, err
 	}
-	outcome := classify(t.Kind, w.test(ctx, m.Path, t, timeout))
+	outcome := classify(t.Kind, w.test(ctx, m.Path, t, bound))
 	if outcome == Survived && t.Machine && len(machine) > 0 {
-		outcome = classify("machine", w.run(ctx, w.dir, machine, machineTimeout))
+		outcome = classify("machine", w.run(ctx, w.dir, machine, machineBound))
 	}
 	if err := os.WriteFile(file, original, 0o644); err != nil {
 		return 0, err
@@ -279,6 +310,8 @@ func (w *worker) try(ctx context.Context, m Mutant, original []byte, t Target, t
 
 func classify(kind string, run testRun) Outcome {
 	switch {
+	case run.overMemory:
+		return OutOfMemory
 	case run.timedOut || bytes.Contains(run.output, []byte("panic: test timed out")):
 		return TimedOut
 	case run.err == nil:
@@ -310,8 +343,8 @@ func lowPriority(name string, args []string) (string, []string) {
 	return nice, append([]string{"-n", "15", name}, args...)
 }
 
-// test runs the tests that cover file. A zero timeout means none.
-func (w *worker) test(ctx context.Context, file string, t Target, timeout time.Duration) testRun {
+// test runs the tests that cover file within bound.
+func (w *worker) test(ctx context.Context, file string, t Target, bound limit) testRun {
 	var name string
 	var args []string
 	dir := filepath.Join(w.dir, filepath.FromSlash(t.Component))
@@ -330,15 +363,15 @@ func (w *worker) test(ctx context.Context, file string, t Target, timeout time.D
 	default:
 		return testRun{err: fmt.Errorf("%s: no tests for components of kind %q", t.Component, t.Kind)}
 	}
-	return w.run(ctx, dir, append([]string{name}, args...), timeout)
+	return w.run(ctx, dir, append([]string{name}, args...), bound)
 }
 
 // run runs command in dir with the worker's build folder and a temporary
-// folder of its own. A zero timeout means none.
-func (w *worker) run(ctx context.Context, dir string, command []string, timeout time.Duration) testRun {
-	if timeout > 0 {
+// folder of its own, within bound.
+func (w *worker) run(ctx context.Context, dir string, command []string, bound limit) testRun {
+	if bound.time > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
+		ctx, cancel = context.WithTimeout(ctx, bound.time)
 		defer cancel()
 	}
 	name, args := lowPriority(command[0], command[1:])
@@ -353,15 +386,68 @@ func (w *worker) run(ctx context.Context, dir string, command []string, timeout 
 	}
 	defer os.RemoveAll(tmp)
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	stopped, stop := context.WithCancel(ctx)
+	defer stop()
+	cmd := exec.CommandContext(stopped, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CARGO_TARGET_DIR="+w.target, "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
 	cmd.WaitDelay = 5 * time.Second
 	killTree(cmd)
-	out, err := cmd.CombinedOutput()
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return testRun{err: err}
+	}
+	watched := make(chan memoryWatch)
+	ended := make(chan struct{})
+	go func() { watched <- watchMemory(tmp, bound.memory, ended, stop) }()
+	err = cmd.Wait()
+	close(ended)
+	seen := <-watched
 	reapTree(cmd)
 	sweep(tmp)
-	return testRun{err: err, output: out, timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+	return testRun{err: err, output: out.Bytes(), timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded), overMemory: seen.over, peak: seen.peak}
+}
+
+// over says a run that holds now bytes holds more than most, where a most
+// of zero is no bound.
+func over(now, most int64) bool {
+	return most > 0 && now > most
+}
+
+// memoryLook is how often a run's memory is looked at.
+const memoryLook = 200 * time.Millisecond
+
+// memoryWatch is what watchMemory saw of a run.
+type memoryWatch struct {
+	peak int64
+	over bool
+}
+
+// watchMemory looks at the memory the run in tmp holds until ended closes,
+// and calls stop once that is more than most bytes, which zero leaves
+// unbounded. A mutant that keeps allocating would otherwise take the
+// memory of the whole machine before any timeout comes.
+func watchMemory(tmp string, most int64, ended <-chan struct{}, stop func()) memoryWatch {
+	var seen memoryWatch
+	tick := time.NewTicker(memoryLook)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ended:
+			return seen
+		case <-tick.C:
+		}
+		now := held(tmp)
+		seen.peak = max(seen.peak, now)
+		if over(now, most) {
+			seen.over = true
+			stop()
+			sweep(tmp)
+			return seen
+		}
+	}
 }
 
 // copyTree copies the sources of a repository, leaving out skipCopy and

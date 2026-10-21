@@ -152,7 +152,12 @@ this out for a quick run.
 
 - **Killed:** the tests failed, which is what should happen.
 - **Unviable:** the mutant does not build. It is reported, not counted.
-- **Timed out:** it counts as killed.
+- **Timed out:** it counts as killed. A run may take three times as long as
+  the same tests without any mutant, plus 30 seconds.
+- **Out of memory:** it counts as killed too. On Linux a run may hold three
+  times the memory the same tests held without any mutant, and at least
+  1 GiB, all its processes together. A mutant that keeps allocating is
+  stopped there instead of taking the whole machine.
 - **Survived:** a change that no test notices fails CI.
 
 The only way out for a survivor is an entry in `mutants.meri` at the root of

@@ -242,6 +242,7 @@ func writeMutateSummary(w io.Writer, results []mutate.Result, allowed, files int
 	writeTable(w, [][]string{
 		{"  killed", fmt.Sprint(counts[mutate.Killed])},
 		{"  timed out", fmt.Sprint(counts[mutate.TimedOut])},
+		{"  out of memory", fmt.Sprint(counts[mutate.OutOfMemory])},
 		{"  unviable", fmt.Sprint(counts[mutate.Unviable])},
 		{"  allowed", fmt.Sprint(allowed)},
 		{"  survived", fmt.Sprint(len(survivors))},

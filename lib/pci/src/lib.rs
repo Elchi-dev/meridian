@@ -396,17 +396,24 @@ mod tests {
         config
     }
 
+    /// The capabilities `config` lists, but never more than one past the
+    /// most a list can hold, so a list that does not end shows up as one
+    /// too long instead of filling memory.
+    fn listed(config: &[u8]) -> Vec<(u8, usize)> {
+        capabilities(config).take(49).collect()
+    }
+
     #[test]
     fn capabilities_are_followed_from_the_pointer_on() {
         let config = listing(
             0x40,
             &[(0x40, 0x09, 0x50), (0x50, 0x11, 0x84), (0x84, 0x05, 0)],
         );
-        let found: Vec<_> = capabilities(&config).collect();
+        let found = listed(&config);
         assert_eq!(found, [(0x09, 0x40), (0x11, 0x50), (0x05, 0x84)]);
         let low_bits = listing(0x43, &[(0x40, 0x09, 0x53), (0x50, 0x01, 0)]);
         assert_eq!(
-            capabilities(&low_bits).collect::<Vec<_>>(),
+            listed(&low_bits),
             [(0x09, 0x40), (0x01, 0x50)],
             "the low two bits of a pointer do not count"
         );
@@ -416,27 +423,23 @@ mod tests {
     fn a_list_needs_the_status_bit_and_pointers_into_the_rest() {
         let mut config = listing(0x40, &[(0x40, 0x09, 0)]);
         config[6] = 0;
-        assert_eq!(capabilities(&config).count(), 0, "no list without the bit");
+        assert_eq!(listed(&config).len(), 0, "no list without the bit");
         assert_eq!(
-            capabilities(&listing(0x3c, &[(0x3c, 9, 0)])).count(),
+            listed(&listing(0x3c, &[(0x3c, 9, 0)])).len(),
             0,
             "not in the header"
         );
-        assert_eq!(capabilities(&listing(0, &[])).count(), 0);
+        assert_eq!(listed(&listing(0, &[])).len(), 0);
         let cut = listing(0x40, &[(0x40, 0x09, 0x80)]);
-        assert_eq!(
-            capabilities(&cut[..0x81]).count(),
-            1,
-            "one past the end stops"
-        );
-        assert_eq!(capabilities(&cut[..0x41]).count(), 0);
-        assert_eq!(capabilities(&[]).count(), 0);
+        assert_eq!(listed(&cut[..0x81]).len(), 1, "one past the end stops");
+        assert_eq!(listed(&cut[..0x41]).len(), 0);
+        assert_eq!(listed(&[]).len(), 0);
     }
 
     #[test]
     fn a_list_that_loops_ends() {
         let config = listing(0x40, &[(0x40, 0x09, 0x44), (0x44, 0x0a, 0x40)]);
-        let found: Vec<_> = capabilities(&config).collect();
+        let found = listed(&config);
         assert_eq!(found.len(), 48, "as many as 192 bytes could hold");
         assert_eq!(&found[..3], [(0x09, 0x40), (0x0a, 0x44), (0x09, 0x40)]);
     }

@@ -65,6 +65,16 @@ at 0.x until the native API is stable.
   - Channels between programs: a program reaches kernel objects only through handles in its own table, with rights and generations, and can make a channel, send through it, receive from it and close it. Two programs on different cores talk through one, and a message can hand a handle over to the program that takes it.
   - The other cores take jobs: each has a mailbox for a function and what it works on, is woken by an interrupt when a job comes, and sleeps in between. A core only counts as running once it answered its first job with its own APIC id.
   - Pages of its own: the kernel maps and unmaps 4 KiB pages in the address space it runs in, with new page tables from the frame allocator, and makes the processor forget an unmapped page at once.
+  - Threads move between cores: a core with nothing to run takes a waiting thread from a busy one, unless that thread was started for its core. A thread's FPU and SSE registers survive every switch, kept with XSAVE, AVX and AVX-512 included, where the processor has it, and with FXSAVE otherwise.
+  - The kernel lies at a random 2 MiB boundary in the top 2 GiB, chosen with RDRAND. Every core runs with SMEP and SMAP: the kernel reaches a program's pages only through copies that check them first, and a copy stops short at a page another thread of the program gave back meanwhile.
+  - Programs from files: `.mexec` files, ELF with Meridian's version and name notes, from `meridian/programs` on the boot partition, each page mapped with the rights its segment gives it.
+  - Processes: SPAWN starts a program by its name or its path and hands it a handle, WAIT gets its exit code or the exception that ended it, and TERMINATE ends it at its next way back to ring 3, also while it waits. THREAD and END_THREAD give a program more threads; a page one of them unmaps is forgotten on every core that runs the program, through a shootdown interrupt. MAP and UNMAP give memory from a region that hands every address out once.
+  - Security tokens (decision record 0014): SIDs, privileges and integrity levels, SYSTEM for what the kernel starts and a restricted copy through SPAWN. OPEN asks the access check for every file.
+  - Channels carry handles: one handed over leaves its sender, needs the right to be handed over, and one nobody takes is closed with its channel.
+  - Disks: PCI through ECAM, every function on every bus and behind bridges; SATA disks through AHCI, NVMe drives and virtio block devices, read and written by polling; and every disk's GPT.
+  - Files: FAT32 read, and a VFS with one tree, paths compared in capitals, mounts, and OPEN, READ, INFO and LIST. The partition the loader came from is at `/System/Boot`.
+  - The PS/2 keyboard through the I/O APIC, its keys named by their USB HID usage, and a text console for programs, WRITE and KEY, in rows of JetBrains Mono that wrap and scroll.
+  - init starts the services `meridian/services.meri` lists, each in a thread of its own, and starts one again when it ends, waiting longer each time it ended soon. A first shell runs on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `clear` and `exit`, and any program by its name in `/System/Boot/meridian/programs` or by its path, saying how it ended.
 - **Libraries**
   - `lib/font`: TrueType fonts parsed and rasterized without allocating, with Inter and JetBrains Mono under the SIL Open Font License (decision record 0012).
   - `lib/canvas`: rectangles and text on a framebuffer in either pixel order.
@@ -74,6 +84,9 @@ at 0.x until the native API is stable.
   - `lib/acpi`: the root pointer, the XSDT, the MADT and the FADT, with their checksums.
   - `lib/meri`: `.meri` documents read in Rust without a heap, event by event or setting by setting, for the loader's settings.
   - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
+  - `lib/abi`: the system calls programs and the kernel agree on; `lib/program`: what a program in Rust is built on, the calls as functions, `main!`, a heap and `log!`; `lib/security`: SIDs, tokens and the access check, in the shape [MS-DTYP] gives them.
+  - `lib/pci`, `lib/ahci`, `lib/nvme`, `lib/virtio` and `lib/ps2`: the parts of each driver that need no hardware, from the specifications.
+  - `lib/gpt`: partition tables read and written, with their copies and the protective MBR; `lib/fat`: FAT32 read and written, long names with their short ones, and volumes made as fatgen103 lays them out.
 
 ### Fixed
 
@@ -82,7 +95,7 @@ at 0.x until the native API is stable.
 
 ### Verified
 
-- **Test lines.** 31262 lines of tests for 17488 lines of code, a ratio of 1.78, and every component at 1.5 or more.
+- **Test lines.** 47210 lines of tests for 26948 lines of code, a ratio of 1.75, and every component at 1.5 or more.
 - **sextant.** All tests pass with the race detector, at 7712 lines of code and 13743 lines of tests, a ratio of 1.78, on Linux, macOS and Windows.
 - **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest. OVMF in Setup Mode takes Meridian's own key through the authenticated variable writes sextant makes, refuses a write whose signature was changed, and afterwards starts only what that key signed. OVMF with Microsoft's keys, as a PC from a shop has them, starts the shim, which refuses the loader until a Go test has pressed through enrolling `meridian.cer` in MokManager, and starts it after the restart; with another key's certificate enrolled it keeps refusing.
 - **`lib/uefi`.** 111 host tests pass at a ratio of 1.60. Every field offset of the firmware tables is checked against the specification.
@@ -106,7 +119,7 @@ at 0.x until the native API is stable.
 
   - Enter and the down arrow, pressed by sextant through the QEMU monitor
 - **Images boot.** A GPT disk and an ISO written by sextant both boot through the shim into the loader on OVMF.
-- **On real firmware.** `sextant test --qemu` runs 267 checks in QEMU with KVM, twice: on QEMU's processor, and on one without x2APIC, so the kernel's xAPIC path is checked too: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its frames and heap, pages it maps and unmaps, its timer, the other cores starting, their guarded stacks and the jobs they take, its screens, five exceptions caused on purpose, a panic and a stack overflow. Without KVM all 267 run as well, in xAPIC mode.
+- **On real firmware.** `sextant test --qemu` runs 344 checks in QEMU with KVM, twice: on QEMU's processor, and on one without x2APIC, XSAVE or PS/2 whose NVMe and virtio disks write to copies, so the kernel's other paths are checked too: the loader's and every crate's under the firmware, firmware variables and boot options, the boot screen, its log and its settings, a firmware boot option started from its card, then the kernel's on what the loader handed over, the ACPI tables, the measured counter, its frames and heap, pages it maps and unmaps, its timer, the other cores starting, their guarded stacks and the jobs they take, its screens, five exceptions caused on purpose, a panic and a stack overflow, and then threads moving between cores, programs in ring 3 with their system calls, their threads and shootdowns, channels, tokens, the disks, the files and the console. Without KVM the time stamp counter and the ACPI timer drift apart, so one check fails there.
 - **Boot options on another disk.** A Go test gives the test image a second disk: an option with the whole path to a loader there starts and comes back, and one with the short path Windows uses goes through `BootNext` and a restart, after which the firmware starts it from the second disk.
 - **The keys and settings on a real machine.** Go tests press F on OVMF and see its setup after the restart, and boot the plain image with `verbose` and `default = example` and see the log, the countdown and the example starting.
 - **What a person sees.** The boot, log, status, panic and double fault screens are kept as PNG files. A Go test checks their colours and reads the QR codes with `zbarimg`, and on the plain image checks that only the uptime changes in 2.5 seconds.
@@ -115,6 +128,5 @@ at 0.x until the native API is stable.
 
 ### Not built yet
 
-Scheduling, user mode, drivers, the file system, the desktop and the
-Win32 personality: everything that makes the kernel more than a status
-screen. See [TODO.md](TODO.md).
+Strata, writing files through the VFS, an installer, USB, the desktop
+and the Win32 personality. See [TODO.md](TODO.md).

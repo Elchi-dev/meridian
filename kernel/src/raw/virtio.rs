@@ -16,8 +16,11 @@ const COMMON: u64 = kernel::VIRTIO_REGISTERS;
 const DEVICE: u64 = kernel::VIRTIO_REGISTERS + 0x1000;
 const NOTIFY: u64 = kernel::VIRTIO_REGISTERS + 0x2000;
 
-/// How often a register is read while waiting for the device.
-const PATIENCE: u32 = 1_000_000;
+/// How long the device may take to answer, in cycles of the time stamp
+/// counter: about a second on a fast processor. A count of looks instead
+/// ran out within a millisecond on the queue's ring, which lies in memory,
+/// whenever QEMU was slow to get to the request.
+const PATIENCE: u64 = 4_000_000_000;
 
 /// Where the request's header and status byte lie in the queue's frame,
 /// past its rings.
@@ -121,9 +124,9 @@ fn map(h: &Header, region: Region, skip: u64, virt: u64) -> Option<u64> {
     memory::map_registers(virt, page, 1).then_some(at)
 }
 
-/// Waits until `done` holds, reading no more than [`PATIENCE`] times.
-fn wait(mut done: impl FnMut() -> bool) -> bool {
-    (0..PATIENCE).any(|_| done())
+/// Waits until `done` holds, for no longer than [`PATIENCE`].
+fn wait(done: impl Fn() -> bool) -> bool {
+    x86::raw::wait_for(PATIENCE, done)
 }
 
 /// Starts the block device at `at`, whose header is `h`: resets it, agrees

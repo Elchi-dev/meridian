@@ -485,8 +485,9 @@ What exists:
   vendor and device ids, finds where its structures are from the
   capabilities its function lists (`lib/pci`), resets it, agrees on
   version 1 and on whether it only reads (`lib/virtio`), sets up one
-  queue of eight entries in a frame of its own, and reads up to a frame
-  a request, polled. Test machines with a disk see it once more as a
+  queue of eight entries in a frame of its own, and reads and writes up
+  to a frame a request, polled, waiting up to about a second for each
+  answer. Test machines with a disk see it once more as a
   read only virtio disk; the test image wants it ready as agreed, as
   large as the AHCI disk and reading the same sectors, a request of an
   unknown type refused, and hello through FAT32 on it as the loader read
@@ -508,8 +509,12 @@ What exists:
 - **Partitions and FAT32.** `lib/gpt` reads a GPT header with every check
   UEFI asks for, and its entries once their CRC-32 matches; `lib/fat`
   reads FAT32 volumes, long names checked against their short entry,
-  chains that may not leave the volume, loop or run past a file. The
-  kernel logs every disk's partitions and each FAT32 volume on them, and
+  chains that may not leave the volume, loop or run past a file. A file
+  is read a piece at a time: every whole sector that lies in one run, in
+  this cluster and the ones right behind it, in one read, and the FAT
+  sector read last is kept for the next cluster. `lib/fat` also writes
+  FAT32 and makes new volumes, and `lib/gpt` writes partition tables;
+  the kernel writes no files yet. The kernel logs every disk's partitions and each FAT32 volume on them, and
   the test image reads the EFI system partition's settings, the
   firmware's file and hello through them, hello byte for byte as the
   loader read it.

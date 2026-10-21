@@ -12,7 +12,7 @@
 **An operating system written from scratch that runs your Windows programs natively :3**
 
 [![CI](https://github.com/Elchi-dev/meridian/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Elchi-dev/meridian/actions/workflows/ci.yml)
-![Status](https://img.shields.io/badge/status-M1%20boot-FF8A1C)
+![Status](https://img.shields.io/badge/status-M4%20storage-FF8A1C)
 [![Rust](https://img.shields.io/badge/Rust-1.99.0-B7410E?logo=rust)](rust-toolchain.toml)
 [![Go](https://img.shields.io/badge/Go-1.27-12A4A1?logo=go)](tools/sextant/go.mod)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-22B45E)
@@ -51,14 +51,17 @@ Meridian is my attempt at the one I want:
 - **Power without fear.** The file system keeps snapshots, so a broken
   install or a wrong command can be undone with one click.
 
-> Meridian is at the very beginning. Today there is the build tool, which
-> writes and signs the boot images itself, the settings format, and a UEFI
-> loader with a boot screen: a card for each system it finds, the log on
-> V, the firmware settings on F, and its settings in `boot.meri`. It loads
-> a higher-half kernel that catches every processor exception on a panic
-> screen with a QR code, and shows the processor, its cores, the memory
-> and a live uptime. **It does nothing more yet.** Everything below about
-> the running system describes where Meridian is going.
+> Meridian is early. Today there is the build tool, which writes and signs
+> the boot images itself, the settings format, and a UEFI loader with a
+> boot screen: a card for each system it finds, the log on V, the firmware
+> settings on F, and its settings in `boot.meri`. It loads a higher-half
+> kernel that runs threads on every core and programs in ring 3, each in
+> an address space of its own, with handles, channels and security tokens.
+> The kernel reads SATA, NVMe and virtio disks, their GPT and FAT32, and
+> hangs the partition it came from at `/System/Boot`. init starts the
+> services its list names, and a first shell runs on a text console.
+> **There is no desktop and no Windows program yet.** Everything below
+> about the running system describes where Meridian is going.
 > [ROADMAP](docs/ROADMAP.md) and [TODO](TODO.md) say exactly what is
 > finished.
 
@@ -112,14 +115,14 @@ Wine or ReactOS ([ADR 0004](docs/adr/0004-clean-room.md)).
 | Part | What it is | State today |
 | --- | --- | --- |
 | [`boot`](docs/architecture/boot.md) | UEFI bootloader in Rust: a boot menu that finds Windows and Linux, Secure Boot through a signed shim, a framebuffer handed to the kernel without a flicker | boot screen with cards for the systems on the EFI partition and the firmware's boot options, the log, the firmware settings and `boot.meri`; loads the kernel and hands it memory, framebuffer and ACPI; starts through Ubuntu's shim signed by Microsoft, with Meridian's key enrolled once in MokManager |
-| [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | its own descriptor tables, every exception on a panic screen with a QR code, a status screen with cores and a live uptime; a frame allocator and a heap, the APIC timer, so the processor sleeps between ticks, and every core started (M2 has begun) |
+| [`kernel`](docs/architecture/kernel.md) | hybrid kernel with the handle model above, all CPU cores from the start, NX, SMEP, SMAP and KASLR | every exception on a panic screen with a QR code, a status screen, threads on every core with preemption, programs in ring 3 with 23 system calls, handles, channels, security tokens, TLB shootdowns, KASLR, SMEP and SMAP; AHCI, NVMe and virtio disks, GPT, FAT32 and a VFS read only; a PS/2 keyboard and a text console |
 | `lib/uefi` | UEFI types and firmware calls, written from the specification | done for what the loader calls, checked against OVMF |
-| `lib` | `no_std` crates shared by kernel and userland, tested on the host | `acpi`, `bootinfo`, `canvas`, `elf`, `font`, `meri`, `paging`, `qr`, `uefi`, `x86` |
-| `user` | init, the shell, command-line tools, the terminal, the apps | planned (M5, M7) |
+| `lib` | `no_std` crates shared by kernel and userland, tested on the host | `abi`, `acpi`, `ahci`, `bootinfo`, `canvas`, `channel`, `elf`, `fat`, `font`, `frames`, `gpt`, `handles`, `heap`, `meri`, `nvme`, `paging`, `pci`, `program`, `ps2`, `qr`, `sched`, `security`, `uefi`, `virtio`, `x86` |
+| `user` | init, the shell, command-line tools, the terminal, the apps | init and a first shell, written on `lib/program` (M5); the rest planned (M5, M7) |
 | [`win32`](docs/architecture/win32.md) | PE loader, Meridian's own ntdll, kernel32, user32, gdi32; 64-bit and 32-bit | planned (M6, M8) |
 | [Horizon](docs/architecture/horizon.md) | the desktop | designed, not built (M7) |
 | [Strata](docs/architecture/strata.md) | copy-on-write file system with snapshots, checksums and an instant file index | specified, not built (M4) |
-| [`sextant`](docs/architecture/sextant.md) | the build and dev tool, in Go, runs on Linux, macOS and Windows | `build`, `image`, `run`, `test`, `stats`, `lint` and `mutate` work, with the `.meri` reader, the GPT, FAT32 and ISO writers and the Authenticode signer; `doctor` is next |
+| [`sextant`](docs/architecture/sextant.md) | the build and dev tool, in Go, runs on Linux, macOS and Windows | `build`, `image`, `run`, `test`, `ci`, `doctor`, `stats`, `lint`, `mutate`, `adr new` and `key new` work, with the `.meri` reader, the GPT, FAT32 and ISO writers and the Authenticode signer; `debug`, `flash` and `release` are planned |
 
 ---
 
@@ -205,8 +208,8 @@ boot menu has started to exist.
 
 ## Status
 
-**M0, the foundation, and M1, the boot, are in progress.** See
-[ROADMAP](docs/ROADMAP.md).
+**M2, memory and CPUs, is done. M0, M1, M3, M4 and M5 are in progress.**
+See [ROADMAP](docs/ROADMAP.md).
 
 The test bar holds for every component, from the first commit on:
 
@@ -223,26 +226,39 @@ The test bar holds for every component, from the first commit on:
   by OpenSSL.
   The `.meri` readers have to pass a shared conformance suite of 134 cases.
 
-On 15 October 2026:
+On 21 October 2026:
 
 | Component | Code | Tests | Ratio |
 | --- | --- | --- | --- |
-| `boot` | 1882 | 3220 | 1.71 |
-| `kernel` | 1643 | 2593 | 1.57 |
-| `lib/acpi` | 147 | 369 | 2.51 |
-| `lib/bootinfo` | 167 | 262 | 1.56 |
-| `lib/canvas` | 292 | 506 | 1.73 |
-| `lib/elf` | 265 | 523 | 1.97 |
+| `boot` | 2020 | 3438 | 1.70 |
+| `kernel` | 5592 | 8639 | 1.54 |
+| `lib/abi` | 321 | 498 | 1.55 |
+| `lib/acpi` | 226 | 564 | 2.49 |
+| `lib/ahci` | 147 | 269 | 1.82 |
+| `lib/bootinfo` | 238 | 366 | 1.53 |
+| `lib/canvas` | 317 | 566 | 1.78 |
+| `lib/channel` | 144 | 272 | 1.88 |
+| `lib/elf` | 328 | 739 | 2.25 |
+| `lib/fat` | 994 | 2162 | 2.17 |
 | `lib/font` | 898 | 2616 | 2.91 |
 | `lib/frames` | 159 | 256 | 1.61 |
+| `lib/gpt` | 336 | 605 | 1.80 |
+| `lib/handles` | 133 | 220 | 1.65 |
 | `lib/heap` | 49 | 120 | 2.44 |
 | `lib/meri` | 1240 | 1962 | 1.58 |
-| `lib/paging` | 213 | 602 | 2.82 |
+| `lib/nvme` | 230 | 348 | 1.51 |
+| `lib/paging` | 243 | 695 | 2.86 |
+| `lib/pci` | 133 | 249 | 1.87 |
+| `lib/program` | 1018 | 1528 | 1.50 |
+| `lib/ps2` | 220 | 339 | 1.54 |
 | `lib/qr` | 496 | 830 | 1.67 |
+| `lib/sched` | 114 | 211 | 1.85 |
+| `lib/security` | 411 | 644 | 1.56 |
 | `lib/uefi` | 1666 | 2666 | 1.60 |
-| `lib/x86` | 659 | 994 | 1.50 |
-| `tools/sextant` | 7712 | 13743 | 1.78 |
-| total | 17488 | 31262 | 1.78 |
+| `lib/virtio` | 201 | 340 | 1.69 |
+| `lib/x86` | 967 | 1469 | 1.51 |
+| `tools/sextant` | 8143 | 14745 | 1.81 |
+| total | 26984 | 47356 | 1.75 |
 
 `sextant stats` prints the current numbers.
 

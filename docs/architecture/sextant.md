@@ -16,11 +16,11 @@ system will get its own name later.
 | `stats [--check] [--files] [--min N]` | code and test lines per component; `--check` fails below the minimum and says how many test lines are missing | works |
 | `lint` | the project rules no compiler knows | works |
 | `doctor [--yes]` | checks Go, rustup and the pinned toolchain, QEMU, OVMF, KVM and the tools the tests check with, prints how to fix each, and installs what is missing with pacman, apt, dnf, zypper, Homebrew or winget after one "y" | works |
-| `build [part] [--release]` | builds the loader, and later the kernel and everything else, through Cargo | being built |
-| `image` | writes a bootable GPT disk image, and an ISO | being built; the writers work |
+| `build [part] [--release]` | builds the loader, the kernel and the programs through Cargo, and puts them on the EFI partition | works |
+| `image` | writes a bootable GPT disk image, and an ISO | works |
 | `run [--headless] [--debug] [--for 30s] [--until "text"]` | boots the image in QEMU with KVM, HVF or WHPX when available, serial output in the terminal; `--for` stops the machine after that long, `--until` once the text appears on the serial port, restarting a firmware that stalls, so `run --headless --until "Meridian kernel"` is a quick check that the image boots | works |
 | `test [--host] [--qemu] [--win]` | host tests, QEMU test images, Windows behaviour tests | being built |
-| `mutate [paths]` | mutation testing for Rust and Go | being built |
+| `mutate [paths]` | mutation testing for Rust and Go, each mutant in a private copy; a mutant whose tests run too long or, on Linux, hold too much memory is stopped and counts as killed | works |
 | `debug` | like `run`, paused, with GDB attached | planned |
 | `adr new "title"` | the next numbered decision record from the template, proposed and dated today, with its row in the index | works |
 | `key new file [--name]` | a new RSA key with a certificate for 30 years, written to a file only its owner can read, and the certificate alone next to it as `.cer`; prints the certificate's SHA-256 and how to hand the key to CI. It never replaces a file | works |

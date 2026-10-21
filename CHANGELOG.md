@@ -86,7 +86,7 @@ at 0.x until the native API is stable.
   - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
   - `lib/abi`: the system calls programs and the kernel agree on; `lib/program`: what a program in Rust is built on, the calls as functions, `main!`, a heap and `log!`; `lib/security`: SIDs, tokens and the access check, in the shape [MS-DTYP] gives them.
   - `lib/pci`, `lib/ahci`, `lib/nvme`, `lib/virtio` and `lib/ps2`: the parts of each driver that need no hardware, from the specifications.
-  - `lib/gpt`: partition tables read and written, with their copies and the protective MBR; `lib/fat`: FAT32 read and written, long names with their short ones, and volumes made as fatgen103 lays them out.
+  - `lib/gpt`: partition tables read and written, with their copies and the protective MBR; `lib/fat`: FAT32 read, a run of sectors at a time, and written, long names with their short ones, and volumes made as fatgen103 lays them out.
 
 ### Fixed
 
@@ -95,7 +95,7 @@ at 0.x until the native API is stable.
 
 ### Verified
 
-- **Test lines.** 47210 lines of tests for 26948 lines of code, a ratio of 1.75, and every component at 1.5 or more.
+- **Test lines.** 47356 lines of tests for 26984 lines of code, a ratio of 1.75, and every component at 1.5 or more.
 - **sextant.** All tests pass with the race detector, at 7712 lines of code and 13743 lines of tests, a ratio of 1.78, on Linux, macOS and Windows.
 - **Signatures.** OpenSSL verifies the loader's signature, its signed digest and its certificate, and the digest matches a second reading of the file through Go's `debug/pe`. OVMF with Secure Boot on starts the loader signed with an enrolled key and refuses it unsigned, signed with another key, or signed over a wrong digest. OVMF in Setup Mode takes Meridian's own key through the authenticated variable writes sextant makes, refuses a write whose signature was changed, and afterwards starts only what that key signed. OVMF with Microsoft's keys, as a PC from a shop has them, starts the shim, which refuses the loader until a Go test has pressed through enrolling `meridian.cer` in MokManager, and starts it after the restart; with another key's certificate enrolled it keeps refusing.
 - **`lib/uefi`.** 111 host tests pass at a ratio of 1.60. Every field offset of the firmware tables is checked against the specification.

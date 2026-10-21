@@ -14,7 +14,7 @@ and never build something that cannot be tested yet.
 | M2 | Memory and CPUs | done |
 | M3 | Processes | in progress |
 | M4 | Storage and Strata | in progress |
-| M5 | Userland | planned |
+| M5 | Userland | in progress |
 | M6 | Windows programs, step 1: the console | planned |
 | M7 | Horizon, the desktop | planned |
 | M8 | Windows programs, step 2: windows | planned |

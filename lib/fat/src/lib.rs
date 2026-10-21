@@ -268,11 +268,16 @@ fn short_name(e: &[u8]) -> impl Iterator<Item = u16> + '_ {
         .map(u16::from)
 }
 
-/// A FAT32 volume, read through `read`, which reads the volume's sector it
-/// is given into the room it is given and says whether it could.
+/// A FAT32 volume, read through `read`, which reads the volume's sectors
+/// from the one it is given on into the room it is given, a whole number
+/// of them, and says whether it could.
 pub struct Fat<R> {
     pub volume: Volume,
     read: R,
+    /// The FAT sector read last, and its number. A chain mostly runs on
+    /// inside one, so it is read once rather than once for every cluster.
+    pub(crate) table: Option<u64>,
+    table_room: [u8; 4096],
 }
 
 impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
@@ -289,6 +294,8 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
         Ok(Fat {
             volume: Volume::read(&boot)?,
             read,
+            table: None,
+            table_room: [0; 4096],
         })
     }
 
@@ -309,12 +316,15 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
     /// have.
     pub fn next(&mut self, cluster: u32) -> Result<Option<u32>, Error> {
         let (sector, offset) = self.volume.entry_of(cluster);
-        let mut room = [0u8; 4096];
-        let size = self.volume.sector_size as usize;
-        if !(self.read)(sector, &mut room[..size]) {
-            return Err(Error::Read);
+        if self.table != Some(sector) {
+            self.table = None;
+            let size = self.volume.sector_size as usize;
+            if !(self.read)(sector, &mut self.table_room[..size]) {
+                return Err(Error::Read);
+            }
+            self.table = Some(sector);
         }
-        let next = u32_at(&room, offset) & 0x0fff_ffff;
+        let next = u32_at(&self.table_room, offset) & 0x0fff_ffff;
         if next >= END {
             return Ok(None);
         }
@@ -511,21 +521,51 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
         let mut done = 0;
         loop {
             let start = self.volume.first_sector(cluster).ok_or(Error::BadChain)?;
-            while sector < per_cluster {
-                if !(self.read)(start + sector, &mut room[..size]) {
+            let whole = ((want - done) / size) as u64;
+            if skip == 0 && whole > 0 {
+                // Every whole sector wanted from here that lies in one piece,
+                // in this cluster and the ones right behind it, in one read.
+                let mut last = cluster;
+                let mut run = per_cluster - sector;
+                while run < whole && self.next(last)? == Some(last + 1) {
+                    last += 1;
+                    run += per_cluster;
+                }
+                let n = run.min(whole);
+                let bytes = usize::try_from(n).map_err(|_| Error::Read)? * size;
+                if !(self.read)(start + sector, &mut into[done..done + bytes]) {
                     return Err(Error::Read);
                 }
-                let n = (size - skip).min(want - done);
-                into[done..done + n].copy_from_slice(&room[skip..skip + n]);
-                done += n;
-                skip = 0;
-                sector += 1;
+                done += bytes;
+                let through = sector + n;
+                let read_last = cluster
+                    + u32::try_from((through - 1) / per_cluster).map_err(|_| Error::BadChain)?;
                 if done == want {
-                    return Ok((done, cluster));
+                    return Ok((done, read_last));
                 }
+                sector = through % per_cluster;
+                cluster = if sector == 0 {
+                    self.next(read_last)?.ok_or(Error::BadChain)?
+                } else {
+                    read_last
+                };
+                continue;
             }
-            sector = 0;
-            cluster = self.next(cluster)?.ok_or(Error::BadChain)?;
+            if !(self.read)(start + sector, &mut room[..size]) {
+                return Err(Error::Read);
+            }
+            let n = (size - skip).min(want - done);
+            into[done..done + n].copy_from_slice(&room[skip..skip + n]);
+            done += n;
+            skip = 0;
+            sector += 1;
+            if done == want {
+                return Ok((done, cluster));
+            }
+            if sector == per_cluster {
+                sector = 0;
+                cluster = self.next(cluster)?.ok_or(Error::BadChain)?;
+            }
         }
     }
 }
@@ -533,6 +573,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
 
     /// The sizes of the test volume: as small as FAT32 allows with one
@@ -626,9 +667,11 @@ mod tests {
 
         fn reader(&self) -> impl FnMut(u64, &mut [u8]) -> bool + '_ {
             |lba, into| {
-                into.copy_from_slice(
-                    &self.sectors.get(&lba).copied().unwrap_or([0; 512])[..into.len()],
-                );
+                for (at, chunk) in (lba..).zip(into.chunks_mut(512)) {
+                    chunk.copy_from_slice(
+                        &self.sectors.get(&at).copied().unwrap_or([0; 512])[..chunk.len()],
+                    );
+                }
                 true
             }
         }
@@ -1088,6 +1131,162 @@ mod tests {
             );
             assert_eq!(room, &bytes[offset..offset + len], "from byte {offset}");
         }
+    }
+
+    /// The reader of `disk`, noting in `reads` where each read starts and
+    /// how many bytes it asks for.
+    fn noting<'a>(
+        disk: &'a Disk,
+        reads: &'a RefCell<Vec<(u64, usize)>>,
+    ) -> impl FnMut(u64, &mut [u8]) -> bool + 'a {
+        let mut read = disk.reader();
+        move |lba, into| {
+            reads.borrow_mut().push((lba, into.len()));
+            read(lba, into)
+        }
+    }
+
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..=252u8).cycle().take(len).collect()
+    }
+
+    #[test]
+    fn a_file_in_one_piece_is_read_in_one_go() {
+        let mut disk = Disk::new();
+        let bytes = pattern(64 * 512);
+        let first = disk.file(&bytes);
+        let entry = Entry {
+            first,
+            size: 64 * 512,
+            directory: false,
+        };
+        let reads = RefCell::new(Vec::new());
+        let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
+        reads.borrow_mut().clear();
+        let mut room = vec![0u8; bytes.len()];
+        assert_eq!(fat.read_file(&entry, &mut room), Ok(bytes.len()));
+        assert_eq!(room, bytes);
+        let data = fat.volume.first_sector(first).unwrap();
+        assert_eq!(
+            *reads.borrow(),
+            [(32, 512), (data, 64 * 512)],
+            "its FAT sector once and its sectors all together"
+        );
+    }
+
+    #[test]
+    fn a_file_in_pieces_is_read_a_piece_at_a_time() {
+        let mut disk = Disk::new();
+        let clusters = [10, 11, 12, 200, 201, 5];
+        let bytes = pattern(6 * 512 - 100);
+        disk.link(&clusters);
+        disk.fill(&clusters, &bytes);
+        let entry = Entry {
+            first: 10,
+            size: 6 * 512 - 100,
+            directory: false,
+        };
+        let reads = RefCell::new(Vec::new());
+        let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
+        reads.borrow_mut().clear();
+        let mut room = vec![0u8; bytes.len()];
+        assert_eq!(fat.read_file(&entry, &mut room), Ok(bytes.len()));
+        assert_eq!(room, bytes);
+        let at = |c| fat.volume.first_sector(c).unwrap();
+        // Clusters 200 and 201 have their entries in the FAT's second
+        // sector, the others in its first, and only the last is kept.
+        assert_eq!(
+            *reads.borrow(),
+            [
+                (32, 512),
+                (at(10), 3 * 512),
+                (33, 512),
+                (at(200), 2 * 512),
+                (at(5), 512),
+                (32, 512)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_parts_of_sectors_at_either_end_are_read_on_their_own() {
+        let mut disk = Disk::new();
+        let bytes = pattern(8 * 512);
+        let first = disk.file(&bytes);
+        let entry = Entry {
+            first,
+            size: 8 * 512,
+            directory: false,
+        };
+        let reads = RefCell::new(Vec::new());
+        let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
+        reads.borrow_mut().clear();
+        let mut room = vec![0u8; 3 * 512];
+        assert_eq!(fat.read_at(&entry, 100, &mut room), Ok(3 * 512));
+        assert_eq!(room, &bytes[100..100 + 3 * 512]);
+        let data = fat.volume.first_sector(first).unwrap();
+        assert_eq!(
+            *reads.borrow(),
+            [(data, 512), (32, 512), (data + 1, 2 * 512), (data + 3, 512)]
+        );
+    }
+
+    #[test]
+    fn clusters_of_several_sectors_are_read_together_from_inside_the_first() {
+        let (disk, bytes) = wide();
+        let reads = RefCell::new(Vec::new());
+        let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
+        let entry = fat.find("wide file.bin").unwrap();
+        reads.borrow_mut().clear();
+        let mut room = vec![0u8; 8000];
+        assert_eq!(fat.read_at(&entry, 1024, &mut room), Ok(8000));
+        assert_eq!(room, &bytes[1024..9024]);
+        let data = fat.volume.first_sector(66_000).unwrap();
+        assert_eq!(
+            *reads.borrow(),
+            [(32 + 515, 512), (data + 2, 15 * 512), (data + 17, 512)],
+            "from the third sector of the first cluster through the second sector of the third"
+        );
+    }
+
+    #[test]
+    fn a_run_from_inside_a_cluster_ends_with_it_when_the_next_lies_elsewhere() {
+        let mut disk = Disk::of(8, 32 + 2 * 520 + 66_100 * 8, 520);
+        let clusters = [66_000, 66_005];
+        let bytes = pattern(16 * 512);
+        disk.link(&clusters);
+        disk.fill(&clusters, &bytes);
+        let entry = Entry {
+            first: 66_000,
+            size: 16 * 512,
+            directory: false,
+        };
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        let mut room = vec![0u8; 8 * 512];
+        assert_eq!(fat.read_at(&entry, 2 * 512, &mut room), Ok(8 * 512));
+        assert_eq!(room, &bytes[2 * 512..10 * 512]);
+    }
+
+    #[test]
+    fn the_chain_is_followed_only_as_far_as_the_bytes_wanted() {
+        let mut disk = Disk::new();
+        let bytes = pattern(3 * 512);
+        let first = disk.file(&bytes);
+        disk.set_fat(first + 1, 70_000);
+        let entry = Entry {
+            first,
+            size: 3 * 512,
+            directory: false,
+        };
+        let mut fat = Fat::open(disk.reader()).unwrap();
+        let mut room = [0u8; 1025];
+        assert_eq!(fat.read_at(&entry, 0, &mut room[..1024]), Ok(1024));
+        assert_eq!(room[..1024], bytes[..1024]);
+        assert_eq!(
+            fat.read_at(&entry, 0, &mut room),
+            Err(Error::BadChain),
+            "one byte further needs the cluster the second names, which the volume does not have"
+        );
     }
 
     #[test]

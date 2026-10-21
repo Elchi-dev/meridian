@@ -39,6 +39,8 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
     }
 
     fn put(&mut self, at: u64, from: &[u8]) -> Result<(), Error> {
+        // The FAT sector the reader keeps may be the one written.
+        self.fat.table = None;
         if (self.write)(at, from) {
             Ok(())
         } else {

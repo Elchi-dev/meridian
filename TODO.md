@@ -101,7 +101,7 @@ Loader and UEFI:
 - [x] Threads on every core: a run queue and an idle thread each, every core's timer ticking, a thread for another core waking it
 - [x] Threads move between cores: a core with nothing to run takes a waiting thread from a busy one, unless it was started for its core
 - [x] Each thread's FPU and SSE registers kept across switches, before programs use them: XSAVE with AVX and AVX-512 where the processor has them, FXSAVE otherwise, fresh for every new thread
-- [ ] `kernel.thread.freed_elsewhere` failed once in three runs of the test image on 2026-10-21; find out why
+- [x] Checks that measure time hold on a busy host: `kernel.thread.freed_elsewhere`, `kernel.smp.quick`, `kernel.tsc.agrees` and `kernel.timer.ticks` failed now and then while other machines ran beside them, and other cores now get a second to come
 - [x] Threads in programs, and with them TLB shootdowns: a page one thread unmaps must not stay cached on another core (THREAD, END_THREAD, the SHOOTDOWN interrupt)
 - [x] TERMINATE: a process ends at its next way back to ring 3, also while it waits
 - [x] Ring 3 and system calls: user segments, `int 0x2e`, a kernel stack per thread in the task state, the first program saying hello, faults in ring 3 ending only the program
@@ -146,7 +146,7 @@ Loader and UEFI:
 ## M5: Userland
 
 - [x] init: the services `meridian/services.meri` lists, each kept in a thread of its own and started again when it ends, waiting longer each time it ended soon; the kernel starts init alone
-- [ ] init ends without waiting for its own threads, so a service one of them started a moment before can outlive it; since files load faster, `kernel.init` fails now and then because of it
+- [x] init ends after the threads that keep its services, so a service one of them started a moment before cannot outlive it
 - [ ] The service manager: services that wait for others, that end on their own, and asked about from the shell
 - [x] A first shell on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `clear`, `exit`, on every image
 - [x] The shell starts a program by its name in `/System/Boot/meridian/programs` or by its path (SPAWN takes paths), and says how it ended

@@ -577,6 +577,9 @@ fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64,
         }
     };
     let core = super::interrupts::this_core();
+    // Kept before it starts, which it may end on another core at once.
+    #[cfg(feature = "qemu-test")]
+    seen::keep_start(name);
     if let Err(e) = start_file_as(core, file, argument, child) {
         let _ = with_handles(|t| t.close(handle).map_err(|_| syscall::BAD_HANDLE));
         let mut objects = OBJECTS.lock();
@@ -1986,6 +1989,10 @@ pub mod seen {
     /// for a program's end, each up to 64 bytes of it and its length.
     static LOG: Kept = Kept::new();
     static ENDED: Kept = Kept::new();
+    /// The first programs started and ended since the last forget, in
+    /// order, and how many there were.
+    static EVENTS: [Kept; 32] = [const { Kept::new() }; 32];
+    static EVENTS_SEEN: AtomicUsize = AtomicUsize::new(0);
 
     /// How often each call was made since the last program started.
     static CALLS: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
@@ -2076,6 +2083,13 @@ pub mod seen {
             self.len.store(len, Ordering::Release);
         }
 
+        fn text(&self) -> alloc::vec::Vec<u8> {
+            let len = self.len.load(Ordering::Acquire).min(64);
+            (0..len)
+                .map(|i| self.words[i / 8].load(Ordering::Acquire).to_le_bytes()[i % 8])
+                .collect()
+        }
+
         fn holds(&self, text: &[u8]) -> bool {
             self.len.load(Ordering::Acquire) == text.len()
                 && text.iter().take(64).enumerate().all(|(i, &b)| {
@@ -2125,6 +2139,30 @@ pub mod seen {
 
     pub(super) fn keep_ended<W>(line: &Through<W>) {
         ENDED.keep(&line.kept, line.len);
+        keep_event(&line.kept[..line.len.min(64)]);
+    }
+
+    /// Keeps that a program is started by `name`, as "start" and the name.
+    pub(super) fn keep_start(name: &[u8]) {
+        let mut text = [0u8; 64];
+        text[..6].copy_from_slice(b"start ");
+        let len = (6 + name.len()).min(64);
+        text[6..len].copy_from_slice(&name[..len - 6]);
+        keep_event(&text[..len]);
+    }
+
+    fn keep_event(text: &[u8]) {
+        if let Some(event) = EVENTS.get(EVENTS_SEEN.fetch_add(1, Ordering::AcqRel)) {
+            event.keep(text, text.len());
+        }
+    }
+
+    /// The first 32 programs started and ended since the last forget, in
+    /// order: "start" and the name each was started by, and the line the
+    /// kernel logged for each end, each up to 64 bytes.
+    pub fn events() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        let seen = EVENTS_SEEN.load(Ordering::Acquire).min(EVENTS.len());
+        EVENTS[..seen].iter().map(Kept::text).collect()
     }
 
     /// Whether the last line the kernel logged for a program's end is
@@ -2143,7 +2181,8 @@ pub mod seen {
     }
 
     /// Forgets what the programs before left: the calls they made, the
-    /// last line they logged and the last end logged. A check does this
+    /// last line they logged, the last end logged and the starts and ends
+    /// kept in order. A check does this
     /// before it starts the program it looks at, which may run at once on
     /// another tick.
     pub fn forget() {
@@ -2155,6 +2194,7 @@ pub mod seen {
         USER_ACCESS.store(false, Ordering::Release);
         LOG.len.store(0, Ordering::Release);
         ENDED.len.store(0, Ordering::Release);
+        EVENTS_SEEN.store(0, Ordering::Release);
     }
 
     /// Forgets how the program before ended on thread `slot`, as the

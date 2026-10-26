@@ -1408,10 +1408,11 @@ fn shell_checks<W: Write>(
 }
 
 /// init, handed a channel end: of the services the test image lists, it
-/// starts whoami, which ends at once there, again and again but waiting
-/// longer each time, and the shell once, and once the channel's other end
-/// closes, it ends them and itself, so every frame they took comes back.
-/// Booted from a CD it has no list, so it starts the shell alone.
+/// runs exitwith once, starts whoami, which waits for exitwith to end and
+/// ends at once there, again and again but waiting longer each time, and
+/// the shell once, and once the channel's other end closes, it ends them
+/// and itself, so every frame they took comes back. Booted from a CD it
+/// has no list, so it starts the shell alone.
 fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
     use handles::Rights;
     use raw::user::{self, seen};
@@ -1435,8 +1436,18 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
     });
     raw::thread::sleep(60);
     let spawns = seen::calls(abi::SPAWN);
+    let events = seen::events();
+    let first = |line: &[u8]| events.iter().position(|e| e.starts_with(line));
     let ran = if disk {
-        (5..=11).contains(&spawns) && seen::logged(b"init: whoami ended with 1")
+        let once = events
+            .iter()
+            .filter(|e| e.starts_with(b"start exitwith"))
+            .count()
+            == 1;
+        let waited = first(b"user: exitwith ended with 2989")
+            .zip(first(b"start whoami"))
+            .is_some_and(|(ended, started)| ended < started);
+        (6..=12).contains(&spawns) && once && waited && seen::logged(b"init: whoami ended with 1")
     } else {
         spawns == 1
     };
@@ -1453,7 +1464,7 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
     report.check(
         "kernel.init",
         ran && ended && back && last,
-        "init should start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
+        "init should run a service once where it says so, start one that waits for it only after it ended, start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
     );
 }
 

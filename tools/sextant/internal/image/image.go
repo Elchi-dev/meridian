@@ -162,17 +162,27 @@ const ServicesPath = "meridian/services.meri"
 // console.
 const Services = `# The services init starts, and starts again when one ends. A program
 # is named as among meridian/programs, without .mexec, or by its path.
+# once = true runs a service once, and after = name, or a list of names,
+# makes it wait for services above it: one that runs once until it ended,
+# any other until it started.
 
 service shell {
     program = shell
 }
 `
 
-// testServices is the list of test images: whoami, which ends at once
-// there, so the test image sees init start it again and again, and the
-// shell, which runs until init ends it.
-const testServices = `service whoami {
+// testServices is the list of test images: exitwith, which runs once
+// and ends at once with 2989 there, whoami, which waits for it and ends at
+// once there too, so the test image sees init start it again and again,
+// and the shell, which runs until init ends it.
+const testServices = `service exitwith {
+    program = exitwith
+    once = true
+}
+
+service whoami {
     program = whoami
+    after = exitwith
 }
 
 service shell {

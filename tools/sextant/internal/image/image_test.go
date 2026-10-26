@@ -200,7 +200,7 @@ func TestTheServicesListsNameTheirPrograms(t *testing.T) {
 		services  []string
 	}{
 		{"services.meri", Services, []string{"shell"}},
-		{"test services.meri", testServices, []string{"whoami", "shell"}},
+		{"test services.meri", testServices, []string{"exitwith", "whoami", "shell"}},
 	} {
 		doc, err := meri.Parse(c.name, []byte(c.src))
 		if err != nil {
@@ -216,6 +216,29 @@ func TestTheServicesListsNameTheirPrograms(t *testing.T) {
 				t.Errorf("%s: service %q runs %q, %v", c.name, b.Label, program, err)
 			}
 		}
+	}
+}
+
+func TestTheTestServicesRunOneOnceAndWaitForIt(t *testing.T) {
+	doc, err := meri.Parse("test services.meri", []byte(testServices))
+	if err != nil {
+		t.Fatal(err)
+	}
+	once := map[string]bool{}
+	after := map[string]string{}
+	for _, b := range doc.Blocks("service") {
+		if once[b.Label], err = b.Bool("once", false); err != nil {
+			t.Fatal(err)
+		}
+		if after[b.Label], err = b.String("after", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !once["exitwith"] || once["whoami"] || once["shell"] {
+		t.Errorf("only exitwith should run once: %v", once)
+	}
+	if after["whoami"] != "exitwith" || after["exitwith"] != "" || after["shell"] != "" {
+		t.Errorf("only whoami should wait, for exitwith: %v", after)
 	}
 }
 

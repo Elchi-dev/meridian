@@ -147,7 +147,8 @@ Loader and UEFI:
 
 - [x] init: the services `meridian/services.meri` lists, each kept in a thread of its own and started again when it ends, waiting longer each time it ended soon; the kernel starts init alone
 - [x] init ends after the threads that keep its services, so a service one of them started a moment before cannot outlive it
-- [ ] The service manager: services that wait for others, that end on their own, and asked about from the shell
+- [x] Services that run once and services that wait for others (`once`, `after` in `services.meri`)
+- [ ] Services asked about from the shell
 - [x] A first shell on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `clear` and `cls`, `exit`, on every image
 - [x] The shell starts a program by its name in `/System/Boot/meridian/programs` or by its path (SPAWN takes paths), and says how it ended
 - [ ] The shell, with an `sh` mode

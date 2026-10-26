@@ -394,11 +394,18 @@ loader's programs or by its path; every image lists the shell. Each
 service runs in a thread of init's own that starts it, waits for it to
 end, logs how it ended and starts it again, waiting first when it ended
 within a second of starting: a tick, then twice as long each time up to
-128. Without the list, as on a CD, the shell is the one service. Handed a
+128. A service with `once = true` runs once and is not started again. One
+with `after`, a name or a list of names, waits for the services listed
+above it that it names: for one that runs once until it ended, for any
+other until it started. Naming only services above keeps a service from
+waiting for itself or in a ring; init logs any other name and goes on.
+Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
-itself. The test image does that with a list of whoami, which ends at
-once there, and the shell: it wants whoami started five to eleven times
-in 60 ticks, and every frame back once init ended.
+itself. The test image does that with a list of exitwith, which runs once
+and ends at once, whoami, which waits for it and ends at once there, and
+the shell. It keeps the order programs started and ended in and wants
+exitwith started once and ended before whoami first started, six to
+twelve starts in 60 ticks, and every frame back once init ended.
 
 ## The console (M5)
 

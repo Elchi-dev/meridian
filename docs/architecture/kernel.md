@@ -78,7 +78,8 @@ is what exists today; everything after it is still to come.
   physical memory, the stack, the processor state, the ACPI root pointer,
   and that boot services are over. It checks the cores and the timer it
   found, and measures the counter a second time over 100 ms, which has to
-  agree with the first measurement to within a tenth. It checks its status screen by reading
+  agree with the first measurement to within a tenth in one of three
+  tries, since a busy host can stretch any one of them. It checks its status screen by reading
   the framebuffer back, and checks the loaded tables and five exceptions
   it causes on purpose (breakpoint, invalid opcode, division by zero, a
   read of address 0, a bad selector), each resumed after the fault. Then

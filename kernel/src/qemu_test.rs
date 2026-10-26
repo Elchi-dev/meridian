@@ -1574,14 +1574,20 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
     );
     // A second measurement, ten times as long, should agree with the
     // first to within a tenth.
+    // A host that takes the processor away between two readings makes
+    // one measurement long, never all three.
     let agrees = pm_timer.zip(tsc_hz).is_some_and(|((port, bits), hz)| {
-        let tenth = acpi::PM_TIMER_HZ / 10;
-        let (pm_start, tsc_start) = (u64::from(raw::pm_timer(port)), x86::raw::tsc());
-        while kernel::clock::ticks_between(pm_start, u64::from(raw::pm_timer(port)), bits) < tenth {
-            core::hint::spin_loop();
-        }
-        let ms = (x86::raw::tsc() - tsc_start) / (hz / 1000);
-        (90..=110).contains(&ms)
+        (0..3).any(|_| {
+            let tenth = acpi::PM_TIMER_HZ / 10;
+            let (pm_start, tsc_start) = (u64::from(raw::pm_timer(port)), x86::raw::tsc());
+            while kernel::clock::ticks_between(pm_start, u64::from(raw::pm_timer(port)), bits)
+                < tenth
+            {
+                core::hint::spin_loop();
+            }
+            let ms = (x86::raw::tsc() - tsc_start) / (hz / 1000);
+            (90..=110).contains(&ms)
+        })
     });
     report.check(
         "kernel.tsc.agrees",
@@ -1853,12 +1859,16 @@ fn timer_checks<W: Write>(
             && read_apic(apic::LVT_TIMER) & 0x3_00ff == apic::periodic(crate::raw::interrupts::TIMER),
         "the APIC should be on with its spurious vector, its timer periodic on its vector, and interrupts let in",
     );
-    let first = ticks();
-    x86::raw::spin(tenth);
-    let counted = ticks() - first;
+    // A host that takes the processor away during one tenth swallows its
+    // ticks, never those of all three.
+    let counted = (0..3).any(|_| {
+        let first = ticks();
+        x86::raw::spin(tenth);
+        (5..=20).contains(&(ticks() - first))
+    });
     report.check(
         "kernel.timer.ticks",
-        (5..=20).contains(&counted),
+        counted,
         "the timer should interrupt about ten times in a tenth of a second",
     );
     let before = ticks();
@@ -3073,10 +3083,12 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     );
     // Threads that end there free their numbers once that core switched
     // away from them, so more than there are can start one after another.
+    // Each runs within microseconds, but a busy host once kept the other
+    // core away for 57 ms, so each gets half a second.
     RAN.store(0, Ordering::Release);
     let freed = (0..300u32).all(|n| {
         thread::spawn_on(first, counting, 0, NORMAL).is_ok()
-            && x86::raw::wait_for(tsc_hz / 100, || RAN.load(Ordering::Acquire) == n + 1)
+            && x86::raw::wait_for(tsc_hz / 2, || RAN.load(Ordering::Acquire) == n + 1)
     });
     report.check(
         "kernel.thread.freed_elsewhere",

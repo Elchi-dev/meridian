@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -122,6 +123,20 @@ func TestMutateRunStillReportsStaleAllowances(t *testing.T) {
 	r := runIn(checkout(t, repo), "mutate")
 	if r.code != ExitFailure || !strings.Contains(r.stderr, "mutants.meri:7:1: this allow matches no mutant in m/less.go any more") {
 		t.Fatalf("exit %d\nstderr %s", r.code, r.stderr)
+	}
+}
+
+func TestMutateSettingsFromTheCommandLine(t *testing.T) {
+	m, err := parseMutate(nil)
+	if err != nil || m.since != "" || m.jobs != 2 || m.list || !m.machine || len(m.paths) != 0 {
+		t.Fatalf("defaults: %+v, %v", m, err)
+	}
+	m, err = parseMutate([]string{"lib/fat", "--since", "main", "--jobs", "4", "kernel", "--list", "--machine=false"})
+	if err != nil || m.since != "main" || m.jobs != 4 || !m.list || m.machine || !slices.Equal(m.paths, []string{"lib/fat", "kernel"}) {
+		t.Fatalf("all set: %+v, %v", m, err)
+	}
+	if m, err := parseMutate([]string{"--jobs", "1"}); err != nil || m.jobs != 1 {
+		t.Fatalf("one at a time: %+v, %v", m, err)
 	}
 }
 

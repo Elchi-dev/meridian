@@ -19,31 +19,50 @@ import (
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/stats"
 )
 
-func runMutate(env Env, args []string) error {
+// mutateSettings are what sextant mutate is asked for.
+type mutateSettings struct {
+	paths   []string
+	since   string
+	jobs    int
+	list    bool
+	machine bool
+}
+
+func parseMutate(args []string) (mutateSettings, error) {
 	flags := flag.NewFlagSet("mutate", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	since := flags.String("since", "", "only files changed since this git ref")
-	jobs := flags.Int("jobs", 2, "mutants tested at the same time")
-	list := flags.Bool("list", false, "print the mutants without running them")
-	machine := flags.Bool("machine", true, "boot the QEMU test image for Rust mutants the host tests miss in crates with QEMU checks")
+	var m mutateSettings
+	flags.StringVar(&m.since, "since", "", "only files changed since this git ref")
+	flags.IntVar(&m.jobs, "jobs", 2, "mutants tested at the same time")
+	flags.BoolVar(&m.list, "list", false, "print the mutants without running them")
+	flags.BoolVar(&m.machine, "machine", true, "boot the QEMU test image for Rust mutants the host tests miss in crates with QEMU checks")
 	paths, err := parseInterleaved(flags, args)
 	if err != nil {
-		return usageErrorf("%v", err)
+		return mutateSettings{}, usageErrorf("%v", err)
 	}
-	if *jobs < 1 {
-		return usageErrorf("--jobs must be at least 1, got %d", *jobs)
+	if m.jobs < 1 {
+		return mutateSettings{}, usageErrorf("--jobs must be at least 1, got %d", m.jobs)
+	}
+	m.paths = paths
+	return m, nil
+}
+
+func runMutate(env Env, args []string) error {
+	m, err := parseMutate(args)
+	if err != nil {
+		return err
 	}
 	root, err := project.FindRoot(env.Dir)
 	if err != nil {
 		return err
 	}
-	rel, err := repoPaths(root, env.Dir, paths)
+	rel, err := repoPaths(root, env.Dir, m.paths)
 	if err != nil {
 		return err
 	}
 	var changed map[string]bool
-	if *since != "" {
-		if changed, err = changedSince(root, *since); err != nil {
+	if m.since != "" {
+		if changed, err = changedSince(root, m.since); err != nil {
 			return err
 		}
 	}
@@ -69,7 +88,7 @@ func runMutate(env Env, args []string) error {
 	}
 	run, allowed, stale := mutate.Split(allow, mutants, checked)
 
-	if *list {
+	if m.list {
 		for _, m := range run {
 			fmt.Fprintln(env.Stdout, m)
 		}
@@ -93,14 +112,14 @@ func runMutate(env Env, args []string) error {
 	var mu sync.Mutex
 	done := 0
 	var machineChecks []string
-	if *machine {
+	if m.machine {
 		self, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("find sextant itself to run the QEMU checks: %w", err)
 		}
 		machineChecks = []string{self, "test", "--qemu"}
 	}
-	runner := &mutate.Runner{Root: root, Jobs: *jobs, Scratch: scratch, Machine: machineChecks, Done: func(r mutate.Result) {
+	runner := &mutate.Runner{Root: root, Jobs: m.jobs, Scratch: scratch, Machine: machineChecks, Done: func(r mutate.Result) {
 		mu.Lock()
 		defer mu.Unlock()
 		done++

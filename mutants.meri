@@ -96,14 +96,7 @@ allow {
 
 allow {
     file = "kernel/src/raw/smp.rs"
-    line = "let _ = x86::raw::wait_for(tsc_hz / 10, || RUNNING.load(Ordering::Acquire) > before);"
-    mutation = "/ to *"
-    reason = "the limit only matters for a core that never starts; every core of the test machines starts, and the wait ends as soon as it has"
-}
-
-allow {
-    file = "kernel/src/raw/smp.rs"
-    line = "let _ = x86::raw::wait_for(tsc_hz / 10, || RUNNING.load(Ordering::Acquire) > before);"
+    line = "let came = x86::raw::wait_for(tsc_hz, || RUNNING.load(Ordering::Acquire) > before);"
     mutation = "> to >="
     reason = "every core of the test machines has come in by the end of the 0.2 ms after its first startup, so the wait finds it there either way; on slower hardware it keeps the next core's stack from being set while this one still reads its own"
 }

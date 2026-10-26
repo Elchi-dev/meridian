@@ -70,12 +70,19 @@ pub const THREAD_STACK_PAGES: u64 = 16;
 /// is ending.
 pub fn thread(work: impl FnOnce() -> u64 + Send + 'static) -> Result<(), Error> {
     let guard = map(THREAD_STACK_PAGES + 1)?;
-    let stack = guard + 4096;
-    let started = unmap(guard, 1)
-        .and_then(|()| raw::start_thread(Box::new(work), stack + THREAD_STACK_PAGES * 4096));
+    let (stack, top) = thread_stack(guard);
+    let started = unmap(guard, 1).and_then(|()| raw::start_thread(Box::new(work), top));
     started.inspect_err(|_| {
         let _ = unmap(stack, THREAD_STACK_PAGES);
     })
+}
+
+/// Where a thread's stack lies in the pages mapped from `guard` on: the
+/// first stays unmapped as its guard, and the stack takes the
+/// [`THREAD_STACK_PAGES`] above it. The second number is its top.
+const fn thread_stack(guard: u64) -> (u64, u64) {
+    let stack = guard + 4096;
+    (stack, stack + THREAD_STACK_PAGES * 4096)
 }
 
 /// Writes `line` to the kernel's log.
@@ -553,6 +560,16 @@ mod tests {
     use core::fmt::Write;
 
     use super::*;
+
+    #[test]
+    fn a_thread_stack_takes_the_pages_above_its_guard() {
+        assert_eq!(thread_stack(0x10_0000), (0x10_1000, 0x11_1000));
+        assert_eq!(
+            thread_stack(0x7f_f000).1 - thread_stack(0x7f_f000).0,
+            64 << 10,
+            "the whole 64 KiB its pages promise"
+        );
+    }
 
     #[test]
     fn a_log_line_is_given_by_where_it_is_and_how_long() {

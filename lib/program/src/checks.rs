@@ -20,7 +20,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 30] = [
+const CHECKS: [(&str, Check); 31] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -43,6 +43,7 @@ const CHECKS: [(&str, Check); 30] = [
     ("thread", threads_of_a_child),
     ("thread.here", a_thread_of_its_own),
     ("thread.moves", a_thread_takes_what_it_was_given),
+    ("thread.stack", a_thread_has_all_its_stack),
     ("wait.other", wait_for_no_process),
     ("token", own_token),
     ("spawn.token", child_gets_no_more),
@@ -532,6 +533,38 @@ fn a_thread_of_its_own() -> Outcome {
         FOUND.load(core::sync::atomic::Ordering::Acquire) == 42
     });
     expect(seen, "which should run beside it, in its memory")
+}
+
+/// What the thread with the deep stack read back from both ends of it.
+static DEEPEST: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Fills all but 4 KiB of a thread's stack, a byte on every page, and
+/// says what it reads back at both ends. A stack smaller than promised
+/// runs into the page below it, and the fault ends hello.
+fn deep() -> u64 {
+    let mut room = [0u8; 60 << 10];
+    let room = core::hint::black_box(&mut room);
+    for page in room.chunks_mut(4096) {
+        page[0] = 7;
+    }
+    let ends = u64::from(room[0]) + u64::from(room[room.len() - 4096]);
+    DEEPEST.store(ends, core::sync::atomic::Ordering::Release);
+    0
+}
+
+fn a_thread_has_all_its_stack() -> Outcome {
+    expect(
+        crate::thread(deep) == Ok(()),
+        "a thread should start for a deep stack",
+    )?;
+    let seen = (0..100).any(|_| {
+        sleep(1);
+        DEEPEST.load(core::sync::atomic::Ordering::Acquire) == 14
+    });
+    expect(
+        seen,
+        "and have the 64 KiB its stack is promised, all but 4 KiB of it in use",
+    )
 }
 
 /// What the thread that was given a list found in it.

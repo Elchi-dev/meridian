@@ -171,7 +171,7 @@ pub fn read_only(taken: u64) -> bool {
     taken & features::BLOCK_READ_ONLY != 0
 }
 
-/// Whether the device still says FEATURES_OK once the driver set it with
+/// Whether the device still says `FEATURES_OK` once the driver set it with
 /// the features it took. A device that clears it again cannot work with
 /// those and is not used.
 #[must_use]

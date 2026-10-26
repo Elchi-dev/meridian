@@ -459,11 +459,22 @@ func TestHostTestsDoNotStartInsideThemselves(t *testing.T) {
 	}
 }
 
+// The machine stops once the kernel's line appears, long before the time
+// it was given is over.
 func TestRunBootsTheRealImageUntilTheKernel(t *testing.T) {
 	needTool(t, "cargo")
 	needTool(t, "qemu-system-x86_64")
-	r := runIn(realRoot(t), "run", "--headless", "--until", "Meridian kernel", "--for", "3m")
+	// Built first, so the run's time is the machine's alone.
+	if r := runIn(realRoot(t), "build"); r.code != ExitOK {
+		t.Fatalf("build: exit %d\n%s", r.code, r.stderr)
+	}
+	started := time.Now()
+	r := runIn(realRoot(t), "run", "--headless", "--until", "Meridian kernel", "--for", "5m")
+	took := time.Since(started)
 	if r.code != ExitOK || !strings.Contains(r.stdout, "Meridian boot") || !strings.Contains(r.stdout, "Meridian kernel") {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+	}
+	if took > 2*time.Minute {
+		t.Errorf("the run took %v of its 5m; it should have ended once the kernel's line appeared", took)
 	}
 }

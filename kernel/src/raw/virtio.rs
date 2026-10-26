@@ -22,11 +22,6 @@ const NOTIFY: u64 = kernel::VIRTIO_REGISTERS + 0x2000;
 /// whenever QEMU was slow to get to the request.
 const PATIENCE: u64 = 4_000_000_000;
 
-/// Where the request's header and status byte lie in the queue's frame,
-/// past its rings.
-const HEADER: u64 = 0x800;
-const STATUS: u64 = 0x810;
-
 /// What a block device the kernel drives is like.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drive {
@@ -309,7 +304,7 @@ fn request(
     let frame = HHDM_BASE + queue.frame;
     let rings = virtio::rings(queue.size);
     let length = u32::try_from(length).map_err(|_| Error::OutOfRange)?;
-    let (header_at, status_at) = (queue.frame + HEADER, queue.frame + STATUS);
+    let (header_at, status_at) = virtio::request_at(queue.frame);
     let chain = if out {
         virtio::write_chain(header_at, data, length, status_at)
     } else {

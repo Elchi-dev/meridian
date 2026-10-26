@@ -215,6 +215,14 @@ pub fn rings(size: u16) -> Rings {
     }
 }
 
+/// Where a request's 16 bytes of header and its status byte lie in the
+/// page of a queue at `queue`: in the page's second half, past the rings
+/// of any queue the driver sets up.
+#[must_use]
+pub fn request_at(queue: u64) -> (u64, u64) {
+    (queue + 0x800, queue + 0x810)
+}
+
 /// Descriptor flags: another descriptor follows, and the device writes
 /// the buffer instead of reading it.
 pub const NEXT: u16 = 1;
@@ -725,6 +733,17 @@ mod tests {
             set | status::DRIVER_OK | status::NEEDS_RESET | status::FAILED
         ));
         assert!(!features_kept(0));
+    }
+
+    #[test]
+    fn a_request_lies_in_its_queues_page_past_the_rings() {
+        let queue = 0x0012_3000;
+        let (header, status) = request_at(queue);
+        for size in 3..=QUEUE_SIZE {
+            assert!(header >= queue + rings(size).end as u64, "{size}");
+        }
+        assert!(header + 16 <= status, "the status byte after the header");
+        assert!(status < queue + 4096, "in the same page");
     }
 
     #[test]

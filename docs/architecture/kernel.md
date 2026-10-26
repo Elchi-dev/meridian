@@ -113,9 +113,11 @@ it started it, with a 16 KiB fault stack of its own: NMIs, double faults
 and machine checks on it run there, as they do on the first core. Then
 it turns its APIC on and halts, as there is no work for it yet. The GDT
 has room for the task states of 64 cores; cores past them are not
-started. The test image checks every core came in on its own
-stack and the kernel's tables, and that starting them did not wait out
-the time a core that never starts gets.
+started. The first core gives each a second to come in and another to
+answer a first job with its own APIC id, as a busy host kept a virtual
+core away for more than 100 ms. The test image checks every core came
+in on its own stack and the kernel's tables, and that starting them did
+not wait out the time a core that never starts gets.
 
 ## Memory (M2)
 

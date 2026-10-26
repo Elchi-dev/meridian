@@ -102,13 +102,6 @@ allow {
 }
 
 allow {
-    file = "kernel/src/raw/smp.rs"
-    line = ".filter(|&(index, &id)| wait(index + 1, tsc_hz / 100) == Some(u64::from(id)))"
-    mutation = "/ to *"
-    reason = "the limit only matters for a core that never answers; every core of the test machines answers within microseconds, and the wait ends as soon as it has"
-}
-
-allow {
     file = "lib/program/src/raw.rs"
     line = "while self.taken.swap(true, Ordering::Acquire) {"
     mutation = "true to false"

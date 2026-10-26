@@ -343,10 +343,12 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
     for number in 1..=others.len() {
         let _ = send(number, own_id, 0);
     }
+    // The answers get a second each as well: 10 ms ran out on a host that
+    // kept a core away while it answered, after it had come in time.
     let answered = others
         .iter()
         .enumerate()
-        .filter(|&(index, &id)| wait(index + 1, tsc_hz / 100) == Some(u64::from(id)))
+        .filter(|&(index, &id)| wait(index + 1, tsc_hz) == Some(u64::from(id)))
         .count();
     let answered = u32::try_from(answered).unwrap_or(u32::MAX);
     #[cfg(feature = "qemu-test")]

@@ -171,6 +171,14 @@ pub fn read_only(taken: u64) -> bool {
     taken & features::BLOCK_READ_ONLY != 0
 }
 
+/// Whether the device still says FEATURES_OK once the driver set it with
+/// the features it took. A device that clears it again cannot work with
+/// those and is not used.
+#[must_use]
+pub fn features_kept(device_status: u8) -> bool {
+    device_status & status::FEATURES_OK != 0
+}
+
 /// How many entries the queue Meridian sets up has, at most: a read needs
 /// three descriptors, and there is one read at a time.
 pub const QUEUE_SIZE: u16 = 8;
@@ -705,6 +713,18 @@ mod tests {
             [1, 2, 4, 8]
         );
         assert_eq!((status::NEEDS_RESET, status::FAILED), (0x40, 0x80));
+    }
+
+    #[test]
+    fn a_device_that_clears_features_ok_again_has_not_kept_the_features() {
+        let set = status::ACKNOWLEDGE | status::DRIVER;
+        assert!(features_kept(set | status::FEATURES_OK));
+        assert!(features_kept(0xff));
+        assert!(!features_kept(set), "cleared again");
+        assert!(!features_kept(
+            set | status::DRIVER_OK | status::NEEDS_RESET | status::FAILED
+        ));
+        assert!(!features_kept(0));
     }
 
     #[test]

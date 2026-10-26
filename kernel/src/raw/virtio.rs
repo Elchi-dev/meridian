@@ -157,7 +157,7 @@ pub fn start(at: Address, h: &Header) -> Option<Drive> {
     write32(base + common::DRIVER_FEATURE_SELECT, 1);
     write32(base + common::DRIVER_FEATURE, high);
     write8(status_at, read8(status_at) | status::FEATURES_OK);
-    if read8(status_at) & status::FEATURES_OK == 0 {
+    if !virtio::features_kept(read8(status_at)) {
         write8(status_at, status::FAILED);
         return None;
     }

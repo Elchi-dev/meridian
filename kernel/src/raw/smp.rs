@@ -238,6 +238,11 @@ static ANSWERED: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "qemu-test")]
 static TOOK: AtomicU64 = AtomicU64::new(0);
 
+/// How many of them came while the kernel still waited for them, rather
+/// than after it gave up on them. Only the test image keeps it.
+#[cfg(feature = "qemu-test")]
+static CAME: AtomicU32 = AtomicU32::new(0);
+
 /// How many other processors have come into the kernel, and how many of
 /// them settled on their own stack and the kernel's tables. Only the test
 /// image asks.
@@ -250,11 +255,12 @@ pub fn running() -> (u32, u32, u32) {
     )
 }
 
-/// How many counter cycles starting the other processors took. Only the
-/// test image asks.
+/// How many counter cycles starting the other processors took, and how
+/// many of them came while the kernel waited for them. Only the test image
+/// asks.
 #[cfg(feature = "qemu-test")]
-pub fn took() -> u64 {
-    TOOK.load(Ordering::Acquire)
+pub fn took() -> (u64, u32) {
+    (TOOK.load(Ordering::Acquire), CAME.load(Ordering::Acquire))
 }
 
 /// Starts every usable processor the MADT lists but this one, one after
@@ -323,7 +329,14 @@ pub fn start_others(regions: &[MemoryRegion], madt: Option<&[u8]>, tsc_hz: Optio
             unsafe { x86::raw::send_startup(id, page) };
             x86::raw::spin(tsc_hz / 5000);
         }
-        let _ = x86::raw::wait_for(tsc_hz / 10, || RUNNING.load(Ordering::Acquire) > before);
+        // A core comes within microseconds on a machine of its own. A busy
+        // host running Meridian in a virtual machine kept one away for more
+        // than 100 ms, so each gets a second.
+        let came = x86::raw::wait_for(tsc_hz, || RUNNING.load(Ordering::Acquire) > before);
+        #[cfg(feature = "qemu-test")]
+        CAME.fetch_add(u32::from(came), Ordering::AcqRel);
+        #[cfg(not(feature = "qemu-test"))]
+        let _ = came;
     }
     #[cfg(feature = "qemu-test")]
     TOOK.store(x86::raw::tsc() - begin, Ordering::Release);

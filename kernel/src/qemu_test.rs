@@ -1688,13 +1688,15 @@ fn smp_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: O
         "each other core's stacks should be mapped, with nothing below them, and no more stacks than cores",
     );
     work_checks(report, others, tsc_hz.unwrap_or(0) / 10);
-    // A core that starts at once takes 10.4 ms and one that never starts
-    // 110.4 ms. Halfway between leaves room for a busy host, which once
-    // kept a quick start past 15 ms.
-    let late = 10 + 50 * machine.cores.map_or(0, |n| u64::from(n.saturating_sub(1)));
+    // Each core ends the wait for it by coming, and none takes longer than
+    // the second it may wait plus its pauses, which only a pause far too
+    // long would pass. A bound on the time alone failed on a busy host,
+    // which kept a core that starts in 10.4 ms away for more than 60.
+    let (took, came) = raw::smp::took();
     report.check(
         "kernel.smp.quick",
-        tsc_hz.is_some_and(|hz| raw::smp::took() < hz / 1000 * late),
+        usize::try_from(came) == Ok(others)
+            && tsc_hz.is_some_and(|hz| took < hz * 2 * (others as u64).max(1)),
         "starting the other cores should not wait out the time a core that never starts gets",
     );
 }

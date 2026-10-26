@@ -1372,9 +1372,11 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
         raw::thread::sleep(1);
         free() == before
     });
+    // init ends after its services, so its end is the last one logged.
+    let last = seen::ended(b"user: init ended with 0\n");
     report.check(
         "kernel.init",
-        ran && ended && back,
+        ran && ended && back && last,
         "init should start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
     );
 }

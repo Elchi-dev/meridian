@@ -13,7 +13,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 
 use meri::{Event, Reader, Value};
 use program::{Ended, Error, Handle, abi::file, log};
@@ -35,6 +35,11 @@ static RUNNING: [AtomicU64; MOST] = [const { AtomicU64::new(0) }; MOST];
 
 /// Whether init is ending its services.
 static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// How many of init's threads still keep a service. init ends once none
+/// does: its end ends the whole program, so a thread that just started a
+/// service again would leave that service running past it.
+static KEEPING: AtomicUsize = AtomicUsize::new(0);
 
 /// A service that ended sooner than this many ticks after it started
 /// ended soon, and waits longer before it starts again.
@@ -135,13 +140,13 @@ fn init(control: Handle) -> u64 {
         let _ = log!("init: {LIST}: {e}");
         services(ALONE).unwrap_or_default()
     });
-    let mut started = 0;
     for (slot, service) in services.into_iter().take(MOST).enumerate() {
-        if program::thread(move || keep(slot, &service)).is_ok() {
-            started += 1;
+        KEEPING.fetch_add(1, SeqCst);
+        if program::thread(move || keep(slot, &service)).is_err() {
+            KEEPING.fetch_sub(1, SeqCst);
         }
     }
-    if started == 0 {
+    if KEEPING.load(SeqCst) == 0 {
         return 1;
     }
     let mut room = [0u8; 1];
@@ -159,6 +164,9 @@ fn init(control: Handle) -> u64 {
             let _ = program::terminate(Handle(child), 0);
         }
     }
+    while KEEPING.load(SeqCst) != 0 {
+        program::sleep(1);
+    }
     0
 }
 
@@ -169,7 +177,7 @@ fn read(path: &str) -> Option<Vec<u8>> {
     let size = program::info(handle).ok()?.size;
     let mut bytes = alloc::vec![0; usize::try_from(size).ok()?];
     let mut done = 0;
-    while done < bytes.len() {
+    while done != bytes.len() {
         match program::read(handle, done as u64, &mut bytes[done..]) {
             Ok(0) | Err(_) => break,
             Ok(len) => done += len,
@@ -205,9 +213,21 @@ fn keep(slot: usize, service: &Service) -> u64 {
             Err(e) => log!("init: {} did not start: {e:?}", service.name),
         };
         soon = soon_again(soon, program::ticks() - start);
-        program::sleep(pause(soon));
+        rest(pause(soon));
     }
+    KEEPING.fetch_sub(1, SeqCst);
     0
+}
+
+/// Sleeps `ticks`, or less once init ends its services.
+#[cfg_attr(test, allow(dead_code))]
+fn rest(ticks: u64) {
+    for _ in 0..ticks {
+        if STOPPING.load(SeqCst) {
+            return;
+        }
+        program::sleep(1);
+    }
 }
 
 #[cfg(test)]

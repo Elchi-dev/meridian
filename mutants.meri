@@ -200,6 +200,13 @@ allow {
 }
 
 allow {
+    file = "kernel/src/raw/ahci.rs"
+    line = "let whole = len > 0 && len.is_multiple_of(size) && len <= 4096;"
+    mutation = "> to >="
+    reason = "issue refuses a transfer of no bytes before it builds a command, as prdt_entry has no entry for 0, so reading or writing nothing still fails as out of range; it only takes a frame first and gives it back"
+}
+
+allow {
     file = "kernel/src/raw/pci.rs"
     line = "if function == 0 && !h.multifunction {"
     mutation = "== to !="

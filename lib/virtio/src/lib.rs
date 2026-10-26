@@ -291,6 +291,36 @@ pub fn write_chain(header: u64, data: u64, length: u32, status: u64) -> [[u8; 16
     ]
 }
 
+/// The most data descriptors one request of [`chain`] has: the queue's
+/// entries but the header's and the status byte's.
+pub const PIECES: usize = QUEUE_SIZE as usize - 2;
+
+/// The descriptor table of a request whose data lies in `pieces`, each
+/// at its physical address with its length: the header at `header`, the
+/// pieces in order, which the device writes when `device_writes` and reads
+/// otherwise, and the status byte at `status`, and how many of the table's
+/// entries the request takes. None for no pieces, or more than [`PIECES`].
+#[must_use]
+pub fn chain(
+    header: u64,
+    pieces: &[(u64, u32)],
+    device_writes: bool,
+    status: u64,
+) -> Option<([[u8; 16]; QUEUE_SIZE as usize], usize)> {
+    if pieces.is_empty() || pieces.len() > PIECES {
+        return None;
+    }
+    let flags = if device_writes { NEXT | WRITE } else { NEXT };
+    let mut table = [[0u8; 16]; QUEUE_SIZE as usize];
+    table[0] = descriptor(header, 16, NEXT, 1);
+    for (n, &(address, length)) in (1u16..).zip(pieces) {
+        table[usize::from(n)] = descriptor(address, length, flags, n + 1);
+    }
+    let last = pieces.len() + 1;
+    table[last] = descriptor(status, 1, WRITE, 0);
+    Some((table, last + 1))
+}
+
 /// How many 512-byte sectors a block device holds, from the start of its
 /// device configuration.
 #[must_use]
@@ -566,6 +596,46 @@ mod tests {
             u16::from_le_bytes([d[12], d[13]]),
             u16::from_le_bytes([d[14], d[15]]),
         )
+    }
+
+    #[test]
+    fn a_request_takes_as_many_pieces_as_the_queue_leaves_room_for() {
+        let pieces: Vec<(u64, u32)> = (1..=6).map(|n| (n << 12, 4096)).collect();
+        let (table, used) = chain(0x9000, &pieces, true, 0x9010).unwrap();
+        assert_eq!(used, 8, "the header, six pieces and the status");
+        assert_eq!(table[0], descriptor(0x9000, 16, NEXT, 1));
+        for n in 1..=6u16 {
+            assert_eq!(
+                table[usize::from(n)],
+                descriptor(u64::from(n) << 12, 4096, NEXT | WRITE, n + 1),
+                "piece {n}"
+            );
+        }
+        assert_eq!(table[7], descriptor(0x9010, 1, WRITE, 0));
+        let seven: Vec<(u64, u32)> = (1..=7).map(|n| (n << 12, 4096)).collect();
+        assert_eq!(chain(0x9000, &seven, true, 0x9010), None, "one too many");
+        assert_eq!(chain(0x9000, &[], true, 0x9010), None, "no data");
+    }
+
+    #[test]
+    fn one_piece_is_the_chain_of_a_read_or_a_write() {
+        let (read, used) = chain(0x1000, &[(0x2000, 1024)], true, 0x1010).unwrap();
+        assert_eq!(
+            (&read[..3], used),
+            (&read_chain(0x1000, 0x2000, 1024, 0x1010)[..], 3)
+        );
+        assert!(read[3..].iter().all(|d| *d == [0; 16]), "the rest unused");
+        let (write, _) = chain(0x1000, &[(0x2000, 1024)], false, 0x1010).unwrap();
+        assert_eq!(&write[..3], &write_chain(0x1000, 0x2000, 1024, 0x1010)[..]);
+        let (pair, used) = chain(0x1000, &[(0x2000, 4096), (0x7000, 512)], false, 0x1010).unwrap();
+        assert_eq!(used, 4);
+        assert_eq!(pair[1], descriptor(0x2000, 4096, NEXT, 2));
+        assert_eq!(
+            pair[2],
+            descriptor(0x7000, 512, NEXT, 3),
+            "the device reads what it writes out"
+        );
+        assert_eq!(pair[3], descriptor(0x1010, 1, WRITE, 0));
     }
 
     #[test]

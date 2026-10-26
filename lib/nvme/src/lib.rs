@@ -188,14 +188,39 @@ pub fn create_submission_queue(
 /// page at `page`; none for no blocks or more than a 16-bit count holds.
 #[must_use]
 pub fn read(id: u16, namespace: u32, lba: u64, blocks: u32, page: u64) -> Option<Command> {
-    transfer(opcode::READ, id, namespace, lba, blocks, page)
+    transfer(opcode::READ, id, namespace, lba, blocks, (page, 0))
 }
 
 /// Writes `blocks` blocks from the page at `page` to namespace
 /// `namespace` from `lba` on; none as for [`read`].
 #[must_use]
 pub fn write(id: u16, namespace: u32, lba: u64, blocks: u32, page: u64) -> Option<Command> {
-    transfer(opcode::WRITE, id, namespace, lba, blocks, page)
+    transfer(opcode::WRITE, id, namespace, lba, blocks, (page, 0))
+}
+
+/// As [`read`], into the pages the two PRP entries `prp` name, as
+/// [`prps`] gives them.
+#[must_use]
+pub fn read_into(
+    id: u16,
+    namespace: u32,
+    lba: u64,
+    blocks: u32,
+    prp: (u64, u64),
+) -> Option<Command> {
+    transfer(opcode::READ, id, namespace, lba, blocks, prp)
+}
+
+/// As [`write`], from the pages the two PRP entries `prp` name.
+#[must_use]
+pub fn write_from(
+    id: u16,
+    namespace: u32,
+    lba: u64,
+    blocks: u32,
+    prp: (u64, u64),
+) -> Option<Command> {
+    transfer(opcode::WRITE, id, namespace, lba, blocks, prp)
 }
 
 fn transfer(
@@ -204,16 +229,39 @@ fn transfer(
     namespace: u32,
     lba: u64,
     blocks: u32,
-    page: u64,
+    prp: (u64, u64),
 ) -> Option<Command> {
     let count = blocks.checked_sub(1).filter(|&c| c <= 0xffff)?;
-    Some(command(
+    let mut c = command(
         opcode,
         id,
         namespace,
-        page,
+        prp.0,
         [low(lba), low(lba >> 32), count, 0, 0, 0],
-    ))
+    );
+    c[32..40].copy_from_slice(&prp.1.to_le_bytes());
+    Some(c)
+}
+
+/// The two PRP entries of a command that moves the whole pages at the
+/// physical addresses `pages`, in order (NVM Express 2.0, 4.1.1): the first
+/// page, and then the second, or for three pages or more `list`, the
+/// physical address of the page `entries` is written for, which holds the
+/// rest. None for no pages, or more than one page of a list holds.
+#[must_use]
+pub fn prps(pages: &[u64], list: u64, entries: &mut [u8; 4096]) -> Option<(u64, u64)> {
+    let (&first, rest) = pages.split_first()?;
+    match rest {
+        [] => Some((first, 0)),
+        [second] => Some((first, *second)),
+        _ if rest.len() <= 512 => {
+            for (slot, page) in entries.as_chunks_mut::<8>().0.iter_mut().zip(rest) {
+                *slot = page.to_le_bytes();
+            }
+            Some((first, list))
+        }
+        _ => None,
+    }
 }
 
 /// A completion queue entry, as the controller wrote it.
@@ -250,6 +298,9 @@ pub struct Controller {
     model: [u8; 40],
     /// The most namespaces it may have.
     pub namespaces: u32,
+    /// The most pages of its smallest size one command may move, or none
+    /// when it sets no limit.
+    pub transfer_pages: Option<u32>,
 }
 
 /// The bytes of a padded text field, without the padding.
@@ -271,6 +322,7 @@ impl Controller {
             serial,
             model,
             namespaces: u32::from_le_bytes([data[516], data[517], data[518], data[519]]),
+            transfer_pages: (data[77] != 0).then(|| 1 << data[77].min(31)),
         }
     }
 
@@ -641,6 +693,74 @@ mod tests {
         data[24..64].copy_from_slice(format!("{model:<40}").as_bytes());
         data[516..520].copy_from_slice(&namespaces.to_le_bytes());
         data
+    }
+
+    #[test]
+    fn a_controller_says_how_much_one_command_may_move() {
+        assert_eq!(
+            Controller::read(&qemu_controller()).transfer_pages,
+            Some(128),
+            "QEMU's, 2 to the 7 pages of 4 KiB"
+        );
+        let mut data = controller(1, "S", "M", 1);
+        assert_eq!(Controller::read(&data).transfer_pages, None, "no limit");
+        data[77] = 1;
+        assert_eq!(Controller::read(&data).transfer_pages, Some(2));
+        data[77] = 40;
+        assert_eq!(Controller::read(&data).transfer_pages, Some(1 << 31));
+    }
+
+    #[test]
+    fn up_to_two_pages_go_in_the_command_and_more_in_a_list() {
+        let mut list = [0xaau8; 4096];
+        assert_eq!(prps(&[], 0x5000, &mut list), None);
+        assert_eq!(prps(&[0x1000], 0x5000, &mut list), Some((0x1000, 0)));
+        assert_eq!(
+            prps(&[0x1000, 0x7000], 0x5000, &mut list),
+            Some((0x1000, 0x7000))
+        );
+        assert!(list.iter().all(|&b| b == 0xaa), "no list for two pages");
+        assert_eq!(
+            prps(&[0x1000, 0x7000, 0x3_0000_2000], 0x5000, &mut list),
+            Some((0x1000, 0x5000))
+        );
+        assert_eq!(&list[..8], &0x7000u64.to_le_bytes());
+        assert_eq!(&list[8..16], &0x3_0000_2000u64.to_le_bytes());
+        assert!(
+            list[16..].iter().all(|&b| b == 0xaa),
+            "nothing past the rest"
+        );
+    }
+
+    #[test]
+    fn a_list_holds_512_pages_beside_the_first() {
+        let pages: Vec<u64> = (1..=514).map(|n| n << 12).collect();
+        let mut list = [0u8; 4096];
+        assert_eq!(
+            prps(&pages[..513], 0x9000, &mut list),
+            Some((0x1000, 0x9000))
+        );
+        assert_eq!(
+            &list[4088..],
+            &(513u64 << 12).to_le_bytes(),
+            "the last slot"
+        );
+        assert_eq!(prps(&pages, 0x9000, &mut list), None, "a second list page");
+    }
+
+    #[test]
+    fn a_transfer_names_both_its_prp_entries() {
+        let r = read_into(5, 1, 0x10, 16, (0x1000, 0x5000)).unwrap();
+        assert_eq!(r[0], opcode::READ);
+        assert_eq!((word(&r, 24), word(&r, 32)), (0x1000, 0x5000));
+        assert_eq!((word(&r, 40), word(&r, 48)), (0x10, 15));
+        let w = write_from(6, 1, 0x20, 2, (0x8_0000_1000, 0x8_0000_3000)).unwrap();
+        assert_eq!(w[0], opcode::WRITE);
+        assert_eq!(&w[24..32], &0x8_0000_1000u64.to_le_bytes());
+        assert_eq!(&w[32..40], &0x8_0000_3000u64.to_le_bytes());
+        assert_eq!(write_from(6, 1, 0, 0, (0x1000, 0)), None, "no blocks");
+        let one = read(5, 1, 0, 1, 0x9000).unwrap();
+        assert_eq!(&one[32..40], &[0; 8], "one page needs no second entry");
     }
 
     #[test]

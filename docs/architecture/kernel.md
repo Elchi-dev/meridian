@@ -485,7 +485,8 @@ What exists:
   boots from that one; the test image reads the same sectors through
   both and compares them, a block at a time until the queues have
   wrapped twice, seventeen frames in as few commands as the controller
-  takes, and at either end.
+  takes, and at either end. The second test pass gives the controller a
+  limit of four pages a command, where QEMU's own takes 128.
 - **virtio-blk.** The kernel takes the first virtio block device, by its
   vendor and device ids, finds where its structures are from the
   capabilities its function lists (`lib/pci`), resets it, agrees on

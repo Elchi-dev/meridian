@@ -153,6 +153,18 @@ func TestTheOtherDisksCanWriteToCopies(t *testing.T) {
 	}
 }
 
+func TestTheNVMeControllerCanTakeSmallTransfers(t *testing.T) {
+	m := fullMachine()
+	m.SmallNVMeTransfers = true
+	got := strings.Join(m.Args(), " ")
+	if !strings.Contains(got, " -device nvme,serial=meridian,drive=meridian.nvme,mdts=2 -drive ") {
+		t.Errorf("one command should move four pages at most: %s", got)
+	}
+	if plain := strings.Join(fullMachine().Args(), " "); strings.Contains(plain, "mdts") {
+		t.Errorf("an ordinary test machine's controller keeps QEMU's limit: %s", plain)
+	}
+}
+
 func TestASecondDiskComesAfterTheFirst(t *testing.T) {
 	m := fullMachine()
 	m.SecondDisk = "/out/other,disk.img"

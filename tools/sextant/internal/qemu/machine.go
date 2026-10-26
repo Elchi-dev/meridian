@@ -65,6 +65,10 @@ type Machine struct {
 	// too: into copies of the disk QEMU keeps until it ends, so what the
 	// AHCI disk wrote stays as it was. Without it they only read.
 	WritingCopies bool
+	// SmallNVMeTransfers lets one NVMe command move four pages at most,
+	// where QEMU's controller otherwise takes 128, so a driver has to split
+	// what it moves as it must for controllers with a small limit.
+	SmallNVMeTransfers bool
 }
 
 // Exit codes of isa-debug-exit: QEMU exits with (value << 1) | 1, and test
@@ -170,9 +174,14 @@ func (m Machine) Args() []string {
 			if m.WritingCopies {
 				mode = "snapshot=on"
 			}
+			nvme := "nvme,serial=meridian,drive=meridian.nvme"
+			if m.SmallNVMeTransfers {
+				// The limit is 2 to the power mdts, in pages.
+				nvme += ",mdts=2"
+			}
 			args = append(args,
 				"-drive", "if=none,id=meridian.nvme,format=raw,"+mode+",file.locking=off,file="+escape(m.Disk),
-				"-device", "nvme,serial=meridian,drive=meridian.nvme",
+				"-device", nvme,
 				"-drive", "if=none,id=meridian.virtio,format=raw,"+mode+",file.locking=off,file="+escape(m.Disk),
 				"-device", "virtio-blk-pci,drive=meridian.virtio",
 			)

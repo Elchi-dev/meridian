@@ -141,7 +141,7 @@ Loader and UEFI:
 - [x] VFS, reading: one tree, paths compared in capitals, mounts, OPEN, READ and INFO, the EFI system partition at /System/Boot (`kernel::vfs`)
 - [x] VFS: listing directories (LIST), and the partition the loader came from at /System/Boot (`lib/bootinfo` version 4)
 - [ ] VFS: writing
-- [ ] No writes to partitions Meridian did not create
+- [ ] No writes to partitions Meridian did not create (ADR 0015, proposed)
 
 ## M5: Userland
 

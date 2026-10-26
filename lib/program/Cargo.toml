@@ -13,6 +13,7 @@ abi = { path = "../abi" }
 heap = { path = "../heap" }
 meri = { path = "../meri" }
 security = { path = "../security" }
+services = { path = "../services" }
 
 # Built as a test on the host, the way the kernel is, and for Meridian
 # with --target x86_64-unknown-none.

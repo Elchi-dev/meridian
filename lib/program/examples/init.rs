@@ -4,8 +4,11 @@
 //! each time it ended soon after it started. A service may run once
 //! instead, and may wait for services listed above it: for one that runs
 //! once until it ended, for any other until it started. Without that file,
-//! as on a CD, the shell is the one service. Handed a channel end, it ends
-//! every service and then itself once the other end is closed.
+//! as on a CD, the shell is the one service. Each program a service runs
+//! starts with a line to init, which answers what it asks about the
+//! services ([`services`]). Handed a channel end, init answers the same
+//! questions there, and ends every service and then itself once the other
+//! end is closed.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -14,11 +17,15 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
+use core::sync::atomic::{
+    AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst,
+};
 
 use meri::{Event, Reader, Value};
 use program::{Ended, Error, Handle, abi::file, log};
+use services::{About, MESSAGE, State};
 
 program::main!(init);
 
@@ -38,6 +45,15 @@ static RUNNING: [AtomicU64; MOST] = [const { AtomicU64::new(0) }; MOST];
 /// Whether the services that wait for each one may start: once it ended
 /// when it runs once, and once it started otherwise.
 static READY: [AtomicBool; MOST] = [const { AtomicBool::new(false) }; MOST];
+
+/// What each service is doing, as its place in [`STATES`], and how often
+/// it started.
+static STATE: [AtomicU8; MOST] = [const { AtomicU8::new(0) }; MOST];
+static STARTS: [AtomicU32; MOST] = [const { AtomicU32::new(0) }; MOST];
+const STATES: [State; 4] = [State::Waiting, State::Running, State::Resting, State::Ended];
+
+/// init's end of the line each service's program runs with, 0 for none.
+static LINES: [AtomicU64; MOST] = [const { AtomicU64::new(0) }; MOST];
 
 /// Whether init is ending its services.
 static STOPPING: AtomicBool = AtomicBool::new(false);
@@ -176,6 +192,18 @@ fn may_start(waits: &[usize], ready: impl Fn(usize) -> bool) -> bool {
     waits.iter().all(|&at| ready(at))
 }
 
+/// What init says about the service at `place` among `names`, as `now`
+/// gives its state and how often it started; none past the last.
+fn about(names: &[String], place: usize, now: impl Fn(usize) -> (State, u32)) -> Option<About<'_>> {
+    let name = names.get(place)?;
+    let (state, starts) = now(place);
+    Some(About {
+        name,
+        state,
+        starts,
+    })
+}
+
 /// What SPAWN takes for `program`: a path as it is, or a name as the file
 /// the loader read.
 fn file_of(program: &str) -> String {
@@ -227,6 +255,7 @@ fn init(control: Handle) -> u64 {
     for line in unknown {
         let _ = program::log(&line);
     }
+    let names: Arc<Vec<String>> = Arc::new(services.iter().map(|s| s.name.clone()).collect());
     for (slot, (service, waits)) in services.into_iter().zip(waits).enumerate() {
         KEEPING.fetch_add(1, SeqCst);
         if program::thread(move || keep(slot, &service, &waits)).is_err() {
@@ -236,11 +265,16 @@ fn init(control: Handle) -> u64 {
     if KEEPING.load(SeqCst) == 0 {
         return 1;
     }
-    let mut room = [0u8; 1];
+    let lines = Arc::clone(&names);
+    if program::thread(move || serve(&lines)).is_err() {
+        let _ = program::log("init: the services' lines have nobody to answer them");
+    }
+    let mut room = [0u8; MESSAGE];
     loop {
         match program::receive(control, &mut room) {
             Err(Error::Closed) => break,
-            Err(Error::Empty) | Ok(_) => program::sleep(10),
+            Ok((len, _)) => reply(control, &room[..len], &names),
+            Err(Error::Empty) => program::sleep(1),
             Err(_) => program::end_thread(0),
         }
     }
@@ -279,6 +313,7 @@ fn read(path: &str) -> Option<Vec<u8>> {
 /// in `slot` of [`RUNNING`], until init ends its services.
 #[cfg_attr(test, allow(dead_code))]
 fn keep(slot: usize, service: &Service, waits: &[usize]) -> u64 {
+    set_state(slot, State::Waiting);
     while !may_start(waits, |at| READY[at].load(SeqCst)) && !STOPPING.load(SeqCst) {
         program::sleep(1);
     }
@@ -286,12 +321,16 @@ fn keep(slot: usize, service: &Service, waits: &[usize]) -> u64 {
     let mut soon = 0;
     while !STOPPING.load(SeqCst) {
         let start = program::ticks();
-        let spawned = program::spawn(&file, None);
+        let (ours, theirs) = program::channel().map_or((None, None), |(a, b)| (Some(a), Some(b)));
+        let spawned = program::spawn(&file, theirs);
         if !service.once {
             READY[slot].store(true, SeqCst);
         }
         let _ = match spawned {
             Ok(child) => {
+                LINES[slot].store(ours.map_or(0, |h| h.0), SeqCst);
+                STARTS[slot].fetch_add(1, SeqCst);
+                set_state(slot, State::Running);
                 // Either this sees init stopping, or init sees the child.
                 RUNNING[slot].store(child.0, SeqCst);
                 if STOPPING.load(SeqCst) {
@@ -300,21 +339,94 @@ fn keep(slot: usize, service: &Service, waits: &[usize]) -> u64 {
                 let how = program::wait(child);
                 RUNNING[slot].store(0, SeqCst);
                 let _ = program::close(child);
+                let line = LINES[slot].swap(0, SeqCst);
+                if line != 0 {
+                    let _ = program::close(Handle(line));
+                }
                 match how {
                     Ok(how) => program::log(&ended(&service.name, how)),
                     Err(e) => log!("init: {} could not be waited for: {e:?}", service.name),
                 }
             }
-            Err(e) => log!("init: {} did not start: {e:?}", service.name),
+            Err(e) => {
+                for end in [ours, theirs].into_iter().flatten() {
+                    let _ = program::close(end);
+                }
+                log!("init: {} did not start: {e:?}", service.name)
+            }
         };
         if service.once {
             break;
         }
+        set_state(slot, State::Resting);
         soon = soon_again(soon, program::ticks() - start);
         rest(pause(soon));
     }
+    set_state(slot, State::Ended);
     done(slot);
     0
+}
+
+/// Notes what the service in `slot` is doing.
+#[cfg_attr(test, allow(dead_code))]
+fn set_state(slot: usize, state: State) {
+    STATE[slot].store(code(state), SeqCst);
+}
+
+/// The place in [`STATES`] of `state`.
+fn code(state: State) -> u8 {
+    let place = STATES.iter().position(|&s| s == state);
+    place.and_then(|p| u8::try_from(p).ok()).unwrap_or(0)
+}
+
+/// The state at the place `code` in [`STATES`]; past them, the last.
+fn state_of(code: u8) -> State {
+    STATES[usize::from(code).min(STATES.len() - 1)]
+}
+
+/// Answers the questions programs ask over the lines of the services that
+/// run them, looking at each line in turn and resting a tick when none
+/// asked anything.
+#[cfg_attr(test, allow(dead_code))]
+fn serve(names: &[String]) -> u64 {
+    let mut room = [0u8; MESSAGE];
+    loop {
+        let mut asked = false;
+        for line in &LINES {
+            let end = Handle(line.load(SeqCst));
+            if end.0 != 0
+                && let Ok((len, _)) = program::receive(end, &mut room)
+            {
+                reply(end, &room[..len], names);
+                asked = true;
+            }
+        }
+        if !asked {
+            program::sleep(1);
+        }
+    }
+}
+
+/// Answers `message` on `end` when it asks about a service.
+#[cfg_attr(test, allow(dead_code))]
+fn reply(end: Handle, message: &[u8], names: &[String]) {
+    let now = |at: usize| (state_of(STATE[at].load(SeqCst)), STARTS[at].load(SeqCst));
+    if let Some((room, len)) = answer_to(message, names, now) {
+        let _ = program::send(end, &room[..len], None);
+    }
+}
+
+/// init's answer to `message`, knowing the services `names` and what `now`
+/// says of each, and its length; none when `message` asks nothing.
+fn answer_to(
+    message: &[u8],
+    names: &[String],
+    now: impl Fn(usize) -> (State, u32),
+) -> Option<([u8; MESSAGE], usize)> {
+    let place = services::asked(message)?;
+    let mut room = [0u8; MESSAGE];
+    let len = services::answer(about(names, usize::from(place), now), &mut room);
+    Some((room, len))
 }
 
 /// Counts the service in `slot` as kept no longer, and as ready for those
@@ -518,6 +630,107 @@ mod tests {
         assert_eq!(unknown, Vec::<String>::new());
         assert!(may_start(&each[1], |at| at == 0));
         assert!(!may_start(&each[1], |_| false));
+    }
+
+    #[test]
+    fn init_tells_of_the_service_at_each_place_and_none_past_them() {
+        let names: Vec<String> = ["exitwith", "whoami", "shell"].map(String::from).to_vec();
+        let now = |at: usize| (STATES[at], u32::try_from(at).unwrap() * 3);
+        assert_eq!(
+            about(&names, 0, now),
+            Some(About {
+                name: "exitwith",
+                state: State::Waiting,
+                starts: 0
+            })
+        );
+        assert_eq!(
+            about(&names, 2, now),
+            Some(About {
+                name: "shell",
+                state: State::Resting,
+                starts: 6
+            })
+        );
+        assert_eq!(about(&names, 3, now), None);
+        assert_eq!(about(&[], 0, now), None);
+        assert_eq!(
+            STATES,
+            [State::Waiting, State::Running, State::Resting, State::Ended]
+        );
+    }
+
+    /// The services list sextant writes as `constant` in its image code.
+    fn sextants_list(constant: &str) -> Vec<Service> {
+        let source = include_str!("../../../tools/sextant/internal/image/image.go");
+        let start = format!("const {constant} = `");
+        let at = source.find(&start).expect("the list") + start.len();
+        let list = &source[at..at + source[at..].find('`').expect("its end")];
+        services(list.as_bytes()).expect("a list init reads")
+    }
+
+    #[test]
+    fn init_reads_the_lists_sextant_writes_as_they_are_meant() {
+        assert_eq!(sextants_list("Services"), [service("shell", "shell")]);
+        let test = sextants_list("testServices");
+        assert_eq!(
+            test,
+            [
+                Service {
+                    once: true,
+                    ..service("setup", "whoami")
+                },
+                Service {
+                    after: alloc::vec!["setup".into()],
+                    ..service("whoami", "whoami")
+                },
+                Service {
+                    after: alloc::vec!["whoami".into()],
+                    ..service("shell", "shell")
+                },
+            ]
+        );
+        let (each, unknown) = waits(&test);
+        assert_eq!(each, [alloc::vec![], alloc::vec![0], alloc::vec![1]]);
+        assert_eq!(unknown, Vec::<String>::new());
+    }
+
+    #[test]
+    fn each_state_keeps_its_own_place() {
+        for state in STATES {
+            assert_eq!(state_of(code(state)), state);
+        }
+        assert_eq!(STATES.map(code), [0, 1, 2, 3]);
+        assert_eq!(state_of(4), State::Ended, "past the last");
+        assert_eq!(state_of(u8::MAX), State::Ended);
+    }
+
+    #[test]
+    fn init_answers_a_question_and_nothing_else() {
+        let names: Vec<String> = ["exitwith", "whoami"].map(String::from).to_vec();
+        let now = |at: usize| {
+            let state = if at == 0 {
+                State::Ended
+            } else {
+                State::Running
+            };
+            (state, 7)
+        };
+        let (room, len) = answer_to(&services::ask(1), &names, now).unwrap();
+        assert_eq!(
+            services::read(&room[..len]),
+            Ok(Some(About {
+                name: "whoami",
+                state: State::Running,
+                starts: 7
+            }))
+        );
+        let (room, len) = answer_to(&services::ask(2), &names, now).unwrap();
+        assert_eq!(services::read(&room[..len]), Ok(None), "none past the last");
+        assert_eq!(answer_to(b"hello", &names, now), None);
+        assert_eq!(answer_to(&[], &names, now), None);
+        let (room, len) = answer_to(&services::ask(0), &[], now).unwrap();
+        assert_eq!(&room[..len], b".");
     }
 
     #[test]

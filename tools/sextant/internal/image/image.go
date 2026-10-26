@@ -171,19 +171,19 @@ service shell {
 }
 `
 
-// testServices is the list of test images: exitwith, which runs once
-// and ends at once with 2989 there, whoami, which waits for it and ends at
-// once there too, so the test image sees init start it again and again,
-// and the shell, which waits for whoami to start and runs until init ends
-// it.
-const testServices = `service exitwith {
-    program = exitwith
+// testServices is the list of test images: setup, which runs whoami once,
+// whoami, which waits for it, and ends at once there, so the test image
+// sees init start it again and again, and the shell, which waits for
+// whoami to start and runs until init ends it. whoami sends its token to
+// init over the line it starts with, which init takes for no question.
+const testServices = `service setup {
+    program = whoami
     once = true
 }
 
 service whoami {
     program = whoami
-    after = exitwith
+    after = setup
 }
 
 service shell {

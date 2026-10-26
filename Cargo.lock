@@ -101,6 +101,7 @@ dependencies = [
  "qr",
  "sched",
  "security",
+ "services",
  "virtio",
  "x86",
 ]
@@ -129,6 +130,7 @@ dependencies = [
  "heap",
  "meri",
  "security",
+ "services",
 ]
 
 [[package]]
@@ -146,6 +148,13 @@ version = "0.0.0"
 [[package]]
 name = "security"
 version = "0.0.0"
+
+[[package]]
+name = "services"
+version = "0.0.0"
+dependencies = [
+ "abi",
+]
 
 [[package]]
 name = "uefi"

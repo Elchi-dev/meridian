@@ -1989,8 +1989,8 @@ pub mod seen {
     /// for a program's end, each up to 64 bytes of it and its length.
     static LOG: Kept = Kept::new();
     static ENDED: Kept = Kept::new();
-    /// The first programs started and ended since the last forget, in
-    /// order, and how many there were.
+    /// The first programs started and ended, and lines programs logged,
+    /// since the last forget, in order, and how many there were.
     static EVENTS: [Kept; 32] = [const { Kept::new() }; 32];
     static EVENTS_SEEN: AtomicUsize = AtomicUsize::new(0);
 
@@ -2100,6 +2100,7 @@ pub mod seen {
 
     pub(super) fn keep_log(text: &[u8]) {
         LOG.keep(text, text.len());
+        keep_event(text);
     }
 
     /// Whether the last line logged is `text`, up to 64 bytes of it.
@@ -2157,9 +2158,10 @@ pub mod seen {
         }
     }
 
-    /// The first 32 programs started and ended since the last forget, in
-    /// order: "start" and the name each was started by, and the line the
-    /// kernel logged for each end, each up to 64 bytes.
+    /// The first 32 starts, ends and logged lines since the last forget, in
+    /// order: "start" and the name each program was started by, the line
+    /// the kernel logged for each end, and each line a program logged, each
+    /// up to 64 bytes.
     pub fn events() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         let seen = EVENTS_SEEN.load(Ordering::Acquire).min(EVENTS.len());
         EVENTS[..seen].iter().map(Kept::text).collect()

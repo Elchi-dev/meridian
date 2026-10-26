@@ -1385,6 +1385,8 @@ fn shell_checks<W: Write>(
     };
     typed(&["n", "o", "p", "e", "ret"]);
     let refused = waited_for("nope: no such command");
+    typed(&["s", "e", "r", "v", "i", "c", "e", "s", "ret"]);
+    let alone = waited_for("services: init did not start this shell");
     // exitwith, given no channel, ends with 0xbad.
     typed(&["e", "x", "i", "t", "w", "i", "t", "h", "ret"]);
     let ran = if disk {
@@ -1402,18 +1404,26 @@ fn shell_checks<W: Write>(
     });
     report.check(
         "kernel.shell",
-        greeted && echoed && listed && shown && refused && ran && ended,
-        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, run a program from its file and say how it ended, and end at exit",
+        greeted && echoed && listed && shown && refused && alone && ran && ended,
+        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, and end at exit",
     );
 }
 
 /// init, handed a channel end: of the services the test image lists, it
-/// runs exitwith once, starts whoami, which waits for exitwith to end and
-/// ends at once there, again and again but waiting longer each time, and
-/// the shell once whoami started, and once the channel's other end closes,
+/// runs setup, which is whoami, once, starts whoami, which waits for setup
+/// to end and ends at once, again and again but waiting longer each time,
+/// and the shell once whoami started, and once the channel's other end closes,
 /// it ends them and itself, so every frame they took comes back. Booted
-/// from a CD it has no list, so it starts the shell alone.
-fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
+/// from a CD it has no list, so it starts the shell alone. Asked over that
+/// channel, and by its shell over the line init gave it, init says what
+/// each service is doing.
+fn init_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    info: &BootInfo,
+    regions: &[MemoryRegion],
+    machine: &Machine,
+    tsc_hz: Option<u64>,
+) {
     use handles::Rights;
     use raw::user::{self, seen};
     let Some((_, file)) = raw::modules(info, regions).find(|(m, _)| kernel::is_init(m.name()))
@@ -1439,21 +1449,26 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
     let events = seen::events();
     let first = |line: &[u8]| events.iter().position(|e| e.starts_with(line));
     let ran = if disk {
-        let once = events
+        // setup and whoami run the same program; init's lines tell them apart.
+        let setup = b"init: setup ended with 0";
+        let once = events.iter().filter(|e| e.starts_with(setup)).count() == 1;
+        let whoami = events
             .iter()
-            .filter(|e| e.starts_with(b"start exitwith"))
-            .count()
-            == 1;
-        let waited = first(b"user: exitwith ended with 2989")
-            .zip(first(b"start whoami"))
+            .enumerate()
+            .filter(|(_, e)| e.starts_with(b"start whoami"))
+            .nth(1)
+            .map(|(at, _)| at);
+        let waited = first(setup)
+            .zip(whoami)
             .is_some_and(|(ended, started)| ended < started)
-            && first(b"start whoami")
+            && whoami
                 .zip(first(b"start shell"))
                 .is_some_and(|(whoami, shell)| whoami < shell);
-        (6..=12).contains(&spawns) && once && waited && seen::logged(b"init: whoami ended with 1")
+        (6..=12).contains(&spawns) && once && waited && seen::logged(b"init: whoami ended with 0")
     } else {
         spawns == 1
     };
+    init_services_checks(report, channel.map(|(ours, _)| ours), disk, machine, tsc_hz);
     if let Some((ours, _)) = channel {
         raw::ipc::close(ours);
     }
@@ -1468,6 +1483,99 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
         "kernel.init",
         ran && ended && back && last,
         "init should run a service once where it says so, start one that waits for it only after it ended and one that waits for a service that keeps running only after that started, start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
+    );
+}
+
+/// What init, holding the other end of `ours`, says about its services:
+/// asked over that channel, each of the test image's services with what it
+/// does and how often it started, and none past them; asked by its shell
+/// with the services command, where keys can be typed, the same as lines
+/// on the console.
+fn init_services_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    ours: Option<u64>,
+    disk: bool,
+    machine: &Machine,
+    tsc_hz: Option<u64>,
+) {
+    use services::{About, State};
+    let ask = |place: u8| -> Option<alloc::vec::Vec<u8>> {
+        let ours = ours?;
+        raw::ipc::send(ours, &services::ask(place), None).ok()?;
+        let mut room = [0u8; services::MESSAGE];
+        (0..100)
+            .find_map(|_| match raw::ipc::receive(ours, &mut room) {
+                Ok((len, _)) => Some(Some(room[..len].to_vec())),
+                Err(channel::Error::Empty) => {
+                    raw::thread::sleep(1);
+                    None
+                }
+                Err(_) => Some(None),
+            })
+            .flatten()
+    };
+    let answers: alloc::vec::Vec<_> = (0..4).map(ask).collect();
+    let told = |place: usize| {
+        answers
+            .get(place)
+            .and_then(Option::as_deref)
+            .and_then(|a| services::read(a).ok())
+    };
+    let shell = About {
+        name: "shell",
+        state: State::Running,
+        starts: 1,
+    };
+    let asked = if disk {
+        let setup = About {
+            name: "setup",
+            state: State::Ended,
+            starts: 1,
+        };
+        told(0) == Some(Some(setup))
+            && told(1).flatten().is_some_and(|a| {
+                a.name == "whoami"
+                    && matches!(a.state, State::Running | State::Resting)
+                    && (5..=11).contains(&a.starts)
+            })
+            && told(2) == Some(Some(shell))
+            && told(3) == Some(None)
+    } else {
+        told(0) == Some(Some(shell)) && told(1) == Some(None)
+    };
+    report.check(
+        "kernel.init.services",
+        asked,
+        "asked over its channel, init should say what each service does and how often it started, and that none is past the last",
+    );
+    // Without the 8042 nothing could type at init's shell.
+    if raw::console::shape().is_none() || machine.i8042 == Some(false) {
+        return;
+    }
+    let patience = tsc_hz.unwrap_or(1_000_000_000) * 5;
+    for key in ["s", "e", "r", "v", "i", "c", "e", "s", "ret"] {
+        let _ = writeln!(report.out, "PRESS {key}");
+    }
+    let shown = |line: &str| {
+        let start = x86::raw::tsc();
+        while x86::raw::tsc() - start < patience {
+            let count = raw::console::shape().map_or(0, |((_, rows), _)| rows);
+            if (0..count).filter_map(raw::console::row).any(|r| r == line) {
+                return true;
+            }
+            raw::thread::sleep(1);
+        }
+        false
+    };
+    let listed = if disk {
+        shown("setup: ended, started once") && shown("shell: running, started once")
+    } else {
+        shown("shell: running, started once")
+    };
+    report.check(
+        "kernel.init.shell_services",
+        listed,
+        "the shell init started should list init's services with the services command",
     );
 }
 
@@ -1987,7 +2095,7 @@ fn timer_checks<W: Write>(
     );
     keyboard_checks(report, machine, tsc_hz);
     shell_checks(report, info, regions, machine, tsc_hz);
-    init_checks(report, info, regions);
+    init_checks(report, info, regions, machine, tsc_hz);
     timer::stop();
     let stopped = ticks();
     x86::raw::spin(tenth);

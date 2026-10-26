@@ -197,10 +197,11 @@ func TestInitReadsTheServicesWhereTheyGo(t *testing.T) {
 func TestTheServicesListsNameTheirPrograms(t *testing.T) {
 	for _, c := range []struct {
 		name, src string
-		services  []string
+		// Each service's name and the program it runs.
+		services [][2]string
 	}{
-		{"services.meri", Services, []string{"shell"}},
-		{"test services.meri", testServices, []string{"exitwith", "whoami", "shell"}},
+		{"services.meri", Services, [][2]string{{"shell", "shell"}}},
+		{"test services.meri", testServices, [][2]string{{"setup", "whoami"}, {"whoami", "whoami"}, {"shell", "shell"}}},
 	} {
 		doc, err := meri.Parse(c.name, []byte(c.src))
 		if err != nil {
@@ -212,7 +213,7 @@ func TestTheServicesListsNameTheirPrograms(t *testing.T) {
 		}
 		for i, b := range blocks {
 			program, err := b.String("program", "")
-			if !b.Labelled || b.Label != c.services[i] || err != nil || program != c.services[i] {
+			if !b.Labelled || b.Label != c.services[i][0] || err != nil || program != c.services[i][1] {
 				t.Errorf("%s: service %q runs %q, %v", c.name, b.Label, program, err)
 			}
 		}
@@ -234,11 +235,11 @@ func TestTheTestServicesRunOneOnceAndWaitForIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !once["exitwith"] || once["whoami"] || once["shell"] {
-		t.Errorf("only exitwith should run once: %v", once)
+	if !once["setup"] || once["whoami"] || once["shell"] {
+		t.Errorf("only setup should run once: %v", once)
 	}
-	if after["whoami"] != "exitwith" || after["shell"] != "whoami" || after["exitwith"] != "" {
-		t.Errorf("whoami should wait for exitwith, and the shell for whoami: %v", after)
+	if after["whoami"] != "setup" || after["shell"] != "whoami" || after["setup"] != "" {
+		t.Errorf("whoami should wait for setup, and the shell for whoami: %v", after)
 	}
 }
 

@@ -399,14 +399,21 @@ with `after`, a name or a list of names, waits for the services listed
 above it that it names: for one that runs once until it ended, for any
 other until it started. Naming only services above keeps a service from
 waiting for itself or in a ring; init logs any other name and goes on.
+Each program a service runs starts with a line to init, a channel, over
+which it can ask about the service at a place in the list: init answers
+with its name, whether it waits, runs, rests between starts or ended, and
+how often it started, or that none is there (`lib/services`). The shell's
+`services` asks so and shows each.
 Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
-itself. The test image does that with a list of exitwith, which runs once
-and ends at once, whoami, which waits for it and ends at once there, and
-the shell, which waits for whoami. It keeps the order programs started
-and ended in and wants exitwith started once and ended before whoami
-first started, whoami started before the shell, six to twelve starts in
-60 ticks, and every frame back once init ended.
+itself. The test image does that with a list of setup, which runs whoami
+once, whoami, which waits for it and ends at once, and the shell, which
+waits for whoami. It keeps the order programs started and ended and what
+they logged, and wants setup ended once, before whoami first started,
+whoami started before the shell, six to twelve starts in 60 ticks, and
+every frame back once init ended. It asks init about each
+service over its channel, and where keys can be typed has init's shell
+list them.
 
 ## The console (M5)
 

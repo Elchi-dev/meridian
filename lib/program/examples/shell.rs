@@ -1,7 +1,8 @@
 //! The shell: it reads keys, shows what they type on the console, and runs
 //! the line typed once Enter goes down. It knows help, echo, ls, cat,
-//! clear, which cls is too, and exit, reads paths through the tree of
-//! files, and starts any other word as a program, waiting until it ended.
+//! clear, which cls is too, services, which asks init over the line init
+//! started it with, and exit, reads paths through the tree of files, and
+//! starts any other word as a program, waiting until it ended.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -10,8 +11,11 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use program::{Ended, Error, Handle, KeyEvent, abi::file, layout};
+use services::{About, MESSAGE};
 
 program::main!(shell);
 
@@ -68,12 +72,17 @@ enum Command<'a> {
     List(&'a str),
     Show(&'a str),
     Clear,
+    Services,
     Exit,
     Empty,
     /// A program, by its name in [`PROGRAMS`] or by its path.
     Program(&'a str),
     Missing(&'a str),
 }
+
+/// What `help` says.
+const HELP: &str =
+    "help, echo TEXT, ls [PATH], cat PATH, clear or cls, services, exit, or a program\n";
 
 /// Where `ls` looks without a path.
 const HOME: &str = "/System/Boot";
@@ -94,6 +103,7 @@ fn parse(line: &str) -> Command<'_> {
         "cat" if rest.is_empty() => Command::Missing("cat"),
         "cat" => Command::Show(rest),
         "clear" | "cls" => Command::Clear,
+        "services" => Command::Services,
         "exit" => Command::Exit,
         other => Command::Program(other),
     }
@@ -134,8 +144,21 @@ fn trouble(path: &str, e: Error) -> String {
     format!("{path}: {why}\n")
 }
 
+/// What the shell says about a service init told it of.
+fn shown(about: &About<'_>) -> String {
+    let times = match about.starts {
+        1 => "once".into(),
+        n => format!("{n} times"),
+    };
+    format!("{}: {}, started {times}\n", about.name, about.state.word())
+}
+
+/// The line to init the shell started with, 0 when init did not start it.
+static LINE: AtomicU64 = AtomicU64::new(0);
+
 #[cfg_attr(test, allow(dead_code))]
-fn shell(_: Handle) -> u64 {
+fn shell(line: Handle) -> u64 {
+    LINE.store(line.0, SeqCst);
     let _ = program::write("Meridian shell. Type help to see what it knows.\n> ");
     let mut editor = Editor::default();
     loop {
@@ -163,19 +186,67 @@ fn shell(_: Handle) -> u64 {
 #[cfg_attr(test, allow(dead_code))]
 fn run(line: &str) -> bool {
     let _ = match parse(line) {
-        Command::Help => program::write(
-            "help, echo TEXT, ls [PATH], cat PATH, clear or cls, exit, or a program\n",
-        ),
+        Command::Help => program::write(HELP),
         Command::Echo(text) => program::write(&format!("{text}\n")),
         Command::List(path) => list(path),
         Command::Show(path) => show(path),
         Command::Clear => program::write("\u{c}"),
+        Command::Services => services(),
         Command::Exit => return false,
         Command::Empty => Ok(()),
         Command::Program(word) => start(word),
         Command::Missing(word) => program::write(&format!("{word} needs a path\n")),
     };
     true
+}
+
+/// Asks init about each of its services in turn and shows what it says.
+#[cfg_attr(test, allow(dead_code))]
+fn services() -> Result<(), Error> {
+    let line = Handle(LINE.load(SeqCst));
+    if line.0 == 0 {
+        return program::write("services: init did not start this shell\n");
+    }
+    program::write(&listing((0..=u8::MAX).map(|place| ask(line, place))))
+}
+
+/// What the shell shows for init's answers about the services, place
+/// after place: each service until init says none is left, and what went
+/// wrong when it gives no answer or something else. Asks no more once it
+/// stopped.
+fn listing(answers: impl IntoIterator<Item = Option<Vec<u8>>>) -> String {
+    let mut text = String::new();
+    for answer in answers {
+        let Some(answer) = answer else {
+            text.push_str("services: init does not answer\n");
+            break;
+        };
+        match services::read(&answer) {
+            Ok(Some(about)) => text.push_str(&shown(&about)),
+            Ok(None) => break,
+            Err(_) => {
+                text.push_str("services: init answered something else\n");
+                break;
+            }
+        }
+    }
+    text
+}
+
+/// Asks init over `line` about the service at `place`, and waits up to
+/// a second for the answer.
+#[cfg_attr(test, allow(dead_code))]
+fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
+    program::send(line, &services::ask(place), None).ok()?;
+    let mut room = [0u8; MESSAGE];
+    for _ in 0..100 {
+        match program::receive(line, &mut room) {
+            Ok((len, _)) => return Some(room[..len].to_vec()),
+            Err(Error::Empty) => program::sleep(1),
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// Starts the program `word` names and waits until it ended.
@@ -371,6 +442,12 @@ mod tests {
             (Command::Clear, Command::Exit, Command::Empty)
         );
         assert_eq!(parse(" cls "), Command::Clear, "as on Windows");
+        assert_eq!(parse("services"), Command::Services);
+        assert_eq!(
+            parse("services now"),
+            Command::Services,
+            "it takes no words"
+        );
         assert_eq!(parse("rm -rf /"), Command::Program("rm"));
         assert_eq!(
             parse("Help"),
@@ -412,6 +489,126 @@ mod tests {
             ending("one", Ended::Exited(1)).as_deref(),
             Some("one ended with 1\n")
         );
+    }
+
+    #[test]
+    fn a_service_is_shown_with_what_it_does_and_how_often_it_started() {
+        use services::State;
+        let about = |name, state, starts| About {
+            name,
+            state,
+            starts,
+        };
+        assert_eq!(
+            shown(&about("exitwith", State::Ended, 1)),
+            "exitwith: ended, started once\n"
+        );
+        assert_eq!(
+            shown(&about("whoami", State::Resting, 6)),
+            "whoami: resting, started 6 times\n"
+        );
+        assert_eq!(
+            shown(&about("disk", State::Waiting, 0)),
+            "disk: waiting, started 0 times\n"
+        );
+        assert_eq!(
+            shown(&about("shell", State::Running, 2)),
+            "shell: running, started 2 times\n"
+        );
+    }
+
+    /// init's answer about `about`, as it sends it.
+    fn told(about: Option<About<'_>>) -> Option<Vec<u8>> {
+        let mut room = [0u8; MESSAGE];
+        let len = services::answer(about, &mut room);
+        room.get(..len).map(<[u8]>::to_vec)
+    }
+
+    fn running(name: &str, starts: u32) -> About<'_> {
+        About {
+            name,
+            state: services::State::Running,
+            starts,
+        }
+    }
+
+    #[test]
+    fn the_services_are_listed_until_init_says_none_is_left() {
+        let ended = About {
+            name: "exitwith",
+            state: services::State::Ended,
+            starts: 1,
+        };
+        let answers = [
+            told(Some(ended)),
+            told(Some(running("shell", 2))),
+            told(None),
+            told(Some(running("never shown", 1))),
+        ];
+        assert_eq!(
+            listing(answers),
+            "exitwith: ended, started once\nshell: running, started 2 times\n"
+        );
+        assert_eq!(listing([told(None)]), "", "no services");
+        assert_eq!(listing([]), "");
+    }
+
+    #[test]
+    fn the_listing_says_when_init_stops_answering_or_answers_something_else() {
+        let shell = told(Some(running("shell", 1)));
+        assert_eq!(
+            listing([shell.clone(), None, told(None)]),
+            "shell: running, started once\nservices: init does not answer\n"
+        );
+        assert_eq!(
+            listing([Some(b"?\x01".to_vec()), shell.clone()]),
+            "services: init answered something else\n"
+        );
+        assert_eq!(
+            listing([shell, Some(Vec::new())]),
+            "shell: running, started once\nservices: init answered something else\n"
+        );
+    }
+
+    #[test]
+    fn the_listing_asks_no_more_once_init_said_none_is_left() {
+        let mut asked = 0;
+        let text = listing((0..=u8::MAX).map(|place| {
+            asked += 1;
+            told((place < 2).then(|| running("s", u32::from(place))))
+        }));
+        assert_eq!(asked, 3);
+        assert_eq!(
+            text,
+            "s: running, started 0 times\ns: running, started once\n"
+        );
+    }
+
+    #[test]
+    fn help_names_every_command_the_shell_knows() {
+        let known = [
+            "help", "echo", "ls", "cat", "clear", "cls", "services", "exit",
+        ];
+        for word in known {
+            let named = HELP
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .any(|w| w == word);
+            assert!(named, "help leaves out {word}");
+            assert!(
+                !matches!(parse(word), Command::Program(_)),
+                "{word} is no command"
+            );
+        }
+        let words = HELP
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .filter(|w| w.chars().all(|c| c.is_ascii_lowercase()) && !w.is_empty());
+        for word in words {
+            assert!(
+                known.contains(&word) || ["or", "a", "program"].contains(&word),
+                "help names {word}, which the shell does not know"
+            );
+        }
+        assert_eq!(parse("nope"), Command::Program("nope"));
     }
 
     #[test]

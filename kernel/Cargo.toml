@@ -39,6 +39,7 @@ pci = { path = "../lib/pci" }
 virtio = { path = "../lib/virtio" }
 sched = { path = "../lib/sched" }
 security = { path = "../lib/security" }
+services = { path = "../lib/services" }
 qr = { path = "../lib/qr" }
 x86 = { path = "../lib/x86" }
 

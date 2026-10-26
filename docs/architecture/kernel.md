@@ -403,9 +403,10 @@ Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
 itself. The test image does that with a list of exitwith, which runs once
 and ends at once, whoami, which waits for it and ends at once there, and
-the shell. It keeps the order programs started and ended in and wants
-exitwith started once and ended before whoami first started, six to
-twelve starts in 60 ticks, and every frame back once init ended.
+the shell, which waits for whoami. It keeps the order programs started
+and ended in and wants exitwith started once and ended before whoami
+first started, whoami started before the shell, six to twelve starts in
+60 ticks, and every frame back once init ended.
 
 ## The console (M5)
 

@@ -1410,9 +1410,9 @@ fn shell_checks<W: Write>(
 /// init, handed a channel end: of the services the test image lists, it
 /// runs exitwith once, starts whoami, which waits for exitwith to end and
 /// ends at once there, again and again but waiting longer each time, and
-/// the shell once, and once the channel's other end closes, it ends them
-/// and itself, so every frame they took comes back. Booted from a CD it
-/// has no list, so it starts the shell alone.
+/// the shell once whoami started, and once the channel's other end closes,
+/// it ends them and itself, so every frame they took comes back. Booted
+/// from a CD it has no list, so it starts the shell alone.
 fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &[MemoryRegion]) {
     use handles::Rights;
     use raw::user::{self, seen};
@@ -1446,7 +1446,10 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
             == 1;
         let waited = first(b"user: exitwith ended with 2989")
             .zip(first(b"start whoami"))
-            .is_some_and(|(ended, started)| ended < started);
+            .is_some_and(|(ended, started)| ended < started)
+            && first(b"start whoami")
+                .zip(first(b"start shell"))
+                .is_some_and(|(whoami, shell)| whoami < shell);
         (6..=12).contains(&spawns) && once && waited && seen::logged(b"init: whoami ended with 1")
     } else {
         spawns == 1
@@ -1464,7 +1467,7 @@ fn init_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions: &
     report.check(
         "kernel.init",
         ran && ended && back && last,
-        "init should run a service once where it says so, start one that waits for it only after it ended, start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
+        "init should run a service once where it says so, start one that waits for it only after it ended and one that waits for a service that keeps running only after that started, start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
     );
 }
 

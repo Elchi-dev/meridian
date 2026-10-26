@@ -230,8 +230,7 @@ fn init(control: Handle) -> u64 {
     for (slot, (service, waits)) in services.into_iter().zip(waits).enumerate() {
         KEEPING.fetch_add(1, SeqCst);
         if program::thread(move || keep(slot, &service, &waits)).is_err() {
-            KEEPING.fetch_sub(1, SeqCst);
-            READY[slot].store(true, SeqCst);
+            done(slot);
         }
     }
     if KEEPING.load(SeqCst) == 0 {
@@ -314,9 +313,16 @@ fn keep(slot: usize, service: &Service, waits: &[usize]) -> u64 {
         soon = soon_again(soon, program::ticks() - start);
         rest(pause(soon));
     }
+    done(slot);
+    0
+}
+
+/// Counts the service in `slot` as kept no longer, and as ready for those
+/// that wait for it, which no longer wait once it will not run again.
+#[cfg_attr(test, allow(dead_code))]
+fn done(slot: usize) {
     READY[slot].store(true, SeqCst);
     KEEPING.fetch_sub(1, SeqCst);
-    0
 }
 
 /// Sleeps `ticks`, or less once init ends its services.
@@ -393,6 +399,12 @@ mod tests {
         assert_eq!(e.code, meri::Code::DuplicateLabel);
         let twice = b"service a {\n    program = a\n    program = b\n}\n";
         assert_eq!(services(twice).unwrap_err().code, meri::Code::DuplicateKey);
+        let waits_twice = b"service a {\n    program = a\n}\nservice b {\n    program = b\n    after = a\n    after = [a]\n}\n";
+        assert_eq!(
+            services(waits_twice).unwrap_err().code,
+            meri::Code::DuplicateKey,
+            "after is said once, as a name or a list"
+        );
     }
 
     #[test]
@@ -420,7 +432,7 @@ mod tests {
 
     #[test]
     fn only_names_count_as_what_a_service_waits_for() {
-        let list = b"service a {\n    program = a\n    once = yes\n    after = [b, 3, [c, d], \"e\"]\n    notes = [f]\n    inner {\n        after = g\n    }\n}\nservice b {\n    after = [a]\n}\n";
+        let list = b"service a {\n    program = a\n    once = yes\n    after = [b, 3, [c, d], \"e\"]\n    notes = [[f], g]\n    inner {\n        after = g\n    }\n}\nservice b {\n    after = [a]\n}\n";
         assert_eq!(
             services(list).unwrap(),
             [Service {

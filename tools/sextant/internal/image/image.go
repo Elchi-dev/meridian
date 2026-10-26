@@ -174,7 +174,8 @@ service shell {
 // testServices is the list of test images: exitwith, which runs once
 // and ends at once with 2989 there, whoami, which waits for it and ends at
 // once there too, so the test image sees init start it again and again,
-// and the shell, which runs until init ends it.
+// and the shell, which waits for whoami to start and runs until init ends
+// it.
 const testServices = `service exitwith {
     program = exitwith
     once = true
@@ -187,6 +188,7 @@ service whoami {
 
 service shell {
     program = shell
+    after = whoami
 }
 `
 

@@ -237,8 +237,8 @@ func TestTheTestServicesRunOneOnceAndWaitForIt(t *testing.T) {
 	if !once["exitwith"] || once["whoami"] || once["shell"] {
 		t.Errorf("only exitwith should run once: %v", once)
 	}
-	if after["whoami"] != "exitwith" || after["exitwith"] != "" || after["shell"] != "" {
-		t.Errorf("only whoami should wait, for exitwith: %v", after)
+	if after["whoami"] != "exitwith" || after["shell"] != "whoami" || after["exitwith"] != "" {
+		t.Errorf("whoami should wait for exitwith, and the shell for whoami: %v", after)
 	}
 }
 

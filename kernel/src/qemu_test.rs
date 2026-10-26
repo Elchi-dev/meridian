@@ -632,6 +632,29 @@ fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
         spanning && each && end && refused,
         "virtio should read the same sectors as AHCI, up to the disk's last and no further",
     );
+    // A request takes a descriptor for its header and one for its status
+    // besides those for its frames.
+    let pieces = raw::virtio::agreed().map_or(0, |(.., size, _)| size.saturating_sub(2));
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let mut by_virtio = alloc::vec![0u8; 17 * 4096];
+    let mut by_ahci = by_virtio.clone();
+    let (before, frames) = (raw::virtio::requests(), free());
+    let large = read(2040, &mut by_virtio).is_ok();
+    let sent = raw::virtio::requests().wrapping_sub(before);
+    let back = frames.is_some() && free() == frames;
+    let same = ahci_read(2040, &mut by_ahci)
+        && by_virtio == by_ahci
+        && by_virtio[8 * 512 + 510..8 * 512 + 512] == [0x55, 0xaa];
+    report.check(
+        "kernel.virtio.large",
+        large && same && back && pieces > 0 && sent == 17u16.div_ceil(pieces),
+        "seventeen frames should come in as few requests as the queue has descriptors for, as AHCI reads them, and the frames they came through should go back",
+    );
     let wanted = virtio::features::VERSION_1 | offered & virtio::features::BLOCK_READ_ONLY;
     report.check(
         "kernel.virtio.ready",

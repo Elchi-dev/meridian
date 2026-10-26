@@ -490,12 +490,13 @@ What exists:
   capabilities its function lists (`lib/pci`), resets it, agrees on
   version 1 and on whether it only reads (`lib/virtio`), sets up one
   queue of eight entries in a frame of its own, and reads and writes up
-  to a frame a request, polled, waiting up to about a second for each
-  answer. Test machines with a disk see it once more as a
-  read only virtio disk; the test image wants it ready as agreed, as
-  large as the AHCI disk and reading the same sectors, a request of an
-  unknown type refused, and hello through FAT32 on it as the loader read
-  it.
+  to six frames a request, as many as the queue has descriptors for
+  beside the header's and the status byte's, polled, waiting up to about
+  a second for each answer. Test machines with a disk see it once more as
+  a read only virtio disk; the test image wants it ready as agreed, as
+  large as the AHCI disk and reading the same sectors, seventeen frames
+  in as few requests as the queue allows, a request of an unknown type
+  refused, and hello through FAT32 on it as the loader read it.
 - **The keyboard.** `lib/acpi` finds the I/O APIC and where ISA's
   interrupts arrive in the MADT; the kernel maps the I/O APIC uncached,
   holds every input back, sets the i8042 up for a keyboard on its first

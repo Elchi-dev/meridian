@@ -252,15 +252,17 @@ pub mod block {
     /// The size of the sectors requests count in, whatever the disk's.
     pub const SECTOR: u64 = 512;
 
-    /// The most bytes one request moves: a frame's worth.
-    pub const PART: usize = 4096;
-
-    /// The parts of [`PART`] bytes or less that `len` bytes from `sector`
-    /// on go in: the sector each starts at, and where in the bytes it lies.
-    pub fn parts(sector: u64, len: usize) -> impl Iterator<Item = (u64, core::ops::Range<usize>)> {
-        (0..len).step_by(PART).map(move |start| {
+    /// The parts of `size` bytes or less, one request each, that `len`
+    /// bytes from `sector` on go in: the sector each starts at, and where
+    /// in the bytes it lies. `size` is more than 0.
+    pub fn parts(
+        sector: u64,
+        len: usize,
+        size: usize,
+    ) -> impl Iterator<Item = (u64, core::ops::Range<usize>)> {
+        (0..len).step_by(size).map(move |start| {
             let first = sector + start as u64 / SECTOR;
-            (first, start..len.min(start + PART))
+            (first, start..len.min(start + size))
         })
     }
 }
@@ -282,29 +284,6 @@ fn header(kind: u32, sector: u64) -> [u8; 16] {
     h[..4].copy_from_slice(&kind.to_le_bytes());
     h[8..].copy_from_slice(&sector.to_le_bytes());
     h
-}
-
-/// The three descriptors of a read, as entries 0, 1 and 2 of the table:
-/// the header at `header`, which the device reads, the `length` bytes at
-/// `data` and then the status byte at `status`, which it writes.
-#[must_use]
-pub fn read_chain(header: u64, data: u64, length: u32, status: u64) -> [[u8; 16]; 3] {
-    [
-        descriptor(header, 16, NEXT, 1),
-        descriptor(data, length, NEXT | WRITE, 2),
-        descriptor(status, 1, WRITE, 0),
-    ]
-}
-
-/// The three descriptors of a write, as [`read_chain`] lays out a read:
-/// the device reads the data instead of writing it.
-#[must_use]
-pub fn write_chain(header: u64, data: u64, length: u32, status: u64) -> [[u8; 16]; 3] {
-    [
-        descriptor(header, 16, NEXT, 1),
-        descriptor(data, length, NEXT, 2),
-        descriptor(status, 1, WRITE, 0),
-    ]
 }
 
 /// The most data descriptors one request of [`chain`] has: the queue's
@@ -335,6 +314,27 @@ pub fn chain(
     let last = pieces.len() + 1;
     table[last] = descriptor(status, 1, WRITE, 0);
     Some((table, last + 1))
+}
+
+/// The pieces of a request whose `length` bytes fill the frames at
+/// `frames` in order, a frame's worth in each but the last, and how many
+/// there are, as [`chain`] takes them. None when they take more frames
+/// than there are or than [`PIECES`].
+#[must_use]
+pub fn pieces(frames: &[u64], length: u32) -> Option<([(u64, u32); PIECES], usize)> {
+    let count = usize::try_from(length.div_ceil(4096)).ok()?;
+    if count > PIECES {
+        return None;
+    }
+    let mut pieces = [(0, 0); PIECES];
+    for ((piece, &frame), done) in pieces
+        .iter_mut()
+        .zip(frames.get(..count)?)
+        .zip((0..).step_by(4096))
+    {
+        *piece = (frame, (length - done).min(4096));
+    }
+    Some((pieces, count))
 }
 
 /// How many 512-byte sectors a block device holds, from the start of its
@@ -411,16 +411,50 @@ mod tests {
     }
 
     #[test]
-    fn requests_go_a_frame_at_a_time() {
-        let parts = |sector, len| block::parts(sector, len).collect::<Vec<_>>();
-        assert_eq!(parts(10, 0), []);
-        assert_eq!(parts(10, 512), [(10, 0..512)]);
-        assert_eq!(parts(10, 4096), [(10, 0..4096)]);
+    fn requests_go_as_many_bytes_at_a_time_as_they_take() {
+        let parts = |sector, len, size| block::parts(sector, len, size).collect::<Vec<_>>();
+        assert_eq!(parts(10, 0, 4096), []);
+        assert_eq!(parts(10, 512, 4096), [(10, 0..512)]);
+        assert_eq!(parts(10, 4096, 4096), [(10, 0..4096)]);
         assert_eq!(
-            parts(10, 2 * 4096 + 512),
+            parts(10, 2 * 4096 + 512, 4096),
             [(10, 0..4096), (18, 4096..8192), (26, 8192..8704)],
             "each part eight sectors after the one before"
         );
+        assert_eq!(
+            parts(10, 13 * 4096, 6 * 4096),
+            [(10, 0..24576), (58, 24576..49152), (106, 49152..53248)],
+            "six frames at a time"
+        );
+    }
+
+    #[test]
+    fn a_request_fills_its_frames_in_order() {
+        let frames = [
+            0x1000,
+            0x9000,
+            0x5000,
+            0x2_0000_0000,
+            0xb000,
+            0x7000,
+            0xd000,
+        ];
+        assert_eq!(
+            pieces(&frames, 512),
+            Some(([(0x1000, 512), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)], 1))
+        );
+        let (two, n) = pieces(&frames, 4096 + 1024).unwrap();
+        assert_eq!(&two[..n], [(0x1000, 4096), (0x9000, 1024)]);
+        let (six, n) = pieces(&frames, 6 * 4096).unwrap();
+        assert_eq!(n, 6);
+        assert!(
+            six.iter()
+                .zip(frames)
+                .all(|(&(at, len), frame)| at == frame && len == 4096)
+        );
+        assert_eq!(pieces(&frames, 6 * 4096 + 512), None, "seven frames");
+        assert_eq!(pieces(&frames[..2], 3 * 4096), None, "more than were given");
+        assert_eq!(pieces(&frames, 0), Some(([(0, 0); PIECES], 0)));
     }
 
     /// A capability of `kind` at `at` in `config`, pointing at the next one.
@@ -578,10 +612,11 @@ mod tests {
             read_header(0x0102_0304_0506_0708),
             [0, 0, 0, 0, 0, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1]
         );
-        let chain = read_chain(0x1000, 0x2000, 4096, 0x1010);
-        assert_eq!(chain[0], descriptor(0x1000, 16, NEXT, 1));
-        assert_eq!(chain[1], descriptor(0x2000, 4096, NEXT | WRITE, 2));
-        assert_eq!(chain[2], descriptor(0x1010, 1, WRITE, 0));
+        let (table, used) = chain(0x1000, &[(0x2000, 4096)], true, 0x1010).unwrap();
+        assert_eq!(used, 3);
+        assert_eq!(table[0], descriptor(0x1000, 16, NEXT, 1));
+        assert_eq!(table[1], descriptor(0x2000, 4096, NEXT | WRITE, 2));
+        assert_eq!(table[2], descriptor(0x1010, 1, WRITE, 0));
         assert_eq!(
             (block::IN, block::OK, block::IO_ERROR, block::UNSUPPORTED),
             (0, 0, 1, 2)
@@ -636,13 +671,17 @@ mod tests {
     #[test]
     fn one_piece_is_the_chain_of_a_read_or_a_write() {
         let (read, used) = chain(0x1000, &[(0x2000, 1024)], true, 0x1010).unwrap();
-        assert_eq!(
-            (&read[..3], used),
-            (&read_chain(0x1000, 0x2000, 1024, 0x1010)[..], 3)
-        );
+        assert_eq!(used, 3);
+        assert_eq!(read[1], descriptor(0x2000, 1024, NEXT | WRITE, 2));
         assert!(read[3..].iter().all(|d| *d == [0; 16]), "the rest unused");
-        let (write, _) = chain(0x1000, &[(0x2000, 1024)], false, 0x1010).unwrap();
-        assert_eq!(&write[..3], &write_chain(0x1000, 0x2000, 1024, 0x1010)[..]);
+        let (write, used) = chain(0x1000, &[(0x2000, 1024)], false, 0x1010).unwrap();
+        assert_eq!(used, 3);
+        assert_eq!(
+            (write[0], write[2]),
+            (read[0], read[2]),
+            "the header and the status as for a read"
+        );
+        assert_eq!(write[1], descriptor(0x2000, 1024, NEXT, 2));
         let (pair, used) = chain(0x1000, &[(0x2000, 4096), (0x7000, 512)], false, 0x1010).unwrap();
         assert_eq!(used, 4);
         assert_eq!(pair[1], descriptor(0x2000, 4096, NEXT, 2));
@@ -657,7 +696,8 @@ mod tests {
     #[test]
     fn a_read_chain_is_followed_from_its_head_to_its_end() {
         let mut table = [0u8; 16 * 8];
-        for (i, d) in read_chain(0x5000, 0x6000, 512, 0x5010).iter().enumerate() {
+        let (read, used) = chain(0x5000, &[(0x6000, 512)], true, 0x5010).unwrap();
+        for (i, d) in read[..used].iter().enumerate() {
             table[16 * i..16 * i + 16].copy_from_slice(d);
         }
         let mut at = 0;
@@ -681,15 +721,15 @@ mod tests {
     fn a_write_hands_the_device_its_data_to_read() {
         assert_eq!(write_header(9)[..4], 1u32.to_le_bytes());
         assert_eq!(write_header(9)[4..], read_header(9)[4..]);
-        let chain = write_chain(0x1000, 0x2000, 1024, 0x1010);
-        let flags: Vec<u16> = chain.iter().map(|d| decoded(d).2).collect();
+        let (write, used) = chain(0x1000, &[(0x2000, 1024)], false, 0x1010).unwrap();
+        let flags: Vec<u16> = write[..used].iter().map(|d| decoded(d).2).collect();
         assert_eq!(
             flags,
             [NEXT, NEXT, WRITE],
             "only the status for the device to write"
         );
-        assert_eq!(decoded(&chain[1]), (0x2000, 1024, NEXT, 2));
-        assert_eq!(chain[0], read_chain(0x1000, 0x2000, 1024, 0x1010)[0]);
+        assert_eq!(decoded(&write[1]), (0x2000, 1024, NEXT, 2));
+        assert_eq!(decoded(&write[0]), (0x1000, 16, NEXT, 1));
         assert_eq!(block::OUT, 1);
     }
 

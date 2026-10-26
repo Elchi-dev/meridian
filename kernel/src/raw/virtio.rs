@@ -1,6 +1,6 @@
 //! A virtio block device, through the structures its capabilities name:
 //! reset, the features agreed, one queue of a few entries in a frame of
-//! its own, and reads of up to a frame each, one at a time, polled.
+//! its own, and requests of up to six frames each, one at a time, polled.
 
 use core::sync::atomic::{Ordering, fence};
 
@@ -8,7 +8,7 @@ use bootinfo::HHDM_BASE;
 use pci::{Address, Bar, Header};
 use virtio::{Region, block, common, status};
 
-use super::memory::{self, Spin};
+use super::memory::{self, DeviceFrames, Spin};
 
 /// Where the common structure, the device's and the queue's notification
 /// address are mapped, a page each.
@@ -209,39 +209,46 @@ pub fn drive() -> Option<Drive> {
     QUEUE.lock().as_ref().map(|q| q.drive)
 }
 
+/// The frames one request on `queue` moves the `len` bytes through, as
+/// many as its descriptors leave room for beside the header's and the
+/// status byte's.
+fn take(queue: &Queue, len: usize) -> Option<DeviceFrames> {
+    let room = usize::from(queue.size).saturating_sub(2);
+    DeviceFrames::take(len.div_ceil(4096).min(room))
+}
+
 /// Reads the sectors from `sector` on into `into`, which takes a whole
-/// number of them, a frame at a time.
+/// number of them, as many frames at a time as the queue has room for.
 ///
 /// # Errors
 ///
 /// When there is no device, the sectors are not all on it, no memory is
-/// left for the frame they come through, or the device does not answer in
-/// time or answers with an error.
+/// left for the frames they come through, or the device does not answer
+/// in time or answers with an error.
 pub fn read(sector: u64, into: &mut [u8]) -> Result<(), Error> {
     let mut guard = QUEUE.lock();
     let queue = guard.as_mut().ok_or(Error::NoDrive)?;
     span(queue, sector, into.len())?;
-    let data = memory::device_frame().ok_or(Error::NoMemory)?;
-    let mut answer = Ok(());
-    for (first, part) in block::parts(sector, into.len()) {
+    let frames = take(queue, into.len()).ok_or(Error::NoMemory)?;
+    for (first, part) in block::parts(sector, into.len(), frames.bytes()) {
         let chunk = &mut into[part];
         let header = virtio::read_header(first);
-        answer = request(queue, &header, false, data, chunk.len());
-        if answer.is_err() {
-            break;
+        request(queue, &header, false, &frames, chunk.len())?;
+        for (frame, piece) in frames.frames().iter().zip(chunk.chunks_mut(4096)) {
+            // SAFETY: the frame is the kernel's alone, in the direct map,
+            // and the device wrote the piece's length into it before it
+            // answered.
+            let read = unsafe {
+                core::slice::from_raw_parts((HHDM_BASE + frame) as *const u8, piece.len())
+            };
+            piece.copy_from_slice(read);
         }
-        // SAFETY: the frame is the kernel's alone, in the direct map, and
-        // the device wrote the chunk's length into it before it answered.
-        let read =
-            unsafe { core::slice::from_raw_parts((HHDM_BASE + data) as *const u8, chunk.len()) };
-        chunk.copy_from_slice(read);
     }
-    memory::give_back(data);
-    answer
+    Ok(())
 }
 
-/// Writes `from`, a whole number of sectors, from `sector` on, a frame at
-/// a time.
+/// Writes `from`, a whole number of sectors, from `sector` on, as many
+/// frames at a time as [`read`] reads.
 ///
 /// # Errors
 ///
@@ -255,27 +262,24 @@ pub fn write(sector: u64, from: &[u8]) -> Result<(), Error> {
         return Err(Error::ReadOnly);
     }
     span(queue, sector, from.len())?;
-    let data = memory::device_frame().ok_or(Error::NoMemory)?;
-    let mut answer = Ok(());
-    for (first, part) in block::parts(sector, from.len()) {
+    let frames = take(queue, from.len()).ok_or(Error::NoMemory)?;
+    for (first, part) in block::parts(sector, from.len(), frames.bytes()) {
         let chunk = &from[part];
-        // SAFETY: the frame is the kernel's alone, in the direct map, and a
-        // chunk is no longer than it.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                chunk.as_ptr(),
-                (HHDM_BASE + data) as *mut u8,
-                chunk.len(),
-            );
-        };
-        let header = virtio::write_header(first);
-        answer = request(queue, &header, true, data, chunk.len());
-        if answer.is_err() {
-            break;
+        for (frame, piece) in frames.frames().iter().zip(chunk.chunks(4096)) {
+            // SAFETY: the frame is the kernel's alone, in the direct map,
+            // and a piece is no longer than it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    piece.as_ptr(),
+                    (HHDM_BASE + frame) as *mut u8,
+                    piece.len(),
+                );
+            };
         }
+        let header = virtio::write_header(first);
+        request(queue, &header, true, &frames, chunk.len())?;
     }
-    memory::give_back(data);
-    answer
+    Ok(())
 }
 
 /// Whether the `len` bytes from `sector` on are a whole number of sectors,
@@ -291,25 +295,23 @@ fn span(queue: &Queue, sector: u64, len: usize) -> Result<(), Error> {
     }
 }
 
-/// Sends the request `header` with the `length` bytes of the frame `data`,
-/// for the device to read when `out` and to write otherwise, and waits for
-/// the answer.
+/// Sends the request `header` with the `length` bytes in the first of
+/// `frames`, for the device to read when `out` and to write otherwise, and
+/// waits for the answer.
 fn request(
     queue: &mut Queue,
     header: &[u8; 16],
     out: bool,
-    data: u64,
+    frames: &DeviceFrames,
     length: usize,
 ) -> Result<(), Error> {
     let frame = HHDM_BASE + queue.frame;
     let rings = virtio::rings(queue.size);
     let length = u32::try_from(length).map_err(|_| Error::OutOfRange)?;
     let (header_at, status_at) = virtio::request_at(queue.frame);
-    let chain = if out {
-        virtio::write_chain(header_at, data, length, status_at)
-    } else {
-        virtio::read_chain(header_at, data, length, status_at)
-    };
+    let (pieces, count) = virtio::pieces(frames.frames(), length).ok_or(Error::OutOfRange)?;
+    let (chain, used) =
+        virtio::chain(header_at, &pieces[..count], !out, status_at).ok_or(Error::OutOfRange)?;
     let status = (HHDM_BASE + status_at) as *mut u8;
     // SAFETY: the queue's frame is the kernel's and the device's alone, in
     // the direct map; the device reads the descriptors and the request only
@@ -318,7 +320,7 @@ fn request(
     // names descriptor 0, the head of the only chain, as the zeroed frame
     // had it from the start.
     unsafe {
-        core::ptr::copy_nonoverlapping(chain.as_ptr().cast::<u8>(), frame as *mut u8, 48);
+        core::ptr::copy_nonoverlapping(chain.as_ptr().cast::<u8>(), frame as *mut u8, 16 * used);
         core::ptr::copy_nonoverlapping(header.as_ptr(), (HHDM_BASE + header_at) as *mut u8, 16);
         core::ptr::write_volatile(status, 0xff);
         let ring = frame + rings.available as u64;
@@ -350,12 +352,17 @@ fn request(
 pub fn ask(kind: u32) -> Result<(), Error> {
     let mut guard = QUEUE.lock();
     let queue = guard.as_mut().ok_or(Error::NoDrive)?;
-    let data = memory::device_frame().ok_or(Error::NoMemory)?;
+    let frames = DeviceFrames::take(1).ok_or(Error::NoMemory)?;
     let mut header = virtio::read_header(0);
     header[..4].copy_from_slice(&kind.to_le_bytes());
-    let answer = request(queue, &header, false, data, 512);
-    memory::give_back(data);
-    answer
+    request(queue, &header, false, &frames, 512)
+}
+
+/// How many requests went to the device so far, as its ring counts them.
+/// Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn requests() -> u16 {
+    QUEUE.lock().as_ref().map_or(0, |q| q.sent)
 }
 
 /// The device's status, the features it offers and those agreed on, as

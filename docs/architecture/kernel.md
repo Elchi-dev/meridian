@@ -416,10 +416,11 @@ program may use both until terminals and focus exist. The runtime turns a
 key into a character on a US layout; others come from CLDR with Horizon.
 
 The shell edits a line with either shift and backspace and runs `help`,
-`echo`, `ls`, `cat`, `clear` and `exit`, reading the tree of files. Any
-other word is a program: by its name in `/System/Boot/meridian/programs`,
-or by its path, started with SPAWN and waited for, and the shell says how
-it ended unless it exited with 0. The test image checks the console's
+`echo`, `ls`, `cat`, `clear` or `cls` and `exit`, reading the tree of
+files. Any other word is a program: by its name in
+`/System/Boot/meridian/programs`, or by its path, started with SPAWN and
+waited for, and the shell says how it ended unless it exited with 0. The
+test image checks the console's
 text, cursor, cells, scrolling and clearing on the screen, that a
 character is rasterized once, that nothing is drawn once a crash took the
 screen, a line hello writes from ring 3, and types at the shell with keys

@@ -1,7 +1,7 @@
 //! The shell: it reads keys, shows what they type on the console, and runs
 //! the line typed once Enter goes down. It knows help, echo, ls, cat,
-//! clear and exit, reads paths through the tree of files, and starts any
-//! other word as a program, waiting until it ended.
+//! clear, which cls is too, and exit, reads paths through the tree of
+//! files, and starts any other word as a program, waiting until it ended.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -93,7 +93,7 @@ fn parse(line: &str) -> Command<'_> {
         "ls" => Command::List(rest),
         "cat" if rest.is_empty() => Command::Missing("cat"),
         "cat" => Command::Show(rest),
-        "clear" => Command::Clear,
+        "clear" | "cls" => Command::Clear,
         "exit" => Command::Exit,
         other => Command::Program(other),
     }
@@ -163,9 +163,9 @@ fn shell(_: Handle) -> u64 {
 #[cfg_attr(test, allow(dead_code))]
 fn run(line: &str) -> bool {
     let _ = match parse(line) {
-        Command::Help => {
-            program::write("help, echo TEXT, ls [PATH], cat PATH, clear, exit, or a program\n")
-        }
+        Command::Help => program::write(
+            "help, echo TEXT, ls [PATH], cat PATH, clear or cls, exit, or a program\n",
+        ),
         Command::Echo(text) => program::write(&format!("{text}\n")),
         Command::List(path) => list(path),
         Command::Show(path) => show(path),
@@ -370,6 +370,7 @@ mod tests {
             (parse("clear"), parse("exit"), parse("   ")),
             (Command::Clear, Command::Exit, Command::Empty)
         );
+        assert_eq!(parse(" cls "), Command::Clear, "as on Windows");
         assert_eq!(parse("rm -rf /"), Command::Program("rm"));
         assert_eq!(
             parse("Help"),

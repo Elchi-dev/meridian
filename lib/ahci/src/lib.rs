@@ -157,6 +157,27 @@ pub fn prdt_entry(address: u64, bytes: u32) -> Option<[u8; 16]> {
     Some(entry)
 }
 
+/// The PRDT entries of a command whose `bytes` fill the frames at
+/// physical `frames` in order, a frame's worth in each but the last,
+/// written to the start of `entries`, and how many they are. None for no
+/// bytes, an odd count, or more than the frames given or `entries` hold.
+#[must_use]
+pub fn prdt(frames: &[u64], bytes: u32, entries: &mut [[u8; 16]]) -> Option<u16> {
+    let count = usize::try_from(bytes.div_ceil(4096)).ok()?;
+    if count == 0 {
+        return None;
+    }
+    let slots = entries.get_mut(..count)?;
+    for ((slot, &frame), done) in slots
+        .iter_mut()
+        .zip(frames.get(..count)?)
+        .zip((0..).step_by(4096))
+    {
+        *slot = prdt_entry(frame, (bytes - done).min(4096))?;
+    }
+    u16::try_from(count).ok()
+}
+
 /// What a disk says about itself in its 512 bytes of IDENTIFY data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
@@ -397,6 +418,40 @@ mod tests {
         assert_eq!(prdt_entry(0, ENTRY_MAX + 2), None);
         assert_eq!(prdt_entry(0, 0), None);
         assert_eq!(prdt_entry(0, 511), None);
+    }
+
+    #[test]
+    fn a_command_takes_an_entry_for_each_frame_it_fills() {
+        let frames = [0x1000, 0x9000, 0x2_0000_5000];
+        let mut entries = [[0xaa; 16]; 4];
+        assert_eq!(prdt(&frames, 2 * 4096 + 1024, &mut entries), Some(3));
+        assert_eq!(entries[0], prdt_entry(0x1000, 4096).unwrap());
+        assert_eq!(entries[1], prdt_entry(0x9000, 4096).unwrap());
+        assert_eq!(
+            entries[2],
+            prdt_entry(0x2_0000_5000, 1024).unwrap(),
+            "the last frame only as far as the bytes go"
+        );
+        assert_eq!(entries[3], [0xaa; 16], "nothing past them");
+        assert_eq!(prdt(&frames, 512, &mut entries), Some(1));
+        assert_eq!(entries[0], prdt_entry(0x1000, 512).unwrap());
+        assert_eq!(prdt(&frames, 3 * 4096, &mut entries), Some(3));
+        assert_eq!(entries[2], prdt_entry(0x2_0000_5000, 4096).unwrap());
+    }
+
+    #[test]
+    fn a_command_without_its_frames_or_room_for_their_entries_has_none() {
+        let frames = [0x1000, 0x9000, 0x5000];
+        let mut entries = [[0; 16]; 2];
+        assert_eq!(prdt(&frames, 0, &mut entries), None, "no bytes");
+        assert_eq!(prdt(&frames, 4097, &mut entries), None, "an odd count");
+        assert_eq!(prdt(&frames, 3 * 4096, &mut entries), None, "room for two");
+        assert_eq!(
+            prdt(&frames[..1], 4096 + 512, &mut entries),
+            None,
+            "one frame"
+        );
+        assert_eq!(prdt(&frames, 2 * 4096, &mut entries), Some(2));
     }
 
     /// IDENTIFY data with `model`, and the sector count either in the 28

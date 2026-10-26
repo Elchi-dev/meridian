@@ -9,7 +9,7 @@ use core::sync::atomic::{Ordering, fence};
 use ahci::{Attached, Identity, ata, hba, port};
 use bootinfo::HHDM_BASE;
 
-use super::memory::{self, Spin};
+use super::memory::{self, DeviceFrames, Spin};
 
 /// Where in a port's frame each part lies.
 const COMMAND_LIST: u64 = 0;
@@ -19,6 +19,9 @@ const TABLE: u64 = 0x800;
 /// How long a command or a port may take, in cycles of the time stamp
 /// counter: about a second on a fast processor.
 const PATIENCE: u64 = 4_000_000_000;
+
+/// The most bytes one command moves: as many as a [`DeviceFrames`] holds.
+const MOST: usize = DeviceFrames::MOST * 4096;
 
 /// A port with a device on it, ready for commands.
 #[derive(Clone, Copy, Debug)]
@@ -162,25 +165,32 @@ pub fn last_header(n: usize) -> Option<[u8; 32]> {
     Some(header)
 }
 
-/// Runs `fis` on `drive`, moving `bytes` between the device and the frame
-/// at physical `data`, and waits for its answer.
+/// Runs `fis` on `drive`, moving `bytes` between the device and the first
+/// of `frames`, and waits for its answer.
 fn issue(
     drive: &Drive,
     fis: &[u8; 20],
     write_to_device: bool,
-    data: u64,
-    bytes: u32,
+    frames: &DeviceFrames,
+    bytes: usize,
 ) -> Result<(), Error> {
-    let entry = ahci::prdt_entry(data, bytes).ok_or(Error::OutOfRange)?;
-    let header = ahci::command_header(write_to_device, 1, drive.frame + TABLE);
+    let bytes = u32::try_from(bytes).map_err(|_| Error::OutOfRange)?;
+    let mut entries = [[0u8; 16]; DeviceFrames::MOST];
+    let count = ahci::prdt(frames.frames(), bytes, &mut entries).ok_or(Error::OutOfRange)?;
+    let header = ahci::command_header(write_to_device, count, drive.frame + TABLE);
     let at = |offset: u64| (HHDM_BASE + drive.frame + offset) as *mut u8;
     // SAFETY: the drive's frame is its own and no command runs on it now:
-    // each waits for its answer before the next is built.
+    // each waits for its answer before the next is built. The table with
+    // all its entries ends well inside the frame.
     unsafe {
         core::ptr::copy_nonoverlapping(header.as_ptr(), at(COMMAND_LIST), header.len());
-        core::ptr::write_bytes(at(TABLE), 0, 0x90);
+        core::ptr::write_bytes(at(TABLE), 0, 0x80 + 16 * DeviceFrames::MOST);
         core::ptr::copy_nonoverlapping(fis.as_ptr(), at(TABLE), fis.len());
-        core::ptr::copy_nonoverlapping(entry.as_ptr(), at(TABLE + 0x80), entry.len());
+        core::ptr::copy_nonoverlapping(
+            entries.as_ptr().cast::<u8>(),
+            at(TABLE + 0x80),
+            16 * usize::from(count),
+        );
     }
     fence(Ordering::SeqCst);
     let base = port::base(drive.port);
@@ -210,17 +220,20 @@ fn issue(
 
 /// Asks the disk on `drive` who it is.
 fn identify(drive: &Drive) -> Option<Identity> {
-    let buffer = memory::device_frame()?;
+    let frames = DeviceFrames::take(1)?;
     let fis = ahci::command_fis(ata::IDENTIFY, 0, 0)?;
-    let answer = issue(drive, &fis, false, buffer, 512);
+    issue(drive, &fis, false, &frames, 512).ok()?;
     let mut data = [0u8; 512];
     // SAFETY: a frame of the kernel's own the device just wrote 512 bytes
     // into and is done with.
     unsafe {
-        core::ptr::copy_nonoverlapping((HHDM_BASE + buffer) as *const u8, data.as_mut_ptr(), 512);
+        core::ptr::copy_nonoverlapping(
+            (HHDM_BASE + frames.frames()[0]) as *const u8,
+            data.as_mut_ptr(),
+            512,
+        );
     };
-    memory::give_back(buffer);
-    answer.ok().map(|()| Identity::read(&data))
+    Some(Identity::read(&data))
 }
 
 /// Sends `command` to the disk on port `n`, with a sector's room for what
@@ -238,10 +251,8 @@ pub fn command(n: usize, command: u8) -> Result<(), Error> {
         .flatten()
         .ok_or(Error::NoDisk)?;
     let fis = ahci::command_fis(command, 0, 0).ok_or(Error::OutOfRange)?;
-    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
-    let answer = issue(&drive, &fis, false, buffer, 512);
-    memory::give_back(buffer);
-    answer
+    let frames = DeviceFrames::take(1).ok_or(Error::NoMemory)?;
+    issue(&drive, &fis, false, &frames, 512)
 }
 
 /// The register FIS the device on port `n` last sent, where the port puts
@@ -289,21 +300,22 @@ pub fn drives() -> [Option<Drive>; 32] {
 }
 
 /// Reads the sectors from `lba` on into `into`, which takes any whole
-/// number of them, a frame's worth at a time, from the disk on port `n`.
+/// number of them, sixteen frames at a time, from the disk on port `n`.
 ///
 /// # Errors
 ///
 /// As for [`read_sectors`].
 pub fn read(n: usize, lba: u64, into: &mut [u8]) -> Result<(), Error> {
-    let per_chunk = 4096 / u64::from(sector_size(n)?).max(1);
-    for (i, chunk) in (0..).zip(into.chunks_mut(4096)) {
-        read_sectors(n, lba + i * per_chunk, chunk)?;
+    let per_command = (MOST / sector_size(n)?.max(1)) as u64;
+    for (i, chunk) in (0..).zip(into.chunks_mut(MOST)) {
+        read_sectors(n, lba + i * per_command, chunk)?;
     }
     Ok(())
 }
 
 /// Reads the sectors from `lba` on into `into`, which takes a whole number
-/// of them, at most a frame's worth, from the disk on port `n`.
+/// of them, at most sixteen frames' worth, from the disk on port `n`, with
+/// one command.
 ///
 /// # Errors
 ///
@@ -311,23 +323,23 @@ pub fn read(n: usize, lba: u64, into: &mut [u8]) -> Result<(), Error> {
 /// answer in time or answers with an error, or no memory is left.
 pub fn read_sectors(n: usize, lba: u64, into: &mut [u8]) -> Result<(), Error> {
     let (drive, fis) = span(n, ata::READ_DMA_EXT, lba, into.len())?;
-    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
-    let bytes = u32::try_from(into.len()).map_err(|_| Error::OutOfRange)?;
-    let answer = issue(&drive, &fis, false, buffer, bytes);
-    // SAFETY: as in identify.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            (HHDM_BASE + buffer) as *const u8,
-            into.as_mut_ptr(),
-            into.len(),
-        );
-    };
-    memory::give_back(buffer);
-    answer
+    let frames = DeviceFrames::take(into.len().div_ceil(4096)).ok_or(Error::NoMemory)?;
+    issue(&drive, &fis, false, &frames, into.len())?;
+    for (frame, part) in frames.frames().iter().zip(into.chunks_mut(4096)) {
+        // SAFETY: as in identify.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (HHDM_BASE + frame) as *const u8,
+                part.as_mut_ptr(),
+                part.len(),
+            );
+        };
+    }
+    Ok(())
 }
 
-/// Writes `from`, a whole number of sectors and at most a frame's worth,
-/// to the disk on port `n` from `lba` on.
+/// Writes `from`, a whole number of sectors and at most sixteen frames'
+/// worth, to the disk on port `n` from `lba` on, with one command.
 ///
 /// # Errors
 ///
@@ -336,20 +348,23 @@ pub fn read_sectors(n: usize, lba: u64, into: &mut [u8]) -> Result<(), Error> {
 #[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
 pub fn write_sectors(n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
     let (drive, fis) = span(n, ata::WRITE_DMA_EXT, lba, from.len())?;
-    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
-    let bytes = u32::try_from(from.len()).map_err(|_| Error::OutOfRange)?;
-    // SAFETY: the frame is the kernel's alone, in the direct map, a frame
-    // long, and `from` is no longer than that.
-    unsafe {
-        core::ptr::copy_nonoverlapping(from.as_ptr(), (HHDM_BASE + buffer) as *mut u8, from.len());
-    };
-    let answer = issue(&drive, &fis, true, buffer, bytes);
-    memory::give_back(buffer);
-    answer
+    let frames = DeviceFrames::take(from.len().div_ceil(4096)).ok_or(Error::NoMemory)?;
+    for (frame, part) in frames.frames().iter().zip(from.chunks(4096)) {
+        // SAFETY: the frame is the kernel's alone, in the direct map, and
+        // a part is no longer than it.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                part.as_ptr(),
+                (HHDM_BASE + frame) as *mut u8,
+                part.len(),
+            );
+        };
+    }
+    issue(&drive, &fis, true, &frames, from.len())
 }
 
 /// Writes `from`, which takes any whole number of sectors, to the disk on
-/// port `n` from `lba` on, a frame's worth at a time.
+/// port `n` from `lba` on, sixteen frames at a time.
 ///
 /// # Errors
 ///
@@ -357,28 +372,29 @@ pub fn write_sectors(n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
 // Only the test image writes yet, until files can be written.
 #[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
 pub fn write(n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
-    let per_chunk = 4096 / u64::from(sector_size(n)?).max(1);
-    for (i, chunk) in (0..).zip(from.chunks(4096)) {
-        write_sectors(n, lba + i * per_chunk, chunk)?;
+    let per_command = (MOST / sector_size(n)?.max(1)) as u64;
+    for (i, chunk) in (0..).zip(from.chunks(MOST)) {
+        write_sectors(n, lba + i * per_command, chunk)?;
     }
     Ok(())
 }
 
 /// The size of the sectors of the disk on port `n`.
-fn sector_size(n: usize) -> Result<u32, Error> {
-    Ok(DRIVES
+fn sector_size(n: usize) -> Result<usize, Error> {
+    let size = DRIVES
         .lock()
         .get(n)
         .copied()
         .flatten()
         .and_then(|d| d.identity)
         .ok_or(Error::NoDisk)?
-        .sector_size)
+        .sector_size;
+    usize::try_from(size).map_err(|_| Error::OutOfRange)
 }
 
 /// The drive on port `n` and the FIS that carries `command` for the sectors
-/// from `lba` on that `len` bytes, a whole number of sectors and at most a
-/// frame's worth, take; an error when they are not all on its disk.
+/// from `lba` on that `len` bytes, a whole number of sectors and at most
+/// [`MOST`], take; an error when they are not all on its disk.
 fn span(n: usize, command: u8, lba: u64, len: usize) -> Result<(Drive, [u8; 20]), Error> {
     let drive = DRIVES
         .lock()
@@ -388,7 +404,7 @@ fn span(n: usize, command: u8, lba: u64, len: usize) -> Result<(Drive, [u8; 20])
         .ok_or(Error::NoDisk)?;
     let identity = drive.identity.ok_or(Error::NoDisk)?;
     let size = usize::try_from(identity.sector_size).map_err(|_| Error::OutOfRange)?;
-    let whole = len > 0 && len.is_multiple_of(size) && len <= 4096;
+    let whole = len > 0 && len.is_multiple_of(size) && len <= MOST;
     let count = u16::try_from(len / size.max(1)).map_err(|_| Error::OutOfRange)?;
     if !whole
         || lba

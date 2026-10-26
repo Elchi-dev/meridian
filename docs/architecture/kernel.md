@@ -463,14 +463,15 @@ What exists:
   memory and bus master bits, switches it to AHCI, and gives every port
   with a device a frame of its own for its command list, what the device
   sends back and one command table. It asks each disk who it is and reads
-  sectors with READ DMA EXT, waiting for each answer; there are no
-  interrupts yet. A port stops taking commands after one fails, so a
+  sectors with READ DMA EXT, up to sixteen frames a command with a PRDT
+  entry for each, waiting for each answer; there are no interrupts yet. A port stops taking commands after one fails, so a
   command that fails or goes unanswered starts the port again on its
   frame, and a port that will not start any more drops its drive.
-  `lib/ahci` builds the commands and reads the answers, refusing sectors
-  past what 48 bits address. The test image reads back the protective
-  MBR and the GPT headers sextant wrote, refuses a sector past the disk's
-  end, sees the disk's answers land in the drive's frame, NOP fail and
+  `lib/ahci` builds the commands and their PRDTs and reads the answers,
+  refusing sectors past what 48 bits address. The test image reads back
+  the protective MBR and the GPT headers sextant wrote, refuses a sector
+  past the disk's end, reads seventeen frames as a sector at a time reads
+  them, sees the disk's answers land in the drive's frame, NOP fail and
   the port read again, and a port left stopped with its addresses above
   4 GiB come back; booted from a CD, it finds the CD.
 - **NVMe.** The kernel takes the first NVM Express controller, turns it

@@ -194,16 +194,9 @@ allow {
 
 allow {
     file = "kernel/src/raw/ahci.rs"
-    line = "let answer = issue(&drive, &fis, false, buffer, bytes);"
-    mutation = "false to true"
-    reason = "QEMU takes the direction of a transfer from the ATA command, not from the write bit of the command header"
-}
-
-allow {
-    file = "kernel/src/raw/ahci.rs"
-    line = "let whole = len > 0 && len.is_multiple_of(size) && len <= 4096;"
+    line = "let whole = len > 0 && len.is_multiple_of(size) && len <= MOST;"
     mutation = "> to >="
-    reason = "issue refuses a transfer of no bytes before it builds a command, as prdt_entry has no entry for 0, so reading or writing nothing still fails as out of range; it only takes a frame first and gives it back"
+    reason = "issue refuses a transfer of no bytes before it builds a command, as prdt has no entries for them, so reading or writing nothing still fails as out of range"
 }
 
 allow {

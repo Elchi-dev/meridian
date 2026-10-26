@@ -408,6 +408,35 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
         read && mbr && gpt && refused,
         "the disk's first sectors should be the protective MBR and GPT header, its last the copy, and no sector past it read",
     );
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let mut large = alloc::vec![0u8; 17 * 4096];
+    let mut by_sector = large.clone();
+    let mut at_once = alloc::vec![0u8; 16 * 4096 + 512];
+    let frames = free();
+    let whole = raw::ahci::read(disk.port, 2040, &mut large).is_ok();
+    let back = frames.is_some() && free() == frames;
+    let each = (2040..)
+        .zip(by_sector.chunks_mut(512))
+        .all(|(lba, sector)| read_sectors(disk.port, lba, sector).is_ok());
+    let one = read_sectors(disk.port, 2040, &mut at_once[..16 * 4096]).is_ok()
+        && at_once[..16 * 4096] == large[..16 * 4096];
+    let too_much = read_sectors(disk.port, 2040, &mut at_once) == Err(Error::OutOfRange);
+    report.check(
+        "kernel.ahci.large",
+        whole
+            && back
+            && each
+            && large == by_sector
+            && large[8 * 512 + 510..8 * 512 + 512] == [0x55, 0xaa]
+            && one
+            && too_much,
+        "seventeen frames should read as a sector at a time reads them, and give their frames back, sixteen in one command and no more",
+    );
     let mut read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
     let table = kernel::disk::Table::read(&mut read);
     let esp = table.as_ref().and_then(|t| t.partitions().next());
@@ -852,15 +881,15 @@ fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, system: 
     );
 }
 
-/// What no driver writes: nothing, part of a sector, more than a frame at
-/// once where one frame is all a command takes, past the disk's end, or
-/// to a port without a disk.
+/// What no driver writes: nothing, part of a sector, more than sixteen
+/// frames at once where that is all a command takes, past the disk's end,
+/// or to a port without a disk.
 fn write_refusal_checks<W: Write>(report: &mut Report<'_, W>, port: usize, sectors: u64) {
     use raw::ahci::{Error, write, write_sectors};
-    let room = [0u8; 8192];
+    let room = alloc::vec![0u8; 16 * 4096 + 512];
     let ahci = write_sectors(port, 0, &[]) == Err(Error::OutOfRange)
         && write_sectors(port, 0, &room[..513]) == Err(Error::OutOfRange)
-        && write_sectors(port, 0, &room[..4608]) == Err(Error::OutOfRange)
+        && write_sectors(port, 0, &room) == Err(Error::OutOfRange)
         && write(port, sectors - 1, &room[..1024]) == Err(Error::OutOfRange)
         && write(port, u64::MAX, &room[..512]) == Err(Error::OutOfRange)
         && write(31, 0, &room[..512]) == Err(Error::NoDisk);

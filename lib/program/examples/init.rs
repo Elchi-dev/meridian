@@ -385,25 +385,20 @@ fn state_of(code: u8) -> State {
 }
 
 /// Answers the questions programs ask over the lines of the services that
-/// run them, looking at each line in turn and resting a tick when none
-/// asked anything.
+/// run them, looking at each line in turn, a tick apart.
 #[cfg_attr(test, allow(dead_code))]
 fn serve(names: &[String]) -> u64 {
     let mut room = [0u8; MESSAGE];
     loop {
-        let mut asked = false;
         for line in &LINES {
             let end = Handle(line.load(SeqCst));
             if end.0 != 0
                 && let Ok((len, _)) = program::receive(end, &mut room)
             {
                 reply(end, &room[..len], names);
-                asked = true;
             }
         }
-        if !asked {
-            program::sleep(1);
-        }
+        program::sleep(1);
     }
 }
 

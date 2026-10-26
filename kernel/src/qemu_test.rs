@@ -1441,10 +1441,15 @@ fn init_checks<W: Write>(
     let before = free();
     seen::forget();
     let channel = raw::ipc::create();
+    let channels = raw::ipc::live();
     let started = channel.and_then(|(_, theirs)| {
         user::start_file_holding(0, file, &[theirs], Rights::READ | Rights::WRITE).ok()
     });
     raw::thread::sleep(60);
+    // init closes the line of each program that ended: what is left is
+    // the shell's, and whoami's while it runs.
+    let lines = raw::ipc::live().saturating_sub(channels);
+    let lines_closed = if disk { lines <= 2 } else { lines <= 1 };
     let spawns = seen::calls(abi::SPAWN);
     let events = seen::events();
     let first = |line: &[u8]| events.iter().position(|e| e.starts_with(line));
@@ -1481,8 +1486,8 @@ fn init_checks<W: Write>(
     let last = seen::ended(b"user: init ended with 0\n");
     report.check(
         "kernel.init",
-        ran && ended && back && last,
-        "init should run a service once where it says so, start one that waits for it only after it ended and one that waits for a service that keeps running only after that started, start a service again whenever it ended, waiting longer each time, and end its services and itself once its channel closes",
+        ran && lines_closed && ended && back && last,
+        "init should run a service once where it says so, start one that waits for it only after it ended and one that waits for a service that keeps running only after that started, start a service again whenever it ended, waiting longer each time, close the line of each program that ended, and end its services and itself once its channel closes",
     );
 }
 

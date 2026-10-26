@@ -758,7 +758,7 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
 
 /// Where AHCI's writes go: each of the twelve sectors at its own place,
 /// one sector overwritten among them alone, the partition's last sector,
-/// and sixteen frames at once, read back in one go.
+/// and seventeen frames, sixteen in one command, read back in one go.
 fn write_place_checks<W: Write>(
     report: &mut Report<'_, W>,
     port: usize,
@@ -784,8 +784,9 @@ fn write_place_checks<W: Write>(
     let edge = write(port, last, &[0xa5; 512]).is_ok()
         && raw::virtio::read(last, &mut end).is_ok()
         && end == [0xa5; 512];
-    let large: alloc::vec::Vec<u8> = (0..16 * 4096)
-        .map(|i: usize| i.to_le_bytes()[1] ^ 0x3c)
+    // Seventeen frames: sixteen in one command and one more in a second.
+    let large: alloc::vec::Vec<u8> = (0..17 * 4096)
+        .map(|i: usize| i.to_le_bytes()[1] ^ i.to_le_bytes()[2] ^ 0x3c)
         .collect();
     let mut by_virtio = alloc::vec![0u8; large.len()];
     let many = write(port, at, &large).is_ok()
@@ -794,7 +795,7 @@ fn write_place_checks<W: Write>(
     report.check(
         "kernel.disk.write_places",
         each && alone && edge && many,
-        "each sector AHCI writes should land where it was meant to, one overwritten alone, the partition's last too, and sixteen frames at once",
+        "each sector AHCI writes should land where it was meant to, one overwritten alone, the partition's last too, and seventeen frames in two commands",
     );
     // The W bit of the command header: set where data goes to the disk.
     let towards =

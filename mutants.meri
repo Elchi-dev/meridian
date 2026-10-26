@@ -187,6 +187,13 @@ allow {
 
 allow {
     file = "kernel/src/raw/ahci.rs"
+    line = "core::ptr::write_bytes(at(TABLE), 0, 0x80 + 16 * DeviceFrames::MOST);"
+    mutation = "* to /"
+    reason = "the drive's frame is zeroed when it is taken, and every command writes its whole FIS and each PRDT entry it names over what the last left; the controller reads no other byte of the table, so clearing fewer of them changes nothing"
+}
+
+allow {
+    file = "kernel/src/raw/ahci.rs"
     line = "let whole = len > 0 && len.is_multiple_of(size) && len <= MOST;"
     mutation = "> to >="
     reason = "issue refuses a transfer of no bytes before it builds a command, as prdt has no entries for them, so reading or writing nothing still fails as out of range"

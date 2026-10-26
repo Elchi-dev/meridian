@@ -349,6 +349,50 @@ pub fn device_frame() -> Option<u64> {
     Some(frame)
 }
 
+/// Frames of their own for a device to move data through, zeroed, up to
+/// [`DeviceFrames::MOST`] of them. They go back when dropped.
+pub struct DeviceFrames {
+    frames: [u64; DeviceFrames::MOST],
+    taken: usize,
+}
+
+impl DeviceFrames {
+    /// The most frames one holds: 64 KiB.
+    pub const MOST: usize = 16;
+
+    /// `count` frames, but no more than [`DeviceFrames::MOST`]; none when
+    /// memory runs out.
+    pub fn take(count: usize) -> Option<DeviceFrames> {
+        let mut taken = DeviceFrames {
+            frames: [0; DeviceFrames::MOST],
+            taken: 0,
+        };
+        for _ in 0..count.min(DeviceFrames::MOST) {
+            taken.frames[taken.taken] = device_frame()?;
+            taken.taken += 1;
+        }
+        Some(taken)
+    }
+
+    /// Their physical addresses, in the order they were taken.
+    pub fn frames(&self) -> &[u64] {
+        &self.frames[..self.taken]
+    }
+
+    /// How many bytes they hold together.
+    pub fn bytes(&self) -> usize {
+        self.taken * 4096
+    }
+}
+
+impl Drop for DeviceFrames {
+    fn drop(&mut self) {
+        for &frame in self.frames() {
+            give_back(frame);
+        }
+    }
+}
+
 /// Maps the `pages` pages of a device's registers from physical `phys` on
 /// at `virt`, uncached and never executed. Says whether all of them are.
 pub fn map_registers(virt: u64, phys: u64, pages: u64) -> bool {

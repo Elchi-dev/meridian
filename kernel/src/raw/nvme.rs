@@ -8,7 +8,7 @@ use core::sync::atomic::{Ordering, fence};
 use bootinfo::HHDM_BASE;
 use nvme::{Capabilities, Command, Completion, Controller, Namespace, State, register};
 
-use super::memory::{self, Spin};
+use super::memory::{self, DeviceFrames, Spin};
 
 /// How many entries each queue has: a submission queue of them fills
 /// exactly a frame.
@@ -235,8 +235,24 @@ pub fn drive() -> Option<Drive> {
     *DRIVE.lock()
 }
 
+/// The frames one command of `drive` moves the `len` bytes through, as
+/// many as it takes, and a frame for the PRP entries of those past the
+/// second.
+fn take(drive: &Drive, len: usize) -> Option<(DeviceFrames, DeviceFrames)> {
+    let most = drive
+        .controller
+        .transfer_pages
+        .and_then(|pages| usize::try_from(pages).ok())
+        .map_or(DeviceFrames::MOST, |pages| pages.min(DeviceFrames::MOST));
+    Some((
+        DeviceFrames::take(len.div_ceil(4096).min(most))?,
+        DeviceFrames::take(1)?,
+    ))
+}
+
 /// Reads the blocks from `lba` on of the first namespace into `into`,
-/// which takes any whole number of them, a frame's worth at a time.
+/// which takes any whole number of them, as many frames at a time as the
+/// controller takes, up to sixteen.
 ///
 /// # Errors
 ///
@@ -245,29 +261,28 @@ pub fn drive() -> Option<Drive> {
 pub fn read(lba: u64, into: &mut [u8]) -> Result<(), Error> {
     let mut guard = DRIVE.lock();
     let drive = guard.as_mut().ok_or(Error::NoDrive)?;
-    let per_chunk = span(drive, lba, into.len())?;
-    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
-    let mut answer = Ok(());
-    for (i, chunk) in (0..).zip(into.chunks_mut(4096)) {
-        answer = transfer(drive, nvme::read, lba + i * per_chunk, chunk.len(), buffer);
-        if answer.is_err() {
-            break;
+    let per_frame = span(drive, lba, into.len())?;
+    let (frames, list) = take(drive, into.len()).ok_or(Error::NoMemory)?;
+    let per_piece = per_frame * frames.frames().len() as u64;
+    for (i, piece) in (0..).zip(into.chunks_mut(frames.bytes())) {
+        let at = lba + i * per_piece;
+        transfer(drive, nvme::read, at, piece.len(), &frames, &list)?;
+        for (frame, part) in frames.frames().iter().zip(piece.chunks_mut(4096)) {
+            // SAFETY: as in start, for the blocks just read.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (HHDM_BASE + frame) as *const u8,
+                    part.as_mut_ptr(),
+                    part.len(),
+                );
+            };
         }
-        // SAFETY: as in start, for the blocks just read.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                (HHDM_BASE + buffer) as *const u8,
-                chunk.as_mut_ptr(),
-                chunk.len(),
-            );
-        };
     }
-    memory::give_back(buffer);
-    answer
+    Ok(())
 }
 
 /// Writes `from`, which takes any whole number of blocks, to the first
-/// namespace from `lba` on, a frame's worth at a time.
+/// namespace from `lba` on, as many frames at a time as [`read`] reads.
 ///
 /// # Errors
 ///
@@ -277,26 +292,25 @@ pub fn read(lba: u64, into: &mut [u8]) -> Result<(), Error> {
 pub fn write(lba: u64, from: &[u8]) -> Result<(), Error> {
     let mut guard = DRIVE.lock();
     let drive = guard.as_mut().ok_or(Error::NoDrive)?;
-    let per_chunk = span(drive, lba, from.len())?;
-    let buffer = memory::device_frame().ok_or(Error::NoMemory)?;
-    let mut answer = Ok(());
-    for (i, chunk) in (0..).zip(from.chunks(4096)) {
-        // SAFETY: the frame is the kernel's alone, in the direct map, and
-        // a chunk is no longer than it.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                chunk.as_ptr(),
-                (HHDM_BASE + buffer) as *mut u8,
-                chunk.len(),
-            );
-        };
-        answer = transfer(drive, nvme::write, lba + i * per_chunk, chunk.len(), buffer);
-        if answer.is_err() {
-            break;
+    let per_frame = span(drive, lba, from.len())?;
+    let (frames, list) = take(drive, from.len()).ok_or(Error::NoMemory)?;
+    let per_piece = per_frame * frames.frames().len() as u64;
+    for (i, piece) in (0..).zip(from.chunks(frames.bytes())) {
+        for (frame, part) in frames.frames().iter().zip(piece.chunks(4096)) {
+            // SAFETY: the frame is the kernel's alone, in the direct map,
+            // and a part is no longer than it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    part.as_ptr(),
+                    (HHDM_BASE + frame) as *mut u8,
+                    part.len(),
+                );
+            };
         }
+        let at = lba + i * per_piece;
+        transfer(drive, nvme::write, at, piece.len(), &frames, &list)?;
     }
-    memory::give_back(buffer);
-    answer
+    Ok(())
 }
 
 /// How many blocks a frame holds, once the `len` bytes from `lba` on are
@@ -315,19 +329,42 @@ fn span(drive: &Drive, lba: u64, len: usize) -> Result<u64, Error> {
     u64::try_from(4096 / size).map_err(|_| Error::OutOfRange)
 }
 
-/// Sends the command `build` makes for the `len` bytes from `lba` on and
-/// the frame `buffer`, and waits for its answer.
+/// What builds a command that moves blocks through the pages two PRP
+/// entries name: [`nvme::read`] or [`nvme::write`].
+type Build = fn(u16, u32, u64, u32, (u64, u64)) -> Option<Command>;
+
+/// Sends the command `build` makes for the `len` bytes from `lba` on,
+/// which fill the first of `frames`, with `list` for the PRP entries, and
+/// waits for its answer.
 fn transfer(
     drive: &mut Drive,
-    build: fn(u16, u32, u64, u32, u64) -> Option<nvme::Command>,
+    build: Build,
     lba: u64,
     len: usize,
-    buffer: u64,
+    frames: &DeviceFrames,
+    list: &DeviceFrames,
 ) -> Result<(), Error> {
     let size = usize::try_from(drive.namespace.block_size).map_err(|_| Error::OutOfRange)?;
     let blocks = u32::try_from(len / size.max(1)).map_err(|_| Error::OutOfRange)?;
+    let pages = frames.frames().get(..len.div_ceil(4096));
+    let &[list] = list.frames() else {
+        return Err(Error::NoMemory);
+    };
+    // SAFETY: the list's frame is the kernel's alone and in the direct
+    // map; the controller reads it only while the command below runs.
+    let entries = unsafe { &mut *((HHDM_BASE + list) as *mut [u8; 4096]) };
+    let prp = pages
+        .and_then(|pages| nvme::prps(pages, list, entries))
+        .ok_or(Error::OutOfRange)?;
     let id = drive.next;
     drive.next = drive.next.wrapping_add(1).max(1);
-    let command = build(id, 1, lba, blocks, buffer).ok_or(Error::OutOfRange)?;
+    let command = build(id, 1, lba, blocks, prp).ok_or(Error::OutOfRange)?;
     submit(&drive.capabilities, &mut drive.io, &command, id)
+}
+
+/// How many commands went to the controller so far, on both queues, as
+/// their ids count them. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn commands() -> u16 {
+    DRIVE.lock().as_ref().map_or(0, |d| d.next)
 }

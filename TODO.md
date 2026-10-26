@@ -131,7 +131,7 @@ Loader and UEFI:
 - [x] Writes on AHCI, NVMe and virtio-blk, checked in QEMU on copies of the disks, with a read-only virtio disk refused
 - [ ] Interrupts for disks instead of polling
 - [x] Reads of more than one sector at a time: FAT32 reads a file a piece at a time, every sector that lies in one run in one read, and keeps the FAT sector it needs
-- [ ] Commands longer than a frame: each driver still sends one command per 4 KiB
+- [ ] Commands longer than a frame: NVMe moves up to sixteen frames per command; AHCI and virtio still send one per 4 KiB
 - [x] GPT in the kernel (`lib/gpt`)
 - [x] FAT32 read in the kernel (`lib/fat`)
 - [x] FAT32 written: files and directories made, written and removed, with long names and their short ones (`lib/fat`)

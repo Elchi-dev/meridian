@@ -475,13 +475,16 @@ What exists:
   4 GiB come back; booted from a CD, it finds the CD.
 - **NVMe.** The kernel takes the first NVM Express controller, turns it
   off and on again with admin queues of its own, asks it and its first
-  namespace who they are, and makes one pair of queues for reading, a
-  frame's worth of blocks per command, each waited for. `lib/nvme` builds
-  the commands and reads the completions and IDENTIFY's answers. Test
-  machines with a disk see the same disk once more as NVMe, read only,
-  and OVMF boots from that one; the test image reads the same sectors
-  through both and compares them, a block at a time until the queues
-  have wrapped twice, and at either end.
+  namespace who they are, and makes one pair of queues for reading and
+  writing. A command moves up to sixteen frames, or as many as the
+  controller says it takes if that is fewer, through a list of PRP
+  entries, and each is waited for. `lib/nvme` builds the commands and the
+  lists and reads the completions and IDENTIFY's answers. Test machines
+  with a disk see the same disk once more as NVMe, read only, and OVMF
+  boots from that one; the test image reads the same sectors through
+  both and compares them, a block at a time until the queues have
+  wrapped twice, seventeen frames in as few commands as the controller
+  takes, and at either end.
 - **virtio-blk.** The kernel takes the first virtio block device, by its
   vendor and device ids, finds where its structures are from the
   capabilities its function lists (`lib/pci`), resets it, agrees on

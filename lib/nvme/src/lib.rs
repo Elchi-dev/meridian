@@ -185,41 +185,17 @@ pub fn create_submission_queue(
 }
 
 /// Reads `blocks` blocks from `lba` on of namespace `namespace` into the
-/// page at `page`; none for no blocks or more than a 16-bit count holds.
+/// pages the two PRP entries `prp` name, as [`prps`] gives them; none for
+/// no blocks or more than a 16-bit count holds.
 #[must_use]
-pub fn read(id: u16, namespace: u32, lba: u64, blocks: u32, page: u64) -> Option<Command> {
-    transfer(opcode::READ, id, namespace, lba, blocks, (page, 0))
-}
-
-/// Writes `blocks` blocks from the page at `page` to namespace
-/// `namespace` from `lba` on; none as for [`read`].
-#[must_use]
-pub fn write(id: u16, namespace: u32, lba: u64, blocks: u32, page: u64) -> Option<Command> {
-    transfer(opcode::WRITE, id, namespace, lba, blocks, (page, 0))
-}
-
-/// As [`read`], into the pages the two PRP entries `prp` name, as
-/// [`prps`] gives them.
-#[must_use]
-pub fn read_into(
-    id: u16,
-    namespace: u32,
-    lba: u64,
-    blocks: u32,
-    prp: (u64, u64),
-) -> Option<Command> {
+pub fn read(id: u16, namespace: u32, lba: u64, blocks: u32, prp: (u64, u64)) -> Option<Command> {
     transfer(opcode::READ, id, namespace, lba, blocks, prp)
 }
 
-/// As [`write`], from the pages the two PRP entries `prp` name.
+/// Writes `blocks` blocks from the pages the two PRP entries `prp` name
+/// to namespace `namespace` from `lba` on; none as for [`read`].
 #[must_use]
-pub fn write_from(
-    id: u16,
-    namespace: u32,
-    lba: u64,
-    blocks: u32,
-    prp: (u64, u64),
-) -> Option<Command> {
+pub fn write(id: u16, namespace: u32, lba: u64, blocks: u32, prp: (u64, u64)) -> Option<Command> {
     transfer(opcode::WRITE, id, namespace, lba, blocks, prp)
 }
 
@@ -467,7 +443,7 @@ mod tests {
             identify(2, 1, 0x1000),
             create_completion_queue(3, 1, 64, 0x2000),
             create_submission_queue(4, 1, 64, 0x3000, 1),
-            read(5, 1, 7, 8, 0x4000).unwrap(),
+            read(5, 1, 7, 8, (0x4000, 0)).unwrap(),
         ];
         for c in commands {
             assert_eq!(c[1], 0, "no fused operation, PRPs for data: {c:x?}");
@@ -623,7 +599,7 @@ mod tests {
 
     #[test]
     fn a_read_names_its_blocks_counted_from_0() {
-        let r = read(5, 1, 0x1_2345_6789, 8, 0x9000).unwrap();
+        let r = read(5, 1, 0x1_2345_6789, 8, (0x9000, 0)).unwrap();
         assert_eq!(r[0], opcode::READ);
         assert_eq!(word(&r, 4), 1);
         assert_eq!(
@@ -632,21 +608,28 @@ mod tests {
             "the first block in two words"
         );
         assert_eq!(word(&r, 48), 7, "eight blocks");
-        assert_eq!(read(5, 1, 0, 0, 0), None, "no blocks");
-        assert_eq!(read(5, 1, 0, 65_536, 0).map(|c| word(&c, 48)), Some(0xffff));
-        assert_eq!(read(5, 1, 0, 65_537, 0), None, "more than a count holds");
+        assert_eq!(read(5, 1, 0, 0, (0, 0)), None, "no blocks");
+        assert_eq!(
+            read(5, 1, 0, 65_536, (0, 0)).map(|c| word(&c, 48)),
+            Some(0xffff)
+        );
+        assert_eq!(
+            read(5, 1, 0, 65_537, (0, 0)),
+            None,
+            "more than a count holds"
+        );
     }
 
     #[test]
     fn a_write_is_a_read_the_other_way() {
-        let w = write(6, 1, 0x1_2345_6789, 8, 0x9000).unwrap();
-        let r = read(6, 1, 0x1_2345_6789, 8, 0x9000).unwrap();
+        let w = write(6, 1, 0x1_2345_6789, 8, (0x9000, 0)).unwrap();
+        let r = read(6, 1, 0x1_2345_6789, 8, (0x9000, 0)).unwrap();
         assert_eq!(w[0], opcode::WRITE);
         assert_eq!(w[1..], r[1..], "the same blocks from the same page");
-        assert_eq!(write(6, 1, 0, 0, 0), None, "no blocks");
-        assert_eq!(write(6, 1, 0, 65_537, 0), None);
+        assert_eq!(write(6, 1, 0, 0, (0, 0)), None, "no blocks");
+        assert_eq!(write(6, 1, 0, 65_537, (0, 0)), None);
         assert_eq!((opcode::WRITE, opcode::READ), (1, 2));
-        let one = write(0x1234, 2, 7, 1, 0x00ab_c000).unwrap();
+        let one = write(0x1234, 2, 7, 1, (0x00ab_c000, 0)).unwrap();
         assert_eq!(u16::from_le_bytes([one[2], one[3]]), 0x1234, "its id");
         assert_eq!(word(&one, 4), 2, "its namespace");
         assert_eq!(
@@ -750,16 +733,16 @@ mod tests {
 
     #[test]
     fn a_transfer_names_both_its_prp_entries() {
-        let r = read_into(5, 1, 0x10, 16, (0x1000, 0x5000)).unwrap();
+        let r = read(5, 1, 0x10, 16, (0x1000, 0x5000)).unwrap();
         assert_eq!(r[0], opcode::READ);
         assert_eq!((word(&r, 24), word(&r, 32)), (0x1000, 0x5000));
         assert_eq!((word(&r, 40), word(&r, 48)), (0x10, 15));
-        let w = write_from(6, 1, 0x20, 2, (0x8_0000_1000, 0x8_0000_3000)).unwrap();
+        let w = write(6, 1, 0x20, 2, (0x8_0000_1000, 0x8_0000_3000)).unwrap();
         assert_eq!(w[0], opcode::WRITE);
         assert_eq!(&w[24..32], &0x8_0000_1000u64.to_le_bytes());
         assert_eq!(&w[32..40], &0x8_0000_3000u64.to_le_bytes());
-        assert_eq!(write_from(6, 1, 0, 0, (0x1000, 0)), None, "no blocks");
-        let one = read(5, 1, 0, 1, 0x9000).unwrap();
+        assert_eq!(write(6, 1, 0, 0, (0x1000, 0)), None, "no blocks");
+        let one = read(5, 1, 0, 1, (0x9000, 0)).unwrap();
         assert_eq!(&one[32..40], &[0; 8], "one page needs no second entry");
     }
 

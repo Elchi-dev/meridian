@@ -495,9 +495,9 @@ fn ahci_port_checks<W: Write>(report: &mut Report<'_, W>, port: usize) {
 /// The NVM Express controller a test machine with a disk has next to
 /// AHCI, with the same image behind it: it says it is QEMU's, its
 /// namespace is as big as the AHCI disk, and it reads what AHCI reads,
-/// whether in one go over several frames or a block at a time, more often
-/// than its queues have room, and nothing past the end. A machine booted
-/// from a CD has none.
+/// whether in one go over several frames, in as few commands as the
+/// controller takes, or a block at a time, more often than its queues have
+/// room, and nothing past the end. A machine booted from a CD has none.
 fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::nvme::{Error, read};
     let drives = raw::ahci::drives();
@@ -550,6 +550,29 @@ fn nvme_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.nvme.read",
         spanning && each && end && refused,
         "NVMe should read the same sectors as AHCI, up to the disk's last and no further",
+    );
+    let most = drive
+        .and_then(|d| d.controller.transfer_pages)
+        .map_or(16, |pages| pages.min(16));
+    let free = || {
+        raw::memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(frames::Frames::free_frames)
+    };
+    let mut by_nvme = alloc::vec![0u8; 17 * 4096];
+    let mut by_ahci = by_nvme.clone();
+    let (before, frames) = (raw::nvme::commands(), free());
+    let large = read(2040, &mut by_nvme).is_ok();
+    let sent = raw::nvme::commands().wrapping_sub(before);
+    let back = frames.is_some() && free() == frames;
+    let same = ahci_read(2040, &mut by_ahci)
+        && by_nvme == by_ahci
+        && by_nvme[8 * 512 + 510..8 * 512 + 512] == [0x55, 0xaa];
+    report.check(
+        "kernel.nvme.large",
+        large && same && back && u32::from(sent) == 17u32.div_ceil(most),
+        "seventeen frames should come in as few commands as the controller takes, sixteen frames each at most, as AHCI reads them, and the frames they came through should go back",
     );
 }
 

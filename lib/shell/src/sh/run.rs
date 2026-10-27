@@ -63,9 +63,9 @@ const DEEPEST_RUNNING: usize = 64;
 
 /// The builtins POSIX calls special: their errors end a script, and the
 /// variables assigned before them stay.
-const SPECIAL: [&str; 13] = [
-    "break", "continue", "return", "exit", ":", ".", "eval", "export", "readonly", "set", "shift",
-    "trap", "unset",
+const SPECIAL: [&str; 14] = [
+    "break", "continue", "return", "exit", ":", ".", "eval", "exec", "export", "readonly", "set",
+    "shift", "trap", "unset",
 ];
 
 /// The builtins POSIX calls no special ones that the session runs itself,
@@ -308,11 +308,13 @@ impl Session {
             if !last {
                 machine.begin_capture();
             }
+            machine.begin_subshell();
             let ran = match prepared {
                 Some(Ok(prepared)) => copy.prepared(prepared, machine),
                 Some(Err(stop)) => Err(stop),
                 None => copy.command(command, machine),
             };
+            machine.end_subshell();
             if !last {
                 input = Some(machine.end_capture());
             }
@@ -541,6 +543,9 @@ impl Session {
         functions: bool,
         machine: &mut impl Machine,
     ) -> Result<Flow, Stop> {
+        if name == "exec" {
+            return self.exec(ready, assigned, machine);
+        }
         if SPECIAL.contains(&name) {
             for (name, value) in assigned {
                 let _ = self.assign(&name, value);
@@ -580,6 +585,35 @@ impl Session {
         // assigned before one reach none of them.
         self.status = machine.run(&[ready]);
         Ok(Flow::Next)
+    }
+
+    /// `exec`: without a command, makes its redirections hold from now on,
+    /// one it cannot make ending the script; with one, runs it and ends
+    /// the shell with its status, its trap unrun, as Meridian cannot put a
+    /// program in the place of a running one.
+    fn exec(
+        &mut self,
+        ready: Ready,
+        assigned: Vec<(String, String)>,
+        machine: &mut impl Machine,
+    ) -> Result<Flow, Stop> {
+        for (name, value) in assigned {
+            let _ = self.assign(&name, value);
+        }
+        if ready.words.len() == 1 {
+            self.status = 0;
+            if !machine.redirect(&ready.redirections) {
+                return Err(Stop::Said(1));
+            }
+            return Ok(Flow::Next);
+        }
+        let ready = Ready {
+            words: ready.words[1..].to_vec(),
+            redirections: ready.redirections,
+        };
+        let status = machine.run(&[ready]);
+        self.exit_trap = None;
+        Err(Stop::Exit(status))
     }
 
     /// `command`: with `-v`, says what each name after it stands for;
@@ -731,6 +765,7 @@ impl Session {
         run: impl FnOnce(&mut Session, &mut M) -> Result<Flow, Stop>,
     ) -> u8 {
         let directory = machine.directory();
+        machine.begin_subshell();
         let mut copy = self.clone();
         // A subshell starts without the traps it would run, but those that
         // ignore stay, as POSIX has it.
@@ -747,6 +782,7 @@ impl Session {
         });
         let ran = copy.finish(ran, machine);
         let status = copy.ended(ran, machine);
+        machine.end_subshell();
         let _ = machine.set_directory(&directory);
         status
     }
@@ -3341,5 +3377,81 @@ mod tests {
             ("127\n".into(), "nope: not found\n".into())
         );
         assert_eq!(out("command command echo d"), "d\n");
+    }
+
+    #[test]
+    fn exec_makes_its_redirections_the_shell_s_own() {
+        assert_eq!(
+            said("exec >&2; echo a; echo b", &[]),
+            (String::new(), "a\nb\n".into())
+        );
+        let (_, _, desk) = ran("exec <<EOF\nl1\nl2\nEOF\nread a; read b; echo $b$a", &[]);
+        assert_eq!(desk.out, b"l2l1\n");
+        assert_eq!(
+            out("a=1 exec; echo $a $?"),
+            "1 0\n",
+            "assignments before it stay"
+        );
+    }
+
+    #[test]
+    fn a_block_puts_back_only_the_streams_it_set() {
+        assert_eq!(
+            said("{ exec 2>&1; echo e >&2; } 2>&-; echo f >&2", &[]),
+            ("e\n".into(), "f\n".into()),
+            "the block set stream 2, so exec changed the block's"
+        );
+        assert_eq!(
+            said("{ exec >&2; echo in; } 2>&-; echo out", &[]),
+            (String::new(), String::new()),
+            "the block set no stream 1, so exec changed the shell's, to what was closed"
+        );
+        assert_eq!(
+            said("{ { exec >&2; echo a; } 2>&-; echo b; } >&2; echo c", &[]),
+            ("c\n".into(), String::new()),
+            "exec closed the outer block's stream 1, which only that block's end puts back"
+        );
+    }
+
+    #[test]
+    fn a_subshell_keeps_what_exec_changed_in_it() {
+        assert_eq!(
+            said("(exec >&2; echo in); echo out", &[]),
+            ("out\n".into(), "in\n".into())
+        );
+        assert_eq!(
+            said("x=$(exec >&2; echo in); echo \"[$x]\"", &[]),
+            ("[]\n".into(), "in\n".into())
+        );
+        assert_eq!(
+            said(": | { exec >&2; echo x; }; echo y", &[]),
+            ("y\n".into(), "x\n".into())
+        );
+        assert_eq!(
+            said("echo a | { exec >&2; echo x; } | :; echo y", &[]),
+            ("y\n".into(), "x\n".into())
+        );
+    }
+
+    #[test]
+    fn exec_with_a_command_runs_it_and_ends_the_shell() {
+        let (ended, _, desk) = ran("exec echo hi; echo no", &[]);
+        assert_eq!((ended, desk.out), (Err(Stop::Exit(0)), b"hi\n".to_vec()));
+        let (ended, _, desk) = finished("trap 'echo trap' EXIT; exec false");
+        assert_eq!(
+            (ended, desk.out),
+            (Err(Stop::Exit(1)), Vec::new()),
+            "its trap unrun"
+        );
+        let (ended, _, desk) = ran("exec echo a >&2", &[]);
+        assert_eq!((ended, desk.err), (Err(Stop::Exit(0)), b"a\n".to_vec()));
+    }
+
+    #[test]
+    fn a_redirection_exec_cannot_make_ends_the_script() {
+        let (ended, _, desk) = ran("exec > f; echo no", &[]);
+        assert_eq!((ended, desk.out), (Err(Stop::Said(1)), Vec::new()));
+        assert_eq!(desk.err, b"f: no file here to write\n");
+        assert_eq!(ran("exec 3>&1; echo no", &[]).0, Err(Stop::Said(1)));
     }
 }

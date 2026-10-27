@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 105] = [
+const CHECKS: [(&str, Check); 109] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -127,7 +127,11 @@ const CHECKS: [(&str, Check); 105] = [
     ("shell.sh.dot", sh_dot),
     ("shell.sh.cd", sh_cd),
     ("shell.sh.command", sh_command),
+    ("shell.sh.command.paths", sh_command_paths),
     ("shell.sh.started", sh_started),
+    ("shell.sh.exec", sh_exec),
+    ("shell.sh.exec.files", sh_exec_files),
+    ("shell.sh.read.files", sh_read_files),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3315,6 +3319,27 @@ fn sh_command() -> Outcome {
     )
 }
 
+/// In sh, `command -v` names the shell program's own commands, and finds
+/// a program by its path when its file is there.
+fn sh_command_paths() -> Outcome {
+    let wc = "/System/Boot/meridian/programs/wc.mexec";
+    let want = if booted_from_disk() {
+        alloc::format!("cat\nls\n{wc}\n0\n")
+    } else {
+        String::from("cat\nls\n1\n")
+    };
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "#!/bin/sh\ncommand -v cat ls {wc}; echo $?"
+        ))?,
+        &ran(0, want.as_bytes()),
+    );
+    expect(
+        checked,
+        "command -v should name the shell's commands and find a program by its path",
+    )
+}
+
 /// `sh` in Meridian's dialect starts the shell in the sh dialect: with
 /// `-c` on a script that names no dialect, and Meridian's shell says how
 /// it ended.
@@ -3326,6 +3351,71 @@ fn sh_started() -> Outcome {
     expect(checked, "sh -c should run its script in the sh dialect")?;
     let checked = same(&shell_on("sh -c 'exit 4'")?, &ran(4, b"sh ended with 4\n"));
     expect(checked, "the shell should say how sh ended")
+}
+
+/// In sh, `exec` makes its redirections the shell's own from then on: in
+/// a block that set the stream, until the block ends, and in a subshell or
+/// a `$(...)`, only there.
+fn sh_exec() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             { exec 2>&1; nope; } 2>&-\n\
+             (exec >&-; echo lost); echo kept\n\
+             x=$(exec 2>&1; nope); echo \"[$x]\"\n\
+             exec 2>&-; nope; echo end",
+        )?,
+        &ran(
+            0,
+            b"nope: no such command\nkept\n[nope: no such command]\nend\n",
+        ),
+    );
+    expect(checked, "exec should make its redirections the shell's own")
+}
+
+/// In sh, `exec` sends what a subshell writes into a file from then on,
+/// and the shell writes where it did after the subshell.
+fn sh_exec_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "#!/bin/sh\n\
+         : > /System/exec.txt || exit 9\n\
+         (exec > /System/exec.txt; echo inside; echo also)\n\
+         echo outside; cat /System/exec.txt; rm /System/exec.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said == b"/System/exec.txt: on a volume that is only read\n",
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"outside\ninside\nalso\n",
+        "exec should send a subshell's output into the file from then on",
+    )
+}
+
+/// In sh, `read` takes a file's first line through `exec <`, the line
+/// `head` shows, and a command reading the file after it starts past the
+/// lines read.
+fn sh_read_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "#!/bin/sh\n\
+         f=/System/Boot/meridian/boot.meri\n\
+         head -n 2 $f\n\
+         exec < $f; IFS= read -r a; IFS= read -r b; printf '%s\\n%s\\n' \"$a\" \"$b\"",
+    )?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    expect(
+        ended == Ok(Ended::Exited(0)) && lines.len() == 4 && lines[..2] == lines[2..],
+        "read should take the lines of a file exec gives stream 0",
+    )
 }
 
 /// in each of several files by its name.

@@ -182,7 +182,8 @@ Loader and UEFI:
   - [x] `local`, as dash and bash have it
   - [x] `command` and `command -v`
   - [x] `wait`, with nothing to wait for while `&` runs a list to its end
-  - [ ] `&` starting jobs, with `$!`, and `exec`
+  - [x] `exec`, its redirections the shell's own from then on
+  - [ ] `&` starting jobs, with `$!`
   - [x] The `sh` command, and lines typed in sh until `exit`
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

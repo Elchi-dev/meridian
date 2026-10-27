@@ -301,6 +301,13 @@ name, or the path of a program's file; on a CD, where the programs are
 those the loader brought, it finds none of them. `command` runs a command
 as if no function had its name.
 
+`exec` without a command makes its redirections the shell's own from
+then on, as POSIX's does: inside a block that set the same stream, only
+until the block ends, and inside a subshell or a `$(...)`, only there. A
+redirection it cannot make ends the script. `exec` with a command runs it
+and ends the shell with its status, without running the trap, as
+Meridian cannot put a program in the place of a running one.
+
 `getopts` takes options as POSIX's does, saying `getopts: -x: no such
 option` or `getopts: -x: needs an argument` unless its list starts with
 `:`.

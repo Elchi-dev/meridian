@@ -26,18 +26,42 @@ enum Place {
     Closed,
 }
 
+/// One of the desk's levels of streams.
+#[derive(Debug)]
+struct Layer {
+    /// Where streams 1 and 2 go at it, set there or as below it.
+    streams: [Place; 2],
+    /// Whether it sets streams 1 and 2 itself.
+    sets: [bool; 2],
+    /// What stream 0 reads at it, with how far it was read; none for one
+    /// that leaves it as it was.
+    reading: Option<(Vec<u8>, usize)>,
+    /// Whether it is a subshell's own.
+    subshell: bool,
+}
+
+impl Layer {
+    fn new(streams: [Place; 2]) -> Layer {
+        Layer {
+            streams,
+            sets: [false; 2],
+            reading: None,
+            subshell: false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Desk {
     pub out: Vec<u8>,
     pub err: Vec<u8>,
     captures: Vec<Vec<u8>>,
     pipe: Vec<u8>,
-    /// Where streams 1 and 2 go, a level for each capture and each set of
-    /// redirections begun, innermost last.
-    levels: Vec<[Place; 2]>,
-    /// What stream 0 reads at each level, with how far it was read; none
-    /// for a level that left it as it was.
-    reading: Vec<Option<(Vec<u8>, usize)>>,
+    /// A level for each capture, set of redirections and subshell begun,
+    /// innermost last.
+    layers: Vec<Layer>,
+    /// Where streams 1 and 2 go below every level.
+    base: [Place; 2],
     /// The desk's own input, and how far it was read.
     pub input: Vec<u8>,
     taken: usize,
@@ -59,8 +83,8 @@ impl Default for Desk {
             err: Vec::new(),
             captures: Vec::new(),
             pipe: Vec::new(),
-            levels: Vec::new(),
-            reading: Vec::new(),
+            layers: Vec::new(),
+            base: [Place::Out, Place::Err],
             input: Vec::new(),
             taken: 0,
             fed: Vec::new(),
@@ -84,10 +108,30 @@ impl Desk {
 
     /// Where streams 1 and 2 go now.
     fn streams(&self) -> [Place; 2] {
-        self.levels
-            .last()
-            .copied()
-            .unwrap_or([Place::Out, Place::Err])
+        self.layers.last().map_or(self.base, |layer| layer.streams)
+    }
+
+    /// Makes stream `one` + 1 go to `place` as `exec` does: on the
+    /// innermost level that sets it or a subshell's own, or else below
+    /// every level, and on the levels above it that take it from there.
+    fn set_stream(&mut self, one: usize, place: Place) {
+        let at = self
+            .layers
+            .iter()
+            .rposition(|layer| layer.subshell || layer.sets[one]);
+        let from = if let Some(at) = at {
+            self.layers[at].streams[one] = place;
+            at + 1
+        } else {
+            self.base[one] = place;
+            0
+        };
+        for layer in &mut self.layers[from..] {
+            if layer.sets[one] {
+                break;
+            }
+            layer.streams[one] = place;
+        }
     }
 
     fn write(&mut self, place: Place, bytes: &[u8]) -> bool {
@@ -237,15 +281,14 @@ impl Machine for Desk {
 
     fn begin_capture(&mut self) {
         let errors = self.streams()[1];
-        self.levels
-            .push([Place::Capture(self.captures.len()), errors]);
-        self.reading.push(None);
+        let mut layer = Layer::new([Place::Capture(self.captures.len()), errors]);
+        layer.sets[0] = true;
+        self.layers.push(layer);
         self.captures.push(Vec::new());
     }
 
     fn end_capture(&mut self) -> Vec<u8> {
-        self.levels.pop();
-        self.reading.pop();
+        self.layers.pop();
         self.captures.pop().unwrap_or_default()
     }
 
@@ -256,14 +299,50 @@ impl Machine for Desk {
         if let Some(text) = &fed {
             self.fed.push(text.clone());
         }
-        self.levels.push(streams);
-        self.reading.push(fed.map(|text| (text, 0)));
+        let mut layer = Layer::new(streams);
+        layer.sets = [1, 2].map(|stream| redirections.iter().any(|r| r.stream == stream));
+        layer.reading = fed.map(|text| (text, 0));
+        self.layers.push(layer);
         true
     }
 
     fn end_redirections(&mut self) {
-        self.levels.pop();
-        self.reading.pop();
+        self.layers.pop();
+    }
+
+    fn redirect(&mut self, redirections: &[Redirection]) -> bool {
+        let Some((streams, fed)) = self.made(self.streams(), redirections) else {
+            return false;
+        };
+        for (one, (stream, place)) in [1, 2].into_iter().zip(streams).enumerate() {
+            if redirections.iter().any(|r| r.stream == stream) {
+                self.set_stream(one, place);
+            }
+        }
+        if let Some(text) = fed {
+            self.fed.push(text.clone());
+            let at = self
+                .layers
+                .iter()
+                .rposition(|layer| layer.subshell || layer.reading.is_some());
+            if let Some(at) = at {
+                self.layers[at].reading = Some((text, 0));
+            } else {
+                self.input = text;
+                self.taken = 0;
+            }
+        }
+        true
+    }
+
+    fn begin_subshell(&mut self) {
+        let mut layer = Layer::new(self.streams());
+        layer.subshell = true;
+        self.layers.push(layer);
+    }
+
+    fn end_subshell(&mut self) {
+        self.layers.pop();
     }
 
     fn directory(&mut self) -> String {
@@ -318,7 +397,12 @@ impl Machine for Desk {
     }
 
     fn line(&mut self) -> Option<Vec<u8>> {
-        let (text, at) = match self.reading.iter_mut().rev().flatten().next() {
+        let reading = self
+            .layers
+            .iter_mut()
+            .rev()
+            .find_map(|layer| layer.reading.as_mut());
+        let (text, at) = match reading {
             Some((text, at)) => (&*text, at),
             None => (&self.input, &mut self.taken),
         };

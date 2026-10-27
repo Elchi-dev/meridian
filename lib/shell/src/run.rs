@@ -100,6 +100,21 @@ pub trait Machine: Tree {
     /// Ends the innermost redirections, closing what they opened.
     fn end_redirections(&mut self);
 
+    /// Makes `redirections` hold from now on, as `exec` makes them: each
+    /// on the innermost redirections that set its stream, or a subshell's
+    /// own, or else the shell's, so a block's end puts back what the block
+    /// set and a subshell's change stays in it. Says what went wrong and
+    /// answers false when one cannot be made, which makes none.
+    fn redirect(&mut self, redirections: &[Redirection]) -> bool;
+
+    /// Starts a subshell's own streams, where what [`Machine::redirect`]
+    /// changes inside it stays, until the matching
+    /// [`Machine::end_subshell`].
+    fn begin_subshell(&mut self);
+
+    /// Ends the innermost subshell's streams, closing what they opened.
+    fn end_subshell(&mut self);
+
     /// The working directory, from the root.
     fn directory(&mut self) -> String;
 
@@ -539,6 +554,14 @@ mod tests {
 
         fn end_redirections(&mut self) {}
 
+        fn redirect(&mut self, redirections: &[Redirection]) -> bool {
+            self.begin_redirections(redirections)
+        }
+
+        fn begin_subshell(&mut self) {}
+
+        fn end_subshell(&mut self) {}
+
         fn directory(&mut self) -> String {
             String::from("/")
         }
@@ -637,6 +660,14 @@ mod tests {
         }
 
         fn end_redirections(&mut self) {}
+
+        fn redirect(&mut self, redirections: &[Redirection]) -> bool {
+            self.begin_redirections(redirections)
+        }
+
+        fn begin_subshell(&mut self) {}
+
+        fn end_subshell(&mut self) {}
 
         fn directory(&mut self) -> String {
             self.bare.directory()

@@ -624,12 +624,14 @@ fn typed(dialect: &mut impl Typing) -> u8 {
     }
 }
 
-/// What the shell runs commands on: the calls of the runtime, and the
-/// streams the redirections of compound commands and functions and the
-/// captures of `$(...)` make, innermost last.
+/// What the shell runs commands on: the calls of the runtime, the streams
+/// the redirections of compound commands and functions, the captures of
+/// `$(...)` and subshells make, innermost last, and those `exec` made the
+/// shell's own.
 #[derive(Default)]
 struct System {
     levels: Vec<Level>,
+    base: Frame,
     /// What the shell's own input brought past the line `read` took last.
     left: Vec<u8>,
 }
@@ -645,12 +647,15 @@ enum Level {
 /// The streams the redirections of a compound command or a function made
 /// for all that runs inside it: what stream 0 reads and where 1 and 2 go,
 /// none for one they left as it was.
+#[derive(Default)]
 struct Frame {
     input: Option<In>,
     out: Option<Out>,
     errors: Option<Out>,
     /// What its input brought past the line `read` took last.
     left: Vec<u8>,
+    /// Whether it is a subshell's own, where what `exec` changes stays.
+    subshell: bool,
 }
 
 impl Frame {
@@ -685,7 +690,7 @@ impl System {
                 return input.copy();
             }
         }
-        Ok(In::Mine)
+        self.base.input.as_ref().map_or(Ok(In::Mine), In::copy)
     }
 
     /// A copy of where the innermost level that makes it writes.
@@ -700,7 +705,7 @@ impl System {
                 Level::Frame(_) => {}
             }
         }
-        Ok(Out::Mine)
+        self.base.out.as_ref().map_or(Ok(Out::Mine), Out::copy)
     }
 
     /// A copy of where the innermost level that makes it says what went
@@ -715,7 +720,22 @@ impl System {
                 return errors.copy();
             }
         }
-        Ok(Out::MyErrors)
+        self.base
+            .errors
+            .as_ref()
+            .map_or(Ok(Out::MyErrors), Out::copy)
+    }
+
+    /// Where `exec` changes a stream: the innermost frame that sets it, as
+    /// `sets` says, or a subshell's own, or else the shell's.
+    fn setting(&mut self, sets: impl Fn(&Frame) -> bool) -> &mut Frame {
+        let at = self.levels.iter().rposition(
+            |level| matches!(level, Level::Frame(frame) if frame.subshell || sets(frame)),
+        );
+        match at.map(|at| &mut self.levels[at]) {
+            Some(Level::Frame(frame)) => frame,
+            _ => &mut self.base,
+        }
     }
 
     fn defaults(&self) -> Result<Defaults, Error> {
@@ -873,9 +893,63 @@ impl Machine for System {
             input: files.from.take(),
             out,
             errors,
-            left: Vec::new(),
+            ..Frame::default()
         }));
         true
+    }
+
+    /// Makes the redirections hold from now on, each on the frame
+    /// [`System::setting`] finds for its stream, what was there closed.
+    fn redirect(&mut self, redirections: &[Redirection]) -> bool {
+        let mut files = match redirected(redirections) {
+            Ok(files) => files,
+            Err(said) => {
+                let _ = self.err(said.as_bytes());
+                return false;
+            }
+        };
+        let out = match files.into.take() {
+            Some(Place::Opened(file)) => Some(file),
+            Some(Place::Errors) => self.errors().ok(),
+            Some(Place::Output) | None => None,
+        };
+        let errors = match files.errors.take() {
+            Some(Place::Opened(file)) => Some(file),
+            Some(Place::Output) => self.output().ok(),
+            Some(Place::Errors) | None => None,
+        };
+        if let Some(input) = files.from.take() {
+            let frame = self.setting(|frame| frame.input.is_some());
+            frame.left.clear();
+            if let Some(was) = frame.input.replace(input) {
+                was.close();
+            }
+        }
+        if let Some(out) = out
+            && let Some(was) = self.setting(|frame| frame.out.is_some()).out.replace(out)
+        {
+            was.close();
+        }
+        if let Some(errors) = errors
+            && let Some(was) = self
+                .setting(|frame| frame.errors.is_some())
+                .errors
+                .replace(errors)
+        {
+            was.close();
+        }
+        true
+    }
+
+    fn begin_subshell(&mut self) {
+        self.levels.push(Level::Frame(Frame {
+            subshell: true,
+            ..Frame::default()
+        }));
+    }
+
+    fn end_subshell(&mut self) {
+        self.end_redirections();
     }
 
     fn end_redirections(&mut self) {
@@ -925,7 +999,10 @@ impl Machine for System {
                 return input.line(left);
             }
         }
-        In::Mine.line(&mut self.left)
+        match &mut self.base.input {
+            Some(input) => input.line(&mut self.base.left),
+            None => In::Mine.line(&mut self.left),
+        }
     }
 }
 
@@ -2385,6 +2462,12 @@ mod tests {
         );
         assert_eq!(asked(&words("-c --sh")), (Asked::Text("--sh"), false));
         assert_eq!(asked(&words("--sh -c")), (Asked::Unknown, true));
+        assert_eq!(asked(&words("--sh /a.sh more")), (Asked::Unknown, true));
+        assert_eq!(
+            asked(&words("-x --sh")),
+            (Asked::Unknown, false),
+            "--sh comes first or not at all"
+        );
     }
 
     #[test]

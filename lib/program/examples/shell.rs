@@ -257,8 +257,8 @@ fn lines(typed: &str) -> Lines {
 /// standard input yet.
 fn opening(how: Redirect) -> Option<u64> {
     match how {
-        Redirect::Out => Some(file::CREATE_ALWAYS),
-        Redirect::Append => Some(file::OPEN_ALWAYS),
+        Redirect::Out | Redirect::ErrorOut => Some(file::CREATE_ALWAYS),
+        Redirect::Append | Redirect::ErrorAppend => Some(file::OPEN_ALWAYS),
         Redirect::In => None,
     }
 }
@@ -354,13 +354,14 @@ fn shell(_: Handle) -> u64 {
         Asked::File(path) => match text_of(path) {
             Ok(text) => script(&text),
             Err(e) => {
-                let _ = program::write(&trouble(path, e));
+                let _ = program::write_error(&trouble(path, e));
                 2
             }
         },
         Asked::Unknown => {
-            let _ =
-                program::write("shell: start it with no words, -c SCRIPT, or a script's path\n");
+            let _ = program::write_error(
+                "shell: start it with no words, -c SCRIPT, or a script's path\n",
+            );
             2
         }
     };
@@ -376,7 +377,7 @@ fn script(text: &str) -> u8 {
     match ran {
         Ok(_) => session.status(),
         Err(e) => {
-            let _ = program::write(&format!("{e}\n"));
+            let _ = program::write_error(&format!("{e}\n"));
             2
         }
     }
@@ -431,14 +432,14 @@ fn typed() -> u8 {
                             Ok(Flow::Exit) => return session.status(),
                             Ok(_) => {}
                             Err(e) => {
-                                let _ = program::write(&format!("{e}\n"));
+                                let _ = program::write_error(&format!("{e}\n"));
                             }
                         }
                         "> "
                     }
                     Lines::Wrong(e) => {
                         typed.clear();
-                        let _ = program::write(&format!("{e}\n"));
+                        let _ = program::write_error(&format!("{e}\n"));
                         "> "
                     }
                 };
@@ -460,7 +461,7 @@ impl Machine for System {
         let alone = stages.len() == 1;
         let going: Vec<Going> = stages
             .into_iter()
-            .map(|(words, input, out)| begin(words, input, out, alone))
+            .map(|(words, streams)| begin(words, streams, alone))
             .collect();
         // Each one has to be waited for, and the last one's status is the
         // pipeline's. How they ended is said once all did, after all they
@@ -472,7 +473,7 @@ impl Machine for System {
             status
         });
         if !said.is_empty() {
-            let _ = program::write(&said);
+            let _ = program::write_error(&said);
         }
         status
     }
@@ -568,10 +569,12 @@ impl In {
     }
 }
 
-/// Where a command's text goes: the shell's own output, a file from its
-/// byte `at` on, or the pipe to the command after it.
+/// Where a command's text goes: the shell's own output or its standard
+/// error, a file from its byte `at` on, or the pipe to the command after
+/// it.
 enum Out {
     Mine,
+    MyErrors,
     File { handle: Handle, at: u64 },
     Pipe(Handle),
 }
@@ -583,17 +586,21 @@ impl Out {
     }
 
     /// Writes `bytes` as they are into a file or a pipe. The shell's own
-    /// output takes text, so there a character cut short waits in `held`
-    /// for its rest, and what can never be text shows as such.
+    /// output and error take text, so there a character cut short waits in
+    /// `held` for its rest, and what can never be text shows as such.
     #[cfg_attr(test, allow(dead_code))]
     fn put(&mut self, bytes: &[u8], held: &mut Vec<u8>) -> Result<(), Error> {
         match self {
-            Out::Mine => {
+            Out::Mine | Out::MyErrors => {
                 held.extend_from_slice(bytes);
                 let whole = whole(held);
                 let text = String::from_utf8_lossy(&held[..whole]).into_owned();
                 held.drain(..whole);
-                program::write(&text)
+                if matches!(self, Out::Mine) {
+                    program::write(&text)
+                } else {
+                    program::write_error(&text)
+                }
             }
             Out::File { handle, at } => {
                 program::write_file(*handle, *at, bytes)?;
@@ -606,13 +613,14 @@ impl Out {
     }
 
     /// Where a program writing here writes: the file or the pipe, which go
-    /// with it, or the shell's own output.
+    /// with it, or the shell's own output or error.
     #[cfg_attr(test, allow(dead_code))]
     fn handed(self) -> Option<Sink> {
         match self {
             Out::File { handle, .. } => Some(Sink::File(handle)),
             Out::Pipe(end) => Some(Sink::Channel(end)),
-            Out::Mine => inherited(),
+            Out::Mine => inherited(program::start::given().output),
+            Out::MyErrors => inherited(program::start::given().error),
         }
     }
 
@@ -652,41 +660,69 @@ fn whole(bytes: &[u8]) -> usize {
     }
 }
 
-/// Each command of `pipeline` with where it reads and where it writes:
-/// the files its redirections lead to, else the pipes between it and the
-/// commands beside it, else the shell's own. None once something did not
-/// open, after saying so and closing what had.
+/// Where a command reads, where it writes, and where it says what went
+/// wrong.
+struct Streams {
+    input: In,
+    out: Out,
+    errors: Out,
+}
+
+impl Streams {
+    /// The shell's own.
+    fn mine() -> Streams {
+        Streams {
+            input: In::Mine,
+            out: Out::Mine,
+            errors: Out::MyErrors,
+        }
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn close(self) {
+        self.input.close();
+        self.out.close();
+        self.errors.close();
+    }
+}
+
+/// Each command of `pipeline` with its streams: the files its redirections
+/// lead to, else the pipes between it and the commands beside it, else the
+/// shell's own. None once something did not open, after saying so and
+/// closing what had.
 #[cfg_attr(test, allow(dead_code))]
-fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], In, Out)>> {
-    let mut stages: Vec<(&[String], In, Out)> = Vec::new();
+fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
+    let mut stages: Vec<(&[String], Streams)> = Vec::new();
     let mut next = In::Mine;
     let mut failed = false;
     for (i, ready) in pipeline.iter().enumerate() {
-        let Some((from, into)) = redirected(&ready.redirections) else {
+        let Some(files) = redirected(&ready.redirections) else {
             failed = true;
             break;
         };
-        let input = match from {
+        let input = match files.from {
             Some(file) => {
                 core::mem::replace(&mut next, In::Mine).close();
                 file
             }
             None => core::mem::replace(&mut next, In::Mine),
         };
+        let errors = files.errors.unwrap_or(Out::MyErrors);
         let out = if i + 1 == pipeline.len() {
-            into.unwrap_or(Out::Mine)
+            files.into.unwrap_or(Out::Mine)
         } else {
             let Ok((write, read)) = program::channel() else {
-                let _ = program::write("|: no channel is left for the pipe\n");
+                let _ = program::write_error("|: no channel is left for the pipe\n");
                 input.close();
-                if let Some(file) = into {
+                errors.close();
+                if let Some(file) = files.into {
                     file.close();
                 }
                 failed = true;
                 break;
             };
             next = In::Pipe(read);
-            match into {
+            match files.into {
                 Some(file) => {
                     let _ = program::close(write);
                     file
@@ -694,25 +730,45 @@ fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], In, Out)>> {
                 None => Out::Pipe(write),
             }
         };
-        stages.push((&ready.words, input, out));
+        stages.push((&ready.words, Streams { input, out, errors }));
     }
     if failed {
         next.close();
-        for (_, input, out) in stages {
-            input.close();
-            out.close();
+        for (_, streams) in stages {
+            streams.close();
         }
         return None;
     }
     Some(stages)
 }
 
+/// The files a command's redirections opened, the last of each kind: to
+/// read, to write, and for what went wrong.
+#[derive(Default)]
+struct Files {
+    from: Option<In>,
+    into: Option<Out>,
+    errors: Option<Out>,
+}
+
+impl Files {
+    #[cfg_attr(test, allow(dead_code))]
+    fn close(self) {
+        if let Some(file) = self.from {
+            file.close();
+        }
+        for file in [self.into, self.errors].into_iter().flatten() {
+            file.close();
+        }
+    }
+}
+
 /// Opens the files `redirections` lead to, in their order as sh does, and
-/// answers the last one to read and the last one to write, at its end.
-/// Says what went wrong and answers none when one does not open.
+/// answers the last of each kind, one to write at its end. Says what went
+/// wrong and answers none when one does not open.
 #[cfg_attr(test, allow(dead_code))]
-fn redirected(redirections: &[(Redirect, String)]) -> Option<(Option<In>, Option<Out>)> {
-    let (mut from, mut into) = (None::<In>, None::<Out>);
+fn redirected(redirections: &[(Redirect, String)]) -> Option<Files> {
+    let mut files = Files::default();
     for (how, path) in redirections {
         let opened = match opening(*how) {
             Some(how) => program::open_with(path, file::WRITE, how),
@@ -721,28 +777,29 @@ fn redirected(redirections: &[(Redirect, String)]) -> Option<(Option<In>, Option
         let handle = match opened {
             Ok(handle) => handle,
             Err(e) => {
-                let _ = program::write(&trouble(path, e));
-                if let Some(file) = from {
-                    file.close();
-                }
-                if let Some(file) = into {
-                    file.close();
-                }
+                let _ = program::write_error(&trouble(path, e));
+                files.close();
                 return None;
             }
         };
-        if *how == Redirect::In {
-            if let Some(file) = from.replace(In::File { handle, at: 0 }) {
-                file.close();
+        let at = program::info(handle).map_or(0, |i| i.size);
+        let old = match how {
+            Redirect::In => {
+                if let Some(file) = files.from.replace(In::File { handle, at: 0 }) {
+                    file.close();
+                }
+                None
             }
-        } else {
-            let at = program::info(handle).map_or(0, |i| i.size);
-            if let Some(file) = into.replace(Out::File { handle, at }) {
-                file.close();
+            Redirect::Out | Redirect::Append => files.into.replace(Out::File { handle, at }),
+            Redirect::ErrorOut | Redirect::ErrorAppend => {
+                files.errors.replace(Out::File { handle, at })
             }
+        };
+        if let Some(file) = old {
+            file.close();
         }
     }
-    Some((from, into))
+    Some(files)
 }
 
 /// A command of a pipeline on its way: done already, a program, or one of
@@ -784,85 +841,85 @@ impl Going {
     }
 }
 
-/// Starts the command `words` with what it reads and where it writes:
-/// a program, or one of the shell's own, at once when it is `alone` and in
-/// a thread of its own in a pipeline.
+/// Starts the command `words` with its streams: a program, or one of the
+/// shell's own, at once when it is `alone` and in a thread of its own in a
+/// pipeline.
 #[cfg_attr(test, allow(dead_code))]
-fn begin(words: &[String], input: In, out: Out, alone: bool) -> Going {
+fn begin(words: &[String], streams: Streams, alone: bool) -> Going {
     if let Command::Program(word, arguments) = command(words) {
-        return start(word, arguments, input, out);
+        return start(word, arguments, streams);
     }
     if alone {
-        let (mut input, mut out) = (input, out);
-        let status = run(command(words), &mut input, &mut out);
-        input.close();
-        out.close();
+        let mut streams = streams;
+        let status = run(command(words), &mut streams);
+        streams.close();
         return Going::Done(status);
     }
     let Ok((mine, theirs)) = program::channel() else {
-        let _ = program::write("|: no channel is left for the pipe\n");
-        input.close();
-        out.close();
+        let _ = program::write_error("|: no channel is left for the pipe\n");
+        streams.close();
         return Going::Done(1);
     };
     let words = words.to_vec();
     let started = program::thread(move || {
-        let (mut input, mut out) = (input, out);
-        let status = run(command(&words), &mut input, &mut out);
-        input.close();
-        out.close();
+        let mut streams = streams;
+        let status = run(command(&words), &mut streams);
+        streams.close();
         let _ = program::send(theirs, &[status], None);
         let _ = program::close(theirs);
         0
     });
     if started.is_err() {
-        let _ = program::write("|: no thread is left for the pipe\n");
+        let _ = program::write_error("|: no thread is left for the pipe\n");
         let _ = program::close(mine);
         return Going::Done(1);
     }
     Going::Thread(mine)
 }
 
-/// Runs `command`, reading `input` and its text going to `out`, and
-/// answers its status: a program's, or for the shell's own 0, and 1 when
-/// something went wrong.
+/// Runs `command` on `streams`, and answers its status: a program's, or
+/// for the shell's own 0, and 1 when something went wrong.
 #[cfg_attr(test, allow(dead_code))]
-fn run(command: Command<'_>, input: &mut In, out: &mut Out) -> u8 {
+fn run(command: Command<'_>, streams: &mut Streams) -> u8 {
+    let Streams { input, out, errors } = streams;
     let done = match command {
         Command::Program(word, arguments) => {
-            let input = core::mem::replace(input, In::Mine);
-            let out = core::mem::replace(out, Out::Mine);
-            let (status, line) = start(word, arguments, input, out).finish();
+            let taken = core::mem::replace(streams, Streams::mine());
+            let (status, line) = start(word, arguments, taken).finish();
             if let Some(line) = line {
-                let _ = program::write(&line);
+                let _ = program::write_error(&line);
             }
             return status;
         }
         Command::Status(status) => return status,
         Command::Help => out.say(HELP).is_ok(),
         Command::Echo(words) => out.say(&format!("{}\n", words.join(" "))).is_ok(),
-        Command::List([]) => list(&program::directory(), out),
+        Command::List([]) => list(&program::directory(), out, errors),
         Command::ChangeDirectory([]) | Command::WorkingDirectory => {
             out.say(&format!("{}\n", program::directory())).is_ok()
         }
-        Command::ChangeDirectory([path]) => done(path, program::change_directory),
+        Command::ChangeDirectory([path]) => done(path, program::change_directory, errors),
         Command::ChangeDirectory(_) => {
-            let _ = program::write("cd takes one path\n");
+            let _ = errors.say("cd takes one path\n");
             false
         }
-        Command::List(paths) => every(paths, |path| list(path, out)),
+        Command::List(paths) => every(paths, |path| list(path, out, errors)),
         Command::Show([]) => copy(input, out),
-        Command::Show(paths) => every(paths, |path| show(path, out)),
-        Command::MakeDirectory(paths) => every(paths, |path| done(path, program::make_directory)),
-        Command::Remove(paths) => every(paths, |path| done(path, program::remove)),
+        Command::Show(paths) => every(paths, |path| show(path, out, errors)),
+        Command::MakeDirectory(paths) => {
+            every(paths, |path| done(path, program::make_directory, errors))
+        }
+        Command::Remove(paths) => every(paths, |path| done(path, program::remove, errors)),
         Command::Clear => out.say("\u{c}").is_ok(),
-        Command::Services => services(out),
+        Command::Services => services(out, errors),
         Command::Empty => true,
-        Command::RemoveDirectory(paths) => every(paths, |path| done(path, remove_directory)),
-        Command::Copy(paths) => carry(paths, copy_file),
-        Command::Move(paths) => carry(paths, move_file),
+        Command::RemoveDirectory(paths) => {
+            every(paths, |path| done(path, remove_directory, errors))
+        }
+        Command::Copy(paths) => carry(paths, copy_file, errors),
+        Command::Move(paths) => carry(paths, move_file, errors),
         Command::Missing(word) => {
-            let _ = program::write(&missing(word));
+            let _ = errors.say(&missing(word));
             false
         }
     };
@@ -882,10 +939,11 @@ fn every(paths: &[String], mut work: impl FnMut(&str) -> bool) -> bool {
 fn carry(
     paths: &[String],
     mut each: impl FnMut(&str, &str) -> Result<(), (String, Error)>,
+    errors: &mut Out,
 ) -> bool {
     let target = paths.last().map_or("", String::as_str);
     let Some(pairs) = destinations(paths, is_directory(target)) else {
-        let _ = program::write(&format!(
+        let _ = errors.say(&format!(
             "{target}: not a directory, so one path alone goes there\n"
         ));
         return false;
@@ -893,7 +951,7 @@ fn carry(
     let failed = pairs.iter().filter(|(from, to)| {
         each(from, to)
             .inspect_err(|(path, e)| {
-                let _ = program::write(&trouble(path, *e));
+                let _ = errors.say(&trouble(path, *e));
             })
             .is_err()
     });
@@ -976,20 +1034,20 @@ fn remove_directory(path: &str) -> Result<(), Error> {
 /// Does `call` with `path`, says what went wrong when it did, and says
 /// whether it went well.
 #[cfg_attr(test, allow(dead_code))]
-fn done(path: &str, call: fn(&str) -> Result<(), Error>) -> bool {
+fn done(path: &str, call: fn(&str) -> Result<(), Error>, errors: &mut Out) -> bool {
     call(path)
         .inspect_err(|&e| {
-            let _ = program::write(&trouble(path, e));
+            let _ = errors.say(&trouble(path, e));
         })
         .is_ok()
 }
 
 /// Asks init about each of its services in turn and shows what it says.
 #[cfg_attr(test, allow(dead_code))]
-fn services(out: &mut Out) -> bool {
+fn services(out: &mut Out, errors: &mut Out) -> bool {
     let line = Handle(LINE.load(SeqCst));
     if line.0 == 0 {
-        let _ = program::write("services: init did not start this shell\n");
+        let _ = errors.say("services: init did not start this shell\n");
         return false;
     }
     out.say(&listing((0..=u8::MAX).map(|place| ask(line, place))))
@@ -1035,14 +1093,16 @@ fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
     None
 }
 
-/// Starts the program `word` names, handing it `arguments`, what it
-/// reads and where it writes, which go with it.
+/// Starts the program `word` names, handing it `arguments` and its
+/// streams, which go with it.
 #[cfg_attr(test, allow(dead_code))]
-fn start(word: &str, arguments: &[String], input: In, out: Out) -> Going {
+fn start(word: &str, arguments: &[String], streams: Streams) -> Going {
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let Streams { input, out, errors } = streams;
     let given = program::start::Given {
         input: input.handed(),
         output: out.handed(),
+        error: errors.handed(),
         ..program::start::Given::default()
     };
     match program::spawn_handing(&program_name(word, &mut System), &arguments, given) {
@@ -1051,22 +1111,22 @@ fn start(word: &str, arguments: &[String], input: In, out: Out) -> Going {
             Going::Program(word.into(), child)
         }
         Err(Error::NotFound | Error::NoSuchProgram) if !word.starts_with('/') => {
-            let _ = program::write(&format!("{word}: no such command\n"));
+            let _ = program::write_error(&format!("{word}: no such command\n"));
             Going::Done(127)
         }
         Err(e) => {
-            let _ = program::write(&trouble(word, e));
+            let _ = program::write_error(&trouble(word, e));
             Going::Done(126)
         }
     }
 }
 
-/// A second handle to the shell's own standard output, for a program to
-/// write there too (decision record 0019); none while the shell writes to
-/// the console.
+/// A second handle to `sink`, the shell's own standard output or error,
+/// for a program to write there too (decision record 0019); none while the
+/// shell writes it to the console.
 #[cfg_attr(test, allow(dead_code))]
-fn inherited() -> Option<Sink> {
-    Some(match program::start::given().output? {
+fn inherited(sink: Option<Sink>) -> Option<Sink> {
+    Some(match sink? {
         Sink::Channel(end) => Sink::Channel(program::duplicate(end).ok()?),
         Sink::File(file) => Sink::File(program::duplicate(file).ok()?),
     })
@@ -1075,11 +1135,11 @@ fn inherited() -> Option<Sink> {
 /// Shows the names in the directory at `path`, or the path of a file, and
 /// says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
-fn list(path: &str, out: &mut Out) -> bool {
+fn list(path: &str, out: &mut Out, errors: &mut Out) -> bool {
     let directory = match program::open(path, file::READ) {
         Ok(d) => d,
         Err(e) => {
-            let _ = program::write(&trouble(path, e));
+            let _ = errors.say(&trouble(path, e));
             return false;
         }
     };
@@ -1098,7 +1158,7 @@ fn list(path: &str, out: &mut Out) -> bool {
                 break;
             }
             Err(e) => {
-                let _ = program::write(&trouble(path, e));
+                let _ = errors.say(&trouble(path, e));
                 done = false;
                 break;
             }
@@ -1115,11 +1175,11 @@ fn list(path: &str, out: &mut Out) -> bool {
 /// Shows what the file at `path` holds, byte for byte but on the shell's
 /// own output, and says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
-fn show(path: &str, out: &mut Out) -> bool {
+fn show(path: &str, out: &mut Out, errors: &mut Out) -> bool {
     let file = match program::open(path, file::READ) {
         Ok(f) => f,
         Err(e) => {
-            let _ = program::write(&trouble(path, e));
+            let _ = errors.say(&trouble(path, e));
             return false;
         }
     };
@@ -1136,7 +1196,7 @@ fn show(path: &str, out: &mut Out) -> bool {
                 offset += len as u64;
             }
             Err(e) => {
-                let _ = program::write(&trouble(path, e));
+                let _ = errors.say(&trouble(path, e));
                 break false;
             }
         }
@@ -1507,6 +1567,8 @@ mod tests {
         assert_eq!(opening(Redirect::Out), Some(file::CREATE_ALWAYS));
         assert_eq!(opening(Redirect::Append), Some(file::OPEN_ALWAYS));
         assert_eq!(opening(Redirect::In), None);
+        assert_eq!(opening(Redirect::ErrorOut), Some(file::CREATE_ALWAYS));
+        assert_eq!(opening(Redirect::ErrorAppend), Some(file::OPEN_ALWAYS));
     }
 
     /// Directories and files on the host, in a directory of their own

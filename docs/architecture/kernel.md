@@ -491,7 +491,9 @@ among the programs the loader brought, or by its path, started with SPAWN,
 handed the words after it and waited for, and the shell says how it ended
 unless it exited with 0. A program writes where the shell writes, through
 a duplicate of its standard output, and `>` and `>>` send what a command
-writes into a file instead. `|` joins commands with a channel, each of
+writes into a file instead; the shell and its programs say what went
+wrong on its standard error, and `2>` and `2>>` send that into a file.
+`|` joins commands with a channel, each of
 the shell's own commands in a pipeline running in a thread of its own,
 and `<` hands a command a file to read, which a thread of the shell
 feeds to a program. Started

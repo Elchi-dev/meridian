@@ -57,6 +57,10 @@ pub enum Token {
     Append,
     /// `<`
     In,
+    /// `2>`
+    ErrorOut,
+    /// `2>>`
+    ErrorAppend,
     /// `{`
     Open,
     /// `}`
@@ -163,12 +167,17 @@ pub fn tokens(script: &str) -> Result<Vec<(Token, Pos)>, Error> {
             '}' => Token::Close,
             '>' => {
                 chars.next();
-                if chars.peek() == Some('>') {
-                    chars.next();
-                    out.push((Token::Append, at));
-                } else {
-                    out.push((Token::Out, at));
-                }
+                out.push((redirection(&mut chars, Token::Out, Token::Append), at));
+                continue;
+            }
+            // A 2 alone right before > sends the standard error on.
+            '2' if second_is(&chars, '>') => {
+                chars.next();
+                chars.next();
+                out.push((
+                    redirection(&mut chars, Token::ErrorOut, Token::ErrorAppend),
+                    at,
+                ));
                 continue;
             }
             _ => {
@@ -180,6 +189,24 @@ pub fn tokens(script: &str) -> Result<Vec<(Token, Pos)>, Error> {
         out.push((token, at));
     }
     Ok(out)
+}
+
+/// The redirection whose first `>` was taken: `once`, or `twice` when
+/// another `>` comes, which it takes.
+fn redirection(chars: &mut Chars<'_>, once: Token, twice: Token) -> Token {
+    if chars.peek() == Some('>') {
+        chars.next();
+        twice
+    } else {
+        once
+    }
+}
+
+/// Whether `c` comes right after the next character.
+fn second_is(chars: &Chars<'_>, c: char) -> bool {
+    let mut ahead = chars.rest.clone();
+    ahead.next();
+    ahead.next() == Some(c)
 }
 
 /// Whether `c` comes next twice.
@@ -402,6 +429,8 @@ mod tests {
                 Token::Out => ">".into(),
                 Token::Append => ">>".into(),
                 Token::In => "<".into(),
+                Token::ErrorOut => "2>".into(),
+                Token::ErrorAppend => "2>>".into(),
                 Token::Open => "{".into(),
                 Token::Close => "}".into(),
             })
@@ -431,6 +460,20 @@ mod tests {
             "a carriage return and a line feed"
         );
         assert_eq!(short("> >> >>> <"), [">", ">>", ">>", ">", "<"]);
+    }
+
+    #[test]
+    fn a_two_alone_before_a_redirection_sends_the_standard_error() {
+        assert_eq!(short("a 2>e 2>>f"), ["a", "2>", "e", "2>>", "f"]);
+        assert_eq!(short("a 2> e"), ["a", "2>", "e"]);
+        assert_eq!(short("a 2>>>f"), ["a", "2>>", ">", "f"]);
+        assert_eq!(short("a2>f"), ["a2", ">", "f"], "a 2 inside a word stays");
+        assert_eq!(short("a 22>f"), ["a", "22", ">", "f"]);
+        assert_eq!(short("a 2 >f"), ["a", "2", ">", "f"], "and one apart");
+        assert_eq!(short("a '2'>f"), ["a", "[2]", ">", "f"]);
+        assert_eq!(short("echo 2"), ["echo", "2"]);
+        assert_eq!(short("2>e a"), ["2>", "e", "a"]);
+        assert_eq!(short("a;2>e"), ["a", ";", "2>", "e"]);
     }
 
     #[test]

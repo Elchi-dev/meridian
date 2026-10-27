@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 59] = [
+const CHECKS: [(&str, Check); 60] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -80,6 +80,7 @@ const CHECKS: [(&str, Check); 59] = [
     ("shell.bytes", bytes_go_through_as_they_are),
     ("shell.carry", files_copied_and_moved),
     ("shell.directory", the_working_directory),
+    ("shell.errors", errors_go_where_2_sends_them),
     ("console", writes_on_the_console),
 ];
 
@@ -1354,10 +1355,14 @@ fn shell_with(words: &[&str]) -> Result<Ran, &'static str> {
 }
 
 /// Starts the shell with `words` as [`shell_with`] does, and with a
-/// standard input that brings `input` and ends, when that is some.
+/// standard input that brings `input` and ends, when that is some. What
+/// the shell says went wrong comes through the same channel, in its order.
 fn shell_reading(words: &[&str], input: Option<&[u8]>) -> Result<Ran, &'static str> {
     let (mine, theirs) = pair()?;
     let mut given = output(start::Sink::Channel(theirs));
+    given.error = Some(start::Sink::Channel(
+        duplicate(theirs).map_err(|_| "the shell's output should be duplicated")?,
+    ));
     let into = match input {
         Some(_) => {
             let (into, from) = pair()?;
@@ -2038,6 +2043,53 @@ fn the_working_directory() -> Outcome {
                 b"whoami.mexec whoami_again.mexec\nwc.mexec\nwc_again.mexec\n",
             ),
         "patterns not from the root should match in the working directory",
+    )
+}
+
+/// What a command says went wrong goes to the shell's standard error,
+/// and with `2>` and `2>>` into a file instead, for the shell's own
+/// commands and its programs alike.
+fn errors_go_where_2_sends_them() -> Outcome {
+    let (mine, theirs) = pair()?;
+    let (errors, error_end) = pair()?;
+    let given = start::Given {
+        output: Some(start::Sink::Channel(theirs)),
+        error: Some(start::Sink::Channel(error_end)),
+        ..start::Given::default()
+    };
+    let (child, back) = spawn_handing(
+        "shell.mexec",
+        &["-c", "echo a; cat /nope; wc /nope; nope"],
+        given,
+    )
+    .map_err(|_| "the shell should start")?;
+    let ended = wait(child);
+    let (said, complained) = (drained(mine), drained(errors));
+    let _ = (close(child), close(back), close(mine), close(errors));
+    expect(
+        ended == Ok(Ended::Exited(127))
+            && said == b"a\n"
+            && complained
+                == b"/nope: no such file\nwc: /nope: no such file\nwc ended with 1\nnope: no such command\n",
+        "the shell and its programs should say what went wrong on the shell's standard error",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo a 2> /System/e1; cat /nope 2> /System/e1; wc /nope 2>> /System/e1\n\
+         cat /System/e1; rm /System/e1",
+    )?;
+    if said.starts_with(b"/System/e1: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should take what went wrong",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == b"a\nwc ended with 1\n/nope: no such file\nwc: /nope: no such file\n",
+        "2> and 2>> should put what went wrong into a file, from a program too",
     )
 }
 

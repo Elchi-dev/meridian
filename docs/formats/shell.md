@@ -87,9 +87,13 @@ Redirections may stand anywhere among a command's words:
 | `> PATH` | what the command writes goes into the file, made new or emptied |
 | `>> PATH` | what the command writes goes after what the file holds, making it when it is not there |
 | `< PATH` | the command reads the file instead of the keyboard |
+| `2> PATH` | what the command says went wrong goes into the file, made new or emptied |
+| `2>> PATH` | what the command says went wrong goes after what the file holds |
 
 The path is the next word. A redirection without one is an error
-(`missing-path`).
+(`missing-path`). A `2` alone right before `>` or `>>`, with nothing
+between them, makes them `2>` and `2>>`; in a word, as in `a2>f`, or
+apart from them, it is an ordinary word.
 
 A `{` where no block starts is an error (`unexpected-open`); quoted, it
 is part of a word.

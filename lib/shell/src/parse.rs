@@ -17,6 +17,10 @@ pub enum Redirect {
     Append,
     /// `<`: from the file.
     In,
+    /// `2>`: what goes wrong into the file, made new or emptied.
+    ErrorOut,
+    /// `2>>`: what goes wrong after what the file holds.
+    ErrorAppend,
 }
 
 /// A command: the words that name it and its arguments, and its
@@ -352,6 +356,8 @@ impl Parser {
                 Some(Token::Out) => Redirect::Out,
                 Some(Token::Append) => Redirect::Append,
                 Some(Token::In) => Redirect::In,
+                Some(Token::ErrorOut) => Redirect::ErrorOut,
+                Some(Token::ErrorAppend) => Redirect::ErrorAppend,
                 _ => break,
             };
             self.next += 1;
@@ -401,6 +407,8 @@ mod tests {
                 Redirect::Out => ">",
                 Redirect::Append => ">>",
                 Redirect::In => "<",
+                Redirect::ErrorOut => "2>",
+                Redirect::ErrorAppend => "2>>",
             };
             parts.push(format!("{sign}{}", word(path)));
         }
@@ -699,6 +707,9 @@ mod tests {
         ("if a | b { c }", &["if(a | b){c}else{}"]),
         ("if not a { b }", &["if(not a){b}else{}"]),
         ("if a > f { b }", &["if(a >f){b}else{}"]),
+        ("a 2> e > o", &["a 2>e >o"]),
+        ("a 2>>e x", &["a x 2>>e"]),
+        ("a2> e", &["a2 >e"]),
         ("if a { b } else { c }", &["if(a){b}else{c}"]),
         ("if a {\n b\n} else {\n c\n}", &["if(a){b}else{c}"]),
         ("if a { b }; c", &["if(a){b}else{}", "c"]),
@@ -758,6 +769,8 @@ mod tests {
         ("not | a", 1, 5, Code::MissingCommand),
         ("a or\nb", 1, 5, Code::MissingCommand),
         ("<", 1, 2, Code::MissingPath),
+        ("a 2>", 1, 5, Code::MissingPath),
+        ("a 2>> ;", 1, 7, Code::MissingPath),
         ("a <", 1, 4, Code::MissingPath),
         ("a > {", 1, 5, Code::MissingPath),
         ("a > }", 1, 5, Code::MissingPath),

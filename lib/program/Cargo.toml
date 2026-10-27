@@ -14,6 +14,7 @@ heap = { path = "../heap" }
 meri = { path = "../meri" }
 regex = { path = "../regex" }
 security = { path = "../security" }
+sed = { path = "../sed" }
 services = { path = "../services" }
 shell = { path = "../shell" }
 
@@ -89,6 +90,10 @@ test = true
 
 [[example]]
 name = "tee"
+test = true
+
+[[example]]
+name = "sed"
 test = true
 
 [features]

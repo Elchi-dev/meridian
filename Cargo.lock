@@ -132,6 +132,7 @@ dependencies = [
  "meri",
  "regex",
  "security",
+ "sed",
  "services",
  "shell",
 ]

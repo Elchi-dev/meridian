@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 120] = [
+const CHECKS: [(&str, Check); 126] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -137,6 +137,12 @@ const CHECKS: [(&str, Check); 120] = [
     ("shell.sh.read.files", sh_read_files),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("tools.grep", grep_expressions),
+    ("tools.sed", sed_on_its_input),
+    ("tools.sed.files", sed_on_files),
+    ("tools.sed.long", sed_on_a_long_text),
+    ("tools.sed.program", sed_as_a_program),
+    ("tools.sed.wide", sed_on_wide_lines),
+    ("tools.sed.pipes", sed_among_the_tools),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2587,14 +2593,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"36\n"
+        b"38\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, eighteen twice",
+        "ls should write the programs' names into the pipe, nineteen twice",
     )?;
     expect(
         same(
@@ -3627,6 +3633,205 @@ fn grep_expressions() -> Outcome {
     expect(
         checked,
         "grep -l should name the files that hold a line, and -s keep quiet about one it cannot read",
+    )
+}
+
+/// sed runs a script on its input: s in basic and extended expressions,
+/// parts given with -e, $= on the last line, N at the end writing nothing
+/// as POSIX has it, and a last line without its line feed.
+fn sed_on_its_input() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'a\\nb\\n' | sed s/a/x/\n\
+             printf '1\\n2\\n3\\n' | sed -n '$='\n\
+             printf 'a\\nb\\nc\\n' | sed -e 1d -e s/b/B/\n\
+             printf '1\\n2\\n3\\n' | sed 'N;s/\\n/+/'\n\
+             echo aaa | sed -E 's/a+/x/'\n\
+             printf 'a\\nb' | sed 's/$/!/'",
+        )?,
+        &ran(0, b"x\nb\n3\nB\nc\n1+2\nx\na!\nb!\n"),
+    );
+    expect(checked, "sed should run its script on each line it reads")?;
+    let checked = same(
+        &shell_on("sed 'p;k'; echo $?; sed -x p")?,
+        &ran(
+            1,
+            b"sed: 1:3: k is no command\nsed ended with 1\n1\n\
+              sed: -x is no option\nsed ended with 1\n",
+        ),
+    ) && same(
+        &shell_on("printf 'x\\n' | sed -n p /nope; echo $?")?,
+        &ran(0, b"sed: /nope: no such file\nsed ended with 2\n2\n"),
+    );
+    expect(
+        checked,
+        "sed should say where its script is wrong, and end with 2 for a file it cannot read",
+    )
+}
+
+/// sed reads a script from a file with -f, writes lines into a file with
+/// w and a file into its output with r, and reads several files as one
+/// input.
+fn sed_on_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo 's/a/b/' > /System/s.sed || exit 9\n\
+         echo a | sed -f /System/s.sed\n\
+         printf 'a\\nb\\n' | sed -n '/b/w /System/sed.txt'; cat /System/sed.txt\n\
+         printf 'x\\n' | sed 'r /System/s.sed'\n\
+         rm /System/sed.txt /System/s.sed",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/s.sed: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"b\nb\nx\ns/a/b/\n",
+        "sed should take a script from a file, write lines into one and read one in",
+    )?;
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "sed -n '$=' {boot} {boot}; cat {boot} {boot} | sed -n '$='"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let counts: Vec<&str> = text.lines().collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && counts.len() == 2
+            && counts[0] == counts[1]
+            && counts[0].parse::<usize>().is_ok_and(|count| count > 1),
+        "sed should read two files as one input, its last line the second's",
+    )
+}
+
+/// sed writes what it makes in pieces as long as a message, and a text
+/// far longer than one comes out whole: each line printed twice is as
+/// many lines and bytes as the text twice.
+fn sed_on_a_long_text() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let sixteen = [boot; 16].join(" ");
+    let thirty_two = [boot; 32].join(" ");
+    let (ended, said) = shell_on(&alloc::format!(
+        "cat {sixteen} | sed p | wc; cat {thirty_two} | wc; cat {sixteen} | sed -n '$='; cat {sixteen} | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    let counted = |line: &str| line.split(' ').next().and_then(|n| n.parse::<usize>().ok());
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && lines.len() == 4
+            && lines[0] == lines[1]
+            && counted(lines[1]).is_some_and(|n| n > 32)
+            && lines[2].parse::<usize>().ok() == counted(lines[3]),
+        "sed should write a text longer than a message whole, and count its lines",
+    )
+}
+
+/// What sed the program adds to lib/sed: an a\ text that goes on in the
+/// next -e, q ending a pipe's input early, l, y, = and G as written out,
+/// a w file that cannot be made, which ends sed with 4, a search that
+/// would take too long, and where a script read from a file is wrong.
+fn sed_as_a_program() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'x\\n' | sed -e 'a\\' -e 'after'\n\
+             printf '1\\n2\\n3\\n' | sed 1q\n\
+             printf 'a\\tb\\n' | sed -n l\n\
+             printf 'ab\\nc\\n' | sed 'y/abc/xyz/;=;G'",
+        )?,
+        &ran(0, b"x\nafter\n1\na\\tb$\n1\nxy\n\n2\nz\n\n"),
+    );
+    expect(
+        checked,
+        "sed should join its -e parts, end early at q, and write l, y, = and G",
+    )?;
+    let checked = same(
+        &shell_on("printf 'x\\n' | sed 'w /nope/w'; echo $?")?,
+        &ran(0, b"sed: /nope/w: no such file\nsed ended with 4\n4\n"),
+    ) && same(
+        &shell_on(&alloc::format!(
+            "printf '{}\\n' | sed 's/\\(\\(a*\\)*\\)*\\1x/y/'; echo $?",
+            "a".repeat(40)
+        ))?,
+        &ran(
+            0,
+            b"sed: the back-references leave too many ways to match this text\n\
+              sed ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "sed should end with 4 when it cannot make a file to write, and stop a search too long",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'p\\n\\nk\\n' > /System/bad.sed || exit 9\n\
+         sed -n -f /System/bad.sed; rm /System/bad.sed",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/bad.sed: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"sed: 3:1: k is no command\nsed ended with 1\n",
+        "sed should say on which line of its script file it is wrong",
+    )
+}
+
+/// A line longer than a message comes into sed whole, however the pipe
+/// cuts it, and goes out whole: matched, counted, changed throughout and
+/// printed.
+fn sed_on_wide_lines() -> Outcome {
+    let long = "x".repeat(300);
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "echo {long}b | sed 's/x*b/y/'\n\
+             echo {long} | sed -n '$='\n\
+             echo {long} | sed 's/x/z/g' | wc\n\
+             echo a{long} | sed -n '/^ax*$/p' | wc"
+        ))?,
+        &ran(0, b"y\n1\n1 1 301\n1 1 302\n"),
+    );
+    expect(
+        checked,
+        "sed should take a line longer than a message whole",
+    )
+}
+
+/// sed answers as the other tools do in a pipeline: lines 2 and 3 as head
+/// and tail take them, every line marked as grep counts them, and sorted
+/// lines taken once as uniq leaves them.
+fn sed_among_the_tools() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "sed -n '2,3p' < {boot} | wc; head -n 3 {boot} | tail -n 2 | wc\n\
+         sed 's/^/> /' {boot} | grep -c '^> '; sed -n '$=' {boot}\n\
+         sort {boot} | uniq | wc; sort {boot} | sed '$!N;/^\\(.*\\)\\n\\1$/!P;D' | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && lines.len() == 6
+            && lines[0] == lines[1]
+            && lines[2] == lines[3]
+            && lines[4] == lines[5]
+            && lines[3].parse::<usize>().is_ok_and(|count| count > 2),
+        "sed should take the lines head, tail, grep and uniq take",
     )
 }
 

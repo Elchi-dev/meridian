@@ -1501,6 +1501,8 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "hello_again.mexec",
                 "init.mexec",
                 "init_again.mexec",
+                "sed.mexec",
+                "sed_again.mexec",
                 "shell.mexec",
                 "shell_again.mexec",
                 "sort.mexec",
@@ -1521,7 +1523,7 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "whoami_again.mexec",
             ]
             && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the eighteen programs test images carry, each twice",
+        "the programs' directory should list the nineteen programs test images carry, each twice",
     );
 }
 

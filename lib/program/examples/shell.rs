@@ -512,14 +512,28 @@ enum Out {
 impl Out {
     #[cfg_attr(test, allow(dead_code))]
     fn say(&mut self, text: &str) -> Result<(), Error> {
+        self.put(text.as_bytes(), &mut Vec::new())
+    }
+
+    /// Writes `bytes` as they are into a file or a pipe. The shell's own
+    /// output takes text, so there a character cut short waits in `held`
+    /// for its rest, and what can never be text shows as such.
+    #[cfg_attr(test, allow(dead_code))]
+    fn put(&mut self, bytes: &[u8], held: &mut Vec<u8>) -> Result<(), Error> {
         match self {
-            Out::Mine => program::write(text),
+            Out::Mine => {
+                held.extend_from_slice(bytes);
+                let whole = whole(held);
+                let text = String::from_utf8_lossy(&held[..whole]).into_owned();
+                held.drain(..whole);
+                program::write(&text)
+            }
             Out::File { handle, at } => {
-                program::write_file(*handle, *at, text.as_bytes())?;
-                *at += text.len() as u64;
+                program::write_file(*handle, *at, bytes)?;
+                *at += bytes.len() as u64;
                 Ok(())
             }
-            Out::Pipe(end) => program::start::pieces(text.as_bytes())
+            Out::Pipe(end) => program::start::pieces(bytes)
                 .try_for_each(|piece| program::send_waiting(*end, piece)),
         }
     }
@@ -543,24 +557,21 @@ impl Out {
     }
 }
 
-/// Copies what `input` holds to `out` up to its end, and says whether all
-/// of it went. A character cut between two pieces waits for its rest.
+/// Copies what `input` holds to `out` up to its end, byte for byte but on
+/// the shell's own output, and says whether all of it went.
 #[cfg_attr(test, allow(dead_code))]
 fn copy(input: &mut In, out: &mut Out) -> bool {
     let mut room = [0u8; MESSAGE_BYTES];
     let mut held = Vec::new();
     loop {
-        let len = match input.take(&mut room) {
+        match input.take(&mut room) {
             Ok(0) => return held.is_empty() || out.say(&String::from_utf8_lossy(&held)).is_ok(),
-            Ok(len) => len,
+            Ok(len) => {
+                if out.put(&room[..len], &mut held).is_err() {
+                    return false;
+                }
+            }
             Err(_) => return false,
-        };
-        held.extend_from_slice(&room[..len]);
-        let whole = whole(&held);
-        let text = String::from_utf8_lossy(&held[..whole]).into_owned();
-        held.drain(..whole);
-        if out.say(&text).is_err() {
-            return false;
         }
     }
 }
@@ -928,7 +939,8 @@ fn list(path: &str, out: &mut Out) -> bool {
     done
 }
 
-/// Shows what the file at `path` holds, and says whether that went well.
+/// Shows what the file at `path` holds, byte for byte but on the shell's
+/// own output, and says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
 fn show(path: &str, out: &mut Out) -> bool {
     let file = match program::open(path, file::READ) {
@@ -940,11 +952,12 @@ fn show(path: &str, out: &mut Out) -> bool {
     };
     let mut room = [0u8; 4096];
     let mut offset = 0;
+    let mut held = Vec::new();
     let done = loop {
         match program::read(file, offset, &mut room) {
-            Ok(0) => break true,
+            Ok(0) => break held.is_empty() || out.say(&String::from_utf8_lossy(&held)).is_ok(),
             Ok(len) => {
-                if out.say(&String::from_utf8_lossy(&room[..len])).is_err() {
+                if out.put(&room[..len], &mut held).is_err() {
                     break false;
                 }
                 offset += len as u64;

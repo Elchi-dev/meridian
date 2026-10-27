@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 53] = [
+const CHECKS: [(&str, Check); 54] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -74,6 +74,7 @@ const CHECKS: [(&str, Check); 53] = [
     ("shell.input", shell_hands_its_input_on),
     ("shell.redirections.both", reading_and_writing_files_at_once),
     ("shell.output.file", programs_write_into_the_shells_file),
+    ("shell.bytes", bytes_go_through_as_they_are),
     ("console", writes_on_the_console),
 ];
 
@@ -1749,6 +1750,37 @@ fn programs_write_into_the_shells_file() -> Outcome {
             && room[..len] == *b"first\na\nb c\n1 2 4\nlast\n"
             && remove(path) == Ok(()),
         "the shell and its programs should write one after another into the shell's file",
+    )
+}
+
+/// Bytes that are no text go through files and pipes as they are: cat
+/// into a file, a file fed to a program, and a pipe between them.
+fn bytes_go_through_as_they_are() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, READ, WRITE};
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let bytes = [0xff, 0, 0xc3, b'\n', 0x80, b' ', b'x'];
+    let file = match open_with("/System/b1", WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "a file should be made for the bytes")?,
+    };
+    let written = write_file(file, 0, &bytes);
+    let _ = close(file);
+    let (ended, said) =
+        shell_on("cat /System/b1 > /System/b2; cat < /System/b1 | wc; wc < /System/b2")?;
+    let copy = open("/System/b2", READ).map_err(|_| "the copy should open")?;
+    let mut room = [0u8; 16];
+    let len = read(copy, 0, &mut room).unwrap_or(0);
+    let _ = close(copy);
+    let removed = remove("/System/b1") == Ok(()) && remove("/System/b2") == Ok(());
+    expect(
+        written == Ok(())
+            && ended == Ok(Ended::Exited(0))
+            && room[..len] == bytes
+            && said == b"1 3 7\n1 3 7\n"
+            && removed,
+        "cat, a redirection and a pipe should pass on bytes that are no text as they are",
     )
 }
 

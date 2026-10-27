@@ -79,6 +79,9 @@ enum Command<'a> {
     Move(&'a [String]),
     Clear,
     Services,
+    /// `cd`: where to go, or nothing to show where the shell is.
+    ChangeDirectory(&'a [String]),
+    WorkingDirectory,
     Empty,
     /// `true` or `false` in a pipeline, which end so.
     Status(u8),
@@ -90,13 +93,15 @@ enum Command<'a> {
 }
 
 /// What `help` says: the commands on its first line.
-const HELP: &str = "help, echo, ls or dir, cat or type, cp or copy, mv or move, mkdir or md, \
-                    rm or del, rmdir or rd, clear or cls, services, exit, or a program\n\
+const HELP: &str = "help, echo, cd or chdir, pwd, ls or dir, cat or type, cp or copy, \
+                    mv or move, mkdir or md, rm or del, rmdir or rd, clear or cls, services, \
+                    exit, or a program\n\
                     let, if, for, while and fn as blocks in braces; > PATH or >> PATH after a \
                     command sends what it writes into a file\n";
 
-/// Where `ls` looks without a path.
-const HOME: &str = "/System/Boot";
+/// Where a shell that reads what is typed starts, when it is there and
+/// the shell was handed no working directory.
+const HOME: &str = "/System";
 
 /// Where a program named without a path is.
 const PROGRAMS: &str = "/System/Boot/meridian/programs";
@@ -119,6 +124,8 @@ fn command(words: &[String]) -> Command<'_> {
         "rmdir" | "rd" => Command::RemoveDirectory(rest),
         "clear" | "cls" => Command::Clear,
         "services" => Command::Services,
+        "cd" | "chdir" => Command::ChangeDirectory(rest),
+        "pwd" => Command::WorkingDirectory,
         "true" => Command::Status(0),
         "false" => Command::Status(1),
         _ => Command::Program(word, rest),
@@ -396,6 +403,9 @@ fn text_of(path: &str) -> Result<String, Error> {
 /// status it gave.
 #[cfg_attr(test, allow(dead_code))]
 fn typed() -> u8 {
+    if program::directory() == "/" {
+        let _ = program::change_directory(HOME);
+    }
     let _ = program::write("Meridian shell. Type help to see what it knows.\n> ");
     let mut editor = Editor::default();
     let mut session = Session::new();
@@ -467,8 +477,10 @@ impl Machine for System {
         status
     }
 
-    fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String> {
-        matching(directory, pattern, self)
+    // The runtime keeps the working directory, which `cd` changes, so the
+    // session's is the root.
+    fn matching(&mut self, _: &str, pattern: &[Piece]) -> Vec<String> {
+        matching(&program::directory(), pattern, self)
     }
 }
 
@@ -829,7 +841,15 @@ fn run(command: Command<'_>, input: &mut In, out: &mut Out) -> u8 {
         Command::Status(status) => return status,
         Command::Help => out.say(HELP).is_ok(),
         Command::Echo(words) => out.say(&format!("{}\n", words.join(" "))).is_ok(),
-        Command::List([]) => list(HOME, out),
+        Command::List([]) => list(&program::directory(), out),
+        Command::ChangeDirectory([]) | Command::WorkingDirectory => {
+            out.say(&format!("{}\n", program::directory())).is_ok()
+        }
+        Command::ChangeDirectory([path]) => done(path, program::change_directory),
+        Command::ChangeDirectory(_) => {
+            let _ = program::write("cd takes one path\n");
+            false
+        }
         Command::List(paths) => every(paths, |path| list(path, out)),
         Command::Show([]) => copy(input, out),
         Command::Show(paths) => every(paths, |path| show(path, out)),
@@ -1290,6 +1310,16 @@ mod tests {
             assert_eq!(command(&words(name)), Command::Clear);
         }
         assert_eq!(command(&words("services now")), Command::Services);
+        for name in ["cd", "chdir"] {
+            let w = words(&format!("{name} /System"));
+            assert_eq!(command(&w), Command::ChangeDirectory(&w[1..]));
+            assert_eq!(
+                command(&words(name)),
+                Command::ChangeDirectory(&[]),
+                "to show it"
+            );
+        }
+        assert_eq!(command(&words("pwd")), Command::WorkingDirectory);
         assert_eq!(command(&[]), Command::Empty);
         let program = words("edit a b");
         assert_eq!(command(&program), Command::Program("edit", &program[1..]));
@@ -1797,8 +1827,8 @@ mod tests {
     #[test]
     fn help_names_every_command_the_shell_knows() {
         let known = [
-            "help", "echo", "ls", "dir", "cat", "type", "cp", "copy", "mv", "move", "mkdir", "md",
-            "rm", "del", "rmdir", "rd", "clear", "cls", "services", "exit",
+            "help", "echo", "cd", "chdir", "pwd", "ls", "dir", "cat", "type", "cp", "copy", "mv",
+            "move", "mkdir", "md", "rm", "del", "rmdir", "rd", "clear", "cls", "services", "exit",
         ];
         let (first, second) = HELP.split_once('\n').unwrap();
         let named: Vec<&str> = first

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 57] = [
+const CHECKS: [(&str, Check); 58] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -78,6 +78,7 @@ const CHECKS: [(&str, Check); 57] = [
     ("shell.output.file", programs_write_into_the_shells_file),
     ("shell.bytes", bytes_go_through_as_they_are),
     ("shell.carry", files_copied_and_moved),
+    ("shell.directory", the_working_directory),
     ("console", writes_on_the_console),
 ];
 
@@ -1491,7 +1492,7 @@ fn the_shells_own_commands() -> Outcome {
         shell_on("clear | wc")? == ran(0, b"0 0 1\n"),
         "clear should write one form feed",
     )?;
-    let listed = shell_on("ls")?;
+    let listed = shell_on("cd /System/Boot; ls")?;
     let want: &[u8] = if booted_from_disk() {
         b"meridian/\n"
     } else {
@@ -1499,7 +1500,7 @@ fn the_shells_own_commands() -> Outcome {
     };
     expect(
         listed.1.windows(want.len()).any(|w| w == want),
-        "ls without a path should list /System/Boot",
+        "ls without a path should list the working directory",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -1973,9 +1974,52 @@ fn files_copied_and_moved() -> Outcome {
     )
 }
 
+/// cd changes where paths not from the root start, for the shell's own
+/// commands, its patterns and the programs it starts.
+fn the_working_directory() -> Outcome {
+    expect(
+        shell_on("pwd; cd; cd /nope; cd a b")?
+            == ran(1, b"/\n/\n/nope: no such file\ncd takes one path\n"),
+        "the shell should start where its parent is, and stay when cd goes nowhere",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "cd /System/Boot; pwd; chdir meridian; pwd; wc boot.meri; cat boot.meri | wc\n\
+         cd ..; pwd; cd meridian/boot.meri",
+    )?;
+    let lines: Vec<&[u8]> = said.split(|&b| b == b'\n').collect();
+    let counts = |line: &[u8]| {
+        line.split(|&b| b == b' ')
+            .take(3)
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>()
+    };
+    expect(
+        ended == Ok(Ended::Exited(1))
+            && lines.len() == 7
+            && lines[0] == b"/System/Boot"
+            && lines[1] == b"/System/Boot/meridian"
+            && lines[2].ends_with(b" boot.meri")
+            && counts(lines[2]) == counts(lines[3])
+            && lines[4] == b"/System/Boot"
+            && lines[5] == b"meridian/boot.meri: not a directory",
+        "cd should go into a directory and out, and a program find a file from the shell's",
+    )?;
+    expect(
+        shell_on("cd /System/Boot/meridian/programs; echo wh*; ls wc*")?
+            == ran(
+                0,
+                b"whoami.mexec whoami_again.mexec\nwc.mexec\nwc_again.mexec\n",
+            ),
+        "patterns not from the root should match in the working directory",
+    )
+}
+
 /// What `help` shows, counted as wc counts.
-const HELP_WORDS: usize = 56;
-const HELP_BYTES: usize = 255;
+const HELP_WORDS: usize = 60;
+const HELP_BYTES: usize = 273;
 
 fn writes_on_the_console() -> Outcome {
     // The first piece would end inside the last character. Spaces, since

@@ -479,7 +479,8 @@ key into a character on a US layout; others come from CLDR with Horizon.
 The shell edits a line with either shift and backspace and runs it in
 Meridian's shell language (decision record 0016, `lib/shell`), taking
 more lines while a block is open, with one session's variables and
-functions for every line. Its own commands are `help`, `echo`, `ls` or
+functions for every line. It starts in `/System` where there is one,
+and its own commands are `help`, `echo`, `cd` or `chdir`, `pwd`, `ls` or
 `dir`, `cat` or `type`, `cp` or `copy`, `mv` or `move`, `mkdir` or `md`,
 `rm` or `del`, `rmdir` or `rd`, `clear` or `cls` and `services`, reading
 the tree of files, where patterns match too; `mv` renames, and copies a

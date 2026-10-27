@@ -3334,17 +3334,19 @@ fn sh_command() -> Outcome {
 }
 
 /// In sh, `command -v` names the shell program's own commands, and finds
-/// a program by its path when its file is there.
+/// a program by its path when its file is there; it ends with 1 for a name
+/// or a path no program has.
 fn sh_command_paths() -> Outcome {
     let wc = "/System/Boot/meridian/programs/wc.mexec";
     let want = if booted_from_disk() {
-        alloc::format!("cat\nls\n{wc}\n0\n")
+        alloc::format!("cat\nls\n{wc}\n0\n1\n")
     } else {
-        String::from("cat\nls\n1\n")
+        String::from("cat\nls\n1\n1\n")
     };
     let checked = same(
         &shell_on(&alloc::format!(
-            "#!/bin/sh\ncommand -v cat ls {wc}; echo $?"
+            "#!/bin/sh\ncommand -v cat ls {wc}; echo $?\n\
+             command -v nope /System/Boot/meridian/programs/nope.mexec; echo $?"
         ))?,
         &ran(0, want.as_bytes()),
     );
@@ -3369,7 +3371,7 @@ fn sh_started() -> Outcome {
 
 /// In sh, `exec` makes its redirections the shell's own from then on: in
 /// a block that set the stream, until the block ends, and in a subshell or
-/// a `$(...)`, only there.
+/// a `$(...)`, only there. One that cannot redirect ends the script.
 fn sh_exec() -> Outcome {
     let checked = same(
         &shell_on(
@@ -3384,7 +3386,15 @@ fn sh_exec() -> Outcome {
             b"nope: no such command\nkept\n[nope: no such command]\nend\n",
         ),
     );
-    expect(checked, "exec should make its redirections the shell's own")
+    expect(checked, "exec should make its redirections the shell's own")?;
+    let checked = same(
+        &shell_on("#!/bin/sh\nexec > /nope/x\necho still")?,
+        &ran(1, b"/nope/x: no such file\n"),
+    );
+    expect(
+        checked,
+        "an exec whose redirection fails should end the script with 1",
+    )
 }
 
 /// In sh, `&` starts what the shell runs whole as a job, its stream 0

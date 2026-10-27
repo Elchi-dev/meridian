@@ -24,3 +24,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0016](0016-give-the-shell-a-language-of-its-own-and-a-posix-sh-mode.md) | Give the shell a language of its own and a POSIX sh mode | accepted |
 | [0017](0017-give-programs-standard-input-and-output-over-the-channel-they-start-with.md) | Give programs standard input and output over the channel they start with | accepted |
 | [0018](0018-hand-a-program-its-arguments-as-start-messages.md) | Hand a program its arguments as start messages | accepted |
+| [0019](0019-let-a-handle-be-duplicated-and-close-an-object-with-its-last-handle.md) | Let a handle be duplicated, and close an object with its last handle | accepted |

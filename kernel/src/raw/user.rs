@@ -588,8 +588,12 @@ fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64,
     let mut token = with_process(|p| Ok(p.token))?;
     let read: Vec<u8>;
     let file = if name.first() == Some(&b'/') {
-        read = read_program(name, &token)?;
-        &read
+        if let Some(copy) = loaders_copy(name, &token)? {
+            copy
+        } else {
+            read = read_program(name, &token)?;
+            &read
+        }
     } else {
         super::module(name).ok_or(syscall::NO_SUCH_PROGRAM)?
     };
@@ -644,8 +648,24 @@ fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64,
     Ok(u64::from(handle.0))
 }
 
+/// The copy the loader read of the file at the path `path`, once `token`
+/// may run it, when it is one of the loader's programs and the copy is as
+/// long as the file; none for any other path.
+fn loaders_copy(path: &[u8], token: &Token) -> Result<Option<&'static [u8]>, u64> {
+    let path = core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)?;
+    let Some(copy) = kernel::program::loaders_copy(path).and_then(super::module_in_capitals) else {
+        return Ok(None);
+    };
+    let slot = super::vfs::open(path, token, syscall::file::RUN, 0).map_err(file_answer)?;
+    let size = super::vfs::info(slot).map(|(size, _)| size);
+    super::vfs::close(slot);
+    Ok((size == Some(copy.len() as u64)).then_some(copy))
+}
+
 /// The file at the path `path`, read whole, once `token` may run it.
 fn read_program(path: &[u8], token: &Token) -> Result<Vec<u8>, u64> {
+    #[cfg(feature = "qemu-test")]
+    seen::READ_PROGRAMS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
     let path = core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)?;
     let slot = super::vfs::open(path, token, syscall::file::RUN, 0).map_err(file_answer)?;
     let read = read_whole(slot);
@@ -2298,6 +2318,10 @@ pub mod seen {
     pub fn ended(line: &[u8]) -> bool {
         ENDED.holds(line)
     }
+
+    /// How many programs SPAWN read from their files, rather than taking
+    /// the loader's copies.
+    pub static READ_PROGRAMS: AtomicU64 = AtomicU64::new(0);
 
     /// How often the call `number` was made since the last program
     /// started.

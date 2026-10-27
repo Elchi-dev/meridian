@@ -177,7 +177,9 @@ not start, and gives back every frame it took.
 **Processes.** SPAWN starts the program a file of the loader's is named
 after, such as `hello.mexec`, or the one in the file at a path from the
 root, which the caller's token has to be allowed to run, as a process of
-its own, hands it a handle
+its own; a file in `/System/Boot/meridian/programs` starts from the copy
+the loader read of it, the volume being one Meridian never writes. It
+hands the process a handle
 the parent gives up, which becomes its argument, and answers a handle to
 the process. WAIT answers how the process ended: its exit code, or the
 vector of the exception that ended it. TERMINATE asks a process to end

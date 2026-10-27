@@ -163,7 +163,7 @@ Loader and UEFI:
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`
 - [ ] More command-line tools
-- [ ] Start programs under `/System/Boot` from the copies the loader read, rather than reading the disk again each time
+- [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime
 - [ ] Text terminal as a program of its own, keyboard layouts beyond US
 

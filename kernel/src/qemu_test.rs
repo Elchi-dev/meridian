@@ -3187,6 +3187,7 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     };
     let before = free();
     seen::forget();
+    seen::READ_PROGRAMS.store(0, Ordering::Release);
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
     // Its checks start the shell on a score of scripts, each starting
     // programs read from their files, which takes the slower machine a few
@@ -3232,6 +3233,14 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         "kernel.programs.cleaned",
         before.is_some() && free() == before,
         "hello's image, stack and heap should all go back once it ended",
+    );
+    // hello's checks start dozens of programs by their paths in the
+    // loader's folder; only the few paths there that are no program file,
+    // and one CD boots have none of, are read.
+    report.check(
+        "kernel.programs.copies",
+        seen::READ_PROGRAMS.load(Ordering::Acquire) < 10,
+        "a program in the loader's folder should start from the copy the loader read",
     );
     report.check(
         "kernel.programs.not_meridian",

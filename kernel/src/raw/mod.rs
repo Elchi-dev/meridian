@@ -219,6 +219,17 @@ pub fn keep_modules(info: &BootInfo, regions: &[MemoryRegion]) {
     }
 }
 
+/// The bytes of the file the loader read whose name is `name` in
+/// capitals, as the tree of files compares names.
+pub fn module_in_capitals(name: &str) -> Option<&'static [u8]> {
+    let name = name.to_uppercase();
+    KEPT.lock()
+        .iter()
+        .flatten()
+        .find(|(m, _)| core::str::from_utf8(m.name()).is_ok_and(|n| n.to_uppercase() == name))
+        .map(|&(_, bytes)| bytes)
+}
+
 /// The bytes of the file the loader read under `name`.
 pub fn module(name: &[u8]) -> Option<&'static [u8]> {
     KEPT.lock()

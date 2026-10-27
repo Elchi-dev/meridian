@@ -142,6 +142,26 @@ pub fn module_list(info: &BootInfo, regions: &[MemoryRegion]) -> Option<(u64, us
     crate::covered(regions, RegionKind::KERNEL, at, bytes).then_some((at, count))
 }
 
+/// The name of the file the loader read that the file at `path` is: one
+/// in `/System/Boot/meridian/programs`, the loader's own folder on the
+/// volume it came from, which Meridian never writes. Names are compared
+/// in capitals, as the tree of files compares them.
+#[must_use]
+pub fn loaders_copy(path: &str) -> Option<&str> {
+    let path = crate::vfs::Path::parse(path)?;
+    match path.names() {
+        [system, boot, meridian, programs, name]
+            if system.eq_ignore_ascii_case("System")
+                && boot.eq_ignore_ascii_case("Boot")
+                && meridian.eq_ignore_ascii_case("meridian")
+                && programs.eq_ignore_ascii_case("programs") =>
+        {
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
 /// Whether the file `module` lies in the kernel's own memory, where the
 /// loader puts what it reads.
 #[must_use]
@@ -212,6 +232,34 @@ mod tests {
         BootInfo {
             modules: Modules { list, count },
             ..BootInfo::new()
+        }
+    }
+
+    #[test]
+    fn only_a_path_into_the_loaders_folder_is_one_of_its_copies() {
+        assert_eq!(
+            loaders_copy("/System/Boot/meridian/programs/wc.mexec"),
+            Some("wc.mexec")
+        );
+        assert_eq!(
+            loaders_copy("/system/BOOT/Meridian/PROGRAMS/WC.MEXEC"),
+            Some("WC.MEXEC"),
+            "in any capitals"
+        );
+        assert_eq!(
+            loaders_copy("/System/Boot/meridian/x/../programs/./wc.mexec"),
+            Some("wc.mexec"),
+            "as the tree finds it"
+        );
+        for elsewhere in [
+            "/System/meridian/programs/wc.mexec",
+            "/System/Boot/meridian/programs",
+            "/System/Boot/meridian/programs/a/wc.mexec",
+            "/Other/Boot/meridian/programs/wc.mexec",
+            "/System/Boot/meridian/program/wc.mexec",
+            "wc.mexec",
+        ] {
+            assert_eq!(loaders_copy(elsewhere), None, "{elsewhere}");
         }
     }
 

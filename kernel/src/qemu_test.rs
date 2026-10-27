@@ -2960,7 +2960,13 @@ fn ran(program: &'static raw::user::Program, argument: u64) -> Option<usize> {
 /// Waits up to a second for the thread `slot` to end, and says whether it
 /// ended with `code`.
 fn ended_with(slot: Option<usize>, code: u64) -> bool {
-    let ended = (0..100).any(|_| {
+    ended_within(slot, code, 100)
+}
+
+/// Waits up to `ticks` for the thread `slot` to end, and says whether it
+/// ended with `code`.
+fn ended_within(slot: Option<usize>, code: u64, ticks: u64) -> bool {
+    let ended = (0..ticks).any(|_| {
         raw::thread::sleep(1);
         slot.is_some_and(|s| !raw::thread::alive(s))
     });
@@ -3128,9 +3134,11 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     let before = free();
     seen::forget();
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
+    // Its checks start the shell on a score of scripts, each a program
+    // read from its file, which takes the slower machine a few seconds.
     report.check(
         "kernel.programs.hello",
-        ended_with(started, 0)
+        ended_within(started, 0, 10 * raw::timer::HZ)
             && seen::logged(b"Hello from ring 3, in Rust")
             && seen::ended(b"user: hello ended with 0\n"),
         "hello should run from its file, find every call working, greet, and have its end logged",
@@ -3272,7 +3280,7 @@ fn low_memory_checks<W: Write>(report: &mut Report<'_, W>, file: Option<&[u8]>) 
         }
     }
     if started.is_some() {
-        let _ = ended_with(started, 0);
+        let _ = ended_within(started, 0, 10 * raw::timer::HZ);
     }
     while held != 0 {
         held = release_frame(held);

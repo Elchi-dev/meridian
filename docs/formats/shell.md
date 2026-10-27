@@ -193,7 +193,27 @@ A here-document whose last line, its word alone, never comes is an error
 last line; the end of a `$(...)` may not, so a here-document inside one
 ends on a line of its own before the `)`.
 
-Expansions may stand inside each other 16 deep, as in `$(a "$(b)")`,
-which is 2 deep. One deeper is an error (`too-nested`), reported where it
-opens: reading each one takes some of the shell's stack, and a script
-that needs more can set a variable to an inner one first.
+A reserved word or an operator where no command can start, such as `fi`
+without its `if` or `;;` outside a `case`, is an error (`unexpected`).
+A `|`, `&&` or `||` without a command after it is an error
+(`missing-command`), as is a `;` or a `&` without one before it. A
+redirection without its word is an error (`missing-path`), and `<<` or
+`<<-` without the word that ends its here-document is one too
+(`missing-delimiter`).
+
+A compound command whose closing word or sign does not come is an error
+reported at what stands there instead, or at the command's first word at
+the script's end: `if` without `then` (`expected-then`) or `fi`
+(`expected-fi`), a loop without `do` (`expected-do`) or `done`
+(`expected-done`), `case` without its word or `in` (`expected-case-in`),
+a case item without a pattern (`expected-pattern`), a `case` without
+`esac` (`expected-esac`), a subshell, a case item's patterns or a
+function's `name(` without `)` (`expected-close-paren`), and `{` without
+`}` (`expected-close-brace`). `name()` without a compound command after
+it is an error too (`expected-body`).
+
+Compound commands may stand inside each other 16 deep, and so may
+expansions, as in `$(a "$(b)")`, which is 2 deep. One deeper is an error
+(`too-nested`), reported where it opens: reading each one takes some of
+the shell's stack, and a script that needs more can move the inner ones
+into a function or set a variable to them first.

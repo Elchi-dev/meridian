@@ -68,8 +68,35 @@ pub enum Code {
     /// In the sh dialect, a quote, an expansion or a backquote the script
     /// leaves open.
     Unclosed,
-    /// In the sh dialect, expansions inside each other deeper than 16.
+    /// In the sh dialect, compound commands or expansions inside each other
+    /// deeper than 16.
     TooNested,
+    /// In the sh dialect, a reserved word or an operator where no command
+    /// can start.
+    Unexpected,
+    /// In the sh dialect, `<<` or `<<-` without the word that ends its
+    /// here-document.
+    MissingDelimiter,
+    /// In the sh dialect, `if` or `elif` without `then` after its condition.
+    ExpectedThen,
+    /// In the sh dialect, an `if` without its `fi`.
+    ExpectedFi,
+    /// In the sh dialect, `while`, `until` or `for` without `do`.
+    ExpectedDo,
+    /// In the sh dialect, a loop without its `done`.
+    ExpectedDone,
+    /// In the sh dialect, a `case` without its `esac`.
+    ExpectedEsac,
+    /// In the sh dialect, `case` without its word or `in`.
+    ExpectedCaseIn,
+    /// In the sh dialect, a case item without a pattern.
+    ExpectedPattern,
+    /// In the sh dialect, a subshell, a case item's patterns or `name(` without `)`.
+    ExpectedCloseParen,
+    /// In the sh dialect, a `{` without its `}`.
+    ExpectedCloseBrace,
+    /// In the sh dialect, `name()` without a compound command after it.
+    ExpectedBody,
 }
 
 impl Code {
@@ -98,6 +125,18 @@ impl Code {
             Code::TooDeep => "too-deep",
             Code::Unclosed => "unclosed",
             Code::TooNested => "too-nested",
+            Code::Unexpected => "unexpected",
+            Code::MissingDelimiter => "missing-delimiter",
+            Code::ExpectedThen => "expected-then",
+            Code::ExpectedFi => "expected-fi",
+            Code::ExpectedDo => "expected-do",
+            Code::ExpectedDone => "expected-done",
+            Code::ExpectedEsac => "expected-esac",
+            Code::ExpectedCaseIn => "expected-case-in",
+            Code::ExpectedPattern => "expected-pattern",
+            Code::ExpectedCloseParen => "expected-close-paren",
+            Code::ExpectedCloseBrace => "expected-close-brace",
+            Code::ExpectedBody => "expected-body",
         }
     }
 
@@ -127,7 +166,21 @@ impl Code {
             Code::BadStatus => "return a number from 0 to 255",
             Code::TooDeep => "a function calls itself, or others call each other, too deep",
             Code::Unclosed => "close what starts here before the script ends",
-            Code::TooNested => "this goes past 16 expansions inside each other; set a variable",
+            Code::TooNested => {
+                "this goes past 16 commands or expansions inside each other; move some out"
+            }
+            Code::Unexpected => "this does not belong here; quote it to mean the word itself",
+            Code::MissingDelimiter => "put the word whose line ends the here-document after <<",
+            Code::ExpectedThen => "write then after the condition",
+            Code::ExpectedFi => "close the if with fi",
+            Code::ExpectedDo => "write do before the body of the loop",
+            Code::ExpectedDone => "close the loop with done",
+            Code::ExpectedEsac => "close the case with esac",
+            Code::ExpectedCaseIn => "write case WORD in, then the patterns",
+            Code::ExpectedPattern => "put a pattern here, before ) or after |",
+            Code::ExpectedCloseParen => "put a ) here to close what is open",
+            Code::ExpectedCloseBrace => "close the { with }",
+            Code::ExpectedBody => "give the function a body, such as { commands; }",
         }
     }
 }
@@ -156,7 +209,7 @@ impl fmt::Display for Error {
 mod tests {
     use super::*;
 
-    const CODES: [Code; 21] = [
+    const CODES: [Code; 33] = [
         Code::LoneCarriageReturn,
         Code::UnterminatedQuote,
         Code::BadVariable,
@@ -178,6 +231,18 @@ mod tests {
         Code::TooDeep,
         Code::Unclosed,
         Code::TooNested,
+        Code::Unexpected,
+        Code::MissingDelimiter,
+        Code::ExpectedThen,
+        Code::ExpectedFi,
+        Code::ExpectedDo,
+        Code::ExpectedDone,
+        Code::ExpectedEsac,
+        Code::ExpectedCaseIn,
+        Code::ExpectedPattern,
+        Code::ExpectedCloseParen,
+        Code::ExpectedCloseBrace,
+        Code::ExpectedBody,
     ];
 
     #[test]
@@ -262,7 +327,19 @@ mod tests {
                 "18:35: bad-status: return a number from 0 to 255",
                 "19:37: too-deep: a function calls itself, or others call each other, too deep",
                 "20:39: unclosed: close what starts here before the script ends",
-                "21:41: too-nested: this goes past 16 expansions inside each other; set a variable",
+                "21:41: too-nested: this goes past 16 commands or expansions inside each other; move some out",
+                "22:43: unexpected: this does not belong here; quote it to mean the word itself",
+                "23:45: missing-delimiter: put the word whose line ends the here-document after <<",
+                "24:47: expected-then: write then after the condition",
+                "25:49: expected-fi: close the if with fi",
+                "26:51: expected-do: write do before the body of the loop",
+                "27:53: expected-done: close the loop with done",
+                "28:55: expected-esac: close the case with esac",
+                "29:57: expected-case-in: write case WORD in, then the patterns",
+                "30:59: expected-pattern: put a pattern here, before ) or after |",
+                "31:61: expected-close-paren: put a ) here to close what is open",
+                "32:63: expected-close-brace: close the { with }",
+                "33:65: expected-body: give the function a body, such as { commands; }",
             ]
         );
     }

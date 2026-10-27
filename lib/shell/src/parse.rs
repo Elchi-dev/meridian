@@ -117,7 +117,7 @@ fn end_of(script: &str) -> Pos {
 }
 
 /// Whether `name` is one a variable, a loop or a function may have.
-fn is_name(name: &str) -> bool {
+pub(crate) fn is_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()

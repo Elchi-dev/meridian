@@ -98,7 +98,7 @@ pub enum Op {
 /// How deep expansions may stand inside each other. Reading each one
 /// takes some of a program's stack, which is 64 KiB, and scripts rarely
 /// go past three or four.
-const DEEPEST: usize = 16;
+pub(crate) const DEEPEST: usize = 16;
 
 /// The operators as they are written.
 const OPERATORS: [(&str, Op); 18] = [
@@ -819,13 +819,13 @@ fn bracketed(chars: &mut Chars, at: Pos, open: char, close: char) -> Result<(), 
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use alloc::format;
 
     /// Parts written short: quoted text in brackets and expansions as
     /// `$kind{text}`, quoted ones with a `"` before them.
-    fn written_short(parts: &[Part]) -> String {
+    pub(in crate::sh) fn written_short(parts: &[Part]) -> String {
         parts
             .iter()
             .map(|p| match p {

@@ -9,6 +9,7 @@ extern crate alloc;
 
 use core::fmt;
 
+pub mod expand;
 pub mod lex;
 pub mod parse;
 
@@ -54,6 +55,10 @@ pub enum Code {
     UnexpectedElse,
     /// More after a statement on its line.
     ExpectedEnd,
+    /// A variable that was never set, found while running.
+    UnsetVariable,
+    /// A pattern that matches no file, found while running.
+    NoMatch,
 }
 
 impl Code {
@@ -76,6 +81,8 @@ impl Code {
             Code::UnclosedBlock => "unclosed-block",
             Code::UnexpectedElse => "unexpected-else",
             Code::ExpectedEnd => "expected-end",
+            Code::UnsetVariable => "unset-variable",
+            Code::NoMatch => "no-match",
         }
     }
 
@@ -100,6 +107,8 @@ impl Code {
             Code::UnclosedBlock => "close the block this starts with }",
             Code::UnexpectedElse => "put else right after the } of an if block",
             Code::ExpectedEnd => "end the statement here, with ; or a new line",
+            Code::UnsetVariable => "set the variable with let before this",
+            Code::NoMatch => "no file matches the pattern; quote it to mean the word itself",
         }
     }
 }
@@ -128,7 +137,7 @@ impl fmt::Display for Error {
 mod tests {
     use super::*;
 
-    const CODES: [Code; 15] = [
+    const CODES: [Code; 17] = [
         Code::LoneCarriageReturn,
         Code::UnterminatedQuote,
         Code::BadVariable,
@@ -144,6 +153,8 @@ mod tests {
         Code::UnclosedBlock,
         Code::UnexpectedElse,
         Code::ExpectedEnd,
+        Code::UnsetVariable,
+        Code::NoMatch,
     ];
 
     #[test]
@@ -223,6 +234,8 @@ mod tests {
                 "13:25: unclosed-block: close the block this starts with }",
                 "14:27: unexpected-else: put else right after the } of an if block",
                 "15:29: expected-end: end the statement here, with ; or a new line",
+                "16:31: unset-variable: set the variable with let before this",
+                "17:33: no-match: no file matches the pattern; quote it to mean the word itself",
             ]
         );
     }

@@ -9,6 +9,7 @@ extern crate alloc;
 
 use core::fmt;
 
+pub mod commands;
 pub mod expand;
 pub mod lex;
 pub mod parse;

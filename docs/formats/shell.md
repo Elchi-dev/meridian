@@ -167,6 +167,16 @@ its keyword. `else` that does not follow an `if` block's `}` is an error
 ## 7. Builtins
 
 `cls` and `clear` clear the console. The others are listed by `help`.
+
+`echo`, `printf`, `test` and `[`, `true`, `false` and `:` are the same
+in both dialects (decision record 0021). `echo` writes its words with a
+space between each two and a line's end after, which a first word `-n`
+leaves off; a backslash stays as it is. `printf` works as POSIX's does,
+with widths and precisions of at most 4096, and says which word is not
+all a number or too big for 64 bits. `test` and `[` work as POSIX's do;
+Meridian has no links, devices, pipes or sockets, so `-h`, `-L`, `-b`,
+`-c`, `-p` and `-S` answer false, and `-nt`, `-ot` and `-ef` are
+refused, as Meridian keeps no times or links of files to compare.
 Every command answers to its Linux name and to its Windows one where
 there is one: `ls` and `dir`, `cat` and `type`, `cp` and `copy`, `mv` and
 `move`, `rm` and `del`, `mkdir` and `md`, `rmdir` and `rd`.

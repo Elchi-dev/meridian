@@ -1,8 +1,8 @@
 //! What a program's parent sends over its start channel before the
-//! program's own code runs (decision records 0017 and 0018): its standard
-//! streams and init's line, each a message of one kind byte that brings a
-//! handle, its arguments, each a kind byte and its text, and a message of
-//! kind 0 at the end. Text on a stream goes in messages of up to
+//! program's own code runs (decision records 0017, 0018 and 0020): its
+//! standard streams and init's line, each a message of one kind byte that
+//! brings a handle, its arguments and its working directory, each a kind
+//! byte and its text, and a message of kind 0 at the end. Text on a stream goes in messages of up to
 //! [`abi::MESSAGE_BYTES`], and an empty one ends it.
 
 use alloc::string::String;
@@ -12,9 +12,11 @@ use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use crate::{Error, Handle};
 
 /// The kind of a message that starts an argument, its text after the
-/// kind byte, and of one that goes on with the last argument.
+/// kind byte, of one that goes on with the last text, an argument or the
+/// working directory, and of one that starts the working directory.
 pub const ARGUMENT: u8 = 7;
 pub const MORE: u8 = 8;
+pub const DIRECTORY: u8 = 9;
 
 /// What one start message of one byte hands over: a handle, or the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,41 +105,56 @@ pub enum Refused {
     Alone,
 }
 
-/// What a program was given at its start, its arguments with it.
+/// What a program was given at its start, its arguments and its working
+/// directory with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Start {
     pub given: Given,
     pub arguments: Vec<String>,
+    pub directory: Option<String>,
+    /// Whether the last text that started was the directory, which more
+    /// then goes on with.
+    in_directory: bool,
 }
 
 impl Start {
     /// Takes in the start message `bytes` as [`Given::take`] does, and
-    /// the messages of an argument.
+    /// the messages of an argument and of the working directory.
     ///
     /// # Errors
     ///
-    /// As for [`Given::take`], and when an argument brings a handle, its
-    /// text is no UTF-8, or more of one comes before any.
+    /// As for [`Given::take`], and when a text brings a handle or is no
+    /// UTF-8, more of one comes before any, or a second directory comes.
     pub fn take(
         &mut self,
         bytes: &[u8],
         handle: Option<Handle>,
         start: Handle,
     ) -> Result<bool, Refused> {
-        let Some((&kind @ (ARGUMENT | MORE), text)) = bytes.split_first() else {
+        let Some((&kind @ (ARGUMENT | MORE | DIRECTORY), text)) = bytes.split_first() else {
             return self.given.take(bytes, handle, start);
         };
         if handle.is_some() {
             return Err(Refused::Handle);
         }
         let text = core::str::from_utf8(text).map_err(|_| Refused::Text)?;
-        if kind == ARGUMENT {
-            self.arguments.push(text.into());
-        } else {
-            self.arguments
-                .last_mut()
-                .ok_or(Refused::Alone)?
-                .push_str(text);
+        match kind {
+            ARGUMENT => {
+                self.arguments.push(text.into());
+                self.in_directory = false;
+            }
+            DIRECTORY => {
+                fill(&mut self.directory, text.into())?;
+                self.in_directory = true;
+            }
+            _ => {
+                let last = if self.in_directory {
+                    self.directory.as_mut()
+                } else {
+                    self.arguments.last_mut()
+                };
+                last.ok_or(Refused::Alone)?.push_str(text);
+            }
         }
         Ok(true)
     }
@@ -148,9 +165,23 @@ impl Start {
 /// between characters.
 #[must_use]
 pub fn argument_messages(argument: &str) -> Vec<Vec<u8>> {
+    text_messages(ARGUMENT, argument)
+}
+
+/// The messages that hand over the working directory `path`, as
+/// [`argument_messages`] does an argument, the first of kind
+/// [`DIRECTORY`].
+#[must_use]
+pub fn directory_messages(path: &str) -> Vec<Vec<u8>> {
+    text_messages(DIRECTORY, path)
+}
+
+/// The messages that hand over `text`, the first of kind `kind` and the
+/// others of kind [`MORE`].
+fn text_messages(kind: u8, text: &str) -> Vec<Vec<u8>> {
     let mut messages = Vec::new();
-    let mut rest = argument;
-    let mut kind = ARGUMENT;
+    let mut rest = text;
+    let mut kind = kind;
     loop {
         let mut take = rest.len().min(abi::MESSAGE_BYTES - 1);
         while !rest.is_char_boundary(take) {
@@ -311,6 +342,9 @@ pub fn begin(start: Handle) -> Handle {
         slot.store(word, SeqCst);
     }
     crate::raw::keep_arguments(taken.arguments);
+    if let Some(directory) = taken.directory {
+        crate::raw::set_directory(directory);
+    }
     start
 }
 
@@ -643,6 +677,41 @@ mod tests {
     }
 
     #[test]
+    fn the_working_directory_comes_once_and_goes_on_as_an_argument_does() {
+        let mut start = Start::default();
+        let path = alloc::format!("/System/{}", "d".repeat(200));
+        for message in argument_messages("x") {
+            assert_eq!(start.take(&message, None, START), Ok(true));
+        }
+        let messages = directory_messages(&path);
+        assert_eq!(messages.len(), 2, "longer than one message holds");
+        assert_eq!((messages[0][0], messages[1][0]), (DIRECTORY, MORE));
+        for message in messages {
+            assert_eq!(start.take(&message, None, START), Ok(true));
+        }
+        for message in argument_messages(&"\u{e9}".repeat(70)) {
+            assert_eq!(start.take(&message, None, START), Ok(true));
+        }
+        assert_eq!(start.directory.as_deref(), Some(path.as_str()));
+        assert_eq!(start.arguments, ["x".into(), "\u{e9}".repeat(70)]);
+        assert_eq!(
+            start.take(&[DIRECTORY, b'/'], None, START),
+            Err(Refused::Twice)
+        );
+        assert_eq!(
+            start.take(&[DIRECTORY, b'/'], Some(Handle(3)), START),
+            Err(Refused::Handle)
+        );
+        let mut fresh = Start::default();
+        assert_eq!(
+            fresh.take(&[DIRECTORY, 0xff], None, START),
+            Err(Refused::Text)
+        );
+        assert_eq!(fresh.take(&[DIRECTORY], None, START), Ok(true));
+        assert_eq!(fresh.directory.as_deref(), Some(""));
+    }
+
+    #[test]
     fn an_argument_that_does_not_fit_is_refused() {
         let mut start = Start::default();
         assert_eq!(start.take(&[MORE, b'a'], None, START), Err(Refused::Alone));
@@ -671,6 +740,6 @@ mod tests {
             "nothing more is fine"
         );
         assert_eq!(start.arguments, ["a"]);
-        assert_eq!(start.take(&[9], None, START), Err(Refused::Kind(9)));
+        assert_eq!(start.take(&[10], None, START), Err(Refused::Kind(10)));
     }
 }

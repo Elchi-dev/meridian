@@ -445,7 +445,11 @@ gets the text in messages, or a file, which gets it at its end.
 neither. `program::input` reads the standard input a parent hands over, a
 channel that ends with an empty message or once nothing can write to it,
 or else the keys typed at the keyboard, shown as they are typed, until
-control and D.
+control and D. The runtime keeps the program's working directory
+(decision record 0020), the root unless its parent hands over another,
+and its calls start a path not from the root there before the kernel
+sees it; `program::change_directory` moves it, and each child starts in
+its parent's.
 Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
 itself. The test image does that with a list of setup, which runs whoami

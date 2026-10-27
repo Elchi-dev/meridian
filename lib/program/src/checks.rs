@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 56] = [
+const CHECKS: [(&str, Check); 57] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -54,6 +54,7 @@ const CHECKS: [(&str, Check); 56] = [
     ("file.write", files_written),
     ("file.write_refused", writes_refused),
     ("file.rename", files_renamed),
+    ("directory", working_directory),
     ("spawn.file", child_from_its_file),
     ("handle.duplicate", duplicates_stand_for_the_same_object),
     ("spawn.arguments", arguments_arrive),
@@ -846,10 +847,26 @@ fn files_that_do_not_open() -> Outcome {
         open("/Nowhere/x", abi::file::READ) == Err(Error::NotFound),
         "nor a path no volume hangs at",
     )?;
+    let opened = |path: &str| {
+        abi::answer(
+            raw::call(abi::Call::Open {
+                len: path.len() as u64,
+                at: path.as_ptr() as u64,
+                wanted: u64::from(abi::file::READ),
+                how: 0,
+            })
+            .0,
+        )
+    };
     expect(
-        open("meridian/boot.meri", abi::file::READ) == Err(Error::BadArgument)
-            && open("/System/../..", abi::file::READ) == Err(Error::BadArgument),
-        "a path not from the root, or above it, is none",
+        opened("meridian/boot.meri") == Err(Error::BadArgument)
+            && opened("/System/../..") == Err(Error::BadArgument),
+        "the kernel should take a path not from the root, or above it, as none",
+    )?;
+    expect(
+        open("meridian/boot.meri", abi::file::READ) == Err(Error::NotFound)
+            && crate::full_path("meridian/boot.meri") == "/meridian/boot.meri",
+        "the runtime should start a path not from the root at the working directory, the root here",
     )?;
     let long = [b'/'; abi::PATH_BYTES + 1];
     let too_long = abi::Call::Open {
@@ -1127,8 +1144,8 @@ fn files_renamed() -> Outcome {
     expect(
         rename(&long, "/System/x") == Err(Error::TooLong)
             && rename("/System/x", &long) == Err(Error::TooLong)
-            && rename("System/x", "/System/y") == Err(Error::BadArgument),
-        "paths past PATH_BYTES or not from the root should move nothing",
+            && rename("/System/a\0b", "/System/y") == Err(Error::BadArgument),
+        "paths past PATH_BYTES or that are none should move nothing",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -1179,6 +1196,52 @@ fn files_renamed() -> Outcome {
             && remove("/System/rdir/r2.txt") == Ok(())
             && remove("/System/rdir") == Ok(()),
         "a directory should take other capitals, and go once empty",
+    )
+}
+
+/// The working directory changes to a directory that is there and to
+/// nothing else, paths start there, and a child starts in its parent's.
+fn working_directory() -> Outcome {
+    // Whatever went wrong, the checks after start at the root again.
+    let checked = directory_moves();
+    let back = crate::change_directory("/");
+    checked?;
+    expect(
+        back == Ok(()) && crate::directory() == "/",
+        "the program should go back to the root",
+    )
+}
+
+fn directory_moves() -> Outcome {
+    use abi::file::READ;
+    expect(
+        crate::directory() == "/"
+            && crate::change_directory("/nope") == Err(Error::NotFound)
+            && crate::change_directory("/") == Ok(())
+            && crate::directory() == "/",
+        "a program should start at the root, and stay there when told to go nowhere",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    expect(
+        crate::change_directory("/System/Boot") == Ok(())
+            && crate::directory() == "/System/Boot"
+            && open("meridian/boot.meri", READ).is_ok_and(|h| close(h) == Ok(()))
+            && crate::change_directory("meridian/boot.meri") == Err(Error::NotADirectory)
+            && crate::directory() == "/System/Boot",
+        "paths not from the root should start at the working directory, which takes no file",
+    )?;
+    let inherited = shell_on("pwd")?;
+    expect(
+        crate::change_directory("..") == Ok(())
+            && crate::directory() == "/System"
+            && crate::change_directory("/") == Ok(()),
+        "the directory above should be a step away, and the root one more",
+    )?;
+    expect(
+        inherited == ran(0, b"/System/Boot\n"),
+        "a child should start in its parent's working directory",
     )
 }
 

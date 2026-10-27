@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::string::String;
 
 use core::alloc::Layout;
 use core::fmt;
@@ -196,9 +197,10 @@ pub enum Ended {
 }
 
 /// Starts the program whose file is called `name`, such as
-/// `hello.mexec`, as a process of its own, handing it `carry` if there is
-/// one: the program no longer holds that handle, and the new one gets it
-/// as its argument. Returns a handle to the process.
+/// `hello.mexec`, or lies at the path `name`, from the working directory
+/// when it does not start at the root, as a process of its own, handing it
+/// `carry` if there is one: the program no longer holds that handle, and
+/// the new one gets it as its argument. Returns a handle to the process.
 ///
 /// # Errors
 ///
@@ -206,13 +208,78 @@ pub enum Ended {
 /// not the program's or may not be handed over, or there is no room for
 /// the process.
 pub fn spawn(name: &str, carry: Option<Handle>) -> Result<Handle, Error> {
-    answer(raw::call(spawn_call(name, carry, 0)).0).map(Handle)
+    let name = program_named(name);
+    answer(raw::call(spawn_call(&name, carry, 0)).0).map(Handle)
+}
+
+/// What SPAWN is asked for to start `name`: a name of the loader's as it
+/// is, and a path from the root.
+fn program_named(name: &str) -> String {
+    if name.contains('/') {
+        full_path(name)
+    } else {
+        name.into()
+    }
+}
+
+/// The program's working directory, from the root (decision record 0020).
+#[must_use]
+pub fn directory() -> String {
+    raw::directory()
+}
+
+/// `path` from the root: as it is when it starts at `/`, and after the
+/// working directory when it does not, with `.` and `..` worked out.
+#[must_use]
+pub fn full_path(path: &str) -> String {
+    rooted(&raw::directory(), path)
+}
+
+/// `path` from the root, as [`full_path`] has it for a program whose
+/// working directory is `directory`. `..` at the root stays there.
+fn rooted(directory: &str, path: &str) -> String {
+    let joined = if path.starts_with('/') {
+        String::from(path)
+    } else {
+        alloc::format!("{directory}/{path}")
+    };
+    let mut names: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+    for name in joined.split('/') {
+        match name {
+            "" | "." => {}
+            ".." => {
+                names.pop();
+            }
+            name => names.push(name),
+        }
+    }
+    alloc::format!("/{}", names.join("/"))
+}
+
+/// Makes the directory at `path` the program's working directory.
+///
+/// # Errors
+///
+/// When the path is none or too long, nothing is there, or it is a file.
+pub fn change_directory(path: &str) -> Result<(), Error> {
+    let full = full_path(path);
+    if full != "/" {
+        let handle = open(&full, abi::file::READ)?;
+        let directory = info(handle).map(|i| i.directory);
+        let _ = close(handle);
+        if !directory? {
+            return Err(Error::NotADirectory);
+        }
+    }
+    raw::set_directory(full);
+    Ok(())
 }
 
 /// Starts the program `name` as [`spawn`] does, on a fresh start channel
-/// over which it hands the program `arguments` and the end of its start
-/// messages (decision record 0018), and answers its process and this
-/// side of that channel, for whatever else the two say to each other.
+/// over which it hands the program `arguments`, this program's working
+/// directory and the end of its start messages (decision records 0018 and
+/// 0020), and answers its process and this side of that channel, for
+/// whatever else the two say to each other.
 ///
 /// # Errors
 ///
@@ -252,9 +319,12 @@ pub fn spawn_handing(
         send(mine, &[kind], Some(handle))?;
     }
     let end = alloc::vec::Vec::from([start::Kind::End.byte()]);
+    let here = directory();
+    let directory = (here != "/").then(|| start::directory_messages(&here));
     for message in arguments
         .iter()
         .flat_map(|a| start::argument_messages(a))
+        .chain(directory.into_iter().flatten())
         .chain([end])
     {
         send_waiting(mine, &message)?;
@@ -288,7 +358,8 @@ pub fn spawn_restricted(
     carry: Option<Handle>,
     restriction: Restriction,
 ) -> Result<Handle, Error> {
-    answer(raw::call(spawn_call(name, carry, restriction.word())).0).map(Handle)
+    let name = program_named(name);
+    answer(raw::call(spawn_call(&name, carry, restriction.word())).0).map(Handle)
 }
 
 /// A key going down or coming up, by its USB HID usage.
@@ -474,7 +545,7 @@ pub fn open(path: &str, wanted: u32) -> Result<Handle, Error> {
 /// the file as it is, its volume is mounted read only and the file would
 /// be written, or the disk is full or cannot be written.
 pub fn open_with(path: &str, wanted: u32, how: u64) -> Result<Handle, Error> {
-    answer(raw::call(open_call(path, wanted, how)).0).map(Handle)
+    answer(raw::call(open_call(&full_path(path), wanted, how)).0).map(Handle)
 }
 
 /// Writes `bytes` into the file `file` from its byte `offset` on, which
@@ -501,7 +572,7 @@ pub fn write_file(file: Handle, offset: u64, bytes: &[u8]) -> Result<(), Error> 
 /// may not remove it, its volume is mounted read only, it is open, or it
 /// is a directory that holds entries.
 pub fn remove(path: &str) -> Result<(), Error> {
-    answer(raw::call(path_call(path, abi::REMOVE)).0).map(|_| ())
+    answer(raw::call(path_call(&full_path(path), abi::REMOVE)).0).map(|_| ())
 }
 
 /// Makes a directory at `path`.
@@ -512,7 +583,7 @@ pub fn remove(path: &str) -> Result<(), Error> {
 /// there, the program's token may not write there, its volume is mounted
 /// read only, something has the path already, or the disk is full.
 pub fn make_directory(path: &str) -> Result<(), Error> {
-    answer(raw::call(path_call(path, abi::MAKE_DIRECTORY)).0).map(|_| ())
+    answer(raw::call(path_call(&full_path(path), abi::MAKE_DIRECTORY)).0).map(|_| ())
 }
 
 /// Moves the file or directory at `from` to `to`, which may differ from it
@@ -526,7 +597,7 @@ pub fn make_directory(path: &str) -> Result<(), Error> {
 /// mounted read only, it is open, a directory would go inside itself, or
 /// the disk is full.
 pub fn rename(from: &str, to: &str) -> Result<(), Error> {
-    answer(raw::call(rename_call(from, to)).0).map(|_| ())
+    answer(raw::call(rename_call(&full_path(from), &full_path(to))).0).map(|_| ())
 }
 
 fn rename_call(from: &str, to: &str) -> Call {
@@ -959,6 +1030,40 @@ mod tests {
             }),
             "only bit 16 says pressed"
         );
+    }
+
+    #[test]
+    fn a_program_is_named_as_the_loader_has_it_or_by_a_path_from_the_root() {
+        assert_eq!(raw::directory(), "/", "no test moves it");
+        assert_eq!(program_named("hello.mexec"), "hello.mexec");
+        assert_eq!(program_named("/System/a.mexec"), "/System/a.mexec");
+        assert_eq!(program_named("bin/x.mexec"), "/bin/x.mexec");
+        assert_eq!(program_named("./x.mexec"), "/x.mexec");
+        assert_eq!(program_named("a/../b.mexec"), "/b.mexec");
+        assert_eq!(full_path("a.txt"), "/a.txt");
+    }
+
+    #[test]
+    fn a_path_not_from_the_root_starts_at_the_working_directory() {
+        let cases = [
+            ("/", "a.txt", "/a.txt"),
+            ("/System", "a.txt", "/System/a.txt"),
+            ("/System", "/Boot/x", "/Boot/x"),
+            ("/System/Boot", "../made.meri", "/System/made.meri"),
+            (
+                "/System/Boot",
+                "./meridian//boot.meri",
+                "/System/Boot/meridian/boot.meri",
+            ),
+            ("/System", "../../..", "/"),
+            ("/System", ".", "/System"),
+            ("/System", "", "/System"),
+            ("/", "/System/../System/./Boot/", "/System/Boot"),
+            ("/a/b", "c/../../d", "/a/d"),
+        ];
+        for (directory, path, want) in cases {
+            assert_eq!(rooted(directory, path), want, "{path} in {directory}");
+        }
     }
 
     #[test]

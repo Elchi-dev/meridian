@@ -57,6 +57,56 @@ pub fn arguments() -> &'static [String] {
     unsafe { &*kept }
 }
 
+/// The program's working directory (decision record 0020), which one
+/// thread at a time reads or changes while it holds the flag; empty for
+/// the root.
+struct Directory {
+    held: AtomicBool,
+    path: UnsafeCell<String>,
+}
+
+// SAFETY: the path is only reached in `Directory::with`, while the flag
+// is held, so no two threads reach it at once.
+unsafe impl Sync for Directory {}
+
+static DIRECTORY: Directory = Directory {
+    held: AtomicBool::new(false),
+    path: UnsafeCell::new(String::new()),
+};
+
+impl Directory {
+    fn with<T>(&self, f: impl FnOnce(&mut String) -> T) -> T {
+        while self
+            .held
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        // SAFETY: the flag is this thread's until it is let go below.
+        let answer = f(unsafe { &mut *self.path.get() });
+        self.held.store(false, Ordering::Release);
+        answer
+    }
+}
+
+/// The program's working directory, from the root.
+#[must_use]
+pub fn directory() -> String {
+    DIRECTORY.with(|path| {
+        if path.is_empty() {
+            "/".into()
+        } else {
+            path.clone()
+        }
+    })
+}
+
+/// Makes `path`, from the root, the program's working directory.
+pub fn set_directory(path: String) {
+    DIRECTORY.with(|kept| *kept = path);
+}
+
 /// What [`start_thread`] hands a new thread: the work it does.
 type Work = Box<dyn FnOnce() -> u64 + Send>;
 

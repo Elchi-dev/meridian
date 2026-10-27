@@ -179,6 +179,7 @@ Loader and UEFI:
   - [x] `trap` for `EXIT`, run as the script or a subshell ends (ADR 0021)
   - [x] `.`, a file's commands run in the session itself
   - [x] `getopts`
+  - [x] `local`, as dash and bash have it
   - [ ] `&` with `$!` and `wait`, `exec`
   - [ ] The `sh` command and an interactive sh session
 - [x] `wc`, the first command-line tool

@@ -285,6 +285,9 @@ working directory when it does not start at the root, as Meridian has no
 which the shell sets to `/System`, with `-` back to `$OLDPWD`, and it
 keeps `PWD`, which the shell sets as a script starts, and `OLDPWD`.
 
+`local`, which POSIX has not but dash and bash have, makes variables a
+function's own, put back as they were once it returns.
+
 `getopts` takes options as POSIX's does, saying `getopts: -x: no such
 option` or `getopts: -x: needs an argument` unless its list starts with
 `:`.

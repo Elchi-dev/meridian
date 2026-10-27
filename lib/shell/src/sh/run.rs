@@ -70,7 +70,7 @@ const SPECIAL: [&str; 13] = [
 
 /// The builtins POSIX calls no special ones that the session runs itself,
 /// as they read or set its variables.
-const REGULAR: [&str; 3] = ["cd", "getopts", "read"];
+const REGULAR: [&str; 4] = ["cd", "getopts", "local", "read"];
 
 /// A sh session: its variables, functions and parameters, its options,
 /// and the status of its last command.
@@ -99,6 +99,9 @@ pub struct Session {
     /// `OPTIND` it was at, and the character of that word after the last
     /// option it took.
     next_option: Option<(String, usize)>,
+    /// For each function call running, innermost last, the variables
+    /// `local` made its own, as they were before.
+    locals: Vec<Vec<(String, Option<Variable>)>>,
     /// What a trap on `EXIT` runs as the shell ends, as written and read;
     /// nothing at all for one that ignores it.
     exit_trap: Option<(String, Vec<Item>)>,
@@ -141,6 +144,7 @@ impl Session {
             conditions: 0,
             substituted: None,
             next_option: None,
+            locals: Vec::new(),
             exit_trap: None,
         }
     }
@@ -546,6 +550,7 @@ impl Session {
                 Ok(match name.as_str() {
                     "read" => session.read(words, machine),
                     "cd" => session.cd(words, machine),
+                    "local" => session.local(words, machine),
                     _ => session.getopts(words, machine),
                 })
             });
@@ -593,6 +598,7 @@ impl Session {
             let _ = self.assign(&name, value);
         }
         let outer = core::mem::replace(&mut self.positional, ready.words[1..].to_vec());
+        self.locals.push(Vec::new());
         let ran = self.deeper(at, machine, |session, machine| {
             session.around(&ready.redirections, machine, |session, machine| {
                 let made = session.redirections(&function.redirections, machine)?;
@@ -602,6 +608,8 @@ impl Session {
             })
         });
         self.positional = outer;
+        let made_local = self.locals.pop().unwrap_or_default();
+        self.restore(made_local);
         self.restore(kept);
         match ran? {
             Flow::Return | Flow::Next => Ok(Flow::Next),
@@ -935,6 +943,37 @@ impl Session {
         if say && !machine.out(format!("{now}\n").as_bytes()) {
             self.status = 1;
         }
+        Flow::Next
+    }
+
+    /// `local`: makes each variable named the function's own, given the
+    /// value after an `=` or keeping its value, and puts it back as it was
+    /// once the function returns, as dash and bash have it.
+    fn local(&mut self, words: &[String], machine: &mut impl Machine) -> Flow {
+        if self.locals.is_empty() {
+            return self.complained("local", "is for a function's variables", machine);
+        }
+        for word in words {
+            let (name, value) = match word.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (word.as_str(), None),
+            };
+            if !is_name(name) {
+                return self.complained("local", &format!("{name}: not a name"), machine);
+            }
+            let before = self.variables.get(name).cloned();
+            if let Some(made) = self.locals.last_mut()
+                && !made.iter().any(|(was, _)| was == name)
+            {
+                made.push((String::from(name), before));
+            }
+            if let Some(value) = value
+                && self.assign(name, value.into()).is_err()
+            {
+                return self.complained("local", &format!("{name}: read only"), machine);
+            }
+        }
+        self.status = 0;
         Flow::Next
     }
 
@@ -3108,5 +3147,62 @@ mod tests {
             Some("/h"),
             "read only, it stays"
         );
+    }
+
+    #[test]
+    fn local_variables_go_back_as_the_function_returns() {
+        assert_eq!(
+            out("a=1; f() { local a=2; echo $a; }; f; echo $a"),
+            "2\n1\n"
+        );
+        assert_eq!(
+            out("f() { local a; a=2; }; f; echo \"[${a-unset}]\""),
+            "[unset]\n"
+        );
+        assert_eq!(
+            out("a=1; f() { local a; echo \"[$a]\"; }; f"),
+            "[1]\n",
+            "it keeps its value"
+        );
+        assert_eq!(
+            out("a=1; f() { local a=2; local a=3; }; f; echo $a"),
+            "1\n",
+            "made local twice, it goes back to the first value"
+        );
+        assert_eq!(
+            out("a=1; g() { echo $a; }; f() { local a=2; g; }; f"),
+            "2\n",
+            "a function it calls sees it"
+        );
+        assert_eq!(
+            out("a=1; g() { local a=3; }; f() { local a=2; g; echo $a; }; f; echo $a"),
+            "2\n1\n"
+        );
+        assert_eq!(
+            out("f() { local a=1 b c=3; echo $a$c; }; f; echo \"[$a$c]\""),
+            "13\n[]\n"
+        );
+        assert_eq!(
+            out("f() { local a=1; return 2; }; f; echo $? \"[$a]\""),
+            "2 []\n"
+        );
+    }
+
+    #[test]
+    fn local_says_what_is_wrong() {
+        for (script, said_) in [
+            ("local a; echo $?", "local: is for a function's variables\n"),
+            ("f() { local 1a; echo $?; }; f", "local: 1a: not a name\n"),
+            (
+                "readonly r=1; f() { local r=2; echo $?; }; f",
+                "local: r: read only\n",
+            ),
+        ] {
+            assert_eq!(
+                said(script, &[]),
+                (String::from("2\n"), String::from(said_)),
+                "{script}"
+            );
+        }
     }
 }

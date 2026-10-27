@@ -2832,9 +2832,10 @@ fn the_sh_dialect() -> Outcome {
              for i in a b; do f $i; done\n\
              x=$(echo cap | wc); echo \"[$x]\"\n\
              case $x in *4) echo four;; esac\n\
+             g() { local v=in; echo $v; }; v=out; g; echo $v\n\
              exit 3",
         )?,
-        &ran(3, b"f:a\nf:b\n[1 1 4]\nfour\n"),
+        &ran(3, b"f:a\nf:b\n[1 1 4]\nfour\nin\nout\n"),
     );
     expect(
         checked,

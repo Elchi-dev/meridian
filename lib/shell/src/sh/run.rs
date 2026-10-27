@@ -72,6 +72,15 @@ const SPECIAL: [&str; 14] = [
 /// as they read or set its variables.
 const REGULAR: [&str; 6] = ["cd", "command", "getopts", "local", "read", "wait"];
 
+/// The options `set` turns on and off, each by its letter and its name.
+const OPTIONS: [(char, &str); 5] = [
+    ('e', "errexit"),
+    ('f', "noglob"),
+    ('u', "nounset"),
+    ('x', "xtrace"),
+    ('C', "noclobber"),
+];
+
 /// A sh session: its variables, functions and parameters, its options,
 /// and the status of its last command.
 #[derive(Clone, Debug)]
@@ -289,7 +298,10 @@ impl Session {
     fn stages(&mut self, commands: &[Command], machine: &mut impl Machine) {
         let stages = self.prepared_stages(commands, machine);
         self.status = match Self::readies(&stages) {
-            Some(readies) => machine.run(&readies),
+            Some(readies) => {
+                self.trace_stages(&stages, machine);
+                machine.run(&readies)
+            }
             None => Self::in_order(commands, stages, machine),
         };
     }
@@ -300,7 +312,10 @@ impl Session {
     fn in_background(&mut self, commands: &[Command], machine: &mut impl Machine) {
         let stages = self.prepared_stages(commands, machine);
         match Self::readies(&stages) {
-            Some(readies) => self.background = Some(machine.start(&readies)),
+            Some(readies) => {
+                self.trace_stages(&stages, machine);
+                self.background = Some(machine.start(&readies));
+            }
             None => {
                 Self::in_order(commands, stages, machine);
             }
@@ -324,6 +339,22 @@ impl Session {
             stages.push((copy, prepared));
         }
         stages
+    }
+
+    /// Says each of `stages` before the machine runs them, as `set -x`
+    /// asks, which the session would say as it ran them itself.
+    fn trace_stages(
+        &self,
+        stages: &[(Session, Option<Result<Prepared, Stop>>)],
+        machine: &mut impl Machine,
+    ) {
+        if self.flag('x') {
+            for (_, prepared) in stages {
+                if let Some(Ok(prepared)) = prepared {
+                    self.trace(&prepared.assigned, &prepared.ready.words, machine);
+                }
+            }
+        }
     }
 
     /// What the machine runs for `stages`, when it runs each of them.
@@ -564,6 +595,9 @@ impl Session {
             at,
             substituted,
         } = prepared;
+        if self.flag('x') {
+            self.trace(&assigned, &ready.words, machine);
+        }
         // prepare made each assignment once already, so none of them is to
         // a read-only variable.
         let Some(name) = ready.words.first().cloned() else {
@@ -1511,6 +1545,54 @@ impl Session {
         Ok(Flow::Next)
     }
 
+    /// Says each option `-o` names, with `on` whether it is on, or with
+    /// `+o` as the `set` that turns it on or off again.
+    fn options_said(&mut self, on: bool, machine: &mut impl Machine) {
+        let said: String = OPTIONS
+            .iter()
+            .map(|&(letter, name)| match (on, self.flag(letter)) {
+                (true, true) => format!("{name} on\n"),
+                (true, false) => format!("{name} off\n"),
+                (false, true) => format!("set -o {name}\n"),
+                (false, false) => format!("set +o {name}\n"),
+            })
+            .collect();
+        if !machine.out(said.as_bytes()) {
+            self.status = 1;
+        }
+    }
+
+    /// Writes what is about to run, `assigned` and `words`, on stream 2
+    /// after `$PS4`, `+ ` without one, as `set -x` asks.
+    fn trace(&self, assigned: &[(String, String)], words: &[String], machine: &mut impl Machine) {
+        let plain = |w: &str| {
+            !w.is_empty()
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_./=:+-,%@^".contains(c))
+        };
+        let mut line = self.variable("PS4").unwrap_or_else(|| String::from("+ "));
+        let shown = assigned
+            .iter()
+            .map(|(name, value)| {
+                format!(
+                    "{name}={}",
+                    if plain(value) {
+                        value.clone()
+                    } else {
+                        quoted(value)
+                    }
+                )
+            })
+            .chain(
+                words
+                    .iter()
+                    .map(|w| if plain(w) { w.clone() } else { quoted(w) }),
+            );
+        line.push_str(&shown.collect::<Vec<_>>().join(" "));
+        line.push('\n');
+        let _ = machine.err(line.as_bytes());
+    }
+
     /// `set`: options on with `-` and off with `+`, and the positional
     /// parameters after them or after `--`; alone, says every variable.
     fn set(&mut self, rest: &[String], machine: &mut impl Machine) -> Result<Flow, Stop> {
@@ -1543,7 +1625,19 @@ impl Session {
                 }
             };
             for letter in letters.chars() {
-                if !"efuC".contains(letter) {
+                let letter = if letter != 'o' {
+                    letter
+                } else if let Some(name) = words.next() {
+                    let Some(&(letter, _)) = OPTIONS.iter().find(|(_, n)| n == name) else {
+                        let said = format!("-o {name}: no such option");
+                        return Self::refused("set", &said, machine);
+                    };
+                    letter
+                } else {
+                    self.options_said(on, machine);
+                    continue;
+                };
+                if !OPTIONS.iter().any(|&(l, _)| l == letter) {
                     return Self::refused("set", &format!("-{letter}: no such option"), machine);
                 }
                 if on {
@@ -2422,9 +2516,9 @@ mod tests {
             "[]\neu\nu\n"
         );
         assert_eq!(out("set -Cfu; echo $-; set +uC; echo $-"), "Cfu\nf\n");
-        let (ended, session, desk) = ran("set -ex; echo no", &[]);
+        let (ended, session, desk) = ran("set -ez; echo no", &[]);
         assert_eq!(ended, Err(Stop::Said(1)));
-        assert_eq!(desk.err, b"set: -x: no such option\n");
+        assert_eq!(desk.err, b"set: -z: no such option\n");
         assert_eq!(session.flags(), "e", "the letters before it were set");
         assert_eq!(said("set +v", &[]).1, "set: -v: no such option\n");
     }
@@ -3546,5 +3640,45 @@ mod tests {
         assert_eq!((ended, desk.out), (Err(Stop::Said(1)), Vec::new()));
         assert_eq!(desk.err, b"f: no file here to write\n");
         assert_eq!(ran("exec 3>&1; echo no", &[]).0, Err(Stop::Said(1)));
+    }
+
+    #[test]
+    fn set_x_says_each_command_before_it_runs() {
+        assert_eq!(
+            said("set -x; echo a 'b c' \"\"; a=1 b='x y'; f() { :; }; f", &[]),
+            (
+                "a b c \n".into(),
+                "+ echo a 'b c' ''\n+ a=1 b='x y'\n+ f\n+ :\n".into()
+            )
+        );
+        assert_eq!(said("PS4='> '; set -x; :", &[]).1, "> :\n");
+        assert_eq!(
+            said("set -x; echo $((1 + 1)) | echo; set +x; echo quiet", &[]).1,
+            "+ echo 2\n+ echo\n+ set +x\n",
+            "each command of a pipeline, and set +x itself"
+        );
+        assert_eq!(said("set -x; x=$(echo in)", &[]).1, "+ echo in\n+ x=in\n");
+        assert_eq!(said("set -x; echo a & wait", &[]).1, "+ echo a\n+ wait\n");
+    }
+
+    #[test]
+    fn set_o_names_the_options() {
+        assert_eq!(
+            out("set -o xtrace -o errexit; echo $-; set +o errexit; echo $-"),
+            "ex\nx\n"
+        );
+        assert_eq!(said("set -o xtrace; :", &[]).1, "+ :\n");
+        assert_eq!(
+            out("set -eC; set -o"),
+            "errexit on\nnoglob off\nnounset off\nxtrace off\nnoclobber on\n"
+        );
+        assert_eq!(
+            out("set -u; set +o"),
+            "set +o errexit\nset +o noglob\nset -o nounset\nset +o xtrace\nset +o noclobber\n"
+        );
+        let (ended, _, desk) = ran("set -o pipefail; echo no", &[]);
+        assert_eq!(ended, Err(Stop::Said(1)));
+        assert_eq!(desk.err, b"set: -o pipefail: no such option\n");
+        assert_eq!(out("set -o noglob -- a b; echo $- $#"), "f 2\n");
     }
 }

@@ -2970,6 +2970,11 @@ fn sh_errors() -> Outcome {
         ("#!/bin/sh\necho ${u?gone}; echo no", 1, b"u: gone\n"),
         ("#!/bin/sh\nset -e\necho a\nfalse\necho b", 1, b"a\n"),
         (
+            "#!/bin/sh\nset -x\necho a | wc",
+            0,
+            b"+ echo a\n+ wc\n1 1 2\n",
+        ),
+        (
             "#!/bin/sh\nreadonly r=1; r=2",
             2,
             b"2:15: read-only: this variable is read only, so it keeps its value\n",

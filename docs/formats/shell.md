@@ -313,6 +313,13 @@ redirection it cannot make ends the script. `exec` with a command runs it
 and ends the shell with its status, without running the trap, as
 Meridian cannot put a program in the place of a running one.
 
+`set` takes the options `-e`, `-u`, `-f`, `-C` and `-x`, by their
+letters or with `-o` and `+o` by their names, `errexit`, `nounset`,
+`noglob`, `noclobber` and `xtrace`; `set -o` alone says which are on,
+and `set +o` alone says them as the `set` that turns each on or off.
+With `-x` each command is said on stream 2 before it runs, after `$PS4`,
+or `+ ` without one, its words quoted where they need it.
+
 `getopts` takes options as POSIX's does, saying `getopts: -x: no such
 option` or `getopts: -x: needs an argument` unless its list starts with
 `:`.

@@ -161,7 +161,7 @@ Loader and UEFI:
 - [x] Standard error, and `2>` and `2>>` at the shell
 - [x] `2>&1` at the shell
 - [x] The shell runs Meridian's shell language: lines and blocks typed at the console, `-c` and script files, its own commands under Linux and Windows names, `>` and `>>` (ADR 0016)
-- [ ] The shell's sh dialect (ADR 0016)
+- [x] The shell's sh dialect (ADR 0016)
   - [x] Its tokens: operators, the three quotes and `$'...'`, comments, joined lines, IO numbers, and where each expansion ends
   - [x] Here-documents
   - [x] Its grammar: simple and compound commands, functions, pipelines and lists, each error at its place
@@ -184,6 +184,7 @@ Loader and UEFI:
   - [x] `exec`, its redirections the shell's own from then on
   - [x] `&` starting what the shell runs whole as a job, with `$!` and `wait`
   - [x] The `sh` command, and lines typed in sh until `exit`
+  - [x] `set -x`, and the options by their names with `-o` and `+o`
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`
 - [ ] More command-line tools

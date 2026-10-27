@@ -209,7 +209,7 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 	}
 	for _, name := range []string{
 		"basename", "cut", "dirname", "expr", "grep", "head", "hello", "init",
-		"sed", "shell", "sort", "tail", "tee", "tr", "uniq", "wc",
+		"sed", "shell", "sleep", "sort", "tail", "tee", "tr", "uniq", "wc",
 	} {
 		want = append(want, filepath.Join("x86_64-unknown-none", "debug", "examples", name))
 	}

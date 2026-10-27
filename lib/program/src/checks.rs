@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 127] = [
+const CHECKS: [(&str, Check); 128] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -144,6 +144,7 @@ const CHECKS: [(&str, Check); 127] = [
     ("tools.sed.wide", sed_on_wide_lines),
     ("tools.sed.pipes", sed_among_the_tools),
     ("tools.expr", expr_on_its_words),
+    ("tools.sleep", sleep_waits),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2594,14 +2595,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"40\n"
+        b"42\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty twice",
+        "ls should write the programs' names into the pipe, twenty-one twice",
     )?;
     expect(
         same(
@@ -3858,6 +3859,25 @@ fn expr_on_its_words() -> Outcome {
     expect(
         checked,
         "expr should work out its words, end as POSIX says, and count in a script",
+    )
+}
+
+/// sleep waits as long as it is told, in ticks of the timer, and says
+/// what is no time to wait.
+fn sleep_waits() -> Outcome {
+    let before = crate::ticks();
+    let slept = shell_on("sleep 0.2; echo $?")?;
+    let waited = crate::ticks() - before;
+    expect(
+        same(&slept, &ran(0, b"0\n")) && waited >= 20,
+        "sleep 0.2 should wait twenty ticks at least",
+    )?;
+    expect(
+        same(
+            &shell_on("sleep x")?,
+            &ran(1, b"sleep: x is no number of seconds\nsleep ended with 1\n"),
+        ),
+        "sleep should refuse what is no time",
     )
 }
 

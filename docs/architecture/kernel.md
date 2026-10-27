@@ -464,19 +464,28 @@ program's text there, and KEY hands out the keys the keyboard sent; any
 program may use both until terminals and focus exist. The runtime turns a
 key into a character on a US layout; others come from CLDR with Horizon.
 
-The shell edits a line with either shift and backspace and runs `help`,
-`echo`, `ls`, `cat`, `clear` or `cls` and `exit`, reading the tree of
-files. Any other word is a program: by its name in
+The shell edits a line with either shift and backspace and runs it in
+Meridian's shell language (decision record 0016, `lib/shell`), taking
+more lines while a block is open, with one session's variables and
+functions for every line. Its own commands are `help`, `echo`, `ls` or
+`dir`, `cat` or `type`, `mkdir` or `md`, `rm` or `del`, `clear` or `cls`
+and `services`, reading the tree of files, where patterns match too. Any
+other word is a program: by its name in
 `/System/Boot/meridian/programs`, or by its path, started with SPAWN,
 handed the words after it and waited for, and the shell says how it ended
-unless it exited with 0. The
-test image checks the console's
+unless it exited with 0. `>` and `>>` send what a command writes into a
+file, a program's too; pipes and `<` wait for a standard input. Started
+with `-c` and a script, or a script's path, the shell runs that and ends
+with its status. The test image checks the console's
 text, cursor, cells, scrolling and clearing on the screen, that a
 character is rasterized once, that nothing is drawn once a crash took the
 screen, a line hello writes from ring 3, and types at the shell with keys
 sextant presses: it has to greet, echo, list a directory, show the
 shim's licences to their end, name a command it does not know, run
-exitwith from its file and say it ended with 2989, and end at `exit`.
+exitwith from its file and say it ended with 2989, run a block typed over
+three lines, say where a line is wrong, and end at `exit 7` with 7. hello
+runs scripts through the shell with a channel as its output, and checks
+what they write and how they end.
 
 ## The screens the kernel draws itself (M1)
 

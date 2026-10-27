@@ -1744,18 +1744,37 @@ fn shell_checks<W: Write>(
     } else {
         waited_for("exitwith: no such command")
     };
-    typed(&["e", "x", "i", "t", "ret"]);
+    // A block goes on over the lines typed until its brace closes.
+    typed(&[
+        "i",
+        "f",
+        "spc",
+        "t",
+        "r",
+        "u",
+        "e",
+        "spc",
+        "shift-bracket_left",
+        "ret",
+    ]);
+    let open = waited_for("> if true {");
+    typed(&["e", "c", "h", "o", "spc", "y", "e", "s", "ret"]);
+    typed(&["shift-bracket_right", "ret"]);
+    let block = open && waited_for("... echo yes") && waited_for("yes");
+    typed(&["shift-bracket_right", "ret"]);
+    let wrong = waited_for("1:1: unexpected-close: remove the }, or open its block before it");
+    typed(&["e", "x", "i", "t", "spc", "7", "ret"]);
     let ended = started.is_ok_and(|slot| {
         let start = x86::raw::tsc();
         while raw::thread::alive(slot) && x86::raw::tsc() - start < patience {
             raw::thread::sleep(1);
         }
-        !raw::thread::alive(slot) && seen::exit_of(slot) == 0
+        !raw::thread::alive(slot) && seen::exit_of(slot) == 7
     });
     report.check(
         "kernel.shell",
-        greeted && echoed && listed && shown && refused && alone && ran && ended,
-        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, and end at exit",
+        greeted && echoed && listed && shown && refused && alone && ran && block && wrong && ended,
+        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, and end at exit with its status",
     );
 }
 

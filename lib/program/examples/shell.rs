@@ -1,8 +1,9 @@
 //! The shell: it reads keys, shows what they type on the console, and runs
-//! the line typed once Enter goes down. It knows help, echo, ls, cat,
-//! clear, which cls is too, services, which asks init over the line init
-//! started it with, and exit, reads paths through the tree of files, and
-//! starts any other word as a program, waiting until it ended.
+//! what is typed in Meridian's shell language (decision record 0016) once
+//! Enter goes down, taking more lines while a block is open. Its own
+//! commands are help, echo, ls, cat, mkdir, rm, clear and services, which
+//! asks init over the line init started it with, each under its Windows
+//! name too; any other word starts a program, which the shell waits for.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -14,7 +15,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
-use program::{Ended, Error, Handle, KeyEvent, abi::file, layout};
+use ::shell::Code;
+use ::shell::expand::{self, Piece};
+use ::shell::parse::{self, Redirect, Statement};
+use ::shell::run::{Flow, Machine, Ready, Session};
+use program::{Ended, Error, Handle, KeyEvent, abi::file, layout, start::Sink};
 use services::{About, MESSAGE};
 
 program::main!(shell);
@@ -64,31 +69,30 @@ impl Editor {
     }
 }
 
-/// What a command asks for.
-#[derive(Debug, PartialEq, Eq)]
+/// What the words of a command ask for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command<'a> {
     Help,
-    Echo(&'a str),
-    /// `echo` into a file: its text, the file's path, and whether it goes
-    /// after what the file holds rather than in its place.
-    EchoInto(&'a str, &'a str, bool),
-    List(&'a str),
-    Show(&'a str),
-    MakeDirectory(&'a str),
-    Remove(&'a str),
+    Echo(&'a [String]),
+    List(&'a [String]),
+    Show(&'a [String]),
+    MakeDirectory(&'a [String]),
+    Remove(&'a [String]),
     Clear,
     Services,
-    Exit,
     Empty,
     /// A program, by its name in [`PROGRAMS`] or by its path, and the
     /// words it is handed.
-    Program(&'a str, Vec<&'a str>),
+    Program(&'a str, &'a [String]),
+    /// A command that takes paths and was given none.
     Missing(&'a str),
 }
 
-/// What `help` says.
-const HELP: &str = "help, echo TEXT [> PATH], ls [PATH], cat PATH, mkdir or md PATH, \
-                    rm or del PATH, clear or cls, services, exit, or a program\n";
+/// What `help` says: the commands on its first line.
+const HELP: &str = "help, echo, ls or dir, cat or type, mkdir or md, rm or del, clear or cls, \
+                    services, exit, or a program\n\
+                    let, if, for, while and fn as blocks in braces; > PATH or >> PATH after a \
+                    command sends what it writes into a file\n";
 
 /// Where `ls` looks without a path.
 const HOME: &str = "/System/Boot";
@@ -96,42 +100,22 @@ const HOME: &str = "/System/Boot";
 /// Where a program named without a path is.
 const PROGRAMS: &str = "/System/Boot/meridian/programs";
 
-fn parse(line: &str) -> Command<'_> {
-    let line = line.trim();
-    let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
-    let rest = rest.trim();
-    match word {
-        "" => Command::Empty,
+fn command(words: &[String]) -> Command<'_> {
+    let Some((word, rest)) = words.split_first() else {
+        return Command::Empty;
+    };
+    match word.as_str() {
         "help" => Command::Help,
-        "echo" => echo(rest),
-        "ls" if rest.is_empty() => Command::List(HOME),
-        "ls" => Command::List(rest),
-        "cat" | "mkdir" | "md" | "rm" | "del" if rest.is_empty() => Command::Missing(word),
-        "cat" => Command::Show(rest),
+        "echo" => Command::Echo(rest),
+        "ls" | "dir" => Command::List(rest),
+        "cat" | "type" | "mkdir" | "md" | "rm" | "del" if rest.is_empty() => Command::Missing(word),
+        "cat" | "type" => Command::Show(rest),
         "mkdir" | "md" => Command::MakeDirectory(rest),
         "rm" | "del" => Command::Remove(rest),
         "clear" | "cls" => Command::Clear,
         "services" => Command::Services,
-        "exit" => Command::Exit,
-        other => Command::Program(other, rest.split_whitespace().collect()),
+        _ => Command::Program(word, rest),
     }
-}
-
-/// `echo` with `rest` after it: the text alone, or with `> PATH` the text
-/// into the file at PATH, made new or emptied, and with `>> PATH` after
-/// what the file holds, as in sh.
-fn echo(rest: &str) -> Command<'_> {
-    let Some((text, into)) = rest.split_once('>') else {
-        return Command::Echo(rest);
-    };
-    let (path, append) = match into.strip_prefix('>') {
-        Some(path) => (path.trim(), true),
-        None => (into.trim(), false),
-    };
-    if path.is_empty() {
-        return Command::Missing("echo >");
-    }
-    Command::EchoInto(text.trim(), path, append)
 }
 
 /// The file the program `word` names: the path itself, or for a name the
@@ -184,15 +168,170 @@ fn shown(about: &About<'_>) -> String {
     format!("{}: {}, started {times}\n", about.name, about.state.word())
 }
 
+/// What `$?` holds once a program ended so: its exit code, 255 for one
+/// past that, and 128 and the vector when an exception stopped it.
+fn status(ended: Ended) -> u8 {
+    match ended {
+        Ended::Exited(code) => u8::try_from(code).unwrap_or(u8::MAX),
+        Ended::Faulted(vector) => u8::try_from(vector).map_or(u8::MAX, |v| v.saturating_add(128)),
+    }
+}
+
+/// What the lines typed so far come to.
+#[derive(Debug, PartialEq, Eq)]
+enum Lines {
+    /// A whole script, to run.
+    Script(Vec<Statement>),
+    /// A block still open, which the next line goes on with.
+    Open,
+    /// Something that does not read.
+    Wrong(::shell::Error),
+}
+
+fn lines(typed: &str) -> Lines {
+    match parse::script(typed) {
+        Ok(script) => Lines::Script(script),
+        Err(e) if e.code == Code::UnclosedBlock => Lines::Open,
+        Err(e) => Lines::Wrong(e),
+    }
+}
+
+/// How a redirection opens its file: `>` makes it new or empties it, and
+/// `>>` keeps what it holds. `<` opens none, since nothing reads a
+/// standard input yet.
+fn opening(how: Redirect) -> Option<u64> {
+    match how {
+        Redirect::Out => Some(file::CREATE_ALWAYS),
+        Redirect::Append => Some(file::OPEN_ALWAYS),
+        Redirect::In => None,
+    }
+}
+
+/// The paths `pattern` matches, from `directory` when it does not start
+/// at the root: each part between slashes matched against what `names`
+/// lists in the directory at a path, in the order of their names in
+/// capitals. A part without `*` or `?` stays as the pattern wrote it.
+fn matching(
+    directory: &str,
+    pattern: &[Piece],
+    names: &mut impl FnMut(&str) -> Vec<String>,
+) -> Vec<String> {
+    let absolute = pattern.first() == Some(&Piece::Char('/'));
+    let base = if absolute { "/" } else { directory };
+    // Each path found so far: as the word shows it, and from the root,
+    // where a doubled slash is one.
+    let mut found = Vec::from([(String::new(), String::from(base))]);
+    for (pieces, text) in expand::segments(pattern) {
+        if pieces.is_empty() {
+            continue;
+        }
+        let mut next = Vec::new();
+        for (shown, real) in &found {
+            let mut listed = names(real);
+            listed.sort_by_cached_key(|name| name.to_uppercase());
+            for name in listed.iter().filter(|name| expand::matches(&pieces, name)) {
+                let written = text.as_deref().unwrap_or(name);
+                let shown = if shown.is_empty() && !absolute {
+                    written.into()
+                } else {
+                    format!("{shown}/{written}")
+                };
+                next.push((shown, format!("{real}/{name}")));
+            }
+        }
+        found = next;
+    }
+    found.into_iter().map(|(shown, _)| shown).collect()
+}
+
 /// The line to init the shell started with, 0 when init did not start it.
 static LINE: AtomicU64 = AtomicU64::new(0);
+
+/// What the shell was started to do, by the words it was handed.
+#[derive(Debug, PartialEq, Eq)]
+enum Asked<'a> {
+    /// Run the lines typed at the console.
+    Typed,
+    /// Run the script after `-c`.
+    Text(&'a str),
+    /// Run the script in the file at this path.
+    File(&'a str),
+    /// Something else, which it does not know.
+    Unknown,
+}
+
+fn asked(arguments: &[String]) -> Asked<'_> {
+    match arguments {
+        [] => Asked::Typed,
+        [flag, text] if flag == "-c" => Asked::Text(text),
+        [path] if path != "-c" => Asked::File(path),
+        _ => Asked::Unknown,
+    }
+}
 
 #[cfg_attr(test, allow(dead_code))]
 fn shell(_: Handle) -> u64 {
     let line = program::start::given().line;
     LINE.store(line.map_or(0, |h| h.0), SeqCst);
+    let status = match asked(program::arguments()) {
+        Asked::Typed => typed(),
+        Asked::Text(text) => script(text),
+        Asked::File(path) => match text_of(path) {
+            Ok(text) => script(&text),
+            Err(e) => {
+                let _ = program::write(&trouble(path, e));
+                2
+            }
+        },
+        Asked::Unknown => {
+            let _ =
+                program::write("shell: start it with no words, -c SCRIPT, or a script's path\n");
+            2
+        }
+    };
+    u64::from(status)
+}
+
+/// Runs `text` as a script, saying what does not read or run, and answers
+/// the status it ended with: 2 when something did not.
+#[cfg_attr(test, allow(dead_code))]
+fn script(text: &str) -> u8 {
+    let mut session = Session::new();
+    let ran = parse::script(text).and_then(|script| session.run(&script, &mut System));
+    match ran {
+        Ok(_) => session.status(),
+        Err(e) => {
+            let _ = program::write(&format!("{e}\n"));
+            2
+        }
+    }
+}
+
+/// What the file at `path` holds, read as text.
+#[cfg_attr(test, allow(dead_code))]
+fn text_of(path: &str) -> Result<String, Error> {
+    let file = program::open(path, file::READ)?;
+    let mut bytes = Vec::new();
+    let mut room = [0u8; 4096];
+    let read = loop {
+        match program::read(file, bytes.len() as u64, &mut room) {
+            Ok(0) => break Ok(()),
+            Ok(len) => bytes.extend_from_slice(&room[..len]),
+            Err(e) => break Err(e),
+        }
+    };
+    let _ = program::close(file);
+    read.map(|()| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Runs the lines typed at the console until `exit`, and answers the
+/// status it gave.
+#[cfg_attr(test, allow(dead_code))]
+fn typed() -> u8 {
     let _ = program::write("Meridian shell. Type help to see what it knows.\n> ");
     let mut editor = Editor::default();
+    let mut session = Session::new();
+    let mut typed = String::new();
     loop {
         let Some(key) = program::key() else {
             program::sleep(1);
@@ -204,51 +343,179 @@ fn shell(_: Handle) -> u64 {
             Edit::Erase => program::write("\u{8}"),
             Edit::Run(line) => {
                 let _ = program::write("\n");
-                if !run(&line) {
-                    return 0;
-                }
-                program::write("> ")
+                typed.push_str(&line);
+                typed.push('\n');
+                let prompt = match lines(&typed) {
+                    Lines::Open => "... ",
+                    Lines::Script(script) => {
+                        typed.clear();
+                        match session.run(&script, &mut System) {
+                            Ok(Flow::Exit) => return session.status(),
+                            Ok(_) => {}
+                            Err(e) => {
+                                let _ = program::write(&format!("{e}\n"));
+                            }
+                        }
+                        "> "
+                    }
+                    Lines::Wrong(e) => {
+                        typed.clear();
+                        let _ = program::write(&format!("{e}\n"));
+                        "> "
+                    }
+                };
+                program::write(prompt)
             }
             Edit::Nothing => Ok(()),
         };
     }
 }
 
-/// Runs `line`, and says whether the shell goes on.
+/// What the shell runs commands on: the calls of the runtime.
+struct System;
+
+impl Machine for System {
+    fn run(&mut self, pipeline: &[Ready]) -> u8 {
+        let [ready] = pipeline else {
+            let _ =
+                program::write("|: pipes need a standard input, which programs do not have yet\n");
+            return 2;
+        };
+        let Some(mut out) = redirected(&ready.redirections) else {
+            return 1;
+        };
+        let status = run(command(&ready.words), &mut out);
+        if let Out::File { handle, .. } = out {
+            let _ = program::close(handle);
+        }
+        status
+    }
+
+    fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String> {
+        matching(directory, pattern, &mut names)
+    }
+}
+
+/// The names in the directory at `path`, none when it is no directory the
+/// shell can read.
 #[cfg_attr(test, allow(dead_code))]
-fn run(line: &str) -> bool {
-    let _ = match parse(line) {
-        Command::Help => program::write(HELP),
-        Command::Echo(text) => program::write(&format!("{text}\n")),
-        Command::EchoInto(text, path, append) => {
-            echo_into(text, path, append).or_else(|e| program::write(&trouble(path, e)))
-        }
-        Command::List(path) => list(path),
-        Command::Show(path) => show(path),
-        Command::MakeDirectory(path) => {
-            program::make_directory(path).or_else(|e| program::write(&trouble(path, e)))
-        }
-        Command::Remove(path) => {
-            program::remove(path).or_else(|e| program::write(&trouble(path, e)))
-        }
-        Command::Clear => program::write("\u{c}"),
-        Command::Services => services(),
-        Command::Exit => return false,
-        Command::Empty => Ok(()),
-        Command::Program(word, arguments) => start(word, &arguments),
-        Command::Missing(word) => program::write(&format!("{word} needs a path\n")),
+fn names(path: &str) -> Vec<String> {
+    let Ok(directory) = program::open(path, file::READ) else {
+        return Vec::new();
     };
-    true
+    let mut names = Vec::new();
+    let mut room = [0u8; 1024];
+    for index in 0.. {
+        match program::list(directory, index, &mut room) {
+            Ok((len, _)) => names.push(String::from_utf8_lossy(&room[..len]).into_owned()),
+            Err(_) => break,
+        }
+    }
+    let _ = program::close(directory);
+    names
+}
+
+/// Where a command's text goes: the shell's own output, or a file from
+/// its byte `at` on.
+enum Out {
+    Mine,
+    File { handle: Handle, at: u64 },
+}
+
+impl Out {
+    #[cfg_attr(test, allow(dead_code))]
+    fn say(&mut self, text: &str) -> Result<(), Error> {
+        match self {
+            Out::Mine => program::write(text),
+            Out::File { handle, at } => {
+                program::write_file(*handle, *at, text.as_bytes())?;
+                *at += text.len() as u64;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Opens the files `redirections` lead to, in their order as sh does, and
+/// answers where the command's text goes: the last one, at its end. Says
+/// what went wrong and answers none when one does not open.
+#[cfg_attr(test, allow(dead_code))]
+fn redirected(redirections: &[(Redirect, String)]) -> Option<Out> {
+    let mut out = Out::Mine;
+    for (how, path) in redirections {
+        let opened = opening(*how).map(|how| program::open_with(path, file::WRITE, how));
+        if let Out::File { handle, .. } = out {
+            let _ = program::close(handle);
+        }
+        match opened {
+            Some(Ok(handle)) => {
+                let at = program::info(handle).map_or(0, |i| i.size);
+                out = Out::File { handle, at };
+            }
+            Some(Err(e)) => {
+                let _ = program::write(&trouble(path, e));
+                return None;
+            }
+            None => {
+                let _ = program::write(&format!("< {path}: commands read no standard input yet\n"));
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Runs `command`, its text going to `out`, and answers its status: a
+/// program's, or for the shell's own 0, and 1 when something went wrong.
+#[cfg_attr(test, allow(dead_code))]
+fn run(command: Command<'_>, out: &mut Out) -> u8 {
+    let done = match command {
+        Command::Program(word, arguments) => return start(word, arguments, out),
+        Command::Help => out.say(HELP).is_ok(),
+        Command::Echo(words) => out.say(&format!("{}\n", words.join(" "))).is_ok(),
+        Command::List([]) => list(HOME, out),
+        Command::List(paths) => every(paths, |path| list(path, out)),
+        Command::Show(paths) => every(paths, |path| show(path, out)),
+        Command::MakeDirectory(paths) => every(paths, |path| done(path, program::make_directory)),
+        Command::Remove(paths) => every(paths, |path| done(path, program::remove)),
+        Command::Clear => out.say("\u{c}").is_ok(),
+        Command::Services => services(out),
+        Command::Empty => true,
+        Command::Missing(word) => {
+            let _ = program::write(&format!("{word} needs a path\n"));
+            false
+        }
+    };
+    u8::from(!done)
+}
+
+/// Does `work` with each of `paths`, the ones after one that went wrong
+/// too, and says whether all went well.
+fn every(paths: &[String], mut work: impl FnMut(&str) -> bool) -> bool {
+    paths.iter().filter(|path| !work(path)).count() == 0
+}
+
+/// Does `call` with `path`, says what went wrong when it did, and says
+/// whether it went well.
+#[cfg_attr(test, allow(dead_code))]
+fn done(path: &str, call: fn(&str) -> Result<(), Error>) -> bool {
+    call(path)
+        .inspect_err(|&e| {
+            let _ = program::write(&trouble(path, e));
+        })
+        .is_ok()
 }
 
 /// Asks init about each of its services in turn and shows what it says.
 #[cfg_attr(test, allow(dead_code))]
-fn services() -> Result<(), Error> {
+fn services(out: &mut Out) -> bool {
     let line = Handle(LINE.load(SeqCst));
     if line.0 == 0 {
-        return program::write("services: init did not start this shell\n");
+        let _ = program::write("services: init did not start this shell\n");
+        return false;
     }
-    program::write(&listing((0..=u8::MAX).map(|place| ask(line, place))))
+    out.say(&listing((0..=u8::MAX).map(|place| ask(line, place))))
+        .is_ok()
 }
 
 /// What the shell shows for init's answers about the services, place
@@ -290,93 +557,115 @@ fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
     None
 }
 
-/// Starts the program `word` names and waits until it ended.
+/// Starts the program `word` names, handing it `arguments` and the file
+/// `out` leads to, which goes with it, waits until it ended, and answers
+/// its status.
 #[cfg_attr(test, allow(dead_code))]
-fn start(word: &str, arguments: &[&str]) -> Result<(), Error> {
-    let child = match program::spawn_with(&program_path(word), arguments) {
+fn start(word: &str, arguments: &[String], out: &mut Out) -> u8 {
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let output = match core::mem::replace(out, Out::Mine) {
+        Out::File { handle, .. } => Some(Sink::File(handle)),
+        Out::Mine => None,
+    };
+    let child = match program::spawn_handing(&program_path(word), &arguments, output) {
         Ok((child, start)) => {
             let _ = program::close(start);
             child
         }
         Err(Error::NotFound) if !word.starts_with('/') => {
-            return program::write(&format!("{word}: no such command\n"));
+            let _ = program::write(&format!("{word}: no such command\n"));
+            return 127;
         }
-        Err(e) => return program::write(&trouble(word, e)),
+        Err(e) => {
+            let _ = program::write(&trouble(word, e));
+            return 126;
+        }
     };
     let ended = program::wait(child);
     let _ = program::close(child);
     match ended {
-        Ok(ended) => ending(word, ended).map_or(Ok(()), |line| program::write(&line)),
-        Err(e) => program::write(&trouble(word, e)),
+        Ok(ended) => {
+            if let Some(line) = ending(word, ended) {
+                let _ = program::write(&line);
+            }
+            status(ended)
+        }
+        Err(e) => {
+            let _ = program::write(&trouble(word, e));
+            1
+        }
     }
 }
 
+/// Shows the names in the directory at `path`, or the path of a file, and
+/// says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
-fn list(path: &str) -> Result<(), Error> {
+fn list(path: &str, out: &mut Out) -> bool {
     let directory = match program::open(path, file::READ) {
         Ok(d) => d,
-        Err(e) => return program::write(&trouble(path, e)),
+        Err(e) => {
+            let _ = program::write(&trouble(path, e));
+            return false;
+        }
     };
     let mut room = [0u8; 1024];
+    let mut done = true;
     for index in 0.. {
-        match program::list(directory, index, &mut room) {
+        let said = match program::list(directory, index, &mut room) {
             Ok((len, is_directory)) => {
                 let name = String::from_utf8_lossy(&room[..len]);
                 let slash = if is_directory { "/" } else { "" };
-                program::write(&format!("{name}{slash}\n"))?;
+                out.say(&format!("{name}{slash}\n"))
             }
             Err(Error::NotFound) => break,
-            Err(e) => {
-                program::write(&trouble(path, e))?;
+            Err(Error::NotADirectory) => {
+                done = out.say(&format!("{path}\n")).is_ok();
                 break;
             }
+            Err(e) => {
+                let _ = program::write(&trouble(path, e));
+                done = false;
+                break;
+            }
+        };
+        if said.is_err() {
+            done = false;
+            break;
         }
     }
-    program::close(directory)
+    let _ = program::close(directory);
+    done
 }
 
-/// Writes `text` and a line's end into the file at `path`, after what it
-/// holds when `append`, and in its place otherwise.
+/// Shows what the file at `path` holds, and says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
-fn echo_into(text: &str, path: &str, append: bool) -> Result<(), Error> {
-    let how = if append {
-        file::OPEN_ALWAYS
-    } else {
-        file::CREATE_ALWAYS
-    };
-    let handle = program::open_with(path, file::WRITE, how)?;
-    let end = if append {
-        program::info(handle)?.size
-    } else {
-        0
-    };
-    let written = program::write_file(handle, end, format!("{text}\n").as_bytes());
-    program::close(handle)?;
-    written
-}
-
-#[cfg_attr(test, allow(dead_code))]
-fn show(path: &str) -> Result<(), Error> {
+fn show(path: &str, out: &mut Out) -> bool {
     let file = match program::open(path, file::READ) {
         Ok(f) => f,
-        Err(e) => return program::write(&trouble(path, e)),
+        Err(e) => {
+            let _ = program::write(&trouble(path, e));
+            return false;
+        }
     };
     let mut room = [0u8; 4096];
     let mut offset = 0;
-    loop {
+    let done = loop {
         match program::read(file, offset, &mut room) {
-            Ok(0) => break,
+            Ok(0) => break true,
             Ok(len) => {
-                program::write(&String::from_utf8_lossy(&room[..len]))?;
+                if out.say(&String::from_utf8_lossy(&room[..len])).is_err() {
+                    break false;
+                }
                 offset += len as u64;
             }
             Err(e) => {
-                program::write(&trouble(path, e))?;
-                break;
+                let _ = program::write(&trouble(path, e));
+                break false;
             }
         }
-    }
-    program::close(file)
+    };
+    let _ = program::close(file);
+    done
 }
 
 #[cfg(test)]
@@ -486,84 +775,255 @@ mod tests {
         );
     }
 
+    /// The words of `text`, as a command has them.
+    fn words(text: &str) -> Vec<String> {
+        text.split_whitespace().map(String::from).collect()
+    }
+
     #[test]
-    fn a_line_is_read_as_its_command() {
-        assert_eq!(parse("help"), Command::Help);
-        assert_eq!(parse("  echo  hello there  "), Command::Echo("hello there"));
-        assert_eq!(parse("echo"), Command::Echo(""));
-        assert_eq!(
-            parse("echo hello there > /System/a.txt"),
-            Command::EchoInto("hello there", "/System/a.txt", false)
-        );
-        assert_eq!(
-            parse("echo more >>/System/a.txt "),
-            Command::EchoInto("more", "/System/a.txt", true)
-        );
-        assert_eq!(
-            parse("echo >/System/empty"),
-            Command::EchoInto("", "/System/empty", false)
-        );
-        assert_eq!(
-            parse("echo a > b > c"),
-            Command::EchoInto("a", "b > c", false),
-            "only the first > leads into a file"
-        );
-        assert_eq!(parse("echo hi >"), Command::Missing("echo >"));
-        assert_eq!(parse("echo hi >>  "), Command::Missing("echo >"));
-        assert_eq!(parse("ls"), Command::List("/System/Boot"));
-        assert_eq!(
-            parse("ls /System/Boot/meridian"),
-            Command::List("/System/Boot/meridian")
-        );
-        assert_eq!(
-            parse("cat /System/Boot/meridian/boot.meri"),
-            Command::Show("/System/Boot/meridian/boot.meri")
-        );
-        assert_eq!(parse("cat"), Command::Missing("cat"));
-        assert_eq!(
-            parse("mkdir /System/New"),
-            Command::MakeDirectory("/System/New")
-        );
-        assert_eq!(
-            parse("md  /System/A b "),
-            Command::MakeDirectory("/System/A b")
-        );
-        assert_eq!(parse("rm /System/x.txt"), Command::Remove("/System/x.txt"));
-        assert_eq!(parse("del /System/x.txt"), Command::Remove("/System/x.txt"));
-        for word in ["mkdir", "md", "rm", "del"] {
-            assert_eq!(parse(word), Command::Missing(word));
+    fn the_first_word_says_which_command_runs() {
+        assert_eq!(command(&words("help me")), Command::Help);
+        let echo = words("echo hello there");
+        assert_eq!(command(&echo), Command::Echo(&echo[1..]));
+        assert_eq!(command(&words("echo")), Command::Echo(&[]));
+        for name in ["ls", "dir"] {
+            let w = words(&format!("{name} /a /b"));
+            assert_eq!(command(&w), Command::List(&w[1..]));
+            assert_eq!(command(&words(name)), Command::List(&[]), "or none");
         }
+        for name in ["cat", "type"] {
+            let w = words(&format!("{name} /a /b"));
+            assert_eq!(command(&w), Command::Show(&w[1..]));
+        }
+        for name in ["mkdir", "md"] {
+            let w = words(&format!("{name} /a"));
+            assert_eq!(command(&w), Command::MakeDirectory(&w[1..]));
+        }
+        for name in ["rm", "del"] {
+            let w = words(&format!("{name} /a /b"));
+            assert_eq!(command(&w), Command::Remove(&w[1..]));
+        }
+        for name in ["cat", "type", "mkdir", "md", "rm", "del"] {
+            assert_eq!(command(&words(name)), Command::Missing(name));
+        }
+        for name in ["clear", "cls", "cls now"] {
+            assert_eq!(command(&words(name)), Command::Clear);
+        }
+        assert_eq!(command(&words("services now")), Command::Services);
+        assert_eq!(command(&[]), Command::Empty);
+        let program = words("cp a b");
+        assert_eq!(command(&program), Command::Program("cp", &program[1..]));
         assert_eq!(
-            (parse("clear"), parse("exit"), parse("   ")),
-            (Command::Clear, Command::Exit, Command::Empty)
-        );
-        assert_eq!(parse(" cls "), Command::Clear, "as on Windows");
-        assert_eq!(parse("services"), Command::Services);
-        assert_eq!(
-            parse("services now"),
-            Command::Services,
-            "it takes no words"
-        );
-        assert_eq!(parse("dir C:"), Command::Program("dir", vec!["C:"]));
-        assert_eq!(
-            parse("cp  a   'b c' "),
-            Command::Program("cp", vec!["a", "'b", "c'"]),
-            "words at spaces, quotes not yet"
-        );
-        assert_eq!(
-            parse("rm -rf /"),
-            Command::Remove("-rf /"),
-            "no flags: a path that is none, which the kernel refuses"
-        );
-        assert_eq!(
-            parse("Help"),
-            Command::Program("Help", vec![]),
+            command(&words("Help")),
+            Command::Program("Help", &[]),
             "commands are lower case"
         );
+        let path = words("/System/Boot/meridian/programs/hello.mexec x");
         assert_eq!(
-            parse(" /System/Boot/meridian/programs/hello.mexec "),
-            Command::Program("/System/Boot/meridian/programs/hello.mexec", vec![])
+            command(&path),
+            Command::Program("/System/Boot/meridian/programs/hello.mexec", &path[1..])
         );
+        assert_eq!(
+            command(&words("exit")),
+            Command::Program("exit", &[]),
+            "exit is the language's, and only a quoted one comes here"
+        );
+    }
+
+    #[test]
+    fn its_words_say_what_the_shell_runs() {
+        assert_eq!(asked(&[]), Asked::Typed);
+        let text = words("-c echo");
+        assert_eq!(asked(&text[..1]), Asked::Unknown, "-c needs its script");
+        assert_eq!(asked(&text), Asked::Text("echo"));
+        let script = [String::from("-c"), String::from("echo a; echo b")];
+        assert_eq!(asked(&script), Asked::Text("echo a; echo b"));
+        assert_eq!(asked(&words("/System/a.sh")), Asked::File("/System/a.sh"));
+        assert_eq!(asked(&words("/System/a.sh x")), Asked::Unknown);
+        assert_eq!(asked(&words("-c a b")), Asked::Unknown);
+        assert_eq!(asked(&words("-x a")), Asked::Unknown);
+    }
+
+    #[test]
+    fn a_program_leaves_its_exit_code_or_its_exception_as_the_status() {
+        let cases = [
+            (Ended::Exited(0), 0),
+            (Ended::Exited(7), 7),
+            (Ended::Exited(255), 255),
+            (Ended::Exited(256), 255),
+            (Ended::Exited(2989), 255),
+            (Ended::Faulted(0), 128),
+            (Ended::Faulted(14), 142),
+            (Ended::Faulted(127), 255),
+            (Ended::Faulted(200), 255),
+            (Ended::Faulted(256), 255),
+        ];
+        for (ended, want) in cases {
+            assert_eq!(status(ended), want, "{ended:?}");
+        }
+    }
+
+    #[test]
+    fn lines_run_once_every_block_they_open_is_closed() {
+        let statements = |typed: &str| match lines(typed) {
+            Lines::Script(script) => script.len(),
+            other => panic!("{typed:?} is {other:?}"),
+        };
+        assert_eq!(statements("echo hi\n"), 1);
+        assert_eq!(statements("\n"), 0);
+        assert_eq!(lines("if true {\n"), Lines::Open);
+        assert_eq!(lines("if true {\necho a\n"), Lines::Open);
+        assert_eq!(statements("if true {\necho a\n}\n"), 1);
+        assert_eq!(
+            lines("fn f {\nfor x in a {\n}\n"),
+            Lines::Open,
+            "one of two still open"
+        );
+        assert_eq!(statements("fn f {\nfor x in a {\n}\n}; f\n"), 2);
+        assert_eq!(
+            lines("}\n"),
+            Lines::Wrong(::shell::Error {
+                at: ::shell::Pos { line: 1, column: 1 },
+                code: Code::UnexpectedClose
+            })
+        );
+        assert!(
+            matches!(lines("echo 'a\n"), Lines::Wrong(e) if e.code == Code::UnterminatedQuote),
+            "a quote goes on no other line"
+        );
+        assert!(
+            matches!(lines("if a {\n}}\n"), Lines::Wrong(e) if e.at.line == 2),
+            "an error counts lines from the first"
+        );
+    }
+
+    #[test]
+    fn every_path_is_worked_on_after_one_that_went_wrong() {
+        let paths = words("a b c d");
+        let mut seen = Vec::new();
+        let all = every(&paths, |path| {
+            seen.push(String::from(path));
+            path != "b"
+        });
+        assert!(!all);
+        assert_eq!(seen, paths);
+        assert!(every(&paths, |_| true));
+        assert!(every(&[], |_| false), "none went wrong");
+        assert!(!every(&paths, |path| path != "d"), "nor the last");
+    }
+
+    #[test]
+    fn a_redirection_makes_its_file_new_or_adds_to_it() {
+        assert_eq!(opening(Redirect::Out), Some(file::CREATE_ALWAYS));
+        assert_eq!(opening(Redirect::Append), Some(file::OPEN_ALWAYS));
+        assert_eq!(opening(Redirect::In), None);
+    }
+
+    /// Directories and files on the host, in a directory of their own
+    /// among its temporary files, for patterns to match against; gone once
+    /// dropped.
+    struct Tree(std::path::PathBuf);
+
+    impl Tree {
+        /// The tree that holds `paths`, those that end in `/` directories.
+        fn new(name: &str, paths: &[&str]) -> Tree {
+            let root =
+                std::env::temp_dir().join(format!("meridian-shell-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            for path in paths {
+                let at = root.join(path.trim_matches('/'));
+                if path.ends_with('/') {
+                    std::fs::create_dir_all(at).unwrap();
+                } else {
+                    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                    std::fs::write(at, b"").unwrap();
+                }
+            }
+            Tree(root)
+        }
+
+        /// What `pattern` matches from `directory`, the tree's root as
+        /// the root, listed as Meridian's tree of files lists, which takes
+        /// paths from the root alone.
+        fn matching(&self, directory: &str, pattern: &str) -> Vec<String> {
+            let pieces: Vec<Piece> = pattern
+                .chars()
+                .map(|c| match c {
+                    '*' => Piece::Any,
+                    '?' => Piece::One,
+                    c => Piece::Char(c),
+                })
+                .collect();
+            matching(directory, &pieces, &mut |path| {
+                let Some(inside) = path.strip_prefix('/') else {
+                    return Vec::new();
+                };
+                std::fs::read_dir(self.0.join(inside.trim_start_matches('/')))
+                    .map(|dir| {
+                        dir.map(|e| e.unwrap().file_name().into_string().unwrap())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_pattern_finds_the_paths_it_matches_part_by_part() {
+        let tree = Tree::new(
+            "find",
+            &[
+                "System/a.meri",
+                "System/B.MERI",
+                "System/c.txt",
+                "System/d.meri/x",
+                "Other/x",
+                "Other/y/",
+                ".hidden",
+            ],
+        );
+        assert_eq!(
+            tree.matching("/", "/System/*.meri"),
+            ["/System/a.meri", "/System/B.MERI", "/System/d.meri"],
+            "in the order of their names in capitals"
+        );
+        assert_eq!(tree.matching("/", "/System/?.txt"), ["/System/c.txt"]);
+        assert_eq!(
+            tree.matching("/", "/system/C.*"),
+            ["/system/c.txt"],
+            "a part without a wildcard as written"
+        );
+        assert_eq!(tree.matching("/", "/*/x"), ["/Other/x"]);
+        assert_eq!(tree.matching("/", "/*/*/x"), ["/System/d.meri/x"]);
+        assert_eq!(tree.matching("/", "/Other/*"), ["/Other/x", "/Other/y"]);
+        assert_eq!(
+            tree.matching("/System", "*.txt"),
+            ["c.txt"],
+            "from the directory, as written"
+        );
+        assert_eq!(tree.matching("/System/", "d*/x"), ["d.meri/x"]);
+        assert_eq!(
+            tree.matching("/System", "/Other/*"),
+            ["/Other/x", "/Other/y"],
+            "from the root wherever the directory is"
+        );
+        assert_eq!(tree.matching("/", "*"), [".hidden", "Other", "System"]);
+        assert_eq!(tree.matching("/", "/System//c.*"), ["/System/c.txt"]);
+        let none: [&str; 0] = [];
+        assert_eq!(tree.matching("/", "/nope/*"), none);
+        assert_eq!(
+            tree.matching("/", "/System/c.txt/*"),
+            none,
+            "a file holds none"
+        );
+        assert_eq!(tree.matching("/", "/System/e*"), none);
+        assert_eq!(tree.matching("/", "/Other/x/z?"), none);
     }
 
     #[test]
@@ -693,29 +1153,36 @@ mod tests {
     #[test]
     fn help_names_every_command_the_shell_knows() {
         let known = [
-            "help", "echo", "ls", "cat", "mkdir", "md", "rm", "del", "clear", "cls", "services",
-            "exit",
+            "help", "echo", "ls", "dir", "cat", "type", "mkdir", "md", "rm", "del", "clear", "cls",
+            "services", "exit",
         ];
+        let (first, second) = HELP.split_once('\n').unwrap();
+        let named: Vec<&str> = first
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .filter(|w| !w.is_empty())
+            .collect();
         for word in known {
-            let named = HELP
-                .split(|c: char| !c.is_ascii_alphabetic())
-                .any(|w| w == word);
-            assert!(named, "help leaves out {word}");
+            assert!(named.contains(&word), "help leaves out {word}");
             assert!(
-                !matches!(parse(word), Command::Program(..)),
+                word == "exit" || !matches!(command(&words(word)), Command::Program(..)),
                 "{word} is no command"
             );
         }
-        let words = HELP
-            .split(|c: char| !c.is_ascii_alphabetic())
-            .filter(|w| w.chars().all(|c| c.is_ascii_lowercase()) && !w.is_empty());
-        for word in words {
+        for word in named {
             assert!(
                 known.contains(&word) || ["or", "a", "program"].contains(&word),
                 "help names {word}, which the shell does not know"
             );
         }
-        assert_eq!(parse("nope"), Command::Program("nope", vec![]));
+        assert_eq!(
+            parse::script("exit"),
+            Ok(Vec::from([Statement::Exit(None)]))
+        );
+        for keyword in ["let", "if", "for", "while", "fn", "> PATH", ">> PATH"] {
+            assert!(second.contains(keyword), "help leaves out {keyword}");
+        }
+        assert!(second.ends_with('\n') && !second.trim_end().contains('\n'));
+        assert_eq!(command(&words("nope")), Command::Program("nope", &[]));
     }
 
     #[test]

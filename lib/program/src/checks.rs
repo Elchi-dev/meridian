@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 35] = [
+const CHECKS: [(&str, Check); 42] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -56,6 +56,13 @@ const CHECKS: [(&str, Check); 35] = [
     ("spawn.file", child_from_its_file),
     ("spawn.arguments", arguments_arrive),
     ("spawn.output", output_goes_where_it_is_handed),
+    ("shell.script", shell_runs_a_script),
+    ("shell.status", shell_ends_with_the_status),
+    ("shell.programs", shell_starts_programs),
+    ("shell.files", shell_writes_files),
+    ("shell.patterns", shell_matches_patterns),
+    ("shell.file", shell_runs_a_file),
+    ("shell.redirections", shell_redirects),
     ("console", writes_on_the_console),
 ];
 
@@ -1122,6 +1129,212 @@ fn output_goes_where_it_is_handed() -> Outcome {
         "what the child writes should go after what the file held",
     )?;
     expect(remove(path) == Ok(()), "the output should go")
+}
+
+/// How the shell ended and what it wrote.
+type Ran = (Result<Ended, Error>, Vec<u8>);
+
+/// Starts the shell with `words` and a channel as its standard output,
+/// and answers how it ended and what it wrote, which has to fit in the
+/// messages a channel holds, since nothing takes them until it ended.
+fn shell_with(words: &[&str]) -> Result<Ran, &'static str> {
+    let (mine, theirs) = pair()?;
+    let (child, back) = spawn_handing("shell.mexec", words, Some(start::Sink::Channel(theirs)))
+        .map_err(|_| "the shell should start")?;
+    let ended = wait(child);
+    let said = drained(mine);
+    expect(
+        close(child) == Ok(()) && close(back) == Ok(()) && close(mine) == Ok(()),
+        "the shell's handles should close",
+    )?;
+    Ok((ended, said))
+}
+
+/// The shell run on the script `text`.
+fn shell_on(text: &str) -> Result<Ran, &'static str> {
+    shell_with(&["-c", text])
+}
+
+/// What a shell that ended with `status` after writing `said` answers.
+fn ran(status: u64, said: &[u8]) -> Ran {
+    (Ok(Ended::Exited(status)), said.to_vec())
+}
+
+fn shell_runs_a_script() -> Outcome {
+    let script = "let a = hi; echo $a there\nif false { echo no } else { echo yes }\n\
+                  for x in 1 2 { echo $x }\nfn f { return 3 }\nf; echo $?";
+    expect(
+        shell_on(script)? == ran(0, b"hi there\nyes\n1\n2\n3\n"),
+        "the shell should run the script after -c, its variables, blocks and functions",
+    )
+}
+
+fn shell_ends_with_the_status() -> Outcome {
+    expect(
+        shell_on("echo a; exit 7; echo b")? == ran(7, b"a\n"),
+        "exit should end the script with its status",
+    )?;
+    expect(
+        shell_on("true; false")? == ran(1, b""),
+        "a script should end with the status of its last pipeline",
+    )?;
+    expect(
+        shell_on("echo a\n}")?
+            == ran(
+                2,
+                b"2:1: unexpected-close: remove the }, or open its block before it\n",
+            ),
+        "a script that does not read should run nothing and say where it is wrong",
+    )?;
+    expect(
+        shell_on("echo a; echo $nope")?
+            == ran(
+                2,
+                b"a\n1:14: unset-variable: set the variable with let before this\n",
+            ),
+        "a script should stop at a variable never set",
+    )
+}
+
+fn shell_starts_programs() -> Outcome {
+    let want: &[u8] = if booted_from_disk() {
+        b"exitwith ended with 2989\n255\n"
+    } else {
+        b"exitwith: no such command\n127\n"
+    };
+    expect(
+        shell_on("exitwith; echo $?")? == ran(0, want),
+        "the shell should start a program by its name and keep how it ended in $?",
+    )?;
+    expect(
+        shell_on("nope")? == ran(127, b"nope: no such command\n"),
+        "a command that is nowhere should end with 127",
+    )?;
+    expect(
+        shell_on("/System/Boot/meridian/programs")?.0 == Ok(Ended::Exited(126)),
+        "a path that is no program should end with 126",
+    )
+}
+
+fn shell_writes_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/Sh; echo one > /System/Sh/a; echo two >> /System/Sh/a\n\
+         arguments x 'y z' >> /System/Sh/a; cat /System/Sh/a; ls /System/Sh/*\n\
+         rm /System/Sh/a /System/Sh",
+    )?;
+    if said.starts_with(b"/System/Sh: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(2)),
+            "on /System read only the script should stop where nothing matches",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"one\ntwo\nx\ny z\n/System/Sh/a\n",
+        "the shell should make a directory, write a file and add to it, from a program too, show it, match it and remove both",
+    )?;
+    expect(
+        open("/System/Sh", abi::file::READ) == Err(Error::NotFound),
+        "the directory should be gone",
+    )
+}
+
+fn shell_matches_patterns() -> Outcome {
+    let found = if booted_from_disk() {
+        ran(
+            0,
+            b"/System/Boot/meridian/programs/whoami.mexec /System/Boot/meridian/programs/whoami_again.mexec\n",
+        )
+    } else {
+        ran(
+            2,
+            b"1:6: no-match: no file matches the pattern; quote it to mean the word itself\n",
+        )
+    };
+    expect(
+        shell_on("echo /System/Boot/meridian/programs/w*")? == found,
+        "a pattern should become the paths it matches, in order",
+    )?;
+    expect(
+        shell_on("echo '/System/*' /System/Boot/meridian/programs/whoami.me?ec")?
+            == if booted_from_disk() {
+                ran(
+                    0,
+                    b"/System/* /System/Boot/meridian/programs/whoami.mexec\n",
+                )
+            } else {
+                ran(
+                    2,
+                    b"1:18: no-match: no file matches the pattern; quote it to mean the word itself\n",
+                )
+            },
+        "a quoted pattern should stay the word it is",
+    )
+}
+
+fn shell_runs_a_file() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, WRITE};
+    expect(
+        shell_with(&["/System/none.sh"])? == ran(2, b"/System/none.sh: no such file\n"),
+        "a script that is not there should end the shell with 2",
+    )?;
+    expect(
+        shell_with(&["-c"])?
+            == ran(
+                2,
+                b"shell: start it with no words, -c SCRIPT, or a script's path\n",
+            ),
+        "words the shell does not know should end it with 2",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/script.sh";
+    let file = match open_with(path, WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "the script should be made")?,
+    };
+    let written = write_file(
+        file,
+        0,
+        b"# a script\nfor x in a b {\n  echo $x\n}\nexit 4\n",
+    );
+    let _ = close(file);
+    let ended = shell_with(&[path])?;
+    expect(
+        written == Ok(()) && remove(path) == Ok(()) && ended == ran(4, b"a\nb\n"),
+        "the shell should run the script in a file",
+    )
+}
+
+fn shell_redirects() -> Outcome {
+    expect(
+        shell_on("echo a | echo b; cat < /System/x")?
+            == ran(
+                1,
+                b"|: pipes need a standard input, which programs do not have yet\n\
+                  < /System/x: commands read no standard input yet\n",
+            ),
+        "a pipe and < should say they need a standard input, which nothing has yet",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo a > /System/r1 > /System/r2; cat /System/r1 /System/r2; rm /System/r1 /System/r2",
+    )?;
+    if said.starts_with(b"/System/r1: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only nothing should be written or removed",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"a\n",
+        "of two redirections the shell should make both files and write into the last",
+    )
 }
 
 fn writes_on_the_console() -> Outcome {

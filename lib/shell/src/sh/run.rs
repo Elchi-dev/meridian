@@ -1222,8 +1222,9 @@ impl Session {
             .get(index - 1)
             .map(|word| word.chars().collect())
             .unwrap_or_default();
-        let starts = at == 1 && word.len() > 1 && word[0] == '-';
-        if word.len() <= at || at == 1 && !starts {
+        // A word past its last character, or one that starts with no
+        // dash, ends the options.
+        if word.len() <= at || at == 1 && word.first() != Some(&'-') {
             return self.options_ended(name, index);
         }
         if at == 1 && word[1..] == ['-'] {
@@ -1274,7 +1275,7 @@ impl Session {
                 Some(argument) => self.assign("OPTARG", argument).is_ok(),
                 None => self.unset_quietly("OPTARG"),
             };
-        self.next_option = (next.1 > 1).then_some((optind, next.1));
+        self.next_option = Some((optind, next.1));
         if !set {
             return self.complained("getopts", "a variable it sets is read only", machine);
         }
@@ -3680,5 +3681,55 @@ mod tests {
         assert_eq!(ended, Err(Stop::Said(1)));
         assert_eq!(desk.err, b"set: -o pipefail: no such option\n");
         assert_eq!(out("set -o noglob -- a b; echo $- $#"), "f 2\n");
+    }
+
+    #[test]
+    fn getopts_ends_at_a_word_with_no_dash_however_long() {
+        assert_eq!(said(OPTIONS, &["word", "-a"]).0, "rest word -a\n");
+        assert_eq!(said(OPTIONS, &["-a", "ab", "-c"]).0, "a\nrest ab -c\n");
+        assert_eq!(
+            said(
+                "getopts a o; echo $? $OPTIND; getopts a o; echo $? $OPTIND",
+                &["-a", "-"]
+            )
+            .0,
+            "0 2\n1 2\n",
+            "a dash alone is a word"
+        );
+    }
+
+    #[test]
+    fn getopts_will_not_leave_optarg_set_when_it_is_read_only() {
+        assert_eq!(
+            said("readonly OPTARG=x; getopts a o; echo $?", &["-a"]),
+            (
+                String::from("2\n"),
+                String::from("getopts: a variable it sets is read only\n")
+            )
+        );
+        assert_eq!(
+            said(
+                "readonly OPTARG=x; getopts b: o; echo $? $o $OPTARG",
+                &["-b", "v"]
+            ),
+            (
+                String::from("2 b x\n"),
+                String::from("getopts: a variable it sets is read only\n")
+            ),
+            "one it would set to the argument too"
+        );
+    }
+
+    #[test]
+    fn what_says_its_answer_ends_with_0_unless_the_answer_cannot_be_written() {
+        assert_eq!(out("command -v cd; echo $?"), "cd\n0\n");
+        assert_eq!(out("command -v cd >&-; echo $?"), "1\n");
+        assert_eq!(out("cd /a; cd /b; cd -; echo $?"), "/a\n0\n");
+        assert_eq!(out("cd /a; cd /b; cd - >&-; echo $?"), "1\n");
+        assert_eq!(
+            out_to_the_end("trap : EXIT; trap; echo $?"),
+            "trap -- ':' EXIT\n0\n"
+        );
+        assert_eq!(out_to_the_end("trap : EXIT; trap >&-; echo $?"), "1\n");
     }
 }

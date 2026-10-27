@@ -2298,7 +2298,7 @@ fn the_shells_own_commands_in_pipes() -> Outcome {
     )?;
     expect(
         same(
-            &shell_on("help | grep -c or; pwd | wc; true | wc")?,
+            &shell_on("help | grep -c 'or'; pwd | wc; true | wc")?,
             &ran(0, b"2\n1 1 2\n0 0 0\n"),
         ),
         "help, pwd and true should write into a pipe, or not at all",

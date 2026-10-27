@@ -175,6 +175,20 @@ there is one: `ls` and `dir`, `cat` and `type`, `cp` and `copy`, `mv` and
 
 Reading stops at the first error, reported as `LINE:COLUMN: code: what
 to do`, for example `3:9: unterminated-quote: close the " that starts
-here on the same line`. The codes are the ones named above. Running a
+here on the same line`. The codes are the ones this document names. Running a
 command that does not exist is not a reading error; it ends that command
 with status 127 and says so.
+
+## 9. The sh dialect
+
+The sh dialect reads scripts as POSIX sh does, and reports its errors in
+the same form. A quote, a `${`, a `$(`, a `$((` or a backquote that the
+script leaves open is an error (`unclosed`), reported where it opens.
+Quotes and expansions in sh may go on over several lines, so the error
+comes only at the script's end. Inside a `$(`, a `${` or a `$((` the
+error is at the last thing opened, which is the first to close.
+
+Expansions may stand inside each other 16 deep, as in `$(a "$(b)")`,
+which is 2 deep. One deeper is an error (`too-nested`), reported where it
+opens: reading each one takes some of the shell's stack, and a script
+that needs more can set a variable to an inner one first.

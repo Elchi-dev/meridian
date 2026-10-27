@@ -160,6 +160,10 @@ Loader and UEFI:
 - [x] `2>&1` at the shell
 - [x] The shell runs Meridian's shell language: lines and blocks typed at the console, `-c` and script files, its own commands under Linux and Windows names, `>` and `>>` (ADR 0016)
 - [ ] The shell's sh dialect (ADR 0016)
+  - [x] Its tokens: operators, the three quotes and `$'...'`, comments, joined lines, IO numbers, and where each expansion ends
+  - [ ] Here-documents
+  - [ ] Its grammar, which also has to find the end of a `$(...)` holding a `case` whose patterns end in `)`
+  - [ ] Expansions, running, and choosing the dialect
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`
 - [ ] More command-line tools

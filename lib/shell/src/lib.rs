@@ -1,7 +1,7 @@
 //! Meridian's shell language, as `docs/formats/shell.md` describes it:
 //! a script read into its words and operators ([`lex`]), and those into
 //! the commands, lists and blocks they stand for ([`parse`]). Running them
-//! is the shell's.
+//! is the shell's. The sh dialect is read by [`sh`].
 
 #![cfg_attr(not(test), no_std)]
 
@@ -13,6 +13,7 @@ pub mod expand;
 pub mod lex;
 pub mod parse;
 pub mod run;
+pub mod sh;
 
 /// A place in a script: its line and its column, both counted from 1, the
 /// column in Unicode scalar values.
@@ -64,6 +65,11 @@ pub enum Code {
     BadStatus,
     /// Functions that call each other too deep.
     TooDeep,
+    /// In the sh dialect, a quote, an expansion or a backquote the script
+    /// leaves open.
+    Unclosed,
+    /// In the sh dialect, expansions inside each other deeper than 16.
+    TooNested,
 }
 
 impl Code {
@@ -90,6 +96,8 @@ impl Code {
             Code::NoMatch => "no-match",
             Code::BadStatus => "bad-status",
             Code::TooDeep => "too-deep",
+            Code::Unclosed => "unclosed",
+            Code::TooNested => "too-nested",
         }
     }
 
@@ -118,6 +126,8 @@ impl Code {
             Code::NoMatch => "no file matches the pattern; quote it to mean the word itself",
             Code::BadStatus => "return a number from 0 to 255",
             Code::TooDeep => "a function calls itself, or others call each other, too deep",
+            Code::Unclosed => "close what starts here before the script ends",
+            Code::TooNested => "this goes past 16 expansions inside each other; set a variable",
         }
     }
 }
@@ -146,7 +156,7 @@ impl fmt::Display for Error {
 mod tests {
     use super::*;
 
-    const CODES: [Code; 19] = [
+    const CODES: [Code; 21] = [
         Code::LoneCarriageReturn,
         Code::UnterminatedQuote,
         Code::BadVariable,
@@ -166,6 +176,8 @@ mod tests {
         Code::NoMatch,
         Code::BadStatus,
         Code::TooDeep,
+        Code::Unclosed,
+        Code::TooNested,
     ];
 
     #[test]
@@ -249,6 +261,8 @@ mod tests {
                 "17:33: no-match: no file matches the pattern; quote it to mean the word itself",
                 "18:35: bad-status: return a number from 0 to 255",
                 "19:37: too-deep: a function calls itself, or others call each other, too deep",
+                "20:39: unclosed: close what starts here before the script ends",
+                "21:41: too-nested: this goes past 16 expansions inside each other; set a variable",
             ]
         );
     }

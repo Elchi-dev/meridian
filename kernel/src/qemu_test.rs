@@ -3188,11 +3188,12 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     let before = free();
     seen::forget();
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
-    // Its checks start the shell on a score of scripts, each a program
-    // read from its file, which takes the slower machine a few seconds.
+    // Its checks start the shell on a score of scripts, each starting
+    // programs read from their files, which takes the slower machine a few
+    // seconds, and more than ten beside the other machines of the Go tests.
     report.check(
         "kernel.programs.hello",
-        ended_within(started, 0, 10 * raw::timer::HZ)
+        ended_within(started, 0, 30 * raw::timer::HZ)
             && seen::logged(b"Hello from ring 3, in Rust")
             && seen::ended(b"user: hello ended with 0\n"),
         "hello should run from its file, find every call working, greet, and have its end logged",
@@ -3334,7 +3335,7 @@ fn low_memory_checks<W: Write>(report: &mut Report<'_, W>, file: Option<&[u8]>) 
         }
     }
     if started.is_some() {
-        let _ = ended_within(started, 0, 10 * raw::timer::HZ);
+        let _ = ended_within(started, 0, 30 * raw::timer::HZ);
     }
     while held != 0 {
         held = release_frame(held);

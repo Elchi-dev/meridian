@@ -2,7 +2,8 @@
 //! way each part can match is listed with where the subexpressions are in
 //! it, the longest first and, of one length, in the order POSIX prefers:
 //! the earlier part the longer. The first way of the whole expression is
-//! its match. A budget of ways ends a search that would take too long.
+//! its match. Budgets of ways and of depth end a search that would take
+//! too long, hold too much or run past the stack.
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -11,18 +12,33 @@ use crate::parse::Node;
 use crate::{Text, TooComplex, same};
 
 /// Where each subexpression matched, numbered from 1, the match itself
-/// first.
+/// first; none for one that took no part.
 pub type Spans = Vec<Option<(usize, usize)>>;
 
+/// How many places a way keeps: the match's and those of the nine
+/// subexpressions a back-reference can name. Where a later one matched
+/// is not kept, so it is said to have taken no part.
+const SLOTS: usize = 10;
+
+/// The places of a way, in characters, held in the way itself, so that
+/// listing ways asks the heap for nothing each.
+type Slots = [Option<(u32, u32)>; SLOTS];
+
 /// How many ways one search may list before it gives up.
-pub const BUDGET: usize = 1 << 20;
+pub const BUDGET: usize = 1 << 18;
+
+/// How many different ways one part may have at once, as a program has a
+/// heap of 1 MiB and parts inside each other hold theirs at the same
+/// time; `\(.*\)\1` on a line gives a part a way for each of its
+/// characters.
+pub const MOST_WAYS: usize = 1 << 9;
 
 /// How deep parts and rounds may lie inside each other in a search before
 /// it gives up, so that it stays within a program's stack.
 pub const MOST_DEPTH: usize = 400;
 
-/// One way a part matches: where it ends, and the spans then.
-type Way = (usize, Spans);
+/// One way a part matches: where it ends, and the places then.
+type Way = (usize, Slots);
 
 struct Search<'s, 't> {
     text: &'s Text<'t>,
@@ -31,13 +47,24 @@ struct Search<'s, 't> {
     depth: usize,
 }
 
+/// A place as a way holds it.
+fn held(at: usize) -> u32 {
+    u32::try_from(at).unwrap_or(u32::MAX)
+}
+
+/// A place a way held.
+fn place(at: u32) -> usize {
+    usize::try_from(at).unwrap_or(usize::MAX)
+}
+
 /// The leftmost-longest match of `tree`, which has `groups`
 /// subexpressions, among those starting at the character `from` or
 /// after, with where each subexpression matched in it.
 ///
 /// # Errors
 ///
-/// When the search lists more than [`BUDGET`] ways.
+/// When the search lists more than [`BUDGET`] ways in all, one part more
+/// than [`MOST_WAYS`] at once, or goes [`MOST_DEPTH`] deep.
 pub fn find(
     tree: &Node,
     groups: usize,
@@ -51,9 +78,17 @@ pub fn find(
         left: BUDGET,
         depth: 0,
     };
-    let none = alloc::vec![None; groups + 1];
     for start in from..=text.chars.len() {
-        if let Some((end, mut spans)) = search.ways(tree, start, &none)?.into_iter().next() {
+        if let Some(&(end, slots)) = search.ways(tree, start, &[None; SLOTS])?.first() {
+            let mut spans: Spans = (0..=groups)
+                .map(|i| {
+                    slots
+                        .get(i)
+                        .copied()
+                        .flatten()
+                        .map(|(start, end)| (place(start), place(end)))
+                })
+                .collect();
             spans[0] = Some((start, end));
             return Ok(Some(spans));
         }
@@ -61,11 +96,37 @@ pub fn find(
     Ok(None)
 }
 
+/// Adds `more` to `ways`, unless that makes more than [`MOST_WAYS`]
+/// different ones. Ways alike may pile up first; settling them on the
+/// way leaves the order they settle in at the end as it is.
+fn gather(ways: &mut Vec<Way>, more: Vec<Way>) -> Result<(), TooComplex> {
+    ways.extend(more);
+    if ways.len() > MOST_WAYS {
+        *ways = settled(core::mem::take(ways));
+        if ways.len() > MOST_WAYS {
+            return Err(TooComplex);
+        }
+    }
+    Ok(())
+}
+
+/// `ways` the longest first, keeping the order of ways of one length,
+/// each once: of ways alike the first stays.
+fn settled(mut ways: Vec<Way>) -> Vec<Way> {
+    ways.sort_by_key(|way| core::cmp::Reverse(way.0));
+    let mut seen = BTreeSet::new();
+    let kept: Vec<bool> = ways.iter().map(|way| seen.insert(way)).collect();
+    drop(seen);
+    let mut keeps = kept.into_iter();
+    ways.retain(|_| keeps.next().unwrap_or(false));
+    ways
+}
+
 impl Search<'_, '_> {
-    /// Every way `node` matches from the character `at`, with `spans` so
+    /// Every way `node` matches from the character `at`, with `slots` so
     /// far: the longest first and, of one length, as POSIX prefers them.
-    fn ways(&mut self, node: &Node, at: usize, spans: &Spans) -> Result<Vec<Way>, TooComplex> {
-        self.deeper(|search| search.ways_inside(node, at, spans))
+    fn ways(&mut self, node: &Node, at: usize, slots: &Slots) -> Result<Vec<Way>, TooComplex> {
+        self.deeper(|search| search.ways_inside(node, at, slots))
     }
 
     /// What `go` finds one level deeper, unless that is too deep.
@@ -86,55 +147,60 @@ impl Search<'_, '_> {
         &mut self,
         node: &Node,
         at: usize,
-        spans: &Spans,
+        slots: &Slots,
     ) -> Result<Vec<Way>, TooComplex> {
         let either_case = self.either_case;
-        let here = || Vec::from([(at, spans.clone())]);
-        let mut ways = match node {
+        let here = || Vec::from([(at, *slots)]);
+        let ways = match node {
             Node::Empty => here(),
-            Node::Char(want) => self.one(at, spans, |c| same(c, *want, either_case)),
-            Node::Any => self.one(at, spans, |_| true),
-            Node::Set(set) => self.one(at, spans, |c| set.takes(c, either_case)),
+            Node::Char(want) => self.one(at, slots, |c| same(c, *want, either_case)),
+            Node::Any => self.one(at, slots, |_| true),
+            Node::Set(set) => self.one(at, slots, |c| set.takes(c, either_case)),
             Node::Start if at == 0 => here(),
             Node::End if at == self.text.chars.len() => here(),
             Node::Start | Node::End => Vec::new(),
             Node::Group(number, inside) => {
-                let mut ways = self.ways(inside, at, spans)?;
-                for (end, spans) in &mut ways {
-                    spans[*number] = Some((at, *end));
+                let mut ways = self.ways(inside, at, slots)?;
+                for (end, slots) in &mut ways {
+                    if let Some(slot) = slots.get_mut(*number) {
+                        *slot = Some((held(at), held(*end)));
+                    }
                 }
                 ways
             }
-            Node::Concat(items) => self.sequence(items, at, spans)?,
+            Node::Concat(items) => self.sequence(items, at, slots)?,
             Node::Alt(branches) => {
                 let mut ways = Vec::new();
                 for branch in branches {
-                    ways.extend(self.ways(branch, at, spans)?);
+                    let more = self.ways(branch, at, slots)?;
+                    gather(&mut ways, more)?;
                 }
                 ways
             }
-            Node::Repeat(inside, least, most) => {
-                self.rounds(inside, (*least, *most), 0, at, spans)?
+            Node::Repeat(inside, least, most)
+                if matches!(**inside, Node::Char(_) | Node::Any | Node::Set(_)) =>
+            {
+                self.run(inside, (*least, *most), at, slots)?
             }
-            Node::Back(number) => match spans[*number] {
-                Some((start, end)) if self.repeats(start, end, at) => {
-                    Vec::from([(at + end - start, spans.clone())])
+            Node::Repeat(inside, least, most) => {
+                self.rounds(inside, (*least, *most), 0, at, slots)?
+            }
+            Node::Back(number) => match slots.get(*number).copied().flatten() {
+                Some((start, end)) if self.repeats(place(start), place(end), at) => {
+                    Vec::from([(at + place(end) - place(start), *slots)])
                 }
                 _ => Vec::new(),
             },
         };
+        let ways = settled(ways);
         self.left = self.left.checked_sub(ways.len()).ok_or(TooComplex)?;
-        // Sorting keeps the order of ways of one length.
-        ways.sort_by_key(|way| core::cmp::Reverse(way.0));
-        let mut seen = BTreeSet::new();
-        ways.retain(|way| seen.insert(way.clone()));
         Ok(ways)
     }
 
     /// The way past the character at `at`, when it `takes` it.
-    fn one(&self, at: usize, spans: &Spans, takes: impl Fn(Option<char>) -> bool) -> Vec<Way> {
+    fn one(&self, at: usize, slots: &Slots, takes: impl Fn(Option<char>) -> bool) -> Vec<Way> {
         match self.text.chars.get(at) {
-            Some(&c) if takes(c) => Vec::from([(at + 1, spans.clone())]),
+            Some(&c) if takes(c) => Vec::from([(at + 1, *slots)]),
             _ => Vec::new(),
         }
     }
@@ -144,16 +210,46 @@ impl Search<'_, '_> {
         &mut self,
         items: &[Node],
         at: usize,
-        spans: &Spans,
+        slots: &Slots,
     ) -> Result<Vec<Way>, TooComplex> {
         let Some((first, rest)) = items.split_first() else {
-            return Ok(Vec::from([(at, spans.clone())]));
+            return Ok(Vec::from([(at, *slots)]));
         };
         let mut ways = Vec::new();
-        for (middle, spans) in self.ways(first, at, spans)? {
-            ways.extend(self.sequence(rest, middle, &spans)?);
+        for (middle, slots) in self.ways(first, at, slots)? {
+            let more = self.sequence(rest, middle, &slots)?;
+            gather(&mut ways, more)?;
         }
-        Ok(ways)
+        Ok(settled(ways))
+    }
+
+    /// Every way the one-character part `inside` repeats from `at`, as
+    /// many times as `counts` allows, the longest first: a way for each
+    /// length of the run of characters it takes, found without a round
+    /// each, so a long line stays within the depth a search may go to.
+    fn run(
+        &self,
+        inside: &Node,
+        (least, most): (u32, Option<u32>),
+        at: usize,
+        slots: &Slots,
+    ) -> Result<Vec<Way>, TooComplex> {
+        let either_case = self.either_case;
+        let takes = |c: Option<char>| match inside {
+            Node::Char(want) => same(c, *want, either_case),
+            Node::Set(set) => set.takes(c, either_case),
+            _ => true,
+        };
+        let most = most.map_or(usize::MAX, place);
+        let mut length = 0;
+        while length < most && self.text.chars.get(at + length).is_some_and(|&c| takes(c)) {
+            length += 1;
+        }
+        let lengths = place(least)..=length;
+        if lengths.clone().count() > MOST_WAYS {
+            return Err(TooComplex);
+        }
+        Ok(lengths.rev().map(|length| (at + length, *slots)).collect())
     }
 
     /// Every way `inside` matches round after round from `at`, `done`
@@ -165,25 +261,25 @@ impl Search<'_, '_> {
         counts: (u32, Option<u32>),
         done: u32,
         at: usize,
-        spans: &Spans,
+        slots: &Slots,
     ) -> Result<Vec<Way>, TooComplex> {
         let (least, most) = counts;
         let mut ways = Vec::new();
         if most.is_none_or(|most| done < most) {
-            for (end, spans) in self.ways(inside, at, spans)? {
+            for (end, slots) in self.ways(inside, at, slots)? {
                 // A round that takes nothing adds nothing once the least
                 // count is in.
                 if end > at || done < least {
                     let more =
-                        self.deeper(|search| search.rounds(inside, counts, done + 1, end, &spans))?;
-                    ways.extend(more);
+                        self.deeper(|search| search.rounds(inside, counts, done + 1, end, &slots))?;
+                    gather(&mut ways, more)?;
                 }
             }
         }
         if done >= least {
-            ways.push((at, spans.clone()));
+            ways.push((at, *slots));
         }
-        Ok(ways)
+        Ok(settled(ways))
     }
 
     /// Whether the characters from `start` to `end` come again at `at`, in
@@ -430,6 +526,124 @@ mod tests {
                 Some((2, 3)),
                 Some((3, 4))
             ]))
+        );
+    }
+
+    #[test]
+    fn a_part_has_ways_only_up_to_a_bound_that_keeps_the_heap_small() {
+        let twice = "ab".repeat(200);
+        assert_eq!(
+            bre("^\\(.*\\)\\1$", &twice),
+            Some(Vec::from([Some((0, 400)), Some((0, 200))])),
+            "a line of 400 characters, a way for each"
+        );
+        let parsed = parse("\\(.*\\)\\1", Syntax::Basic).unwrap();
+        let long = "a".repeat(MOST_WAYS + 10);
+        let text = Text::new(long.as_bytes());
+        assert_eq!(
+            find(&parsed.tree, parsed.groups, &text, false, 0),
+            Err(TooComplex),
+            "more ends for .* than the bound"
+        );
+    }
+
+    /// A way that ends at `end` with the first subexpression from `start`
+    /// to `end`, or none.
+    fn way(end: usize, group: Option<(u32, u32)>) -> Way {
+        let mut slots = [None; SLOTS];
+        slots[1] = group;
+        (end, slots)
+    }
+
+    #[test]
+    fn ways_settle_longest_first_each_once_in_the_order_they_came() {
+        let a = way(2, Some((0, 1)));
+        let b = way(5, None);
+        let c = way(2, Some((0, 2)));
+        assert_eq!(settled(Vec::from([a, b, c, a, b])), [b, a, c]);
+        assert_eq!(
+            settled(Vec::from([c, a])),
+            [c, a],
+            "of one length, the first first"
+        );
+        assert_eq!(settled(Vec::new()), []);
+    }
+
+    #[test]
+    fn gathering_settles_before_it_says_there_are_too_many() {
+        let mut ways = Vec::new();
+        let same = alloc::vec![way(1, None); MOST_WAYS];
+        assert_eq!(gather(&mut ways, same.clone()), Ok(()));
+        assert_eq!(gather(&mut ways, same), Ok(()), "twice as many, all alike");
+        assert_eq!(ways, [way(1, None)]);
+        let many: Vec<Way> = (0..=MOST_WAYS).map(|end| way(end, None)).collect();
+        assert_eq!(gather(&mut Vec::new(), many), Err(TooComplex));
+        let most: Vec<Way> = (0..MOST_WAYS).map(|end| way(end, None)).collect();
+        assert_eq!(
+            gather(&mut Vec::new(), most),
+            Ok(()),
+            "as many as the bound"
+        );
+    }
+
+    #[test]
+    fn a_run_of_one_character_lists_its_lengths_within_its_counts() {
+        let run = |pattern: &str, text: &str, either_case: bool| {
+            let parsed = parse(pattern, Syntax::Extended).unwrap();
+            let Node::Repeat(inside, least, most) = &parsed.tree else {
+                panic!("a repeat");
+            };
+            let text = Text::new(text.as_bytes());
+            let search = Search {
+                text: &text,
+                either_case,
+                left: BUDGET,
+                depth: 0,
+            };
+            search
+                .run(inside, (*least, *most), 0, &[None; SLOTS])
+                .map(|ways| ways.into_iter().map(|(end, _)| end).collect::<Vec<_>>())
+        };
+        assert_eq!(run("a*", "aab", false), Ok(Vec::from([2, 1, 0])));
+        assert_eq!(run("a+", "aab", false), Ok(Vec::from([2, 1])));
+        assert_eq!(run("a{1,2}", "aaaa", false), Ok(Vec::from([2, 1])));
+        assert_eq!(run("a{3}", "aa", false), Ok(Vec::new()), "too few");
+        assert_eq!(run("[ab]*", "abc", false), Ok(Vec::from([2, 1, 0])));
+        assert_eq!(run(".*", "äö", false), Ok(Vec::from([2, 1, 0])));
+        assert_eq!(run("A*", "aA", true), Ok(Vec::from([2, 1, 0])));
+        assert_eq!(run("A*", "aA", false), Ok(Vec::from([0])));
+        let long = "a".repeat(MOST_WAYS);
+        assert_eq!(
+            run("a*", &long, false),
+            Err(TooComplex),
+            "one more length than the bound"
+        );
+        assert!(run("a+", &long, false).is_ok(), "as many as the bound");
+    }
+
+    #[test]
+    fn a_subexpression_past_the_ninth_takes_no_part_a_search_says() {
+        let pattern = "\\(a\\)".repeat(10) + "\\1";
+        let parsed = parse(&pattern, Syntax::Basic).unwrap();
+        let eleven = "a".repeat(11);
+        let text = Text::new(eleven.as_bytes());
+        let spans = find(&parsed.tree, parsed.groups, &text, false, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(spans.len(), 11);
+        assert_eq!(spans[0], Some((0, 11)));
+        assert_eq!(spans[9], Some((8, 9)));
+        assert_eq!(spans[10], None);
+    }
+
+    #[test]
+    fn places_go_into_ways_and_out_unchanged() {
+        assert_eq!(place(held(0)), 0);
+        assert_eq!(place(held(123_456)), 123_456);
+        assert_eq!(
+            held(usize::MAX),
+            u32::MAX,
+            "past what a way holds, the most it can"
         );
     }
 }

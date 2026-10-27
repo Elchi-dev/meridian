@@ -281,6 +281,10 @@ in the 64, a `return` ending them; it takes the file's path, from the
 working directory when it does not start at the root, as Meridian has no
 `PATH` to look in yet. A file it cannot read ends the script, with 1.
 
+`getopts` takes options as POSIX's does, saying `getopts: -x: no such
+option` or `getopts: -x: needs an argument` unless its list starts with
+`:`.
+
 A pipeline whose commands are all programs or the shell's own commands
 runs them side by side, as Meridian's dialect does. One with a
 function, a builtin POSIX calls special or a compound command in it runs

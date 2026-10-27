@@ -5,7 +5,7 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use super::expand::{Char, Kind, as_pattern, failed, read_values};
@@ -68,6 +68,10 @@ const SPECIAL: [&str; 13] = [
     "trap", "unset",
 ];
 
+/// The builtins POSIX calls no special ones that the session runs itself,
+/// as they read or set its variables.
+const REGULAR: [&str; 2] = ["getopts", "read"];
+
 /// A sh session: its variables, functions and parameters, its options,
 /// and the status of its last command.
 #[derive(Clone, Debug)]
@@ -91,6 +95,10 @@ pub struct Session {
     /// The status of the last command substitution of the command being
     /// expanded, which is the status of a command of assignments alone.
     substituted: Option<u8>,
+    /// Where `getopts` goes on in a word that holds several options: the
+    /// `OPTIND` it was at, and the character of that word after the last
+    /// option it took.
+    next_option: Option<(String, usize)>,
     /// What a trap on `EXIT` runs as the shell ends, as written and read;
     /// nothing at all for one that ignores it.
     exit_trap: Option<(String, Vec<Item>)>,
@@ -132,6 +140,7 @@ impl Session {
             loops: 0,
             conditions: 0,
             substituted: None,
+            next_option: None,
             exit_trap: None,
         }
     }
@@ -477,7 +486,7 @@ impl Session {
     fn machines(&self, prepared: &Prepared) -> bool {
         prepared.ready.words.first().is_some_and(|name| {
             !SPECIAL.contains(&name.as_str())
-                && name != "read"
+                && !REGULAR.contains(&name.as_str())
                 && !self.functions.contains_key(name)
         })
     }
@@ -518,8 +527,8 @@ impl Session {
         if let Some(function) = self.functions.get(&name).cloned() {
             return self.call(&function, &ready, assigned, at, machine);
         }
-        if name == "read" {
-            // The variables assigned before it hold while it reads, as
+        if REGULAR.contains(&name.as_str()) {
+            // The variables assigned before it hold while it runs, as
             // `IFS=: read a b` asks.
             let mut kept = Vec::new();
             for (name, value) in assigned {
@@ -527,7 +536,12 @@ impl Session {
                 let _ = self.assign(&name, value);
             }
             let flow = self.around(&ready.redirections, machine, |session, machine| {
-                Ok(session.read(&ready.words[1..], machine))
+                let words = &ready.words[1..];
+                Ok(if name == "read" {
+                    session.read(words, machine)
+                } else {
+                    session.getopts(words, machine)
+                })
             });
             self.restore(kept);
             return flow;
@@ -879,6 +893,116 @@ impl Session {
         }
         self.status = u8::from(!ended);
         Flow::Next
+    }
+
+    /// `getopts`: the next option among the positional parameters, or the
+    /// words after the variable's name, as the first word lists them, into
+    /// that variable, its argument into `OPTARG`, `OPTIND` the parameter it
+    /// goes on at; `?` and an end with 1 once the options ended. A list
+    /// that starts with `:` says nothing of an option it does not know or
+    /// one short of its argument, and gives it in `OPTARG`.
+    fn getopts(&mut self, words: &[String], machine: &mut impl Machine) -> Flow {
+        let [options, name, given @ ..] = words else {
+            return self.complained("getopts", "needs the options and a variable", machine);
+        };
+        if !is_name(name) {
+            return self.complained("getopts", &format!("{name}: not a name"), machine);
+        }
+        let words = if given.is_empty() {
+            self.positional.clone()
+        } else {
+            given.to_vec()
+        };
+        let quiet = options.starts_with(':');
+        let optind = self.variable("OPTIND").unwrap_or_else(|| String::from("1"));
+        let index = optind.parse::<usize>().unwrap_or(1).max(1);
+        let at = match &self.next_option {
+            Some((was, at)) if *was == optind => *at,
+            _ => 1,
+        };
+        let word: Vec<char> = words
+            .get(index - 1)
+            .map(|word| word.chars().collect())
+            .unwrap_or_default();
+        let starts = at == 1 && word.len() > 1 && word[0] == '-';
+        if word.len() <= at || at == 1 && !starts {
+            return self.options_ended(name, index);
+        }
+        if at == 1 && word[1..] == ['-'] {
+            return self.options_ended(name, index + 1);
+        }
+        let c = word[at];
+        let rest: String = word[at + 1..].iter().collect();
+        let listed = options.char_indices().find(|&(_, o)| o == c && c != ':');
+        let wants = listed.is_some_and(|(i, _)| options[i + c.len_utf8()..].starts_with(':'));
+        // Where it goes on: the next character of this word, or the next word.
+        let mut next = if rest.is_empty() {
+            (index + 1, 1)
+        } else {
+            (index, at + 1)
+        };
+        let mut found = c.to_string();
+        let mut argument = None;
+        if listed.is_none() {
+            found = String::from("?");
+            if quiet {
+                argument = Some(c.to_string());
+            } else {
+                let _ = machine.err(format!("getopts: -{c}: no such option\n").as_bytes());
+            }
+        } else if wants && !rest.is_empty() {
+            argument = Some(rest);
+            next = (index + 1, 1);
+        } else if wants {
+            match words.get(index) {
+                Some(value) => {
+                    argument = Some(value.clone());
+                    next = (index + 2, 1);
+                }
+                None if quiet => {
+                    found = String::from(":");
+                    argument = Some(c.to_string());
+                }
+                None => {
+                    found = String::from("?");
+                    let _ = machine.err(format!("getopts: -{c}: needs an argument\n").as_bytes());
+                }
+            }
+        }
+        let optind = next.0.to_string();
+        let set = self.assign(name, found).is_ok() && self.assign("OPTIND", optind.clone()).is_ok();
+        let set = set
+            && match argument {
+                Some(argument) => self.assign("OPTARG", argument).is_ok(),
+                None => self.unset_quietly("OPTARG"),
+            };
+        self.next_option = (next.1 > 1).then_some((optind, next.1));
+        if !set {
+            return self.complained("getopts", "a variable it sets is read only", machine);
+        }
+        self.status = 0;
+        Flow::Next
+    }
+
+    /// Ends `getopts` once the options ended, `OPTIND` set to `index`, the
+    /// parameter they end before.
+    fn options_ended(&mut self, name: &str, index: usize) -> Flow {
+        self.next_option = None;
+        let _ = self.assign(name, String::from("?"));
+        let _ = self.assign("OPTIND", index.to_string());
+        self.unset_quietly("OPTARG");
+        self.status = 1;
+        Flow::Next
+    }
+
+    /// Unsets the variable `name` unless it is read only, and says whether
+    /// it could.
+    fn unset_quietly(&mut self, name: &str) -> bool {
+        if self.variables.get(name).is_some_and(|v| v.readonly) {
+            return false;
+        }
+        self.variables.remove(name);
+        true
     }
 
     /// Runs the special builtin `words` names.
@@ -2794,5 +2918,99 @@ mod tests {
             (1, 1, Code::TooDeep),
             "a file that runs itself goes only so deep"
         );
+    }
+
+    /// A loop that says each option `getopts` takes from the parameters,
+    /// its argument after a `=`, and the parameters left after them.
+    const OPTIONS: &str = "while getopts ab:c o; do echo \"$o${OPTARG+=$OPTARG}\"; done; \
+                           shift $((OPTIND - 1)); echo \"rest $*\"";
+
+    #[test]
+    fn getopts_takes_the_options_one_by_one() {
+        assert_eq!(
+            said(OPTIONS, &["-a", "-b", "x", "-ac", "-byz", "--", "-c", "w"]).0,
+            "a\nb=x\na\nc\nb=yz\nrest -c w\n"
+        );
+        assert_eq!(said(OPTIONS, &["-cab", "v", "w"]).0, "c\na\nb=v\nrest w\n");
+        assert_eq!(said(OPTIONS, &[]).0, "rest \n");
+    }
+
+    #[test]
+    fn getopts_ends_at_the_first_word_that_is_no_option() {
+        assert_eq!(said(OPTIONS, &["w", "-a"]).0, "rest w -a\n");
+        assert_eq!(said(OPTIONS, &["-a", "-", "-c"]).0, "a\nrest - -c\n");
+        assert_eq!(said(OPTIONS, &["-a", "--"]).0, "a\nrest \n");
+        assert_eq!(
+            said(
+                "getopts a o; echo $? \"$o\" $OPTIND \"[${OPTARG-unset}]\"",
+                &["x"]
+            )
+            .0,
+            "1 ? 1 [unset]\n"
+        );
+    }
+
+    #[test]
+    fn getopts_says_what_is_wrong_with_an_option() {
+        assert_eq!(
+            said(OPTIONS, &["-x", "-b"]),
+            (
+                String::from("?\n?\nrest \n"),
+                String::from("getopts: -x: no such option\ngetopts: -b: needs an argument\n")
+            )
+        );
+        let quiet = "while getopts :ab: o; do echo \"$o=$OPTARG\"; done";
+        assert_eq!(
+            said(quiet, &["-x", "-b"]),
+            (String::from("?=x\n:=b\n"), String::new())
+        );
+        assert_eq!(said(OPTIONS, &["-:"]).1, "getopts: -:: no such option\n");
+    }
+
+    #[test]
+    fn getopts_takes_the_words_after_the_name_when_given() {
+        assert_eq!(out("getopts a: o -a v; echo $o $OPTARG $OPTIND"), "a v 3\n");
+        assert_eq!(
+            said("getopts a o -a; echo $o $#", &["p", "q"]).0,
+            "a 2\n",
+            "the parameters stay as they are"
+        );
+    }
+
+    #[test]
+    fn getopts_starts_again_when_optind_is_set() {
+        assert_eq!(
+            said(
+                "getopts ab o; getopts ab o; echo $o; OPTIND=1; getopts ab o; echo $o",
+                &["-ab"]
+            )
+            .0,
+            "b\na\n"
+        );
+    }
+
+    #[test]
+    fn getopts_says_what_is_wrong_with_its_words() {
+        for (script, said_) in [
+            (
+                "getopts; echo $?",
+                "getopts: needs the options and a variable\n",
+            ),
+            (
+                "getopts a; echo $?",
+                "getopts: needs the options and a variable\n",
+            ),
+            ("getopts a 1o; echo $?", "getopts: 1o: not a name\n"),
+            (
+                "readonly OPTARG; getopts a: o -a v; echo $?",
+                "getopts: a variable it sets is read only\n",
+            ),
+        ] {
+            assert_eq!(
+                said(script, &[]),
+                (String::from("2\n"), String::from(said_)),
+                "{script}"
+            );
+        }
     }
 }

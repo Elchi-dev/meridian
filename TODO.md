@@ -178,7 +178,8 @@ Loader and UEFI:
   - [x] `read`, a program reading on where it stopped in a file or a text
   - [x] `trap` for `EXIT`, run as the script or a subshell ends (ADR 0021)
   - [x] `.`, a file's commands run in the session itself
-  - [ ] `&` with `$!` and `wait`, `exec`, `getopts`
+  - [x] `getopts`
+  - [ ] `&` with `$!` and `wait`, `exec`
   - [ ] The `sh` command and an interactive sh session
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

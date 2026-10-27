@@ -3074,8 +3074,8 @@ fn sh_function_streams() -> Outcome {
 }
 
 /// In sh, `$0` names the script, a `-c` one the shell, which hands it no
-/// parameters; `set` gives it some, and the shell's commands and tests
-/// run in it as in Meridian's dialect.
+/// parameters; `set` gives it some, the shell's commands and tests run in
+/// it as in Meridian's dialect, and `getopts` takes options from them.
 fn sh_parameters() -> Outcome {
     let checked = same(
         &shell_on(
@@ -3083,9 +3083,10 @@ fn sh_parameters() -> Outcome {
              echo $0 $# $$\n\
              set -- a 'b c'; for p; do echo \"[$p]\"; done\n\
              shift; echo $1\n\
-             [ \"$1\" = \"b c\" ] && test -n \"$1\" && echo both",
+             [ \"$1\" = \"b c\" ] && test -n \"$1\" && echo both\n\
+             set -- -ab v w; while getopts ab: o; do echo \"$o$OPTARG\"; done; echo $OPTIND",
         )?,
-        &ran(0, b"shell 0 0\n[a]\n[b c]\nb c\nboth\n"),
+        &ran(0, b"shell 0 0\n[a]\n[b c]\nb c\nboth\na\nbv\n3\n"),
     );
     expect(
         checked,

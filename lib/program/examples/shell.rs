@@ -35,19 +35,78 @@ enum Edit {
     Erase,
     /// The line is done.
     Run(String),
+    /// The line shown goes, `erase` characters of it, for `with`, a line
+    /// from before or the one that was being typed.
+    Recall { erase: usize, with: String },
     /// Nothing changes.
     Nothing,
 }
 
-/// The line being typed, and which shift and control keys are held.
+/// How many lines run before the editor keeps for the arrow keys.
+const HISTORY: usize = 100;
+
+/// The line being typed, which shift and control keys are held, and the
+/// lines run before, oldest first, which up and down bring back.
 #[derive(Default)]
 struct Editor {
     line: String,
     held: Held,
+    history: Vec<String>,
+    /// Which line of the history is shown, none for the one being typed.
+    shown: Option<usize>,
+    /// The line that was being typed while one from before is shown.
+    kept: String,
 }
 
 impl Editor {
     fn feed(&mut self, key: KeyEvent) -> Edit {
+        if key.pressed && matches!(key.usage, 0x51 | 0x52) {
+            return self.recall(key.usage == 0x52);
+        }
+        let edit = self.edit(key);
+        if !matches!(edit, Edit::Nothing) {
+            // A line from before that is changed or run is the one typed.
+            self.shown = None;
+        }
+        if let Edit::Run(line) = &edit {
+            self.kept.clear();
+            if !line.trim().is_empty() && self.history.last() != Some(line) {
+                if self.history.len() == HISTORY {
+                    self.history.remove(0);
+                }
+                self.history.push(line.clone());
+            }
+        }
+        edit
+    }
+
+    /// Shows the line before the one shown, when `up`, or the one after,
+    /// which past the newest is the line that was being typed.
+    fn recall(&mut self, up: bool) -> Edit {
+        let newest = self.history.len().checked_sub(1);
+        let next = match (self.shown, up) {
+            (None, true) => newest,
+            (None, false) => None,
+            (Some(i), true) => Some(i.saturating_sub(1)),
+            (Some(i), false) => (i + 1 < self.history.len()).then_some(i + 1),
+        };
+        if next == self.shown {
+            return Edit::Nothing;
+        }
+        if self.shown.is_none() {
+            self.kept = self.line.clone();
+        }
+        let with = match next {
+            Some(i) => self.history[i].clone(),
+            None => core::mem::take(&mut self.kept),
+        };
+        let erase = self.line.chars().count();
+        self.line.clone_from(&with);
+        self.shown = next;
+        Edit::Recall { erase, with }
+    }
+
+    fn edit(&mut self, key: KeyEvent) -> Edit {
         match self.held.feed(key) {
             Typed::Char('\n') => Edit::Run(core::mem::take(&mut self.line)),
             Typed::Char('\u{8}') => match self.line.pop() {
@@ -420,6 +479,7 @@ fn typed() -> u8 {
         let _ = match editor.feed(key) {
             Edit::Type(c) => program::write(c.encode_utf8(&mut room)),
             Edit::Erase => program::write("\u{8}"),
+            Edit::Recall { erase, with } => program::write(&("\u{8}".repeat(erase) + &with)),
             Edit::Run(line) => {
                 let _ = program::write("\n");
                 typed.push_str(&line);
@@ -1355,6 +1415,97 @@ mod tests {
                 Edit::Run("c".into())
             ]
         );
+    }
+
+    const UP: u16 = 0x52;
+    const DOWN: u16 = 0x51;
+
+    /// An editor that ran `lines`, typed as keys a letter is.
+    fn ran(lines: &[&str]) -> Editor {
+        let mut editor = Editor::default();
+        for line in lines {
+            for c in line.chars() {
+                let usage = u16::from(u8::try_from(c).unwrap() - b'a') + 0x04;
+                editor.feed(down(usage));
+            }
+            assert!(matches!(editor.feed(down(0x28)), Edit::Run(_)));
+        }
+        editor
+    }
+
+    fn recalled(erase: usize, with: &str) -> Edit {
+        Edit::Recall {
+            erase,
+            with: with.into(),
+        }
+    }
+
+    #[test]
+    fn up_and_down_bring_back_the_lines_run_before() {
+        let mut e = ran(&["ls", "cat", "pwd"]);
+        assert_eq!(e.feed(down(UP)), recalled(0, "pwd"));
+        assert_eq!(e.feed(down(UP)), recalled(3, "cat"));
+        assert_eq!(
+            e.feed(up(UP)),
+            Edit::Nothing,
+            "a key coming up does nothing"
+        );
+        assert_eq!(e.feed(down(UP)), recalled(3, "ls"));
+        assert_eq!(e.feed(down(UP)), Edit::Nothing, "the oldest stays");
+        assert_eq!(e.feed(down(DOWN)), recalled(2, "cat"));
+        assert_eq!(e.feed(down(DOWN)), recalled(3, "pwd"));
+        assert_eq!(
+            e.feed(down(DOWN)),
+            recalled(3, ""),
+            "back to the line being typed"
+        );
+        assert_eq!(e.feed(down(DOWN)), Edit::Nothing);
+        assert_eq!(e.feed(down(0x28)), Edit::Run(String::new()));
+        assert_eq!(
+            Editor::default().feed(down(UP)),
+            Edit::Nothing,
+            "no lines yet"
+        );
+    }
+
+    #[test]
+    fn the_line_being_typed_waits_while_older_ones_are_shown() {
+        let mut e = ran(&["ls"]);
+        e.feed(down(0x06));
+        assert_eq!(e.feed(down(UP)), recalled(1, "ls"));
+        assert_eq!(e.feed(down(DOWN)), recalled(2, "c"));
+        assert_eq!(e.feed(down(0x28)), Edit::Run("c".into()));
+    }
+
+    #[test]
+    fn a_line_from_before_changed_is_the_one_run() {
+        let mut e = ran(&["ls"]);
+        e.feed(down(UP));
+        assert_eq!(e.feed(down(0x2a)), Edit::Erase);
+        assert_eq!(e.feed(down(0x04)), Edit::Type('a'));
+        assert_eq!(e.feed(down(0x28)), Edit::Run("la".into()));
+        assert_eq!(e.feed(down(UP)), recalled(0, "la"), "the newest now");
+        assert_eq!(e.feed(down(UP)), recalled(2, "ls"));
+    }
+
+    #[test]
+    fn the_history_keeps_no_empty_line_no_line_twice_and_no_more_than_it_holds() {
+        let mut e = ran(&["a", "a", "", "b"]);
+        assert_eq!(e.history, ["a", "b"]);
+        e = ran(&[]);
+        for n in 0..HISTORY + 5 {
+            e.history.push(format!("{n}"));
+            if e.history.len() > HISTORY {
+                e.history.remove(0);
+            }
+        }
+        for c in ["x", "y"] {
+            e.line = c.into();
+            e.feed(down(0x28));
+        }
+        assert_eq!(e.history.len(), HISTORY);
+        assert_eq!(e.history.last().map(String::as_str), Some("y"));
+        assert_eq!(e.history[0], "7", "the oldest went first");
     }
 
     #[test]

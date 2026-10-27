@@ -1753,25 +1753,7 @@ fn shell_checks<W: Write>(
     typed(&["e", "x", "i", "t", "w", "i", "t", "h", "ret"]);
     // From its file, or on a CD from what the loader brought.
     let ran = waited_for("exitwith ended with 2989");
-    // A block goes on over the lines typed until its brace closes.
-    typed(&[
-        "i",
-        "f",
-        "spc",
-        "t",
-        "r",
-        "u",
-        "e",
-        "spc",
-        "shift-bracket_left",
-        "ret",
-    ]);
-    let open = waited_for("> if true {");
-    typed(&["e", "c", "h", "o", "spc", "y", "e", "s", "ret"]);
-    typed(&["shift-bracket_right", "ret"]);
-    let block = open && waited_for("... echo yes") && waited_for("yes");
-    typed(&["shift-bracket_right", "ret"]);
-    let wrong = waited_for("1:1: unexpected-close: remove the }, or open its block before it");
+    let (block, wrong, recalled) = shell_language_checks(&mut typed, &waited_for, &rows, patience);
     typed(&["e", "x", "i", "t", "spc", "7", "ret"]);
     let ended = started.is_ok_and(|slot| {
         let start = x86::raw::tsc();
@@ -1782,8 +1764,18 @@ fn shell_checks<W: Write>(
     });
     report.check(
         "kernel.shell",
-        greeted && echoed && listed && shown && refused && alone && ran && block && wrong && ended,
-        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, and end at exit with its status",
+        greeted
+            && echoed
+            && listed
+            && shown
+            && refused
+            && alone
+            && ran
+            && block
+            && wrong
+            && recalled
+            && ended,
+        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, and end at exit with its status",
     );
 }
 
@@ -2021,6 +2013,47 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
         made && written && stays && gone,
         "typed at the shell, md should make a directory ls shows, echo should write a file and add to it, cat show it, and rm keep a directory that holds something and remove the file and then the directory",
     );
+}
+
+/// What typing the shell's language does: a block over three lines, a
+/// line that does not read, and the last line run again with up, each
+/// whether it showed what it should.
+fn shell_language_checks(
+    typed: &mut dyn FnMut(&[&str]),
+    waited_for: &dyn Fn(&str) -> bool,
+    rows: &dyn Fn() -> alloc::vec::Vec<alloc::string::String>,
+    patience: u64,
+) -> (bool, bool, bool) {
+    // A block goes on over the lines typed until its brace closes.
+    typed(&[
+        "i",
+        "f",
+        "spc",
+        "t",
+        "r",
+        "u",
+        "e",
+        "spc",
+        "shift-bracket_left",
+        "ret",
+    ]);
+    let open = waited_for("> if true {");
+    typed(&["e", "c", "h", "o", "spc", "y", "e", "s", "ret"]);
+    typed(&["shift-bracket_right", "ret"]);
+    let block = open && waited_for("... echo yes") && waited_for("yes");
+    typed(&["shift-bracket_right", "ret"]);
+    let wrong = waited_for("1:1: unexpected-close: remove the }, or open its block before it");
+    // Up brings the last line back, which Enter runs again.
+    typed(&["e", "c", "h", "o", "spc", "a", "g", "a", "i", "n", "ret"]);
+    let once = waited_for("again");
+    typed(&["up", "ret"]);
+    let start = x86::raw::tsc();
+    let mut again = false;
+    while !again && x86::raw::tsc() - start < patience {
+        again = rows().iter().filter(|r| *r == "again").count() >= 2;
+        raw::thread::sleep(1);
+    }
+    (block, wrong, once && again)
 }
 
 /// Asks sextant to type `line` and press return, a key for each

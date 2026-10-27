@@ -370,6 +370,9 @@ func TestGUIDByteOrder(t *testing.T) {
 	if s := MeridianSystem.String(); s != "B0DD29AB-2286-43EF-9809-E345D01A1B29" {
 		t.Errorf("Meridian type = %s", s)
 	}
+	if s := BasicData.String(); s != "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7" {
+		t.Errorf("basic data type = %s", s)
+	}
 	lower, err := ParseGUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
 	if err != nil || lower != EFISystemPartition {
 		t.Errorf("lower case parse = %v, %v", lower, err)

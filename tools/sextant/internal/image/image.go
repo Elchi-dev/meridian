@@ -31,13 +31,43 @@ type Contents struct {
 	Time  time.Time
 	Files map[string][]byte
 	// System is the size of a Meridian system partition after the EFI
-	// system partition, left empty; 0 for none. Only a disk has one.
+	// system partition; 0 for none. Only a disk has one. Until Strata
+	// exists it holds FAT32, with the lists of what Meridian may write
+	// (decision record 0015): made.meri names the EFI system partition and
+	// itself, and unlocked.meri the others marked unlocked.
 	System int64
+	// Others are partitions after the system partition that made.meri
+	// leaves out, the way a disk Meridian shares with another system has
+	// them. Their room is left empty.
+	Others []Other
+}
+
+// Other is a partition Meridian does not count as one it made, and
+// whether it may write it all the same.
+type Other struct {
+	gpt.Partition
+	Unlocked bool
 }
 
 // TestSystem is the size of the Meridian system partition of test disks,
-// where the test image may write.
-const TestSystem = 1 << 20
+// the least FAT32 holds with a little room to spare.
+const TestSystem = 34 << 20
+
+// TestOthers are the partitions of test disks besides Meridian's own: one
+// unlocked, where the test image writes sectors, and one neither made nor
+// unlocked, though of Meridian's own type, which it must never write.
+var TestOthers = []Other{
+	{Partition: gpt.Partition{Name: "Unlocked", Type: gpt.BasicData, Size: 1 << 20}, Unlocked: true},
+	{Partition: gpt.Partition{Name: "Not listed", Type: gpt.MeridianSystem, Size: 1 << 20}},
+}
+
+// MadePath and UnlockedPath are where on the Meridian system partition
+// the partitions Meridian may write are listed by their unique GUIDs:
+// those it made, and those the person unlocked.
+const (
+	MadePath     = "made.meri"
+	UnlockedPath = "unlocked.meri"
+)
 
 // FirmwarePath is where UEFI firmware looks for a loader on removable
 // media and on disks without boot entries. Images put the shim there,
@@ -297,6 +327,10 @@ func writeDisk(f *os.File, c Contents) error {
 	if c.System > 0 {
 		d.Partitions = append(d.Partitions, gpt.Partition{Name: "Meridian system", Type: gpt.MeridianSystem, Size: c.System})
 	}
+	for _, o := range c.Others {
+		d.Partitions = append(d.Partitions, o.Partition)
+		d.Size += o.Size
+	}
 	if err := f.Truncate(d.Size); err != nil {
 		return err
 	}
@@ -316,7 +350,90 @@ func writeDisk(f *os.File, c Contents) error {
 	if err != nil {
 		return fmt.Errorf("EFI system partition: %w", err)
 	}
+	if c.System > 0 {
+		if err := writeSystem(f, layout, c); err != nil {
+			return fmt.Errorf("Meridian system partition: %w", err)
+		}
+	}
 	return nil
+}
+
+const madeHeader = `# The partitions Meridian made, by their unique GUIDs. It writes to
+# these and to those unlocked.meri names, and to nothing else.
+`
+
+const unlockedHeader = `# Partitions Meridian did not make that it may write all the same, by
+# their unique GUIDs, each with its name and size as they were when they
+# were unlocked.
+`
+
+// writeSystem formats the Meridian system partition, the second, with the
+// lists of what Meridian may write.
+func writeSystem(f *os.File, layout gpt.Layout, c Contents) error {
+	var unlocked []gpt.Placement
+	for i, o := range c.Others {
+		if o.Unlocked {
+			unlocked = append(unlocked, layout.Partitions[2+i])
+		}
+	}
+	system := layout.Partitions[1]
+	_, err := fat.Write(f, system.Offset(), fat.Volume{
+		Size:          c.System,
+		Label:         "SYSTEM",
+		ID:            volumeID(c.Seed + " system"),
+		HiddenSectors: uint32(system.FirstLBA),
+		Time:          fatTime(c.Time),
+		Files: map[string][]byte{
+			MadePath:     list(madeHeader, layout.Partitions[:2]),
+			UnlockedPath: list(unlockedHeader, unlocked),
+		},
+	})
+	return err
+}
+
+// list writes the partitions ps as made.meri and unlocked.meri hold them:
+// after the header, a block for each, labelled with its unique GUID, with
+// the name and size it has.
+func list(header string, ps []gpt.Placement) []byte {
+	var b strings.Builder
+	b.WriteString(header)
+	for _, p := range ps {
+		fmt.Fprintf(&b, "\npartition \"%s\" {\n    name = %s\n    size = %s\n}\n", p.GUID, meriString(p.Name), meriSize(p.Size))
+	}
+	return []byte(b.String())
+}
+
+// meriString writes s as a quoted .meri string.
+func meriString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\u{%X}`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// meriSize writes n bytes as a .meri size, in the largest binary unit
+// that holds it whole.
+func meriSize(n int64) string {
+	for _, u := range []struct {
+		name  string
+		bytes int64
+	}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}} {
+		if n != 0 && n%u.bytes == 0 {
+			return fmt.Sprintf("%d%s", n/u.bytes, u.name)
+		}
+	}
+	return fmt.Sprintf("%dB", n)
 }
 
 // ISO writes an ISO 9660 image whose El Torito boot entry is the EFI

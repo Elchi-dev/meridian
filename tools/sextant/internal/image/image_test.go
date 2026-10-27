@@ -317,34 +317,58 @@ func TestDiskLayoutAsSfdiskSeesIt(t *testing.T) {
 	}
 }
 
-func TestATestDiskHasRoomForMeridiansOwnSystem(t *testing.T) {
-	sfdisk := tool(t, "sfdisk")
-	path := diskFile(t, Contents{Seed: "system", Time: stamp, Files: files(), System: TestSystem})
-	out, err := exec.Command(sfdisk, "--json", path).Output()
+// sfdiskPartition is a partition as sfdisk --json describes it, in
+// sectors.
+type sfdiskPartition struct {
+	Start int64  `json:"start"`
+	Size  int64  `json:"size"`
+	Type  string `json:"type"`
+	UUID  string `json:"uuid"`
+	Name  string `json:"name"`
+}
+
+func partitionsOf(t *testing.T, path string) []sfdiskPartition {
+	t.Helper()
+	out, err := exec.Command(tool(t, "sfdisk"), "--json", path).Output()
 	if err != nil {
 		t.Fatalf("sfdisk: %v", err)
 	}
 	var table struct {
 		PartitionTable struct {
-			Partitions []struct {
-				Start int64  `json:"start"`
-				Size  int64  `json:"size"`
-				Type  string `json:"type"`
-				Name  string `json:"name"`
-			} `json:"partitions"`
+			Partitions []sfdiskPartition `json:"partitions"`
 		} `json:"partitiontable"`
 	}
 	if err := json.Unmarshal(out, &table); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	parts := table.PartitionTable.Partitions
-	if len(parts) != 2 || parts[0].Size != ESPSize/512 {
+	return table.PartitionTable.Partitions
+}
+
+func testDisk(t *testing.T) string {
+	t.Helper()
+	return diskFile(t, Contents{Seed: "system", Time: stamp, Files: files(), System: TestSystem, Others: TestOthers})
+}
+
+func TestATestDiskHasMeridiansSystemAndPartitionsOfOthers(t *testing.T) {
+	sfdisk := tool(t, "sfdisk")
+	path := testDisk(t)
+	parts := partitionsOf(t, path)
+	if len(parts) != 4 || parts[0].Size != ESPSize/512 {
 		t.Fatalf("partitions: %+v", parts)
 	}
-	system := parts[1]
-	if system.Type != "B0DD29AB-2286-43EF-9809-E345D01A1B29" || system.Name != "Meridian system" ||
-		system.Size != TestSystem/512 || system.Start < parts[0].Start+parts[0].Size {
-		t.Fatalf("the Meridian system partition: %+v", system)
+	want := []struct {
+		typ, name string
+		size      int64
+	}{
+		{"B0DD29AB-2286-43EF-9809-E345D01A1B29", "Meridian system", TestSystem / 512},
+		{"EBD0A0A2-B9E5-4433-87C0-68B6B72699C7", "Unlocked", 2048},
+		{"B0DD29AB-2286-43EF-9809-E345D01A1B29", "Not listed", 2048},
+	}
+	for i, w := range want {
+		p, before := parts[i+1], parts[i]
+		if p.Type != w.typ || p.Name != w.name || p.Size != w.size || p.Start < before.Start+before.Size {
+			t.Fatalf("partition %d: %+v", i+2, p)
+		}
 	}
 	if out, err := exec.Command(sfdisk, "--verify", path).CombinedOutput(); err != nil {
 		t.Fatalf("sfdisk --verify: %v\n%s", err, out)
@@ -353,9 +377,107 @@ func TestATestDiskHasRoomForMeridiansOwnSystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	room := data[system.Start*512 : (system.Start+system.Size)*512]
+	for _, p := range parts[2:] {
+		room := data[p.Start*512 : (p.Start+p.Size)*512]
+		if !bytes.Equal(room, make([]byte, len(room))) {
+			t.Errorf("%s should be left empty", p.Name)
+		}
+	}
+}
+
+func TestTheSystemPartitionListsWhatMeridianMayWrite(t *testing.T) {
+	mtype := tool(t, "mtype")
+	fsck := tool(t, "fsck.fat")
+	path := testDisk(t)
+	parts := partitionsOf(t, path)
+	if len(parts) != 4 {
+		t.Fatalf("partitions: %+v", parts)
+	}
+	system := parts[1]
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	volume := filepath.Join(t.TempDir(), "system.img")
+	if err := os.WriteFile(volume, data[system.Start*512:(system.Start+system.Size)*512], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(fsck, "-n", volume).CombinedOutput(); err != nil {
+		t.Fatalf("fsck.fat: %v\n%s", err, out)
+	}
+	if hidden := binary.LittleEndian.Uint32(data[system.Start*512+28:]); int64(hidden) != system.Start {
+		t.Fatalf("hidden sectors = %d, want %d", hidden, system.Start)
+	}
+	listed := func(name string) []*meri.Block {
+		out, err := exec.Command(mtype, "-i", volume, "::/"+name).Output()
+		if err != nil {
+			t.Fatalf("mtype %s: %v", name, err)
+		}
+		root, err := meri.Parse(name, out)
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", name, err, out)
+		}
+		return root.Blocks("partition")
+	}
+	check := func(file string, blocks []*meri.Block, want []sfdiskPartition) {
+		t.Helper()
+		if len(blocks) != len(want) {
+			t.Fatalf("%s lists %d partitions, want %d", file, len(blocks), len(want))
+		}
+		for i, b := range blocks {
+			name, _ := b.String("name", "")
+			size, _ := b.Size("size", 0)
+			if !b.Labelled || !strings.EqualFold(b.Label, want[i].UUID) || name != want[i].Name || size != want[i].Size*512 {
+				t.Errorf("%s, partition %d: %q %q %d, want %+v", file, i, b.Label, name, size, want[i])
+			}
+		}
+	}
+	check(MadePath, listed(MadePath), parts[:2])
+	check(UnlockedPath, listed(UnlockedPath), parts[2:3])
+}
+
+func TestAPlainDiskListsNothing(t *testing.T) {
+	path := diskFile(t, Contents{Seed: "plain", Time: stamp, Files: files(), Others: TestOthers[:1]})
+	parts := partitionsOf(t, path)
+	if len(parts) != 2 || parts[1].Name != "Unlocked" || parts[1].Start != parts[0].Start+parts[0].Size {
+		t.Fatalf("partitions: %+v", parts)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := data[parts[1].Start*512 : (parts[1].Start+parts[1].Size)*512]
 	if !bytes.Equal(room, make([]byte, len(room))) {
-		t.Error("the partition should be left empty")
+		t.Error("without a system partition there is no list, and the other partition stays empty")
+	}
+}
+
+func TestNamesAndSizesReadBackAsTheyWereWritten(t *testing.T) {
+	for _, name := range []string{"", "Data", `a " and a \`, "tab\tline\ncr\r", "del\x7f nul\x00 esc\x1b", "Größe 😀"} {
+		src := "name = " + meriString(name) + "\n"
+		root, err := meri.Parse("name", []byte(src))
+		if err != nil {
+			t.Fatalf("%q: %v\n%s", name, err, src)
+		}
+		if got, _ := root.String("name", "missing"); got != name {
+			t.Errorf("%q read back as %q", name, got)
+		}
+	}
+	for size, want := range map[int64]string{
+		0: "0B", 1: "1B", 512: "512B", 1536: "1536B", 1024: "1KiB", 3 << 10: "3KiB",
+		1 << 20: "1MiB", 1<<20 + 512: "1049088B", 34 << 20: "34MiB", 5 << 30: "5GiB",
+		1<<40 + 1<<30: "1025GiB", 7 << 40: "7TiB",
+	} {
+		if got := meriSize(size); got != want {
+			t.Errorf("%d bytes written as %s, want %s", size, got, want)
+		}
+		root, err := meri.Parse("size", []byte("size = "+meriSize(size)+"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := root.Size("size", -1); got != size {
+			t.Errorf("%s read back as %d bytes, want %d", meriSize(size), got, size)
+		}
 	}
 }
 

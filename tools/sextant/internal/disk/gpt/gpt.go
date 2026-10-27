@@ -44,6 +44,10 @@ var EFISystemPartition = mustParseGUID("C12A7328-F81F-11D2-BA4B-00A0C93EC93B")
 // MeridianSystem marks the partition that holds Meridian's own file system.
 var MeridianSystem = mustParseGUID("B0DD29AB-2286-43EF-9809-E345D01A1B29")
 
+// BasicData is the type Windows gives its data partitions, which other
+// systems use for theirs too.
+var BasicData = mustParseGUID("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7")
+
 // ParseGUID reads the usual text form, such as
 // C12A7328-F81F-11D2-BA4B-00A0C93EC93B, in upper or lower case.
 func ParseGUID(s string) (GUID, error) {

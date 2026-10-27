@@ -718,7 +718,7 @@ const SECOND_DISK_FILE: &str = "/EFI/second/loader.efi";
 /// leaves to the firmware with a restart. Without a second disk it does
 /// nothing.
 pub fn second_disk(system: &System, serial: &mut impl Write) {
-    use uefi::device_path::{from_partition, partition, with_file};
+    use uefi::device_path::{from_partition, partition, partition_number, with_file};
     use uefi::load_option::ACTIVE;
     use uefi::qemu_test::Report;
     use uefi::raw::image::PATH_BYTES;
@@ -729,7 +729,9 @@ pub fn second_disk(system: &System, serial: &mut impl Write) {
     let mut other_len = 0;
     let _ = system.file_system_paths(|p| {
         let theirs = partition(p);
-        if other_len == 0 && theirs.is_some() && theirs != own {
+        // The copy is on an EFI system partition, which sextant makes the
+        // first one; a test disk's Meridian system partition is FAT32 too.
+        if other_len == 0 && theirs.is_some() && theirs != own && partition_number(p) == Some(1) {
             other[..p.len()].copy_from_slice(p);
             other_len = p.len();
         }

@@ -122,27 +122,28 @@ func bootFiles(t *testing.T, qemuTest bool) map[string][]byte {
 	return image.BootFiles(b)
 }
 
-// diskWithLoader writes the real loader onto a disk image.
+// diskWithLoader writes the real loader onto a disk image, laid out as
+// sextant lays out test disks when qemuTest.
 func diskWithLoader(t *testing.T, qemuTest bool) string {
 	t.Helper()
-	var system int64
+	contents := image.Contents{Files: bootFiles(t, qemuTest)}
 	if qemuTest {
-		system = image.TestSystem
+		contents.System = image.TestSystem
+		contents.Others = image.TestOthers
 	}
-	return diskWith(t, bootFiles(t, qemuTest), system)
+	return diskWith(t, contents)
 }
 
 func diskWithFiles(t *testing.T, files map[string][]byte) string {
 	t.Helper()
-	return diskWith(t, files, 0)
+	return diskWith(t, image.Contents{Files: files})
 }
 
-// diskWith writes a disk with files on its EFI system partition and a
-// Meridian system partition of system bytes when that is not 0.
-func diskWith(t *testing.T, files map[string][]byte, system int64) string {
+// diskWith writes a disk of the contents, seeded with the test's name.
+func diskWith(t *testing.T, contents image.Contents) string {
 	t.Helper()
 	disk := filepath.Join(t.TempDir(), "meridian.img")
-	contents := image.Contents{Seed: t.Name(), Time: time.Unix(1_760_000_000, 0), Files: files, System: system}
+	contents.Seed, contents.Time = t.Name(), time.Unix(1_760_000_000, 0)
 	if err := image.Disk(disk, contents); err != nil {
 		t.Fatal(err)
 	}

@@ -99,6 +99,15 @@ pub const MERIDIAN_SYSTEM: Guid = Guid::new(
     [0x98, 0x09, 0xe3, 0x45, 0xd0, 0x1a, 0x1b, 0x29],
 );
 
+/// The partition Windows keeps its data in, which other systems use for
+/// theirs too.
+pub const BASIC_DATA: Guid = Guid::new(
+    0xebd0_a0a2,
+    0xb9e5,
+    0x4433,
+    [0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7],
+);
+
 /// The CRC-32 the header and the entry array are checked with, the one
 /// of IEEE 802.3, zlib and PNG.
 #[must_use]
@@ -514,6 +523,10 @@ mod tests {
         assert_eq!(
             MERIDIAN_SYSTEM.to_string(),
             "B0DD29AB-2286-43EF-9809-E345D01A1B29"
+        );
+        assert_eq!(
+            BASIC_DATA.to_string(),
+            "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7"
         );
         assert_eq!(
             &EFI_SYSTEM.0[..4],

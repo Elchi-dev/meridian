@@ -32,6 +32,7 @@ at 0.x until the native API is stable.
   - Every image carries a loader signed with Authenticode, by the key `sign.key` names or by a development key sextant makes once per machine. Every image also carries a `boot.meri` with the defaults written out.
   - `mutate`, which changes Go and Rust code one mutant at a time in private copies of the repository and runs the tests on each, so tests that cannot fail are found. A mutant in a crate with QEMU checks that its host tests miss is tried on real firmware too. A mutant whose tests run three times as long as without it plus 30 seconds, or on Linux hold three times the memory and at least 1 GiB, is stopped and counts as killed. Known equivalent mutants are listed with a reason in `mutants.meri`.
   - On an ISO, files whose names ISO 9660 cannot hold are only on the EFI system partition inside it, which is all the firmware reads.
+  - Test disks carry a Meridian system partition in FAT32 with `made.meri` and `unlocked.meri`, the lists of what Meridian may write (decision record 0015), then a partition those lists unlock, where the test image writes, and one of Meridian's own type that neither lists.
   - The writes that enroll a key in a firmware's Secure Boot databases from Setup Mode: db, KEK and PK as authenticated variables, signed with a detached PKCS #7 signature.
 - **`lib/uefi`**
   - Status codes with their names and plain-English meanings.

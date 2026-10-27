@@ -439,24 +439,27 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
     );
     let mut read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
     let table = kernel::disk::Table::read(&mut read);
-    let esp = table.as_ref().and_then(|t| t.partitions().next());
-    let system = table.as_ref().and_then(|t| t.partitions().nth(1));
+    let listed = [
+        (gpt::EFI_SYSTEM, 2048, 131_072, "EFI system partition"),
+        (gpt::MERIDIAN_SYSTEM, 133_120, 69_632, "Meridian system"),
+        (gpt::BASIC_DATA, 202_752, 2048, "Unlocked"),
+        (gpt::MERIDIAN_SYSTEM, 204_800, 2048, "Not listed"),
+    ];
     report.check(
         "kernel.gpt.read",
-        table.is_some_and(|t| t.header.backup + 1 == sectors && t.partitions().count() == 2)
-            && esp.is_some_and(|(number, p)| {
-                number == 1
-                    && p.kind == gpt::EFI_SYSTEM
-                    && (p.first, p.sectors()) == (2048, 131_072)
-                    && p.name().eq("EFI system partition".chars())
-            })
-            && system.is_some_and(|(number, p)| {
-                number == 2
-                    && p.kind == gpt::MERIDIAN_SYSTEM
-                    && (p.first, p.sectors()) == (133_120, 2048)
-                    && p.name().eq("Meridian system".chars())
-            }),
-        "the boot disk's partition table should list sextant's EFI system partition of 64 MiB from 1 MiB on, and the test disk's Meridian system partition of 1 MiB after it",
+        table.is_some_and(|t| {
+            t.header.backup + 1 == sectors
+                && t.partitions().count() == listed.len()
+                && t.partitions().zip(1..).zip(listed).all(
+                    |(((number, p), want), (kind, first, size, name))| {
+                        number == want
+                            && p.kind == kind
+                            && (p.first, p.sectors()) == (first, size)
+                            && p.name().eq(name.chars())
+                    },
+                )
+        }),
+        "the boot disk's partition table should list sextant's EFI system partition of 64 MiB from 1 MiB on, then the test disk's Meridian system partition of 34 MiB, and its unlocked partition and one not listed, 1 MiB each",
     );
     ahci_port_checks(report, disk.port);
 }
@@ -703,8 +706,8 @@ fn virtio_checks<W: Write>(report: &mut Report<'_, W>) {
     );
 }
 
-/// Writing, on the test disk's Meridian system partition: twelve sectors
-/// through AHCI, more than a frame, of bytes no run wrote before, which
+/// Writing, on the test disk's unlocked partition: twelve sectors through
+/// AHCI, more than a frame, of bytes no run wrote before, which
 /// AHCI, NVM Express and virtio then read back as written; the last two
 /// hold the disk read only and refuse to write, and AHCI writes nothing
 /// past the disk's end.
@@ -719,13 +722,15 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
     };
     let port = disk.port;
     let mut read = |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
-    let Some(system) =
-        kernel::disk::Table::read(&mut read).and_then(|t| t.first_of(gpt::MERIDIAN_SYSTEM))
-    else {
+    let Some(unlocked) = kernel::disk::Table::read(&mut read).and_then(|t| {
+        t.partitions()
+            .map(|(_, p)| p)
+            .find(|p| p.name().eq("Unlocked".chars()))
+    }) else {
         report.check(
             "kernel.disk.write",
             false,
-            "a test disk should have a Meridian system partition",
+            "a test disk should have an unlocked partition",
         );
         return;
     };
@@ -733,7 +738,7 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
     let written: alloc::vec::Vec<u8> = (0..12 * 512)
         .map(|i: usize| salt[i % 8] ^ (i / 8).to_le_bytes()[0])
         .collect();
-    let at = system.first + 3;
+    let at = unlocked.first + 3;
     let wrote = raw::ahci::write(port, at, &written).is_ok();
     let back = |read: &dyn Fn(u64, &mut [u8]) -> bool| {
         let mut bytes = alloc::vec![0u8; written.len()];
@@ -751,8 +756,8 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
         wrote && through_ahci && through_nvme && through_virtio && refused,
         "sectors AHCI wrote should read back as written through AHCI, NVMe and virtio, and none past the disk or short of a sector go",
     );
-    copy_write_checks(report, port, &system);
-    write_place_checks(report, port, &system, &written);
+    copy_write_checks(report, port, &unlocked);
+    write_place_checks(report, port, &unlocked, &written);
     write_refusal_checks(report, port, sectors);
 }
 
@@ -762,11 +767,11 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
 fn write_place_checks<W: Write>(
     report: &mut Report<'_, W>,
     port: usize,
-    system: &gpt::Partition,
+    unlocked: &gpt::Partition,
     written: &[u8],
 ) {
     use raw::ahci::{read, read_sectors, write, write_sectors};
-    let at = system.first + 3;
+    let at = unlocked.first + 3;
     let mut sector = [0u8; 512];
     let each = written
         .chunks(512)
@@ -779,7 +784,7 @@ fn write_place_checks<W: Write>(
     let alone = write_sectors(port, at + 5, &one).is_ok()
         && read(port, at, &mut read_back).is_ok()
         && read_back == after;
-    let last = system.first + system.sectors() - 1;
+    let last = unlocked.first + unlocked.sectors() - 1;
     let mut end = [0u8; 512];
     let edge = write(port, last, &[0xa5; 512]).is_ok()
         && raw::virtio::read(last, &mut end).is_ok()
@@ -835,14 +840,14 @@ fn virtio_window_checks<W: Write>(report: &mut Report<'_, W>) {
 /// copies of the disk QEMU keeps, as the virtio disk's features tell, each
 /// reads its own writes back, sixteen frames of them at once, and the AHCI
 /// disk never sees them. Elsewhere both refuse to write.
-fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, system: &gpt::Partition) {
+fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, unlocked: &gpt::Partition) {
     let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
     let sector = [0u8; 512];
     if virtio::read_only(offered) {
         let refused = matches!(
-            raw::nvme::write(system.first, &sector),
+            raw::nvme::write(unlocked.first, &sector),
             Err(raw::nvme::Error::Failed(_))
-        ) && raw::virtio::write(system.first, &sector)
+        ) && raw::virtio::write(unlocked.first, &sector)
             == Err(raw::virtio::Error::ReadOnly);
         report.check(
             "kernel.disk.copies",
@@ -856,7 +861,7 @@ fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, system: 
             .map(|i: usize| i.to_le_bytes()[1] ^ i.to_le_bytes()[0] ^ salt)
             .collect()
     };
-    let (nvme_at, virtio_at) = (system.first + 512, system.first + 1024);
+    let (nvme_at, virtio_at) = (unlocked.first + 512, unlocked.first + 1024);
     let before = |at| {
         let mut sector = [0u8; 512];
         raw::ahci::read(port, at, &mut sector)

@@ -68,7 +68,7 @@ pub struct Modules {
 }
 
 impl Modules {
-    pub const MAX: usize = 16;
+    pub const MAX: usize = 64;
 }
 
 /// One file the loader read. Its pages are the kernel's in the memory map.

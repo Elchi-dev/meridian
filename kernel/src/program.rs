@@ -223,13 +223,14 @@ mod tests {
         ];
         let at = HHDM_BASE + 0x20_3000;
         assert_eq!(module_list(&listing(at, 2), &regions), Some((0x20_3000, 2)));
+        let most = Modules::MAX as u64;
         assert_eq!(
-            module_list(&listing(at, 16), &regions),
-            Some((0x20_3000, 16)),
+            module_list(&listing(at, most), &regions),
+            Some((0x20_3000, Modules::MAX)),
             "as many as there may be"
         );
         assert_eq!(
-            module_list(&listing(at, 17), &regions),
+            module_list(&listing(at, most + 1), &regions),
             None,
             "more than the loader writes"
         );

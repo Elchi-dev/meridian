@@ -267,6 +267,10 @@ pub const MEXEC_VERSION: u32 = 1;
 /// The longest message a channel takes, in bytes.
 pub const MESSAGE_BYTES: usize = 128;
 
+/// How many times a second the timer ticks: what `SLEEP` and `TICKS`
+/// count in.
+pub const TICKS_A_SECOND: u64 = 100;
+
 /// The longest path a call takes, in bytes.
 pub const PATH_BYTES: usize = 512;
 

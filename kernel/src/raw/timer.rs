@@ -3,8 +3,8 @@
 
 use super::interrupts::{SPURIOUS, TIMER};
 
-/// How many times a second the timer interrupts.
-pub const HZ: u64 = 100;
+/// How many times a second the timer interrupts, as programs count.
+pub const HZ: u64 = abi::TICKS_A_SECOND;
 
 /// Turns the local APIC on, measures its timer against the time stamp
 /// counter that runs at `tsc_hz` for a hundredth of a second, starts it at

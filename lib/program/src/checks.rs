@@ -2562,23 +2562,38 @@ fn the_shells_own_commands_say_what_went_wrong() -> Outcome {
     let said = |script: &str, want: &[u8]| -> Result<bool, &'static str> {
         Ok(same(&shell_on(script)?, &ran(0, want)))
     };
-    let checked = said(
-        "cat /nope; echo $?; cat /System; echo $?; cat < /System; echo $?",
-        b"/nope: no such file\n1\n/System: a directory, not a file\n1\n\
-          /System: a directory, not a file\n1\n",
-    )? && said(
-        "ls /nope; echo $?; ls /System/Boot/meridian/programs/wc.mexec; echo $?",
-        b"/nope: no such file\n1\n/System/Boot/meridian/programs/wc.mexec\n0\n",
-    )? && said(
-        "cp /System /nope/x; echo $?; cp /System/Boot/meridian/boot.meri /nope/x; echo $?",
-        b"/System: a directory, not a file\n1\n/nope/x: no such file\n1\n",
-    )? && said(
-        "cp a b /System/Boot/meridian/boot.meri; echo $?",
-        b"/System/Boot/meridian/boot.meri: not a directory, so one path alone goes there\n1\n",
-    )? && said(
-        "echo /System/Boot/m*/programs",
-        b"/System/Boot/meridian/programs\n",
+    let missing = said(
+        "cat /nope; echo $?; ls /nope; echo $?; cat < /nope; echo $?",
+        b"/nope: no such file\n1\n/nope: no such file\n1\n/nope: no such file\n1\n",
     )?;
+    // A CD brings no /System.
+    if !booted_from_disk() {
+        return expect(
+            missing,
+            "cat and ls should say what is wrong with a path and end with 1",
+        );
+    }
+    let checked = missing
+        && said(
+            "cat /System; echo $?; cat < /System; echo $?",
+            b"/System: a directory, not a file\n1\n/System: a directory, not a file\n1\n",
+        )?
+        && said(
+            "ls /System/Boot/meridian/programs/wc.mexec; echo $?",
+            b"/System/Boot/meridian/programs/wc.mexec\n0\n",
+        )?
+        && said(
+            "cp /System /nope/x; echo $?; cp /System/Boot/meridian/boot.meri /nope/x; echo $?",
+            b"/System: a directory, not a file\n1\n/nope/x: no such file\n1\n",
+        )?
+        && said(
+            "cp a b /System/Boot/meridian/boot.meri; echo $?",
+            b"/System/Boot/meridian/boot.meri: not a directory, so one path alone goes there\n1\n",
+        )?
+        && said(
+            "echo /System/Boot/m*/programs",
+            b"/System/Boot/meridian/programs\n",
+        )?;
     expect(
         checked,
         "cat, ls and cp should say what is wrong with a path and end with 1",
@@ -2608,6 +2623,9 @@ fn shell_into_nothing(text: &str) -> Result<Ran, &'static str> {
 /// cat, cat with `<` and ls end with 1 when what they write goes nowhere,
 /// and say nothing, as there is nowhere to say it.
 fn the_shell_ends_with_1_when_its_output_is_gone() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
     let mut all = true;
     for script in [
         "cat /System/Boot/meridian/boot.meri",

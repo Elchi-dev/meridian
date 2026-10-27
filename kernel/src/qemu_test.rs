@@ -1722,16 +1722,17 @@ fn shell_checks<W: Write>(
         false
     };
     let greeted = waited_for("Meridian shell. Type help to see what it knows.");
-    // A shell started at the root goes to its home, /System.
+    let disk = esp_of_disk().is_some();
+    // A shell started at the root goes to its home, /System, which a CD
+    // does not bring.
     typed(&["p", "w", "d", "ret"]);
-    let home = waited_for("/System");
+    let home = waited_for(if disk { "/System" } else { "/" });
     typed(&["e", "c", "h", "o", "spc", "h", "i", "ret"]);
     let echoed = waited_for("> echo hi") && waited_for("hi");
     typed(&[
         "l", "s", "spc", "slash", "shift-s", "y", "s", "t", "e", "m", "slash", "shift-b", "o", "o",
         "t", "slash", "m", "e", "r", "i", "d", "i", "a", "n", "ret",
     ]);
-    let disk = esp_of_disk().is_some();
     let listed = if disk {
         waited_for("boot.meri") && waited_for("programs/")
     } else {

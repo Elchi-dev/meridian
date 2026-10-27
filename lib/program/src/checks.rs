@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 113] = [
+const CHECKS: [(&str, Check); 118] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -137,6 +137,11 @@ const CHECKS: [(&str, Check); 113] = [
     ("tools.refused", tools_refuse_what_is_no_text),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
+    ("tools.cut.tee", cut_and_tee),
+    ("tools.tee.trouble", tee_where_it_cannot_write),
+    ("tools.cut.files", cut_on_files),
+    ("tools.tee.anew", tee_writes_anew),
+    ("tools.cut.trouble", cut_refuses_and_leaves_out),
     ("console", writes_on_the_console),
 ];
 
@@ -2580,14 +2585,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"32\n"
+        b"36\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixteen twice",
+        "ls should write the programs' names into the pipe, eighteen twice",
     )?;
     expect(
         same(
@@ -3604,6 +3609,163 @@ fn tr_on_a_long_file() -> Outcome {
     expect(
         ended == Ok(Ended::Exited(0)) && counts.len() == 3 && same_counts && without_ends,
         "tr should go through a file longer than one message",
+    )
+}
+
+/// cut takes the fields, characters and bytes of each line it is told,
+/// and tee writes what it reads to its output and into files, anew or at
+/// their end.
+fn cut_and_tee() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'a:b:c\\nx:y\\n' | cut -d : -f 2\n\
+             echo hello | cut -c 2-4; echo hello | cut -b -2\n\
+             echo one | tee | tee",
+        )?,
+        &ran(0, b"b\ny\nell\nhe\none\n"),
+    );
+    expect(
+        checked,
+        "cut should take the parts it is told, and tee hand on its input",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo first | tee /System/tee.txt || exit 9\n\
+         echo more | tee -a /System/tee.txt | wc\n\
+         cat /System/tee.txt; rm /System/tee.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"tee: /System/tee.txt: on a volume that is only read\n"),
+            "on /System read only tee should say it cannot write the file",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"first\n1 1 5\nfirst\nmore\n",
+        "tee should write into a file anew, and at its end with -a",
+    )
+}
+
+/// tee says which file it could not open, and still writes its input to
+/// its output and to the files it could; it ends with 1 for that. It
+/// writes into several files at once.
+fn tee_where_it_cannot_write() -> Outcome {
+    let checked = same(
+        &shell_on("echo line | tee /nope/x /nope/y")?,
+        &ran(
+            1,
+            b"tee: /nope/x: no such file\ntee: /nope/y: no such file\nline\ntee ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "tee should say which file it could not open, and go on",
+    )?;
+    let checked = same(
+        &shell_on("tee -x")?,
+        &ran(2, b"tee: -x is no option\ntee ended with 2\n"),
+    );
+    expect(checked, "tee should refuse an option it does not know")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo both | tee /System/tee1.txt /System/tee2.txt > /System/tee3.txt || exit 9\n\
+         cat /System/tee1.txt /System/tee2.txt /System/tee3.txt\n\
+         rm /System/tee1.txt /System/tee2.txt /System/tee3.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/tee3.txt: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"both\nboth\nboth\n",
+        "tee should write into every file it names and its output",
+    )
+}
+
+/// cut goes through each file it names in turn, says which one it could
+/// not read, and ends with 1 for that; a file it reads it cuts as it would
+/// the same text on its input.
+fn cut_on_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "cut -c 1-3 /nope {boot}\necho .\ncut -c 1-3 < {boot}"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let read = text
+        .strip_prefix("cut: /nope: no such file\n")
+        .and_then(|rest| rest.split_once("cut ended with 1\n.\n"));
+    let Some((from_file, from_input)) = read else {
+        return expect(false, "cut should say which file it could not read");
+    };
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && !from_file.is_empty()
+            && from_file == from_input
+            && from_file.lines().all(|line| line.chars().count() <= 3),
+        "cut should cut a file as it cuts the same text on its input",
+    )
+}
+
+/// tee writes a file it finds anew, so nothing of a longer old text stays
+/// behind, and with -a makes a file that is not there yet.
+fn tee_writes_anew() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo a longer first line > /System/tee4.txt || exit 9\n\
+         echo x | tee -- /System/tee4.txt\n\
+         cat /System/tee4.txt\n\
+         echo y | tee -a /System/tee5.txt\n\
+         cat /System/tee5.txt\n\
+         rm /System/tee4.txt /System/tee5.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/tee4.txt: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"x\nx\ny\ny\n",
+        "tee should write a file anew, and make one with -a",
+    )
+}
+
+/// cut refuses a list or options it cannot use and ends with 2 before it
+/// reads anything. With -s it leaves out the lines with no delimiter, and
+/// -c counts characters where -b counts bytes.
+fn cut_refuses_and_leaves_out() -> Outcome {
+    let checked = same(
+        &shell_on("cut -c 0; cut -f 3-1; cut -d ab -f 1; cut -s -c 1")?,
+        &ran(
+            2,
+            b"cut: parts are counted from 1\ncut ended with 2\n\
+              cut: 3-1 goes down\ncut ended with 2\n\
+              cut: -d takes one character\ncut ended with 2\n\
+              cut: -d and -s go with -f\ncut ended with 2\n",
+        ),
+    );
+    expect(checked, "cut should refuse what it cannot cut by")?;
+    let checked = same(
+        &shell_on(
+            "printf 'a,b\\nab\\n,\\n' | cut -s -d , -f 2\n\
+             echo über | cut -c 1; echo über | cut -b 1-2",
+        )?,
+        &ran(0, "b\n\nü\nü\n".as_bytes()),
+    );
+    expect(
+        checked,
+        "cut -s should leave out lines with no delimiter, and -c count characters",
     )
 }
 

@@ -164,6 +164,7 @@ Loader and UEFI:
   - [x] Here-documents
   - [x] Its grammar: simple and compound commands, functions, pipelines and lists, each error at its place
   - [x] The end of a `$(...)` found by its grammar, which a `case` inside needs, as its patterns end in `)`
+  - [x] Its pattern matching notation: `*`, `?` and brackets with classes, for `case`, `${x%pattern}` and names of files
   - [ ] Expansions, running, and choosing the dialect
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

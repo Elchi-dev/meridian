@@ -1797,7 +1797,7 @@ fn shell_runs_a_file() -> Outcome {
         shell_with(&["-c"])?
             == ran(
                 2,
-                b"shell: start it with no words, -c SCRIPT, or a script's path\n",
+                b"shell: start it with no words, -c SCRIPT, or a script's path, after --sh for sh\n",
             ),
         "words the shell does not know should end it with 2",
     )?;

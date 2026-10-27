@@ -767,6 +767,52 @@ mod tests {
     }
 
     #[test]
+    fn files_are_written_removed_and_made_by_their_calls() {
+        let bytes = [7u8; 300];
+        assert_eq!(
+            write_file_call(Handle(0x3_0002), 1 << 33, &bytes[100..]),
+            Call::WriteFile {
+                handle: 0x3_0002,
+                at: bytes[100..].as_ptr() as u64,
+                len: 200,
+                offset: 1 << 33
+            }
+        );
+        let path = "/System/New";
+        assert_eq!(
+            path_call(path, abi::REMOVE),
+            Call::Remove {
+                len: 11,
+                at: path.as_ptr() as u64
+            }
+        );
+        assert_eq!(
+            path_call(path, abi::MAKE_DIRECTORY),
+            Call::MakeDirectory {
+                len: 11,
+                at: path.as_ptr() as u64
+            }
+        );
+        assert_eq!(
+            open_call(path, abi::file::WRITE, abi::file::CREATE_NEW),
+            Call::Open {
+                len: 11,
+                at: path.as_ptr() as u64,
+                wanted: abi::file::WRITE.into(),
+                how: abi::file::CREATE_NEW
+            }
+        );
+        let Call::WriteFile { handle, len, .. } = write_file_call(Handle(1), 0, &[]) else {
+            panic!("a write is a WRITE_FILE");
+        };
+        assert_eq!(
+            (handle, len),
+            (1, 0),
+            "nothing to write is a call of length 0"
+        );
+    }
+
+    #[test]
     fn a_file_is_opened_by_its_path_and_read_where_asked() {
         let path = "/System/Boot/meridian/boot.meri";
         assert_eq!(

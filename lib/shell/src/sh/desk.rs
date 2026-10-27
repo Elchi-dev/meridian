@@ -362,3 +362,14 @@ pub fn reading(script: &str, input: &str) -> (String, String) {
         String::from_utf8(desk.err).unwrap(),
     )
 }
+
+/// How `script` ended once its trap on `EXIT` ran, the session after,
+/// and the desk, as [`ran`] answers them.
+pub fn finished(script: &str) -> (Result<Flow, Stop>, Session, Desk) {
+    let mut session = Session::new(String::from("script"), 42, Vec::new());
+    let mut desk = Desk::default();
+    let items = parse::script(script).unwrap();
+    let ran = session.run(&items, &mut desk);
+    let ended = session.finish(ran, &mut desk);
+    (ended, session, desk)
+}

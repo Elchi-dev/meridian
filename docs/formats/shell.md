@@ -269,6 +269,13 @@ a file or a here-document gets the rest of it. A channel, such as a pipe
 or the shell's own input, comes in pieces, so what `read` took past its
 line stays for the next `read` and no program sees it.
 
+`trap` takes `EXIT` and `0`: what it sets runs once as the script or a
+subshell ends, after the error that ended it is said, with `$?` as it
+was before, and an `exit` among it ends with its own status. A subshell
+starts without its parent's trap, unless that one ignores. Meridian sends
+no signals, so a trap for any other condition is refused with 1, and the
+script goes on.
+
 A pipeline whose commands are all programs or the shell's own commands
 runs them side by side, as Meridian's dialect does. One with a
 function, a builtin POSIX calls special or a compound command in it runs

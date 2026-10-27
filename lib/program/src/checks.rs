@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 100] = [
+const CHECKS: [(&str, Check); 101] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -123,6 +123,7 @@ const CHECKS: [(&str, Check); 100] = [
     ("shell.sh.file", sh_script_files),
     ("shell.sh.names", sh_names_of_files),
     ("shell.sh.read", sh_read),
+    ("shell.sh.trap", sh_trap),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3212,6 +3213,22 @@ fn sh_read() -> Outcome {
         ended == Ok(Ended::Exited(0)) && fewer,
         "a program reading a file after read should start past the line",
     )
+}
+
+/// In sh, a trap on `EXIT` runs as the script ends, its status kept, and
+/// a trap on a signal is refused, as Meridian sends none.
+fn sh_trap() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             trap 'echo bye $?' EXIT\n\
+             trap : INT\n\
+             (trap 'echo sub' EXIT; echo in)\n\
+             exit 3",
+        )?,
+        &ran(3, b"trap: INT: Meridian sends no signals\nin\nsub\nbye 3\n"),
+    );
+    expect(checked, "a trap on EXIT should run as the script ends")
 }
 
 /// in each of several files by its name.

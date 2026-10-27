@@ -63,9 +63,9 @@ const DEEPEST_RUNNING: usize = 64;
 
 /// The builtins POSIX calls special: their errors end a script, and the
 /// variables assigned before them stay.
-const SPECIAL: [&str; 11] = [
+const SPECIAL: [&str; 12] = [
     "break", "continue", "return", "exit", ":", "eval", "export", "readonly", "set", "shift",
-    "unset",
+    "trap", "unset",
 ];
 
 /// A sh session: its variables, functions and parameters, its options,
@@ -91,6 +91,9 @@ pub struct Session {
     /// The status of the last command substitution of the command being
     /// expanded, which is the status of a command of assignments alone.
     substituted: Option<u8>,
+    /// What a trap on `EXIT` runs as the shell ends, as written and read;
+    /// nothing at all for one that ignores it.
+    exit_trap: Option<(String, Vec<Item>)>,
 }
 
 /// `value` quoted so the shell reads it back as it is.
@@ -129,6 +132,7 @@ impl Session {
             loops: 0,
             conditions: 0,
             substituted: None,
+            exit_trap: None,
         }
     }
 
@@ -625,10 +629,20 @@ impl Session {
     ) -> u8 {
         let directory = machine.directory();
         let mut copy = self.clone();
+        // A subshell starts without the traps it would run, but those that
+        // ignore stay, as POSIX has it.
+        if copy
+            .exit_trap
+            .as_ref()
+            .is_some_and(|(text, _)| !text.is_empty())
+        {
+            copy.exit_trap = None;
+        }
         let ran = run(&mut copy, machine).map_err(|stop| match at {
             Some(at) => placed(stop, at),
             None => stop,
         });
+        let ran = copy.finish(ran, machine);
         let status = copy.ended(ran, machine);
         machine.set_directory(&directory);
         status
@@ -925,6 +939,7 @@ impl Session {
                     .map_err(|stop| placed(stop, at))
             }
             "export" | "readonly" => self.mark(name, rest, machine),
+            "trap" => self.trap(rest, at, machine),
             "unset" => self.unset(rest, machine),
             "set" => self.set(rest, machine),
             _ => {
@@ -943,6 +958,72 @@ impl Session {
                 Ok(Flow::Next)
             }
         }
+    }
+
+    /// `trap`: what the shell runs as it ends, set for `EXIT` or `0` with
+    /// the action before them, `-` to run nothing again, or an empty one to
+    /// ignore; alone, says the trap set. Meridian sends no signals, so a
+    /// trap for any other condition is refused, with 1.
+    fn trap(&mut self, rest: &[String], at: Pos, machine: &mut impl Machine) -> Result<Flow, Stop> {
+        let Some((action, conditions)) = rest.split_first() else {
+            if let Some((text, _)) = &self.exit_trap {
+                let said = format!("trap -- {} EXIT\n", quoted(text));
+                if !machine.out(said.as_bytes()) {
+                    self.status = 1;
+                }
+            }
+            return Ok(Flow::Next);
+        };
+        if conditions.is_empty() {
+            let _ = machine.err(b"trap: needs an action and a condition\n");
+            self.status = 1;
+            return Ok(Flow::Next);
+        }
+        for condition in conditions {
+            if condition != "EXIT" && condition != "0" {
+                let said = format!("trap: {condition}: Meridian sends no signals\n");
+                let _ = machine.err(said.as_bytes());
+                self.status = 1;
+            } else if action == "-" {
+                self.exit_trap = None;
+            } else {
+                let items = parse::script(action).map_err(|e| failed(at, e.code))?;
+                self.exit_trap = Some((action.clone(), items));
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    /// Runs what the trap on `EXIT` runs, once, as the shell or a subshell
+    /// ends after `ran`, saying the error that ended it first. `$?` is what
+    /// it was before them, and an `exit` among them ends with its status.
+    ///
+    /// # Errors
+    ///
+    /// How the shell ends: as `ran` says, or as the trap's commands end it.
+    pub fn finish(
+        &mut self,
+        ran: Result<Flow, Stop>,
+        machine: &mut impl Machine,
+    ) -> Result<Flow, Stop> {
+        let Some((_, items)) = self.exit_trap.take() else {
+            return ran;
+        };
+        let ran = match ran {
+            Err(Stop::Error(e)) => {
+                let _ = machine.err(format!("{e}\n").as_bytes());
+                Err(Stop::Said(2))
+            }
+            ran => ran,
+        };
+        let status = match ran {
+            Err(Stop::Exit(status) | Stop::Said(status)) => status,
+            _ => self.status,
+        };
+        self.status = status;
+        self.run(&items, machine)?;
+        self.status = status;
+        ran
     }
 
     /// `export` or `readonly`: marks each name, giving it the value after
@@ -1154,7 +1235,7 @@ struct Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sh::desk::{Desk, among, out, ran, reading, said, stopped};
+    use crate::sh::desk::{Desk, among, finished, out, ran, reading, said, stopped};
     use alloc::vec;
 
     fn words(words: &[&str]) -> Vec<String> {
@@ -2496,6 +2577,116 @@ mod tests {
         assert_eq!(
             read_out("read() { echo mine; }; read a; echo \"[$a]\"", "x\n"),
             "mine\n[]\n"
+        );
+    }
+
+    /// What `script` writes, its trap on `EXIT` run at its end.
+    fn out_to_the_end(script: &str) -> String {
+        String::from_utf8(finished(script).2.out).unwrap()
+    }
+
+    #[test]
+    fn a_trap_on_exit_runs_as_the_script_ends() {
+        assert_eq!(out_to_the_end("trap 'echo bye' EXIT; echo hi"), "hi\nbye\n");
+        assert_eq!(out_to_the_end("trap 'echo bye' 0; echo hi"), "hi\nbye\n");
+        assert_eq!(out_to_the_end("trap 'echo $x' EXIT; x=late"), "late\n");
+        assert_eq!(
+            out_to_the_end("f() { trap 'echo set in f' EXIT; }; f; echo on"),
+            "on\nset in f\n"
+        );
+        let (ended, _, desk) = finished("trap 'echo $?' EXIT; exit 4");
+        assert_eq!((ended, desk.out), (Err(Stop::Exit(4)), b"4\n".to_vec()));
+    }
+
+    #[test]
+    fn a_trap_leaves_the_status_as_it_was_unless_it_exits() {
+        let (ended, session, desk) = finished("trap 'echo $?; false' EXIT; (exit 3)");
+        assert_eq!(
+            (ended, session.status(), desk.out),
+            (Ok(Flow::Next), 3, b"3\n".to_vec())
+        );
+        assert_eq!(finished("trap 'exit 7' EXIT; true").0, Err(Stop::Exit(7)));
+        assert_eq!(finished("trap 'exit' EXIT; false").0, Err(Stop::Exit(1)));
+    }
+
+    #[test]
+    fn a_trap_runs_once() {
+        let (_, mut session, mut desk) = finished("trap 'echo once' EXIT");
+        assert_eq!(session.finish(Ok(Flow::Next), &mut desk), Ok(Flow::Next));
+        assert_eq!(desk.out, b"once\n");
+    }
+
+    #[test]
+    fn an_error_is_said_before_the_trap_runs() {
+        let (ended, _, desk) = finished("trap 'echo after' EXIT; echo ${a;b}");
+        assert_eq!(ended, Err(Stop::Said(2)));
+        assert_eq!(desk.out, b"after\n");
+        assert!(
+            desk.err.starts_with(b"1:30: bad-substitution"),
+            "{:?}",
+            desk.err
+        );
+        assert_eq!(
+            finished("trap 'echo ${c;d}' EXIT").0.map_err(|_| ()),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn trap_resets_ignores_and_says_the_trap() {
+        assert_eq!(out_to_the_end("trap 'echo no' EXIT; trap - EXIT"), "");
+        assert_eq!(out_to_the_end("trap 'echo no' EXIT; trap '' EXIT"), "");
+        assert_eq!(
+            out_to_the_end("trap 'echo \"it'\"'\"'s\"' EXIT; trap"),
+            "trap -- 'echo \"it'\\''s\"' EXIT\nit's\n"
+        );
+        assert_eq!(out_to_the_end("trap"), "");
+        assert_eq!(out_to_the_end("trap '' EXIT; trap"), "trap -- '' EXIT\n");
+    }
+
+    #[test]
+    fn a_trap_on_a_signal_is_refused_as_meridian_sends_none() {
+        let (ended, session, desk) = finished("trap 'echo b' INT EXIT TERM; echo $?");
+        assert_eq!(ended, Ok(Flow::Next));
+        assert_eq!(desk.out, b"1\nb\n", "EXIT was set all the same");
+        assert_eq!(
+            desk.err,
+            b"trap: INT: Meridian sends no signals\ntrap: TERM: Meridian sends no signals\n"
+        );
+        assert_eq!(session.status(), 0);
+        assert_eq!(
+            said("trap x; echo $?", &[]),
+            (
+                "1\n".into(),
+                "trap: needs an action and a condition\n".into()
+            )
+        );
+        assert_eq!(stopped("echo a; trap 'fi' EXIT"), (1, 9, Code::Unexpected));
+    }
+
+    #[test]
+    fn a_subshell_runs_a_trap_of_its_own_but_not_its_parent_s() {
+        assert_eq!(
+            out_to_the_end("trap 'echo outer' EXIT; (echo in)"),
+            "in\nouter\n"
+        );
+        assert_eq!(
+            out_to_the_end("(trap 'echo sub' EXIT; echo in); echo after"),
+            "in\nsub\nafter\n"
+        );
+        assert_eq!(
+            out_to_the_end("x=$(trap 'echo t' EXIT; echo v); echo \"$x\""),
+            "v\nt\n"
+        );
+        assert_eq!(
+            out_to_the_end("trap '' EXIT; (trap)"),
+            "trap -- '' EXIT\n",
+            "ignoring stays"
+        );
+        assert_eq!(out_to_the_end("trap 'echo p' EXIT; (trap)"), "p\n");
+        assert_eq!(
+            out_to_the_end("(trap 'exit 5' EXIT; exit 2); echo $?"),
+            "5\n"
         );
     }
 }

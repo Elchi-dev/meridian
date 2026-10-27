@@ -448,7 +448,9 @@ fn sh_script(text: &str, zero: &str) -> u8 {
         }
     };
     let mut session = sh::run::Session::new(zero.into(), 0, Vec::new());
-    match session.run(&items, &mut System::default()) {
+    let mut system = System::default();
+    let ran = session.run(&items, &mut system);
+    match session.finish(ran, &mut system) {
         Ok(_) => session.status(),
         Err(Stop::Exit(status) | Stop::Said(status)) => status,
         Err(Stop::Error(e)) => {

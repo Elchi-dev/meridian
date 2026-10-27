@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 132] = [
+const CHECKS: [(&str, Check); 133] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -149,6 +149,7 @@ const CHECKS: [(&str, Check); 132] = [
     ("tools.comm", comm_on_files),
     ("tools.paste", paste_joins_lines),
     ("tools.fold", fold_breaks_lines),
+    ("tools.nl", nl_numbers_lines),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2599,14 +2600,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"50\n"
+        b"52\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-five twice",
+        "ls should write the programs' names into the pipe, twenty-six twice",
     )?;
     expect(
         same(
@@ -4090,6 +4091,65 @@ fn fold_breaks_lines() -> Outcome {
     expect(
         ended == Ok(Ended::Exited(0)) && counts.len() == 3 && counts[0] == counts[1] && added,
         "fold should leave lines narrower than the width, and add only line feeds",
+    )
+}
+
+/// nl numbers the lines that are not empty, as wide and in the format it
+/// is told, refuses an option it does not know, and with -b a numbers
+/// every line of a file.
+fn nl_numbers_lines() -> Outcome {
+    let checked = same(
+        &shell_on("printf 'a\\n\\nb\\n' | nl; printf 'a\\nb\\n' | nl -n rz -w 3 -s :; nl -x")?,
+        &ran(
+            1,
+            b"     1\ta\n      \t\n     2\tb\n001:a\n002:b\nnl: -x is no option\nnl ended with 1\n",
+        ),
+    );
+    expect(checked, "nl should number lines as it is told")?;
+    let checked = same(
+        &shell_on(
+            "nl /a /b; printf '\\\\:\\\\:\\na\\n\\\\:\\\\:\\\\:\\n\\\\:\\\\:\\nb\\n' | nl -w 1\n\
+             printf '\\\\:\\\\:\\\\:\\n\\\\:\\\\:\\na\\n\\\\:\\\\:\\\\:\\n\\\\:\\\\:\\nb\\n' | nl -p -w 1",
+        )?,
+        &ran(
+            0,
+            b"nl: numbers one file\nnl ended with 1\n\n1\ta\n\n\n1\tb\n\n\n1\ta\n\n\n2\tb\n",
+        ),
+    );
+    expect(
+        checked,
+        "nl should number one file, and each logical page from 1 unless -p",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "wc < {boot}; nl -b a {boot} | wc; nl -b a {boot} | tail -n 1; nl -b n {boot} | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    let count = |line: &str| line.split(' ').next().and_then(|n| n.parse::<u64>().ok());
+    let last = lines
+        .get(2)
+        .and_then(|line| line.trim_start().split('\t').next()?.parse::<u64>().ok());
+    let numbers = |line: Option<&&str>| -> Vec<u64> {
+        line.map_or(Vec::new(), |line| {
+            line.split(' ').filter_map(|n| n.parse().ok()).collect()
+        })
+    };
+    let (whole, none) = (numbers(lines.first()), numbers(lines.get(3)));
+    let padded = whole.len() == 3
+        && none.len() == 3
+        && none[0] == whole[0]
+        && none[2] == whole[2] + 7 * whole[0];
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && lines.len() == 4
+            && lines.first().and_then(|l| count(l)) == lines.get(1).and_then(|l| count(l))
+            && last == lines.first().and_then(|l| count(l))
+            && padded,
+        "nl -b a should number every line of a file, and -b n set each seven bytes in",
     )
 }
 

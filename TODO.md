@@ -188,6 +188,7 @@ Loader and UEFI:
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`
 - [x] `basename`, `dirname`, `tr`, `cut` and `tee`
+- [x] Regular expressions in `lib/regex`, and `grep` with them: `-E`, `-F`, `-e`, `-x`, `-l`, `-q` and `-s`
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

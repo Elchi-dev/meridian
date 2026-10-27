@@ -241,8 +241,8 @@ func TestAScriptPressesKeysOnTheMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 3 || !res.Stopped || res.TimedOut {
-		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	if res.StepsDone != 3 || !res.Stopped || res.TimedOut || res.ExitCode != 0 {
+		t.Fatalf("steps %d, stopped %v, timed out %v, exit %d\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.ExitCode, res.Serial)
 	}
 	if !strings.Contains(res.Serial, "TEST uefi.keyboard.enter ok") {
 		t.Fatalf("the script's Enter did not arrive:\n%s", res.Serial)
@@ -271,8 +271,8 @@ func TestThePlainImageStartsTheKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 5 || !res.Stopped || res.TimedOut {
-		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	if res.StepsDone != 5 || !res.Stopped || res.TimedOut || res.ExitCode != 0 {
+		t.Fatalf("steps %d, stopped %v, timed out %v, exit %d\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.ExitCode, res.Serial)
 	}
 	if strings.Contains(res.Serial, "TEST ") {
 		t.Fatalf("the plain image ran checks:\n%s", res.Serial)
@@ -339,8 +339,8 @@ func TestVerboseSettingsOpenTheLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 2 || !res.Stopped || res.TimedOut {
-		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	if res.StepsDone != 2 || !res.Stopped || res.TimedOut || res.ExitCode != 0 {
+		t.Fatalf("steps %d, stopped %v, timed out %v, exit %d\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.ExitCode, res.Serial)
 	}
 	if strings.Contains(res.Serial, "Meridian kernel") {
 		t.Fatalf("Meridian started instead of the example:\n%s", res.Serial)
@@ -381,8 +381,8 @@ func TestFOpensTheFirmwareSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, res.Serial)
 	}
-	if res.StepsDone != 2 || !res.Stopped || res.TimedOut {
-		t.Fatalf("steps %d, stopped %v, timed out %v\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.Serial)
+	if res.StepsDone != 2 || !res.Stopped || res.TimedOut || res.ExitCode != 0 {
+		t.Fatalf("steps %d, stopped %v, timed out %v, exit %d\n%s", res.StepsDone, res.Stopped, res.TimedOut, res.ExitCode, res.Serial)
 	}
 	if strings.Contains(res.Serial, "Meridian kernel") {
 		t.Fatalf("the kernel started instead:\n%s", res.Serial)
@@ -451,6 +451,70 @@ func TestAMissingVariableStoreIsReported(t *testing.T) {
 	_, err := Run(context.Background(), m, Options{Timeout: time.Second})
 	if err == nil || !strings.HasPrefix(err.Error(), "copy the firmware variable store: ") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// A step that goes wrong stops the machine, and the run ends with that
+// step's error rather than with how QEMU ended once stopped.
+func TestAStepThatGoesWrongEndsTheRunWithItsError(t *testing.T) {
+	r := newRig(t)
+	_, err := Run(context.Background(), r.machine(diskWithLoader(t, true)), reliable(Options{
+		Timeout: 2 * time.Minute,
+		Script:  []Step{{Wait: "PRESS ret", Screen: "Not A Name"}},
+	}))
+	if err == nil || !strings.Contains(err.Error(), `"Not A Name"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestOnlyRunsThatPressKeysTalkToTheMonitor(t *testing.T) {
+	for _, tc := range []struct {
+		opts Options
+		want bool
+	}{
+		{Options{}, false},
+		{Options{Timeout: time.Second, Screens: "x"}, false},
+		{Options{AnswerPress: true}, true},
+		{Options{Script: []Step{{Wait: "a"}}}, true},
+		{Options{Script: []Step{}}, false},
+	} {
+		if got := needsMonitor(tc.opts); got != tc.want {
+			t.Errorf("%+v: got %v", tc.opts, got)
+		}
+	}
+}
+
+func TestOnlyPrintableOutputCountsAsText(t *testing.T) {
+	for in, want := range map[string]bool{
+		"":           false,
+		" \n\t\r":    false,
+		"x":          true,
+		"  BdsDxe\n": true,
+	} {
+		if got := showsText(in); got != want {
+			t.Errorf("%q: got %v", in, got)
+		}
+	}
+}
+
+func TestRequestsAreTheCompleteLines(t *testing.T) {
+	for _, tc := range []struct {
+		clean string
+		from  int
+		lines []string
+		next  int
+	}{
+		{"", 0, nil, 0},
+		{"PRESS a", 0, nil, 0},
+		{"PRESS a\n", 0, []string{"PRESS a"}, 8},
+		{"a\n\n  PRESS x \npart", 0, []string{"a", "", "PRESS x"}, 14},
+		{"a\nb\nc", 2, []string{"b"}, 4},
+		{"a\nb\n", 4, nil, 4},
+	} {
+		lines, next := requests(tc.clean, tc.from)
+		if !slices.Equal(lines, tc.lines) || next != tc.next {
+			t.Errorf("%q from %d: got %q, %d", tc.clean, tc.from, lines, next)
+		}
 	}
 }
 

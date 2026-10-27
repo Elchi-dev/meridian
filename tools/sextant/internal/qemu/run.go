@@ -103,7 +103,7 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 	m.Firmware.Vars = vars
 
 	var monitorAddr string
-	if len(opts.Script) > 0 || opts.AnswerPress {
+	if needsMonitor(opts) {
 		monitorAddr, err = freeLocalAddress()
 		if err != nil {
 			return Result{}, err
@@ -148,23 +148,52 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 	waitErr := cmd.Wait()
 
 	res := Result{Serial: Clean(serial), StepsDone: watcher.done, Stopped: watcher.stopped, FirmwareStalled: stalled.Load(), Screens: watcher.saved}
+	// A step or an answer that went wrong stopped the machine itself, so
+	// how QEMU ended says nothing more.
+	if watcher.err != nil {
+		return res, watcher.err
+	}
 	var exit *exec.ExitError
 	switch {
 	case watcher.stopped || res.FirmwareStalled:
+		return res, nil
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		res.TimedOut = true
+		return res, nil
 	case errors.As(waitErr, &exit):
 		res.ExitCode = exit.ExitCode()
 		if res.ExitCode != ExitPass && res.ExitCode != ExitFail && strings.TrimSpace(stderr.String()) != "" {
 			return res, fmt.Errorf("QEMU failed with exit code %d: %s", res.ExitCode, strings.TrimSpace(stderr.String()))
 		}
-	case waitErr != nil:
-		return res, waitErr
+		return res, nil
 	}
-	if watcher.err != nil {
-		return res, watcher.err
+	return res, waitErr
+}
+
+// needsMonitor says whether a run talks to QEMU's monitor: to press keys,
+// which a script or the answers to the machine's requests do.
+func needsMonitor(opts Options) bool {
+	return len(opts.Script) > 0 || opts.AnswerPress
+}
+
+// showsText says whether the cleaned serial output holds anything to
+// read, which firmware that stalls before printing never sends.
+func showsText(clean string) bool {
+	return strings.TrimSpace(clean) != ""
+}
+
+// requests answers the complete lines of the cleaned output from from on,
+// and where the first line not yet complete starts.
+func requests(clean string, from int) ([]string, int) {
+	var lines []string
+	for {
+		end := strings.IndexByte(clean[from:], '\n')
+		if end < 0 {
+			return lines, from
+		}
+		lines = append(lines, strings.TrimSpace(clean[from:from+end]))
+		from += end + 1
 	}
-	return res, nil
 }
 
 // scriptWatcher reads the serial stream and plays the script against it.
@@ -193,19 +222,18 @@ func (w *scriptWatcher) read(r io.Reader, live io.Writer) string {
 	chunk := make([]byte, 4096)
 	from := 0
 	for {
+		// A read that brings nothing changes nothing below.
 		n, err := r.Read(chunk)
-		if n > 0 {
-			all.Write(chunk[:n])
-			if live != nil {
-				_, _ = live.Write(chunk[:n])
-			}
-			clean := Clean(all.String())
-			if strings.TrimSpace(clean) != "" {
-				w.sawText.Store(true)
-			}
-			from = w.advance(clean, from)
-			w.answerPresses(clean)
+		all.Write(chunk[:n])
+		if live != nil {
+			_, _ = live.Write(chunk[:n])
 		}
+		clean := Clean(all.String())
+		if showsText(clean) {
+			w.sawText.Store(true)
+		}
+		from = w.advance(clean, from)
+		w.answerPresses(clean)
 		if err != nil {
 			break
 		}
@@ -253,13 +281,12 @@ func (w *scriptWatcher) advance(clean string, from int) int {
 // answerPresses answers every complete "PRESS <key>" and "SCREEN <name>"
 // line it has not seen yet.
 func (w *scriptWatcher) answerPresses(clean string) {
-	for w.answer && w.err == nil {
-		end := strings.IndexByte(clean[w.pressFrom:], '\n')
-		if end < 0 {
-			return
-		}
-		line := strings.TrimSpace(clean[w.pressFrom : w.pressFrom+end])
-		w.pressFrom += end + 1
+	if !w.answer || w.err != nil {
+		return
+	}
+	lines, next := requests(clean, w.pressFrom)
+	w.pressFrom = next
+	for _, line := range lines {
 		var err error
 		if key, ok := strings.CutPrefix(line, "PRESS "); ok {
 			err = w.press(strings.TrimSpace(key))
@@ -269,6 +296,7 @@ func (w *scriptWatcher) answerPresses(clean string) {
 		if err != nil {
 			w.err = err
 			w.stop()
+			return
 		}
 	}
 }
@@ -311,28 +339,25 @@ func (w *scriptWatcher) keep(name string) error {
 	return nil
 }
 
+// press presses key on the machine. QEMU keeps the keys it is sent in
+// order, so they need no time between them.
 func (w *scriptWatcher) press(key string) error {
 	if err := w.command("sendkey " + key); err != nil {
 		return fmt.Errorf("send key %q: %w", key, err)
 	}
-	time.Sleep(50 * time.Millisecond)
 	return nil
 }
 
 // command sends one line to the QEMU monitor, connecting first if needed.
+// QEMU listens on it from its start, long before the machine asks for a
+// key or a screen, so one try connects.
 func (w *scriptWatcher) command(line string) error {
 	if w.monitor == nil {
-		var err error
-		for attempt := 0; attempt < 50; attempt++ {
-			w.monitor, err = net.Dial("tcp", w.address)
-			if err == nil {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		monitor, err := net.Dial("tcp", w.address)
 		if err != nil {
 			return fmt.Errorf("connect to the QEMU monitor at %s: %w", w.address, err)
 		}
+		w.monitor = monitor
 	}
 	_, err := fmt.Fprintf(w.monitor, "%s\n", line)
 	return err

@@ -4,9 +4,11 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use abi::{Call, Error};
 
@@ -32,6 +34,27 @@ pub fn call(call: Call) -> (u64, u64) {
         );
     }
     (rax, rdx)
+}
+
+/// The arguments [`keep_arguments`] kept; none before.
+static ARGUMENTS: AtomicPtr<Vec<String>> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Keeps `arguments` for the rest of the program, for [`arguments`].
+pub fn keep_arguments(arguments: Vec<String>) {
+    ARGUMENTS.store(Box::into_raw(Box::new(arguments)), Ordering::SeqCst);
+}
+
+/// The program's arguments, as its parent handed them over (decision
+/// record 0018), without the program's own name.
+#[must_use]
+pub fn arguments() -> &'static [String] {
+    let kept = ARGUMENTS.load(Ordering::SeqCst);
+    if kept.is_null() {
+        return &[];
+    }
+    // SAFETY: the pointer came from Box::into_raw in keep_arguments, and
+    // nothing frees it, so it stays valid while the program runs.
+    unsafe { &*kept }
 }
 
 /// What [`start_thread`] hands a new thread: the work it does.

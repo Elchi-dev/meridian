@@ -26,7 +26,7 @@ pub mod layout;
 mod raw;
 pub mod start;
 
-pub use raw::Allocator;
+pub use raw::{Allocator, arguments};
 
 /// A handle of the program's, standing for a kernel object such as a
 /// channel end. Its number is never 0.
@@ -196,6 +196,51 @@ pub enum Ended {
 /// the process.
 pub fn spawn(name: &str, carry: Option<Handle>) -> Result<Handle, Error> {
     answer(raw::call(spawn_call(name, carry, 0)).0).map(Handle)
+}
+
+/// Starts the program `name` as [`spawn`] does, on a fresh start channel
+/// over which it hands the program `arguments` and the end of its start
+/// messages (decision record 0018), and answers its process and this
+/// side of that channel, for whatever else the two say to each other.
+///
+/// # Errors
+///
+/// As for [`spawn`], and when no channel is left or the messages cannot
+/// be sent.
+pub fn spawn_with(name: &str, arguments: &[&str]) -> Result<(Handle, Handle), Error> {
+    let (mine, theirs) = channel()?;
+    let child = match spawn(name, Some(theirs)) {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = close(mine);
+            let _ = close(theirs);
+            return Err(e);
+        }
+    };
+    let end = alloc::vec::Vec::from([start::Kind::End.byte()]);
+    for message in arguments
+        .iter()
+        .flat_map(|a| start::argument_messages(a))
+        .chain([end])
+    {
+        send_waiting(mine, &message)?;
+    }
+    Ok((child, mine))
+}
+
+/// Sends `message` through `end` as [`send`] does, waiting a tick at a
+/// time while the channel is full.
+///
+/// # Errors
+///
+/// As for [`send`], but for a full channel.
+pub fn send_waiting(end: Handle, message: &[u8]) -> Result<(), Error> {
+    loop {
+        match send(end, message, None) {
+            Err(Error::Full) => sleep(1),
+            other => return other,
+        }
+    }
 }
 
 /// Starts the program as [`spawn`] does, with no more than `restriction`

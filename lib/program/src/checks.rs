@@ -13,15 +13,15 @@ use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
     Ended, Error, Handle, Info, channel, close, info, key, list, log, make_directory, map, open,
-    open_with, raw, read, receive, remove, send, sleep, spawn, spawn_restricted, terminate, token,
-    unmap, wait, write, write_file,
+    open_with, raw, read, receive, remove, send, sleep, spawn, spawn_restricted, spawn_with,
+    terminate, token, unmap, wait, write, write_file,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 33] = [
+const CHECKS: [(&str, Check); 34] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -54,6 +54,7 @@ const CHECKS: [(&str, Check); 33] = [
     ("file.write", files_written),
     ("file.write_refused", writes_refused),
     ("spawn.file", child_from_its_file),
+    ("spawn.arguments", arguments_arrive),
     ("console", writes_on_the_console),
 ];
 
@@ -1031,6 +1032,35 @@ fn writes_refused() -> Outcome {
             && remove(&long) == Err(Error::TooLong)
             && make_directory(&long) == Err(Error::TooLong),
         "a stranger's handle should not write, nor a path past PATH_BYTES name anything",
+    )
+}
+
+/// A child gets the words it is started with as they were, empty ones
+/// and ones longer than a message too, and sends them back.
+fn arguments_arrive() -> Outcome {
+    let long = "\u{e9}".repeat(150);
+    let sent = ["one", "", long.as_str(), "two words"];
+    let (child, mine) =
+        spawn_with("arguments.mexec", &sent).map_err(|_| "arguments should start")?;
+    let mut got: Vec<Vec<u8>> = Vec::from([Vec::new()]);
+    let mut room = [0u8; MESSAGE_BYTES];
+    while got.len() <= sent.len() {
+        match receive(mine, &mut room) {
+            Ok((0, _)) => got.push(Vec::new()),
+            Ok((len, _)) => got
+                .last_mut()
+                .into_iter()
+                .for_each(|a| a.extend_from_slice(&room[..len])),
+            Err(Error::Empty) => sleep(1),
+            Err(_) => break,
+        }
+    }
+    got.pop();
+    let ended = wait(child);
+    let closed = close(child) == Ok(()) && close(mine) == Ok(());
+    expect(
+        ended == Ok(Ended::Exited(0)) && closed && got.iter().eq(sent.iter().map(|a| a.as_bytes())),
+        "the child should send back each word it was started with, as it was",
     )
 }
 

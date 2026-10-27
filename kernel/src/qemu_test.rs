@@ -1429,6 +1429,8 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.vfs.list",
         names
             == [
+                "arguments.mexec",
+                "arguments_again.mexec",
                 "exitwith.mexec",
                 "exitwith_again.mexec",
                 "hello.mexec",
@@ -1443,7 +1445,7 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "whoami_again.mexec",
             ]
             && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the six programs test images carry, each twice",
+        "the programs' directory should list the seven programs test images carry, each twice",
     );
 }
 

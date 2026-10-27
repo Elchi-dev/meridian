@@ -1,14 +1,22 @@
 //! What a program's parent sends over its start channel before the
-//! program's own code runs (decision record 0017): its standard streams
-//! and init's line, each a message of one kind byte that brings a handle,
-//! and a message of kind 0 at the end. Text on a stream goes in messages
-//! of up to [`abi::MESSAGE_BYTES`], and an empty one ends it.
+//! program's own code runs (decision records 0017 and 0018): its standard
+//! streams and init's line, each a message of one kind byte that brings a
+//! handle, its arguments, each a kind byte and its text, and a message of
+//! kind 0 at the end. Text on a stream goes in messages of up to
+//! [`abi::MESSAGE_BYTES`], and an empty one ends it.
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use crate::{Error, Handle};
 
-/// What one start message hands over.
+/// The kind of a message that starts an argument, its text after the
+/// kind byte, and of one that goes on with the last argument.
+pub const ARGUMENT: u8 = 7;
+pub const MORE: u8 = 8;
+
+/// What one start message of one byte hands over: a handle, or the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// No more messages, and no handle.
@@ -89,6 +97,74 @@ pub enum Refused {
     Handle,
     /// Its kind was handed over already.
     Twice,
+    /// An argument's text is no UTF-8.
+    Text,
+    /// More of an argument when none started.
+    Alone,
+}
+
+/// What a program was given at its start, its arguments with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Start {
+    pub given: Given,
+    pub arguments: Vec<String>,
+}
+
+impl Start {
+    /// Takes in the start message `bytes` as [`Given::take`] does, and
+    /// the messages of an argument.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Given::take`], and when an argument brings a handle, its
+    /// text is no UTF-8, or more of one comes before any.
+    pub fn take(
+        &mut self,
+        bytes: &[u8],
+        handle: Option<Handle>,
+        start: Handle,
+    ) -> Result<bool, Refused> {
+        let Some((&kind @ (ARGUMENT | MORE), text)) = bytes.split_first() else {
+            return self.given.take(bytes, handle, start);
+        };
+        if handle.is_some() {
+            return Err(Refused::Handle);
+        }
+        let text = core::str::from_utf8(text).map_err(|_| Refused::Text)?;
+        if kind == ARGUMENT {
+            self.arguments.push(text.into());
+        } else {
+            self.arguments
+                .last_mut()
+                .ok_or(Refused::Alone)?
+                .push_str(text);
+        }
+        Ok(true)
+    }
+}
+
+/// The messages that hand over `argument`: the first of kind
+/// [`ARGUMENT`], and as many of kind [`MORE`] as the rest takes, each cut
+/// between characters.
+#[must_use]
+pub fn argument_messages(argument: &str) -> Vec<Vec<u8>> {
+    let mut messages = Vec::new();
+    let mut rest = argument;
+    let mut kind = ARGUMENT;
+    loop {
+        let mut take = rest.len().min(abi::MESSAGE_BYTES - 1);
+        while !rest.is_char_boundary(take) {
+            take -= 1;
+        }
+        let mut message = Vec::from([kind]);
+        message.extend_from_slice(&rest.as_bytes()[..take]);
+        messages.push(message);
+        rest = &rest[take..];
+        kind = MORE;
+        if rest.is_empty() {
+            return messages;
+        }
+    }
 }
 
 impl Given {
@@ -195,12 +271,12 @@ pub fn begin(start: Handle) -> Handle {
     if start.0 == 0 {
         return start;
     }
-    let mut given = Given::default();
+    let mut taken = Start::default();
     let mut room = [0u8; abi::MESSAGE_BYTES];
     loop {
         match crate::receive(start, &mut room) {
             Ok((len, carried)) => {
-                if given.take(&room[..len], carried, start) != Ok(true) {
+                if taken.take(&room[..len], carried, start) != Ok(true) {
                     break;
                 }
             }
@@ -208,9 +284,10 @@ pub fn begin(start: Handle) -> Handle {
             Err(_) => break,
         }
     }
-    for (slot, word) in GIVEN.iter().zip(given.words()) {
+    for (slot, word) in GIVEN.iter().zip(taken.given.words()) {
         slot.store(word, SeqCst);
     }
+    crate::raw::keep_arguments(taken.arguments);
     start
 }
 
@@ -458,5 +535,80 @@ mod tests {
             assert_eq!(given.words(), words, "{given:?}");
             assert_eq!(Given::from_words(words), given);
         }
+    }
+
+    #[test]
+    fn arguments_go_in_messages_cut_between_characters() {
+        assert_eq!(argument_messages(""), [vec![ARGUMENT]]);
+        assert_eq!(argument_messages("abc"), [vec![ARGUMENT, b'a', b'b', b'c']]);
+        let full = "x".repeat(127);
+        assert_eq!(
+            argument_messages(&full).len(),
+            1,
+            "127 bytes fit after the kind"
+        );
+        let over = "x".repeat(128);
+        let split = argument_messages(&over);
+        assert_eq!(split.iter().map(Vec::len).collect::<Vec<_>>(), [128, 2]);
+        assert_eq!((split[0][0], split[1][0]), (ARGUMENT, MORE));
+        let wide = "\u{e9}".repeat(150);
+        let pieces = argument_messages(&wide);
+        assert_eq!(
+            pieces.iter().map(Vec::len).collect::<Vec<_>>(),
+            [127, 127, 49]
+        );
+        let mut back = String::new();
+        for piece in &pieces {
+            assert!(piece.len() <= abi::MESSAGE_BYTES);
+            back.push_str(core::str::from_utf8(&piece[1..]).unwrap());
+        }
+        assert_eq!(back, wide);
+    }
+
+    #[test]
+    fn arguments_are_taken_in_order_and_pieced_together() {
+        let mut start = Start::default();
+        let words = ["one", "", &"\u{e9}".repeat(150), "two words"];
+        for word in words {
+            for message in argument_messages(word) {
+                assert_eq!(start.take(&message, None, START), Ok(true));
+            }
+        }
+        assert_eq!(start.take(&[Kind::Line.byte()], None, START), Ok(true));
+        assert_eq!(start.take(&[0], None, START), Ok(false));
+        assert_eq!(start.arguments, words);
+        assert_eq!(start.given.line, Some(START), "the other kinds still land");
+    }
+
+    #[test]
+    fn an_argument_that_does_not_fit_is_refused() {
+        let mut start = Start::default();
+        assert_eq!(start.take(&[MORE, b'a'], None, START), Err(Refused::Alone));
+        assert_eq!(
+            start.take(&[ARGUMENT, 0xff], None, START),
+            Err(Refused::Text)
+        );
+        assert_eq!(
+            start.take(&[ARGUMENT], Some(Handle(3)), START),
+            Err(Refused::Handle)
+        );
+        assert_eq!(
+            start.take(&[MORE], Some(Handle(3)), START),
+            Err(Refused::Handle)
+        );
+        assert_eq!(start, Start::default(), "nothing refused was kept");
+        assert_eq!(start.take(&[ARGUMENT, b'a'], None, START), Ok(true));
+        assert_eq!(
+            start.take(&[MORE, 0xc3], None, START),
+            Err(Refused::Text),
+            "half a character"
+        );
+        assert_eq!(
+            start.take(&[MORE], None, START),
+            Ok(true),
+            "nothing more is fine"
+        );
+        assert_eq!(start.arguments, ["a"]);
+        assert_eq!(start.take(&[9], None, START), Err(Refused::Kind(9)));
     }
 }

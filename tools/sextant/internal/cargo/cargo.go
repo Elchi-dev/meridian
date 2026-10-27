@@ -40,10 +40,13 @@ var (
 	// Threads starts threads and ends with them, for the test image's
 	// checks of programs with more than one.
 	Threads = Part{Package: "program", Target: "x86_64-unknown-none", File: "threads", Example: "threads"}
+	// Arguments sends back the arguments it was started with, for the
+	// test image's checks of what a program is handed.
+	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
 	Programs = []Part{Hello, Shell, Init}
 	// TestPrograms are what test images carry on top.
-	TestPrograms = []Part{ExitWith, WhoAmI, Threads}
+	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )
 
 // Build is one build of a part.

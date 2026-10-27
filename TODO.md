@@ -151,6 +151,7 @@ Loader and UEFI:
 - [x] Services asked about from the shell: init gives each program a line to ask over, and the shell's `services` lists them
 - [x] A first shell on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `mkdir` and `md`, `rm` and `del`, `clear` and `cls`, `exit`, on every image
 - [x] The shell starts a program by its name in `/System/Boot/meridian/programs` or by its path (SPAWN takes paths), and says how it ended
+- [x] Programs start with their arguments in start messages (ADR 0018)
 - [ ] The shell, with an `sh` mode (ADR 0016)
 - [ ] Command-line tools
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

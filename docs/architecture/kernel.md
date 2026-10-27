@@ -215,7 +215,8 @@ checks every call through the runtime before it greets, makes sure hello
 reached the kernel with every call, and starts it with no free frame at
 all, then one more after each refusal, until it starts. Test images also
 carry `exitwith`, which exits with the number it is sent, or runs out of
-stack when sent anything else, for hello's checks of SPAWN and WAIT.
+stack when sent anything else, for hello's checks of SPAWN and WAIT, and
+`arguments`, which sends back the arguments it starts with.
 
 ## Objects and handles (M3)
 
@@ -430,7 +431,9 @@ runtime reads the start messages its parent sent over the channel it
 started with (decision record 0017): init says there that the
 channel is the program's line, and ends them; a parent that hands over
 nothing still sends the end. A program started with no channel reads
-none.
+none. A parent hands a program its arguments there too, the words it
+starts with, each as it is (decision record 0018), which
+`program::arguments` answers.
 Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
 itself. The test image does that with a list of setup, which runs whoami

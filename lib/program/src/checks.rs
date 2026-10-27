@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 128] = [
+const CHECKS: [(&str, Check); 129] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -145,6 +145,7 @@ const CHECKS: [(&str, Check); 128] = [
     ("tools.sed.pipes", sed_among_the_tools),
     ("tools.expr", expr_on_its_words),
     ("tools.sleep", sleep_waits),
+    ("tools.cmp", cmp_on_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2595,14 +2596,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"42\n"
+        b"44\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-one twice",
+        "ls should write the programs' names into the pipe, twenty-two twice",
     )?;
     expect(
         same(
@@ -3855,6 +3856,11 @@ fn expr_on_its_words() -> Outcome {
     ) && same(
         &shell_on("#!/bin/sh\ni=0; while [ $i -lt 3 ]; do i=$(expr $i + 1); done; echo $i")?,
         &ran(0, b"3\n"),
+    ) && same(
+        &shell_on(
+            "expr 'a b' : 'a \\(.\\)'; expr abc '<' abd; expr 10 '<' 9; expr 10 '<' 9a; echo $?",
+        )?,
+        &ran(0, b"b\n1\n0\nexpr ended with 1\n1\n0\n"),
     );
     expect(
         checked,
@@ -3874,10 +3880,70 @@ fn sleep_waits() -> Outcome {
     )?;
     expect(
         same(
-            &shell_on("sleep x")?,
-            &ran(1, b"sleep: x is no number of seconds\nsleep ended with 1\n"),
+            &shell_on("sleep x; sleep -- 0; echo $?; sleep 1 2")?,
+            &ran(
+                1,
+                b"sleep: x is no number of seconds\nsleep ended with 1\n0\n\
+                  sleep: takes one time\nsleep ended with 1\n",
+            ),
         ),
-        "sleep should refuse what is no time",
+        "sleep should take a -- and refuse what is no time, or two",
+    )
+}
+
+/// cmp finds a file the same as itself, says which of two ended first,
+/// with - for the standard input, keeps quiet with -s, and says where two
+/// files differ first or, with -l, each byte that differs.
+fn cmp_on_files() -> Outcome {
+    let checked = same(
+        &shell_on("cmp /a; cmp -x /a /b")?,
+        &ran(
+            2,
+            b"cmp: compares two files\ncmp ended with 2\n\
+              cmp: -x is no option\ncmp ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "cmp should say what words it cannot take, and end with 2",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "cmp {boot} {boot}; echo $?\n\
+             head -n 1 {boot} | cmp - {boot}; echo $?\n\
+             cmp -s {boot} /nope; echo $?"
+        ))?,
+        &ran(
+            0,
+            b"0\ncmp: EOF on -\ncmp ended with 1\n1\ncmp ended with 2\n2\n",
+        ),
+    );
+    expect(
+        checked,
+        "cmp should find a file the same as itself and say which of two ended first",
+    )?;
+    let (ended, said) = shell_on(
+        "printf 'abc\\n' > /System/c1 || exit 9\n\
+         printf 'abX\\n' > /System/c2\n\
+         cmp /System/c1 /System/c2; cmp -l /System/c1 /System/c2\n\
+         rm /System/c1 /System/c2",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/c1: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"/System/c1 /System/c2 differ: char 3, line 1\ncmp ended with 1\n\
+                     3 143 130\ncmp ended with 1\n",
+        "cmp should say where two files differ first, and with -l each byte",
     )
 }
 

@@ -104,6 +104,10 @@ test = true
 name = "sleep"
 test = true
 
+[[example]]
+name = "cmp"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

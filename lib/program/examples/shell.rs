@@ -866,7 +866,7 @@ fn start(word: &str, arguments: &[String], input: In, out: Out) -> Going {
             let _ = program::close(start);
             Going::Program(word.into(), child)
         }
-        Err(Error::NotFound) if !word.starts_with('/') => {
+        Err(Error::NotFound | Error::NoSuchProgram) if !word.starts_with('/') => {
             let _ = program::write(&format!("{word}: no such command\n"));
             Going::Done(127)
         }

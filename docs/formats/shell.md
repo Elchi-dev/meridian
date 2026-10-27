@@ -188,6 +188,11 @@ Quotes and expansions in sh may go on over several lines, so the error
 comes only at the script's end. Inside a `$(`, a `${` or a `$((` the
 error is at the last thing opened, which is the first to close.
 
+A here-document whose last line, its word alone, never comes is an error
+(`unclosed`) as well, reported at its `<<`. The script's end may end that
+last line; the end of a `$(...)` may not, so a here-document inside one
+ends on a line of its own before the `)`.
+
 Expansions may stand inside each other 16 deep, as in `$(a "$(b)")`,
 which is 2 deep. One deeper is an error (`too-nested`), reported where it
 opens: reading each one takes some of the shell's stack, and a script

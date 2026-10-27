@@ -126,10 +126,36 @@ const OPERATORS: [(&str, Op); 18] = [
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
     Word(Word),
+    /// The word after `<<` or `<<-`, with the lines it stands for.
+    HereDoc(HereDoc),
     /// Digits right before `<` or `>`, which name the stream it redirects.
     IoNumber(u32),
     Op(Op),
     Newline,
+}
+
+/// A here-document: the word after `<<` or `<<-`, and its lines from the
+/// one after the next line's end up to the line that holds only the word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HereDoc {
+    pub word: Word,
+    /// The lines, each with its end: as they were written when any part of
+    /// the word was quoted, otherwise with escapes and expansions read as
+    /// in double quotes. All of it counts as quoted.
+    pub body: Vec<Part>,
+}
+
+/// A here-document whose lines are still to come.
+struct Pending {
+    /// Where its `<<` or `<<-` is.
+    at: Pos,
+    /// Whether the tabs that start its lines go, as `<<-` asks.
+    strip: bool,
+    /// Whether any part of its word was quoted, which keeps its lines as
+    /// they are.
+    quoted: bool,
+    /// The line that ends it.
+    delimiter: String,
 }
 
 /// The script's characters with where each one is.
@@ -139,6 +165,12 @@ struct Chars {
     pos: Pos,
     /// How many expansions the one being read stands inside.
     depth: usize,
+    /// Where the `<<` or `<<-` just taken is and whether it was `<<-`.
+    here: Option<(Pos, bool)>,
+    /// The here-documents whose lines start after the next line's end.
+    pending: Vec<Pending>,
+    /// The lines of here-documents read at the last line's end, in order.
+    bodies: Vec<Vec<Part>>,
 }
 
 impl Chars {
@@ -148,6 +180,9 @@ impl Chars {
             at: 0,
             pos: Pos { line: 1, column: 1 },
             depth: 0,
+            here: None,
+            pending: Vec::new(),
+            bodies: Vec::new(),
         }
     }
 
@@ -236,8 +271,17 @@ fn in_name(c: char) -> bool {
 pub fn tokens(script: &str) -> Result<Vec<(Token, Pos)>, Error> {
     let mut chars = Chars::new(script);
     let mut out = Vec::new();
+    let mut waiting = Vec::new();
     while let Some(token) = token(&mut chars)? {
+        if matches!(token.0, Token::HereDoc(_)) {
+            waiting.push(out.len());
+        }
         out.push(token);
+        for body in chars.bodies.drain(..) {
+            if let (Token::HereDoc(here), _) = &mut out[waiting.remove(0)] {
+                here.body = body;
+            }
+        }
     }
     Ok(out)
 }
@@ -255,17 +299,42 @@ fn token(chars: &mut Chars) -> Result<Option<(Token, Pos)>, Error> {
         }
     }
     let at = chars.pos;
+    let after = chars.here.take();
     let token = match chars.peek() {
-        None => return Ok(None),
+        None => match chars.pending.first() {
+            Some(here) => return Err(unclosed(here.at)),
+            None => return Ok(None),
+        },
         Some('\n') => {
             chars.next();
+            bodies(chars)?;
             Token::Newline
         }
         Some(_) => {
             if let Some(op) = operator(chars) {
+                if matches!(op, Op::DoubleLess | Op::DoubleLessDash) {
+                    chars.here = Some((at, op == Op::DoubleLessDash));
+                }
                 return Ok(Some((Token::Op(op), at)));
             }
             let word = word(chars)?;
+            if let Some((op, strip)) = after {
+                chars.pending.push(Pending {
+                    at: op,
+                    strip,
+                    quoted: word.parts.iter().any(|p| match p {
+                        Part::Text { quoted, .. } | Part::Expand { quoted, .. } => *quoted,
+                    }),
+                    delimiter: delimiter(&word),
+                });
+                return Ok(Some((
+                    Token::HereDoc(HereDoc {
+                        word,
+                        body: Vec::new(),
+                    }),
+                    at,
+                )));
+            }
             let digits = word
                 .plain()
                 .filter(|t| t.bytes().all(|b| b.is_ascii_digit()));
@@ -276,6 +345,104 @@ fn token(chars: &mut Chars) -> Result<Option<(Token, Pos)>, Error> {
         }
     };
     Ok(Some((token, at)))
+}
+
+/// The line that ends the here-document `word` starts: the word without
+/// its quotes, and an expansion in it as it is written, which POSIX leaves
+/// open, but for a backquote, which reads as `$(`.
+fn delimiter(word: &Word) -> String {
+    let mut out = String::new();
+    for part in &word.parts {
+        match part {
+            Part::Text { text, .. } => out.push_str(text),
+            Part::Expand { expansion, .. } => {
+                let (open, text, close) = match expansion {
+                    Expansion::Parameter(name) => ("$", name, ""),
+                    Expansion::Braced(text) => ("${", text, "}"),
+                    Expansion::Command(text) => ("$(", text, ")"),
+                    Expansion::Arithmetic(text) => ("$((", text, "))"),
+                };
+                out.push_str(open);
+                out.push_str(text);
+                out.push_str(close);
+            }
+        }
+    }
+    out
+}
+
+/// Reads the lines of the here-documents whose words came before the line
+/// end just taken, in their order.
+fn bodies(chars: &mut Chars) -> Result<(), Error> {
+    for here in core::mem::take(&mut chars.pending) {
+        let mut parts = Vec::new();
+        loop {
+            if here.strip {
+                while chars.peek() == Some('\t') {
+                    chars.next();
+                }
+            }
+            if ends(chars, &here.delimiter) {
+                break;
+            }
+            if chars.peek().is_none() {
+                return Err(unclosed(here.at));
+            }
+            line(chars, here.quoted, &mut parts)?;
+        }
+        chars.bodies.push(parts);
+    }
+    Ok(())
+}
+
+/// Whether the line here holds only `delimiter`, taking it and its end if
+/// it does. The script's end ends that line as well.
+fn ends(chars: &mut Chars, delimiter: &str) -> bool {
+    let n = delimiter.chars().count();
+    let fits = delimiter
+        .chars()
+        .enumerate()
+        .all(|(i, c)| chars.ahead(i) == Some(c))
+        && matches!(chars.ahead(n), None | Some('\n'));
+    if fits {
+        for _ in 0..=n {
+            chars.next();
+        }
+    }
+    fits
+}
+
+/// One line of a here-document onto the parts, its end too: as it is when
+/// `quoted`, otherwise with lines a backslash joins joined, and escapes and
+/// expansions as in double quotes, but for `"`, which is a character like
+/// any other there.
+fn line(chars: &mut Chars, quoted: bool, parts: &mut Vec<Part>) -> Result<(), Error> {
+    loop {
+        if !quoted && chars.joins() {
+            continue;
+        }
+        match chars.peek() {
+            None => return Ok(()),
+            Some('\\') if !quoted && matches!(chars.ahead(1), Some('$' | '`' | '\\')) => {
+                chars.next();
+                push(parts, chars.next().unwrap_or('\\'), true);
+            }
+            Some('$' | '`') if !quoted => match dollar(chars)? {
+                Some(expansion) => parts.push(Part::Expand {
+                    expansion,
+                    quoted: true,
+                }),
+                None => push(parts, '$', true),
+            },
+            Some(c) => {
+                chars.next();
+                push(parts, c, true);
+                if c == '\n' {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 /// The operator written `text`.
@@ -609,14 +776,25 @@ fn inside(chars: &mut Chars, open: Pos) -> Result<Expansion, Error> {
 /// tokens so that quotes, comments and expansions in them are taken
 /// whole, and the `)`.
 fn command(chars: &mut Chars, at: Pos) -> Result<(), Error> {
+    // Here-documents opened outside start after a line's end outside, and
+    // those opened inside belong to the tokens inside.
+    let pending = core::mem::take(&mut chars.pending);
+    let bodies = core::mem::take(&mut chars.bodies);
     let mut opens = Vec::new();
-    loop {
-        match token(chars)? {
-            None => return Err(unclosed(opens.last().copied().unwrap_or(at))),
-            Some((Token::Op(Op::Open), here)) => opens.push(here),
-            Some((Token::Op(Op::Close), _)) if opens.pop().is_none() => return Ok(()),
-            Some(_) => {}
+    let read = loop {
+        match token(chars) {
+            Err(e) => break Err(e),
+            Ok(None) => break Err(unclosed(opens.last().copied().unwrap_or(at))),
+            Ok(Some((Token::Op(Op::Open), here))) => opens.push(here),
+            Ok(Some((Token::Op(Op::Close), _))) if opens.pop().is_none() => break Ok(()),
+            Ok(Some(_)) => {}
         }
+    };
+    let inside = core::mem::replace(&mut chars.pending, pending);
+    chars.bodies = bodies;
+    match inside.first() {
+        Some(here) if read.is_ok() => Err(unclosed(here.at)),
+        _ => read,
     }
 }
 
@@ -645,34 +823,45 @@ mod tests {
     use super::*;
     use alloc::format;
 
-    /// The tokens of `script` written short: a word as its parts, quoted
-    /// text in brackets and expansions as `$kind{text}`, quoted ones with a
-    /// `"` before them.
+    /// Parts written short: quoted text in brackets and expansions as
+    /// `$kind{text}`, quoted ones with a `"` before them.
+    fn written_short(parts: &[Part]) -> String {
+        parts
+            .iter()
+            .map(|p| match p {
+                Part::Text {
+                    text,
+                    quoted: false,
+                } => text.clone(),
+                Part::Text { text, quoted: true } => format!("[{text}]"),
+                Part::Expand { expansion, quoted } => {
+                    let q = if *quoted { "\"" } else { "" };
+                    match expansion {
+                        Expansion::Parameter(n) => format!("{q}$p{{{n}}}"),
+                        Expansion::Braced(t) => format!("{q}$b{{{t}}}"),
+                        Expansion::Command(t) => format!("{q}$c{{{t}}}"),
+                        Expansion::Arithmetic(t) => format!("{q}$a{{{t}}}"),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// The tokens of `script` written short: a word as its parts, and a
+    /// here-document as `<word>` and its lines' parts.
     fn short(script: &str) -> Vec<String> {
         tokens(script)
             .unwrap()
             .into_iter()
             .map(|(token, _)| match token {
-                Token::Word(w) => w
-                    .parts
-                    .iter()
-                    .map(|p| match p {
-                        Part::Text {
-                            text,
-                            quoted: false,
-                        } => text.clone(),
-                        Part::Text { text, quoted: true } => format!("[{text}]"),
-                        Part::Expand { expansion, quoted } => {
-                            let q = if *quoted { "\"" } else { "" };
-                            match expansion {
-                                Expansion::Parameter(n) => format!("{q}$p{{{n}}}"),
-                                Expansion::Braced(t) => format!("{q}$b{{{t}}}"),
-                                Expansion::Command(t) => format!("{q}$c{{{t}}}"),
-                                Expansion::Arithmetic(t) => format!("{q}$a{{{t}}}"),
-                            }
-                        }
-                    })
-                    .collect(),
+                Token::Word(w) => written_short(&w.parts),
+                Token::HereDoc(h) => {
+                    format!(
+                        "<{}>{}",
+                        written_short(&h.word.parts),
+                        written_short(&h.body)
+                    )
+                }
                 Token::IoNumber(n) => format!("io{n}"),
                 Token::Op(op) => OPERATORS
                     .iter()
@@ -692,11 +881,11 @@ mod tests {
     #[test]
     fn operators_are_taken_by_the_longest_that_fits() {
         assert_eq!(
-            short("a&&b||c;;d;&e<<-f<<g<&h<>i>>j>&k>|l&m|n;o<p>q(r)"),
+            short("a&&b||c;;d;&e<<-f<<g<&h<>i>>j>&k>|l&m|n;o<p>q(r)\nf\ng"),
             [
-                "a", "&&", "b", "||", "c", ";;", "d", ";&", "e", "<<-", "f", "<<", "g", "<&", "h",
-                "<>", "i", ">>", "j", ">&", "k", ">|", "l", "&", "m", "|", "n", ";", "o", "<", "p",
-                ">", "q", "(", "r", ")"
+                "a", "&&", "b", "||", "c", ";;", "d", ";&", "e", "<<-", "<f>", "<<", "<g>", "<&",
+                "h", "<>", "i", ">>", "j", ">&", "k", ">|", "l", "&", "m", "|", "n", ";", "o", "<",
+                "p", ">", "q", "(", "r", ")", "NL"
             ]
         );
         assert_eq!(short("a <<<b"), ["a", "<<", "<", "b"]);
@@ -845,7 +1034,7 @@ mod tests {
     fn lines_a_backslash_joins_may_cut_anything() {
         assert_eq!(short("a &\\\n& b"), ["a", "&&", "b"]);
         assert_eq!(short("a >\\\n> b"), ["a", ">>", "b"]);
-        assert_eq!(short("a <\\\n<\\\n- b"), ["a", "<<-", "b"]);
+        assert_eq!(short("a <\\\n<\\\n- b\nb"), ["a", "<<-", "<b>", "NL"]);
         assert_eq!(short("2\\\n>e"), ["io2", ">", "e"]);
         assert_eq!(short("$\\\nx"), ["$p{x}"]);
         assert_eq!(short("$ab\\\ncd"), ["$p{abcd}"]);
@@ -961,8 +1150,11 @@ mod tests {
     #[test]
     fn digits_before_every_redirection_name_its_stream() {
         assert_eq!(
-            lines("2>>a 0<&3 1>&2 2<>f 2>|f 2<<E 3<<-E"),
-            ["io2 >> a io0 <& 3 io1 >& 2 io2 <> f io2 >| f io2 << E io3 <<- E"]
+            lines("2>>a 0<&3 1>&2 2<>f 2>|f 2<<E 3<<-E\nE\nE"),
+            [
+                "io2 >> a io0 <& 3 io1 >& 2 io2 <> f io2 >| f io2 << <E> io3 <<- <E>",
+                ""
+            ]
         );
         assert_eq!(short("12345>x"), ["io12345", ">", "x"]);
         assert_eq!(
@@ -1085,7 +1277,7 @@ mod tests {
                         assert_eq!(e.code, Code::Unclosed, "{script:?}");
                         let opens = at(&script, e.at);
                         assert!(
-                            matches!(opens, Some('\'' | '"' | '`' | '$' | '(' | '{')),
+                            matches!(opens, Some('\'' | '"' | '`' | '$' | '(' | '{' | '<')),
                             "{script:?} at {:?}",
                             e.at
                         );
@@ -1107,7 +1299,10 @@ mod tests {
         for text in ["&&&", "|&", "<<<", ">>>", "&;", "((", "))", ">-", ";|", ""] {
             assert_eq!(written(text), None, "{text}");
         }
-        assert_eq!(short("a <<- b a << -b"), ["a", "<<-", "b", "a", "<<", "-b"]);
+        assert_eq!(
+            short("a <<- b a << -b\nb\n-b"),
+            ["a", "<<-", "<b>", "a", "<<", "<-b>", "NL"]
+        );
         assert_eq!(short("((a))"), ["(", "(", "a", ")", ")"]);
     }
 
@@ -1254,6 +1449,199 @@ mod tests {
     }
 
     #[test]
+    fn a_here_document_holds_the_lines_up_to_its_word() {
+        assert_eq!(
+            short("cat <<EOF\nhello\nworld\nEOF\n"),
+            ["cat", "<<", "<EOF>[hello\nworld\n]", "NL"]
+        );
+        assert_eq!(
+            short("cat <<E\nE\necho"),
+            ["cat", "<<", "<E>", "NL", "echo"],
+            "no lines"
+        );
+        assert_eq!(
+            short("cat <<E\na\nE"),
+            ["cat", "<<", "<E>[a\n]", "NL"],
+            "the script's end ends the last line"
+        );
+        assert_eq!(
+            short("cat <<E\nE \n E\nEE\nE\n"),
+            ["cat", "<<", "<E>[E \n E\nEE\n]", "NL"],
+            "only the word alone ends it"
+        );
+        assert_eq!(
+            short("cat <<E >out; echo\nx\nE\n"),
+            ["cat", "<<", "<E>[x\n]", ">", "out", ";", "echo", "NL"]
+        );
+        assert_eq!(
+            places("cat <<E\nx\nE\necho"),
+            [(1, 1), (1, 5), (1, 7), (1, 8), (4, 1)]
+        );
+    }
+
+    #[test]
+    fn a_quoted_word_keeps_the_lines_as_they_are() {
+        let body = "$x `a` \\$y \\\\ \\\n";
+        for (word, written) in [
+            ("'E'", "[E]"),
+            ("\"E\"", "[E]"),
+            ("\\E", "[E]"),
+            ("E''", "E[]"),
+        ] {
+            assert_eq!(
+                short(&format!("cat <<{word}\n{body}E\n")),
+                ["cat", "<<", format!("<{written}>[{body}]").as_str(), "NL"],
+                "{word}"
+            );
+        }
+        assert_eq!(
+            short("cat <<E'x'\n$a\nEx\n"),
+            ["cat", "<<", "<E[x]>[$a\n]", "NL"]
+        );
+        assert_eq!(
+            short("cat <<'a b'\nx\na b\n"),
+            ["cat", "<<", "<[a b]>[x\n]", "NL"]
+        );
+    }
+
+    #[test]
+    fn an_unquoted_word_reads_the_lines_as_in_double_quotes() {
+        assert_eq!(
+            short("cat <<E\n$x `a` \\$y \\\\ \\\"q\\\" ${z}\nE\n"),
+            [
+                "cat",
+                "<<",
+                "<E>\"$p{x}[ ]\"$c{a}[ $y \\ \\\"q\\\" ]\"$b{z}[\n]",
+                "NL"
+            ]
+        );
+        assert_eq!(
+            short("cat <<E\na\\\nb\nE\n"),
+            ["cat", "<<", "<E>[ab\n]", "NL"],
+            "joined"
+        );
+        assert_eq!(
+            short("cat <<E\na\\\nE\nE\n"),
+            ["cat", "<<", "<E>[aE\n]", "NL"],
+            "not the word right after a join"
+        );
+        assert_eq!(
+            short("cat <<E\n$(echo\nE\n)\nE\n"),
+            ["cat", "<<", "<E>\"$c{echo\nE\n}[\n]", "NL"],
+            "an expansion over lines"
+        );
+        assert_eq!(
+            short("cat <<E\n\"$x\"\nE\n"),
+            ["cat", "<<", "<E>[\"]\"$p{x}[\"\n]", "NL"],
+            "a \" is a character"
+        );
+        assert_eq!(
+            short("cat <<E\ncosts $ 5$\nE\n"),
+            ["cat", "<<", "<E>[costs $ 5$\n]", "NL"],
+            "a $ that starts nothing is quoted like the rest"
+        );
+    }
+
+    #[test]
+    fn a_dash_takes_the_tabs_that_start_each_line() {
+        assert_eq!(
+            short("cat <<-E\n\t\ta\n\t b\n\tE\n"),
+            ["cat", "<<-", "<E>[a\n b\n]", "NL"]
+        );
+        assert_eq!(
+            short("cat <<-E\n  a\n  E\nE\n"),
+            ["cat", "<<-", "<E>[  a\n  E\n]", "NL"],
+            "not spaces"
+        );
+        assert_eq!(
+            short("cat <<E\n\ta\n\tE\nE\n"),
+            ["cat", "<<", "<E>[\ta\n\tE\n]", "NL"],
+            "nor without the dash"
+        );
+        assert_eq!(
+            short("cat <<-E\n\ta\\\n\tb\nE\n"),
+            ["cat", "<<-", "<E>[a\tb\n]", "NL"],
+            "nor after a join"
+        );
+    }
+
+    #[test]
+    fn here_documents_on_one_line_come_in_their_order() {
+        assert_eq!(
+            short("cat <<eof1; cat <<eof2\nHi,\neof1\nHelene.\neof2\n"),
+            [
+                "cat",
+                "<<",
+                "<eof1>[Hi,\n]",
+                ";",
+                "cat",
+                "<<",
+                "<eof2>[Helene.\n]",
+                "NL"
+            ]
+        );
+        assert_eq!(
+            short("a <<A <<-B\n1\nA\n\t2\n\tB\nb <<C\n3\nC\n"),
+            [
+                "a", "<<", "<A>[1\n]", "<<-", "<B>[2\n]", "NL", "b", "<<", "<C>[3\n]", "NL"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_here_document_inside_a_command_belongs_to_it() {
+        assert_eq!(short("x=$(cat <<E\n)\nE\n)"), ["x=$c{cat <<E\n)\nE\n}"]);
+        assert_eq!(
+            short("cat <<E $(echo a\necho b)\nbody\nE\n"),
+            ["cat", "<<", "<E>[body\n]", "$c{echo a\necho b}", "NL"]
+        );
+        assert_eq!(
+            short("cat <<A\n$(cat <<B\nb\nB\n)\nA\n"),
+            ["cat", "<<", "<A>\"$c{cat <<B\nb\nB\n}[\n]", "NL"]
+        );
+        assert_eq!(error("$(cat <<E)"), (1, 7, Code::Unclosed));
+        assert_eq!(error("cat <<A $(cat <<B)\nA\n"), (1, 15, Code::Unclosed));
+    }
+
+    #[test]
+    fn a_here_document_whose_word_never_comes_is_unclosed_at_its_operator() {
+        assert_eq!(error("cat <<E"), (1, 5, Code::Unclosed));
+        assert_eq!(error("cat <<E\na\nb"), (1, 5, Code::Unclosed));
+        assert_eq!(error("a\ncat <<A <<-B\nA\n"), (2, 9, Code::Unclosed));
+        assert_eq!(error("cat <<E\nE x\n"), (1, 5, Code::Unclosed));
+        assert_eq!(
+            short("cat <<\nx"),
+            ["cat", "<<", "NL", "x"],
+            "no word, no lines"
+        );
+        assert_eq!(short("cat << ;"), ["cat", "<<", ";"]);
+    }
+
+    #[test]
+    fn the_word_of_a_here_document_keeps_its_expansions_as_written() {
+        assert_eq!(
+            short("cat <<$x\na\n$x\n"),
+            ["cat", "<<", "<$p{x}>[a\n]", "NL"]
+        );
+        assert_eq!(short("cat <<${x}\n${x}\n"), ["cat", "<<", "<$b{x}>", "NL"]);
+        assert_eq!(short("cat <<$(a)\n$(a)\n"), ["cat", "<<", "<$c{a}>", "NL"]);
+        assert_eq!(
+            short("cat <<$((1))\n$((1))\n"),
+            ["cat", "<<", "<$a{1}>", "NL"]
+        );
+        assert_eq!(
+            short("cat <<`a`\n$(a)\n"),
+            ["cat", "<<", "<$c{a}>", "NL"],
+            "a backquote as $("
+        );
+        assert_eq!(
+            short("cat <<\"$x\"\n$y\n$x\n"),
+            ["cat", "<<", "<\"$p{x}>[$y\n]", "NL"],
+            "quoted, so its lines stay as they are"
+        );
+    }
+
+    #[test]
     fn a_script_reads_as_sh_reads_it() {
         let script = r#"#!/bin/sh
 set -e
@@ -1360,7 +1748,7 @@ printf '%s\n' "$(basename "$(pwd)")" >|log"#;
             "x=${a:-b}$(c)$((1+2))$$ $? $ab",
             "a 2>>f <g 10<&3",
             "\"a $b `c` d\" $'e'",
-            "case a in (b) c;; esac <<-x",
+            "case a in (b) c;; esac <>x",
             "f(){ g; }",
         ];
         for script in scripts {
@@ -1375,7 +1763,7 @@ printf '%s\n' "$(basename "$(pwd)")" >|log"#;
     #[test]
     fn a_blank_or_a_line_end_between_two_pieces_keeps_their_tokens_apart() {
         let pieces = [
-            "a", "'b c'", "\"$x\"", "$(d e)", "${f:-g}", "$((1+2))", "|", "&&", ";", "2>", "<<-",
+            "a", "'b c'", "\"$x\"", "$(d e)", "${f:-g}", "$((1+2))", "|", "&&", ";", "2>", "<>",
             "`h`", "$'\\t'", "((", "x=y",
         ];
         for a in pieces {
@@ -1415,6 +1803,30 @@ printf '%s\n' "$(basename "$(pwd)")" >|log"#;
             short("$'\\cz\\cZ\\c_\\c@x'"),
             ["[\u{1a}\u{1a}\u{1f}]"],
             "\\c@ is a zero byte"
+        );
+    }
+
+    #[test]
+    fn here_documents_in_a_script_read_as_sh_reads_them() {
+        let script = r#"cat >config.h <<EOF
+#define VERSION "$version"
+#define PREFIX "${prefix:-/usr}"
+EOF
+if ! cmp -s config.h config.old; then
+	cat <<-'USAGE' >&2
+	usage: $0 [file]
+	USAGE
+fi
+"#;
+        assert_eq!(
+            lines(script),
+            [
+                "cat > config.h << <EOF>[#define VERSION \"]\"$p{version}[\"\n#define PREFIX \"]\"$b{prefix:-/usr}[\"\n]",
+                "if ! cmp -s config.h config.old ; then",
+                "cat <<- <[USAGE]>[usage: $0 [file]\n] >& 2",
+                "fi",
+                "",
+            ]
         );
     }
 

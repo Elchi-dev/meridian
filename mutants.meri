@@ -254,3 +254,10 @@ allow {
     mutation = "& to |"
     reason = "only cores a shootdown asks get its interrupt; a core that serves one anyway while it waits to start its own only forgets pages of that address space once more and clears a bit that was clear, which changes nothing it reads"
 }
+
+allow {
+    file = "kernel/src/raw/vfs.rs"
+    line = "let write = write.unwrap_or_else(|| Box::new(|_, _: &[u8]| false));"
+    mutation = "false to true"
+    reason = "a volume mounted without a writer is read only, and a read-only volume refuses every write, removal and new directory before it reaches the writer, so what the writer would answer is never asked"
+}

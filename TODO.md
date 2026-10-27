@@ -151,7 +151,7 @@ Loader and UEFI:
 - [x] Services asked about from the shell: init gives each program a line to ask over, and the shell's `services` lists them
 - [x] A first shell on the console: a line edited with shift and backspace, `help`, `echo`, `ls`, `cat`, `clear` and `cls`, `exit`, on every image
 - [x] The shell starts a program by its name in `/System/Boot/meridian/programs` or by its path (SPAWN takes paths), and says how it ended
-- [ ] The shell, with an `sh` mode
+- [ ] The shell, with an `sh` mode (ADR 0016)
 - [ ] Command-line tools
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime
 - [ ] Text terminal as a program of its own, keyboard layouts beyond US

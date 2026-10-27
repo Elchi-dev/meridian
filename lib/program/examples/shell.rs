@@ -558,14 +558,14 @@ fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
 }
 
 /// Starts the program `word` names, handing it `arguments` and the file
-/// `out` leads to, which goes with it, waits until it ended, and answers
-/// its status.
+/// `out` leads to, which goes with it, or else the shell's own standard
+/// output, waits until it ended, and answers its status.
 #[cfg_attr(test, allow(dead_code))]
 fn start(word: &str, arguments: &[String], out: &mut Out) -> u8 {
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let output = match core::mem::replace(out, Out::Mine) {
         Out::File { handle, .. } => Some(Sink::File(handle)),
-        Out::Mine => None,
+        Out::Mine => inherited(),
     };
     let child = match program::spawn_handing(&program_path(word), &arguments, output) {
         Ok((child, start)) => {
@@ -595,6 +595,17 @@ fn start(word: &str, arguments: &[String], out: &mut Out) -> u8 {
             1
         }
     }
+}
+
+/// A second handle to the shell's own standard output, for a program to
+/// write there too (decision record 0019); none while the shell writes to
+/// the console.
+#[cfg_attr(test, allow(dead_code))]
+fn inherited() -> Option<Sink> {
+    Some(match program::start::given().output? {
+        Sink::Channel(end) => Sink::Channel(program::duplicate(end).ok()?),
+        Sink::File(file) => Sink::File(program::duplicate(file).ok()?),
+    })
 }
 
 /// Shows the names in the directory at `path`, or the path of a file, and

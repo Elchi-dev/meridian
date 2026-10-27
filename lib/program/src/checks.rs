@@ -1274,6 +1274,10 @@ fn shell_starts_programs() -> Outcome {
         "a command that is nowhere should end with 127",
     )?;
     expect(
+        shell_on("arguments a 'b c'; echo $?")? == ran(0, b"a\nb c\n0\n"),
+        "a program the shell starts should write to the shell's own output",
+    )?;
+    expect(
         shell_on("/System/Boot/meridian/programs")?.0 == Ok(Ended::Exited(126)),
         "a path that is no program should end with 126",
     )

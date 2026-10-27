@@ -476,8 +476,9 @@ and `services`, reading the tree of files, where patterns match too. Any
 other word is a program: by its name in
 `/System/Boot/meridian/programs`, or by its path, started with SPAWN,
 handed the words after it and waited for, and the shell says how it ended
-unless it exited with 0. `>` and `>>` send what a command writes into a
-file, a program's too; pipes and `<` wait for a standard input. Started
+unless it exited with 0. A program writes where the shell writes, through
+a duplicate of its standard output, and `>` and `>>` send what a command
+writes into a file instead; pipes and `<` wait for a standard input. Started
 with `-c` and a script, or a script's path, the shell runs that and ends
 with its status. The test image checks the console's
 text, cursor, cells, scrolling and clearing on the screen, that a

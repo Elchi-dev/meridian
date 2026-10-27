@@ -16,6 +16,11 @@ use crate::{Code, Error, Syntax};
 /// How many times an interval may name at most, POSIX's `RE_DUP_MAX`.
 pub const MOST: u32 = 255;
 
+/// How deep groups may nest, and how many repetitions one item may
+/// take, so that matching it stays within a program's stack.
+pub const MOST_NESTING: usize = 16;
+pub const MOST_REPETITIONS: usize = 4;
+
 /// What an expression is made of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
@@ -61,6 +66,7 @@ pub fn parse(pattern: &str, syntax: Syntax) -> Result<Parsed, Error> {
         at: 0,
         groups: 0,
         closed: Vec::new(),
+        nesting: 0,
     };
     let tree = match syntax {
         Syntax::Basic => reader.basic(None)?,
@@ -79,6 +85,8 @@ struct Reader {
     /// The subexpressions that ended so far, which a back-reference may
     /// name.
     closed: Vec<usize>,
+    /// How many groups are open around the reader.
+    nesting: usize,
 }
 
 /// `items` one after the other, as one node.
@@ -141,13 +149,13 @@ impl Reader {
                         items.push(Node::Start);
                         Node::Char('*')
                     }
-                    Some(item) => Node::Repeat(Box::new(item), 0, None),
+                    Some(item) => repeat(item, (0, None), at)?,
                 },
                 '\\' if next == Some('{') => {
                     self.at += 1;
                     let item = repeated(items.pop(), at)?;
-                    let (least, most) = self.interval(at, Syntax::Basic)?;
-                    Node::Repeat(Box::new(item), least, most)
+                    let counts = self.interval(at, Syntax::Basic)?;
+                    repeat(item, counts, at)?
                 }
                 '\\' => self.basic_escape(at)?,
                 c => Node::Char(c),
@@ -200,13 +208,13 @@ impl Reader {
                 }
                 '*' | '+' | '?' | '{' => {
                     let item = repeated(items.pop(), at)?;
-                    let (least, most) = match c {
+                    let counts = match c {
                         '*' => (0, None),
                         '+' => (1, None),
                         '?' => (0, Some(1)),
                         _ => self.interval(at, Syntax::Extended)?,
                     };
-                    Node::Repeat(Box::new(item), least, most)
+                    repeat(item, counts, at)?
                 }
                 '(' => self.group(at, Syntax::Extended)?,
                 '^' => Node::Start,
@@ -243,6 +251,10 @@ impl Reader {
 
     /// The group whose opening is at `at`, read up to its end.
     fn group(&mut self, at: usize, syntax: Syntax) -> Result<Node, Error> {
+        if self.nesting == MOST_NESTING {
+            return fail(at, Code::TooDeep);
+        }
+        self.nesting += 1;
         self.groups += 1;
         let number = self.groups;
         let inside = match syntax {
@@ -250,6 +262,7 @@ impl Reader {
             Syntax::Extended => self.extended(Some(at))?,
         };
         self.closed.push(number);
+        self.nesting -= 1;
         Ok(Node::Group(number, Box::new(inside)))
     }
 
@@ -305,6 +318,21 @@ impl Reader {
         }
         (self.at > start).then_some(value)
     }
+}
+
+/// `item` repeated `counts` times, by the repetition at `at`, unless it
+/// is repeated [`MOST_REPETITIONS`] times over already.
+fn repeat(item: Node, (least, most): (u32, Option<u32>), at: usize) -> Result<Node, Error> {
+    let mut repetitions = 0;
+    let mut inside = &item;
+    while let Node::Repeat(next, ..) = inside {
+        repetitions += 1;
+        inside = next;
+    }
+    if repetitions == MOST_REPETITIONS {
+        return fail(at, Code::TooDeep);
+    }
+    Ok(Node::Repeat(Box::new(item), least, most))
 }
 
 /// What a repetition at `at` repeats: the item before it, but not an
@@ -814,5 +842,37 @@ mod tests {
             (3, Code::Parenthesis),
             "a ( in a set opens no group for the \\) to end"
         );
+    }
+
+    #[test]
+    fn groups_nest_and_repetitions_pile_up_only_so_far() {
+        let nested = |depth| "(".repeat(depth) + "a" + &")".repeat(depth);
+        assert!(parse(&nested(MOST_NESTING), Syntax::Extended).is_ok());
+        assert_eq!(
+            failed(&nested(MOST_NESTING + 1), Syntax::Extended),
+            (MOST_NESTING, Code::TooDeep),
+            "the group one too deep"
+        );
+        assert_eq!(
+            failed(&"(".repeat(10_000), Syntax::Extended),
+            (MOST_NESTING, Code::TooDeep),
+            "long before the stack would end"
+        );
+        assert_eq!(
+            failed(&"\\(".repeat(MOST_NESTING + 1), Syntax::Basic),
+            (2 * MOST_NESTING, Code::TooDeep)
+        );
+        assert!(
+            parse(&"(a)".repeat(100), Syntax::Extended).is_ok(),
+            "side by side they do not nest"
+        );
+        assert!(parse("a****", Syntax::Basic).is_ok());
+        assert_eq!(failed("a*****", Syntax::Basic), (5, Code::TooDeep));
+        assert_eq!(failed("a+*?{2}+", Syntax::Extended), (7, Code::TooDeep));
+        assert_eq!(
+            failed("a\\{2\\}\\{2\\}***", Syntax::Basic),
+            (13, Code::TooDeep)
+        );
+        assert!(parse("(a*)*(b+)+", Syntax::Extended).is_ok());
     }
 }

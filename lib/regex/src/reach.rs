@@ -97,12 +97,12 @@ impl Places {
 /// A text as its characters, none for a byte that is no UTF-8, and
 /// whether characters match in either case.
 #[derive(Clone, Copy, Debug)]
-pub struct Text<'t> {
+pub struct Chars<'t> {
     pub chars: &'t [Option<char>],
     pub either_case: bool,
 }
 
-impl Text<'_> {
+impl Chars<'_> {
     fn none(&self) -> Places {
         Places::none(self.chars.len())
     }
@@ -143,7 +143,7 @@ impl Text<'_> {
 /// back-reference reaches none here; an expression with one is matched by
 /// a search of its own.
 #[must_use]
-pub fn forward(node: &Node, from: &Places, text: &Text) -> Places {
+pub fn forward(node: &Node, from: &Places, text: &Chars) -> Places {
     let either_case = text.either_case;
     match node {
         Node::Empty => from.clone(),
@@ -172,7 +172,7 @@ pub fn forward(node: &Node, from: &Places, text: &Text) -> Places {
 
 /// Every place `node` can start at to end at one of `to`.
 #[must_use]
-pub fn backward(node: &Node, to: &Places, text: &Text) -> Places {
+pub fn backward(node: &Node, to: &Places, text: &Chars) -> Places {
     let either_case = text.either_case;
     match node {
         Node::Empty => to.clone(),
@@ -243,7 +243,7 @@ fn repeat(
 pub fn groups(
     tree: &Node,
     count: usize,
-    text: &Text,
+    text: &Chars,
     (start, end): (usize, usize),
 ) -> Vec<Option<(usize, usize)>> {
     let mut spans = alloc::vec![None; count + 1];
@@ -266,7 +266,7 @@ fn holds_group(node: &Node) -> bool {
 fn assign(
     node: &Node,
     (start, end): (usize, usize),
-    text: &Text,
+    text: &Chars,
     spans: &mut [Option<(usize, usize)>],
 ) {
     if !holds_group(node) {
@@ -341,10 +341,9 @@ fn assign(
 mod tests {
     use super::*;
     use crate::Syntax;
+    use crate::dice::{Dice, pattern, text};
     use crate::parse::parse;
     use crate::vm::compile;
-    use alloc::format;
-    use alloc::string::String;
 
     fn chars(text: &str) -> Vec<Option<char>> {
         text.chars().map(Some).collect()
@@ -357,7 +356,7 @@ mod tests {
     /// The places `pattern` reaches from `start` in `text`.
     fn ends(pattern: &str, text: &str, start: usize) -> Vec<usize> {
         let chars = chars(text);
-        let text = Text {
+        let text = Chars {
             chars: &chars,
             either_case: false,
         };
@@ -375,7 +374,7 @@ mod tests {
             .unwrap()
             .find(&chars, 0)
             .unwrap();
-        let text = Text {
+        let text = Chars {
             chars: &chars,
             either_case: false,
         };
@@ -439,7 +438,7 @@ mod tests {
     fn a_part_reaches_back_to_every_place_it_can_start_at() {
         let starts = |pattern, text: &str, end| -> Vec<usize> {
             let chars = chars(text);
-            let text = Text {
+            let text = Chars {
                 chars: &chars,
                 either_case: true,
             };
@@ -519,45 +518,6 @@ mod tests {
         assert_eq!(spans("(a|ab)*c", "abac"), [Some((0, 4)), Some((2, 3))]);
     }
 
-    /// Dice for the patterns below: the same rolls every run.
-    struct Dice(u64);
-
-    impl Dice {
-        fn roll(&mut self, sides: usize) -> usize {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            usize::try_from(self.0 % 1024).unwrap() % sides
-        }
-    }
-
-    /// An extended expression over a and b, `depth` deep at most.
-    fn pattern(dice: &mut Dice, depth: u32) -> String {
-        const LEAVES: [&str; 8] = ["a", "b", ".", "[ab]", "[^a]", "^", "$", "()"];
-        if depth == 0 || dice.roll(4) == 0 {
-            return String::from(LEAVES[dice.roll(LEAVES.len())]);
-        }
-        let inside = pattern(dice, depth - 1);
-        match dice.roll(8) {
-            0 => format!("({inside})*"),
-            1 => format!("({inside})+"),
-            2 => format!("({inside})?"),
-            3 => {
-                let least = dice.roll(3);
-                format!("({inside}){{{least},{}}}", least + dice.roll(3))
-            }
-            4 => format!("({inside}|{})", pattern(dice, depth - 1)),
-            _ => format!("{inside}{}", pattern(dice, depth - 1)),
-        }
-    }
-
-    /// A text of up to 7 characters, mostly a and b.
-    fn text(dice: &mut Dice) -> String {
-        (0..dice.roll(8))
-            .map(|_| ['a', 'b', 'a', 'b', 'c'][dice.roll(5)])
-            .collect()
-    }
-
     #[test]
     fn the_vm_finds_the_match_the_places_define() {
         let mut dice = Dice(0x9e37_79b9_7f4a_7c15);
@@ -568,7 +528,7 @@ mod tests {
             for _ in 0..12 {
                 let words = text(&mut dice);
                 let chars = chars(&words);
-                let text = Text {
+                let text = Chars {
                     chars: &chars,
                     either_case: false,
                 };
@@ -596,7 +556,7 @@ mod tests {
             let tree = tree(&pattern);
             let words = text(&mut dice);
             let chars = chars(&words);
-            let text = Text {
+            let text = Chars {
                 chars: &chars,
                 either_case: false,
             };
@@ -627,7 +587,7 @@ mod tests {
             let Some(found) = program.find(&chars, 0) else {
                 continue;
             };
-            let text = Text {
+            let text = Chars {
                 chars: &chars,
                 either_case: false,
             };
@@ -655,7 +615,7 @@ mod tests {
             .unwrap()
             .find(chars, 0)
             .unwrap();
-        let text = Text { chars, either_case };
+        let text = Chars { chars, either_case };
         groups(&parsed.tree, parsed.groups, &text, found)
     }
 

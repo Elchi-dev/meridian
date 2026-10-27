@@ -259,7 +259,7 @@ fn opening(how: Redirect) -> Option<u64> {
     match how {
         Redirect::Out | Redirect::ErrorOut => Some(file::CREATE_ALWAYS),
         Redirect::Append | Redirect::ErrorAppend => Some(file::OPEN_ALWAYS),
-        Redirect::In => None,
+        Redirect::In | Redirect::ErrorToOutput => None,
     }
 }
 
@@ -570,12 +570,11 @@ impl In {
 }
 
 /// Where a command's text goes: the shell's own output or its standard
-/// error, a file from its byte `at` on, or the pipe to the command after
-/// it.
+/// error, a file at its end, or the pipe to the command after it.
 enum Out {
     Mine,
     MyErrors,
-    File { handle: Handle, at: u64 },
+    File(Handle),
     Pipe(Handle),
 }
 
@@ -602,10 +601,11 @@ impl Out {
                     program::write_error(&text)
                 }
             }
-            Out::File { handle, at } => {
-                program::write_file(*handle, *at, bytes)?;
-                *at += bytes.len() as u64;
-                Ok(())
+            // At the end each time, so a file another writer shares, as
+            // with 2>&1, loses nothing.
+            Out::File(handle) => {
+                let end = program::info(*handle)?.size;
+                program::write_file(*handle, end, bytes)
             }
             Out::Pipe(end) => program::start::pieces(bytes)
                 .try_for_each(|piece| program::send_waiting(*end, piece)),
@@ -617,7 +617,7 @@ impl Out {
     #[cfg_attr(test, allow(dead_code))]
     fn handed(self) -> Option<Sink> {
         match self {
-            Out::File { handle, .. } => Some(Sink::File(handle)),
+            Out::File(handle) => Some(Sink::File(handle)),
             Out::Pipe(end) => Some(Sink::Channel(end)),
             Out::Mine => inherited(program::start::given().output),
             Out::MyErrors => inherited(program::start::given().error),
@@ -626,9 +626,20 @@ impl Out {
 
     #[cfg_attr(test, allow(dead_code))]
     fn close(self) {
-        if let Out::File { handle, .. } | Out::Pipe(handle) = self {
+        if let Out::File(handle) | Out::Pipe(handle) = self {
             let _ = program::close(handle);
         }
+    }
+
+    /// A second one to the same place.
+    #[cfg_attr(test, allow(dead_code))]
+    fn copy(&self) -> Result<Out, Error> {
+        Ok(match self {
+            Out::Mine => Out::Mine,
+            Out::MyErrors => Out::MyErrors,
+            Out::File(handle) => Out::File(program::duplicate(*handle)?),
+            Out::Pipe(handle) => Out::Pipe(program::duplicate(*handle)?),
+        })
     }
 }
 
@@ -696,39 +707,42 @@ fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
     let mut next = In::Mine;
     let mut failed = false;
     for (i, ready) in pipeline.iter().enumerate() {
-        let Some(files) = redirected(&ready.redirections) else {
+        let Some(mut files) = redirected(&ready.redirections) else {
             failed = true;
             break;
         };
-        let input = match files.from {
+        let input = match files.from.take() {
             Some(file) => {
                 core::mem::replace(&mut next, In::Mine).close();
                 file
             }
             None => core::mem::replace(&mut next, In::Mine),
         };
-        let errors = files.errors.unwrap_or(Out::MyErrors);
-        let out = if i + 1 == pipeline.len() {
-            files.into.unwrap_or(Out::Mine)
-        } else {
-            let Ok((write, read)) = program::channel() else {
-                let _ = program::write_error("|: no channel is left for the pipe\n");
-                input.close();
-                errors.close();
-                if let Some(file) = files.into {
-                    file.close();
-                }
-                failed = true;
-                break;
-            };
+        // Where the command writes without a file for it: the pipe to the
+        // next one, or the shell's own output for the last.
+        let default = if i + 1 == pipeline.len() {
+            Out::Mine
+        } else if let Ok((write, read)) = program::channel() {
             next = In::Pipe(read);
-            match files.into {
-                Some(file) => {
-                    let _ = program::close(write);
-                    file
-                }
-                None => Out::Pipe(write),
+            Out::Pipe(write)
+        } else {
+            let _ = program::write_error("|: no channel is left for the pipe\n");
+            input.close();
+            files.close();
+            failed = true;
+            break;
+        };
+        let errors = match files.errors.take() {
+            None => Out::MyErrors,
+            Some(Errors::To(file)) => file,
+            Some(Errors::Output) => default.copy().unwrap_or(Out::MyErrors),
+        };
+        let out = match files.into.take() {
+            Some(file) => {
+                default.close();
+                file
             }
+            None => default,
         };
         stages.push((&ready.words, Streams { input, out, errors }));
     }
@@ -742,13 +756,20 @@ fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
     Some(stages)
 }
 
+/// Where a command's redirections send what goes wrong: into a file, or
+/// with `2>&1` before any `>` where the command writes without one.
+enum Errors {
+    To(Out),
+    Output,
+}
+
 /// The files a command's redirections opened, the last of each kind: to
 /// read, to write, and for what went wrong.
 #[derive(Default)]
 struct Files {
     from: Option<In>,
     into: Option<Out>,
-    errors: Option<Out>,
+    errors: Option<Errors>,
 }
 
 impl Files {
@@ -757,7 +778,17 @@ impl Files {
         if let Some(file) = self.from {
             file.close();
         }
-        for file in [self.into, self.errors].into_iter().flatten() {
+        if let Some(Errors::To(file)) = self.errors {
+            file.close();
+        }
+        if let Some(file) = self.into {
+            file.close();
+        }
+    }
+
+    /// Has what goes wrong go to `errors`, closing the file it went to.
+    fn send_errors(&mut self, errors: Errors) {
+        if let Some(Errors::To(file)) = self.errors.replace(errors) {
             file.close();
         }
     }
@@ -767,9 +798,23 @@ impl Files {
 /// answers the last of each kind, one to write at its end. Says what went
 /// wrong and answers none when one does not open.
 #[cfg_attr(test, allow(dead_code))]
-fn redirected(redirections: &[(Redirect, String)]) -> Option<Files> {
+fn redirected(redirections: &[(Redirect, Option<String>)]) -> Option<Files> {
     let mut files = Files::default();
     for (how, path) in redirections {
+        // `2>&1` is the one without a path.
+        let Some(path) = path.as_deref() else {
+            let errors = match files.into.as_ref().map(Out::copy) {
+                None => Errors::Output,
+                Some(Ok(copy)) => Errors::To(copy),
+                Some(Err(e)) => {
+                    let _ = program::write_error(&trouble("2>&1", e));
+                    files.close();
+                    return None;
+                }
+            };
+            files.send_errors(errors);
+            continue;
+        };
         let opened = match opening(*how) {
             Some(how) => program::open_with(path, file::WRITE, how),
             None => program::open(path, file::READ),
@@ -782,21 +827,20 @@ fn redirected(redirections: &[(Redirect, String)]) -> Option<Files> {
                 return None;
             }
         };
-        let at = program::info(handle).map_or(0, |i| i.size);
-        let old = match how {
+        match how {
             Redirect::In => {
                 if let Some(file) = files.from.replace(In::File { handle, at: 0 }) {
                     file.close();
                 }
-                None
             }
-            Redirect::Out | Redirect::Append => files.into.replace(Out::File { handle, at }),
-            Redirect::ErrorOut | Redirect::ErrorAppend => {
-                files.errors.replace(Out::File { handle, at })
+            Redirect::Out | Redirect::Append => {
+                if let Some(file) = files.into.replace(Out::File(handle)) {
+                    file.close();
+                }
             }
-        };
-        if let Some(file) = old {
-            file.close();
+            Redirect::ErrorOut | Redirect::ErrorAppend | Redirect::ErrorToOutput => {
+                files.send_errors(Errors::To(Out::File(handle)));
+            }
         }
     }
     Some(files)
@@ -1563,12 +1607,19 @@ mod tests {
     }
 
     #[test]
+    fn the_shells_own_streams_copy_as_they_are() {
+        assert!(matches!(Out::Mine.copy(), Ok(Out::Mine)));
+        assert!(matches!(Out::MyErrors.copy(), Ok(Out::MyErrors)));
+    }
+
+    #[test]
     fn a_redirection_makes_its_file_new_or_adds_to_it() {
         assert_eq!(opening(Redirect::Out), Some(file::CREATE_ALWAYS));
         assert_eq!(opening(Redirect::Append), Some(file::OPEN_ALWAYS));
         assert_eq!(opening(Redirect::In), None);
         assert_eq!(opening(Redirect::ErrorOut), Some(file::CREATE_ALWAYS));
         assert_eq!(opening(Redirect::ErrorAppend), Some(file::OPEN_ALWAYS));
+        assert_eq!(opening(Redirect::ErrorToOutput), None, "it opens nothing");
     }
 
     /// Directories and files on the host, in a directory of their own

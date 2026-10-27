@@ -157,7 +157,7 @@ Loader and UEFI:
 - [x] A working directory in the runtime, handed to each child, and `cd` (ADR 0020)
 - [x] Pipes between programs and the shell's own commands, and `<`
 - [x] Standard error, and `2>` and `2>>` at the shell
-- [ ] `2>&1` at the shell
+- [x] `2>&1` at the shell
 - [x] The shell runs Meridian's shell language: lines and blocks typed at the console, `-c` and script files, its own commands under Linux and Windows names, `>` and `>>` (ADR 0016)
 - [ ] The shell's sh dialect (ADR 0016)
 - [x] `wc`, the first command-line tool

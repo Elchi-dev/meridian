@@ -89,6 +89,7 @@ Redirections may stand anywhere among a command's words:
 | `< PATH` | the command reads the file instead of the keyboard |
 | `2> PATH` | what the command says went wrong goes into the file, made new or emptied |
 | `2>> PATH` | what the command says went wrong goes after what the file holds |
+| `2>&1` | what the command says went wrong goes where its output goes at that point, a file or the next command of a pipeline |
 
 The path is the next word. A redirection without one is an error
 (`missing-path`). A `2` alone right before `>` or `>>`, with nothing

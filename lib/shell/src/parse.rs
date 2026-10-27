@@ -21,14 +21,17 @@ pub enum Redirect {
     ErrorOut,
     /// `2>>`: what goes wrong after what the file holds.
     ErrorAppend,
+    /// `2>&1`: what goes wrong where the output goes when it comes.
+    ErrorToOutput,
 }
 
 /// A command: the words that name it and its arguments, and its
-/// redirections, each with the word for its path.
+/// redirections, each with the word for its path but `2>&1`, which has
+/// none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
     pub words: Vec<Word>,
-    pub redirections: Vec<(Redirect, Word)>,
+    pub redirections: Vec<(Redirect, Option<Word>)>,
 }
 
 /// Commands joined with `|`, and whether `not` stands before them.
@@ -358,6 +361,11 @@ impl Parser {
                 Some(Token::In) => Redirect::In,
                 Some(Token::ErrorOut) => Redirect::ErrorOut,
                 Some(Token::ErrorAppend) => Redirect::ErrorAppend,
+                Some(Token::ErrorToOutput) => {
+                    self.next += 1;
+                    command.redirections.push((Redirect::ErrorToOutput, None));
+                    continue;
+                }
                 _ => break,
             };
             self.next += 1;
@@ -365,7 +373,7 @@ impl Parser {
                 return self.fail(Code::MissingPath);
             };
             self.next += 1;
-            command.redirections.push((how, path));
+            command.redirections.push((how, Some(path)));
         }
         if command.words.is_empty() {
             let at = if command.redirections.is_empty() {
@@ -409,8 +417,12 @@ mod tests {
                 Redirect::In => "<",
                 Redirect::ErrorOut => "2>",
                 Redirect::ErrorAppend => "2>>",
+                Redirect::ErrorToOutput => "2>&1",
             };
-            parts.push(format!("{sign}{}", word(path)));
+            parts.push(format!(
+                "{sign}{}",
+                path.as_ref().map(word).unwrap_or_default()
+            ));
         }
         parts.join(" ")
     }
@@ -710,6 +722,8 @@ mod tests {
         ("a 2> e > o", &["a 2>e >o"]),
         ("a 2>>e x", &["a x 2>>e"]),
         ("a2> e", &["a2 >e"]),
+        ("a > o 2>&1", &["a >o 2>&1"]),
+        ("a 2>&1 | b", &["a 2>&1 | b"]),
         ("if a { b } else { c }", &["if(a){b}else{c}"]),
         ("if a {\n b\n} else {\n c\n}", &["if(a){b}else{c}"]),
         ("if a { b }; c", &["if(a){b}else{}", "c"]),
@@ -848,9 +862,12 @@ mod tests {
         assert_eq!(
             cat.redirections
                 .iter()
-                .map(|(how, path)| (*how, word(path)))
+                .map(|(how, path)| (*how, path.as_ref().map(word)))
                 .collect::<Vec<_>>(),
-            [(Redirect::In, "i".into()), (Redirect::Out, "o".into())]
+            [
+                (Redirect::In, Some("i".into())),
+                (Redirect::Out, Some("o".into()))
+            ]
         );
         assert_eq!(sort.redirections[0].0, Redirect::Append);
         let lets = script("let n = \"v\"").unwrap();

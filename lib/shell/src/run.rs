@@ -12,11 +12,11 @@ use crate::parse::{Command, Join, List, Pipeline, Redirect, Statement};
 use crate::{Code, Error};
 
 /// A command ready to run: its words, and the paths its redirections lead
-/// to, all expanded.
+/// to, all expanded, none for `2>&1`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ready {
     pub words: Vec<String>,
-    pub redirections: Vec<(Redirect, String)>,
+    pub redirections: Vec<(Redirect, Option<String>)>,
 }
 
 /// What a session needs of the system it runs on.
@@ -334,7 +334,8 @@ impl Session {
         let words = self.words(&command.words, machine)?;
         let mut redirections = Vec::new();
         for (how, path) in &command.redirections {
-            redirections.push((*how, self.text(path)?));
+            let path = path.as_ref().map(|w| self.text(w)).transpose()?;
+            redirections.push((*how, path));
         }
         Ok(Ready {
             words,

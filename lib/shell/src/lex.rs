@@ -61,6 +61,8 @@ pub enum Token {
     ErrorOut,
     /// `2>>`
     ErrorAppend,
+    /// `2>&1`
+    ErrorToOutput,
     /// `{`
     Open,
     /// `}`
@@ -174,10 +176,14 @@ pub fn tokens(script: &str) -> Result<Vec<(Token, Pos)>, Error> {
             '2' if second_is(&chars, '>') => {
                 chars.next();
                 chars.next();
-                out.push((
-                    redirection(&mut chars, Token::ErrorOut, Token::ErrorAppend),
-                    at,
-                ));
+                let token = if chars.peek() == Some('&') && second_is(&chars, '1') {
+                    chars.next();
+                    chars.next();
+                    Token::ErrorToOutput
+                } else {
+                    redirection(&mut chars, Token::ErrorOut, Token::ErrorAppend)
+                };
+                out.push((token, at));
                 continue;
             }
             _ => {
@@ -431,6 +437,7 @@ mod tests {
                 Token::In => "<".into(),
                 Token::ErrorOut => "2>".into(),
                 Token::ErrorAppend => "2>>".into(),
+                Token::ErrorToOutput => "2>&1".into(),
                 Token::Open => "{".into(),
                 Token::Close => "}".into(),
             })
@@ -474,6 +481,11 @@ mod tests {
         assert_eq!(short("echo 2"), ["echo", "2"]);
         assert_eq!(short("2>e a"), ["2>", "e", "a"]);
         assert_eq!(short("a;2>e"), ["a", ";", "2>", "e"]);
+        assert_eq!(short("a 2>&1 b"), ["a", "2>&1", "b"]);
+        assert_eq!(short("a >f 2>&1"), ["a", ">", "f", "2>&1"]);
+        assert_eq!(short("a 2>&2"), ["a", "2>", "&2"], "only to the output");
+        assert_eq!(short("a 2>& 1"), ["a", "2>", "&", "1"]);
+        assert_eq!(short("a 2>&1x"), ["a", "2>&1", "x"]);
     }
 
     #[test]

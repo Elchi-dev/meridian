@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 60] = [
+const CHECKS: [(&str, Check); 61] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -81,6 +81,7 @@ const CHECKS: [(&str, Check); 60] = [
     ("shell.carry", files_copied_and_moved),
     ("shell.directory", the_working_directory),
     ("shell.errors", errors_go_where_2_sends_them),
+    ("shell.errors.output", errors_go_with_the_output),
     ("console", writes_on_the_console),
 ];
 
@@ -2090,6 +2091,42 @@ fn errors_go_where_2_sends_them() -> Outcome {
         ended == Ok(Ended::Exited(0))
             && said == b"a\nwc ended with 1\n/nope: no such file\nwc: /nope: no such file\n",
         "2> and 2>> should put what went wrong into a file, from a program too",
+    )
+}
+
+/// `2>&1` sends what goes wrong where the output goes when it comes: into
+/// a pipe, into the file a `>` before it named, or where the output went
+/// before a `>` after it.
+fn errors_go_with_the_output() -> Outcome {
+    expect(
+        shell_on("cat /nope 2>&1 | wc; wc /nope 2>&1 | wc")?
+            == ran(0, b"1 4 20\n1 5 24\nwc ended with 1\n"),
+        "2>&1 should send what goes wrong into the pipe",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo hi > /System/o 2>&1; cat /nope >> /System/o 2>&1; wc /nope >> /System/o 2>&1\n\
+         cat /System/o; wc /nope 2>&1 > /System/o; cat /System/o; rm /System/o",
+    )?;
+    if said.starts_with(b"/System/o: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should take the output",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"wc ended with 1\nhi\n/nope: no such file\nwc: /nope: no such file\n\
+                     wc: /nope: no such file\nwc ended with 1\n",
+        "2>&1 should share a file with the output, and keep where the output went before a > after it",
+    )?;
+    let (ended, said) = shell_on("cat /nope 2>&1 > /System/o | wc; cat /System/o; rm /System/o")?;
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"1 4 20\n",
+        "2>&1 before a > should keep the pipe for what goes wrong while the output goes to the file",
     )
 }
 

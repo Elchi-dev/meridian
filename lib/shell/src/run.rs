@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use crate::expand::{self, Expanded, Piece};
 use crate::lex::Word;
 use crate::parse::{Command, Join, List, Pipeline, Redirect, Statement};
+use crate::walk::Tree;
 use crate::{Code, Error};
 
 /// What a redirection makes one of a command's streams (decision record
@@ -65,16 +66,12 @@ fn redirection(how: Redirect, path: Option<String>) -> Redirection {
     Redirection { stream, target }
 }
 
-/// What a session needs of the system it runs on.
-pub trait Machine {
+/// What a session needs of the system it runs on, the tree of files that
+/// patterns match names in among it.
+pub trait Machine: Tree {
     /// Runs `pipeline`, its commands joined by pipes, and answers the exit
     /// status of its last command: 127 for one that names nothing there is.
     fn run(&mut self, pipeline: &[Ready]) -> u8;
-
-    /// The paths of the files `pattern` matches, from `directory` when it
-    /// does not start at the root, in the order of their names compared in
-    /// capitals.
-    fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String>;
 
     /// Writes `bytes` where the shell's own output goes now: its output,
     /// or the text the innermost capture takes. Says whether all went.
@@ -139,14 +136,13 @@ impl From<Error> for Stop {
 pub const DEPTH: usize = 64;
 
 /// A session of the shell: its variables, block by block, its functions,
-/// the status of its last pipeline, the arguments of each function it is
-/// in, and the directory paths that do not start at the root start from.
+/// the status of its last pipeline, and the arguments of each function it
+/// is in.
 pub struct Session {
     scopes: Vec<Vec<(String, String)>>,
     functions: Vec<(String, Vec<Statement>)>,
     status: u8,
     arguments: Vec<Vec<String>>,
-    pub directory: String,
 }
 
 impl Default for Session {
@@ -163,7 +159,6 @@ impl Session {
             functions: Vec::new(),
             status: 0,
             arguments: Vec::new(),
-            directory: "/".into(),
         }
     }
 
@@ -430,7 +425,8 @@ impl Session {
             match expand::expand(word, |n| self.variable(n))? {
                 Expanded::Text(text) => out.push(text),
                 Expanded::Pattern(pattern) => {
-                    let found = machine.matching(&self.directory, &pattern);
+                    let directory = machine.directory();
+                    let found = expand::matching(&directory, &pattern, machine);
                     if found.is_empty() {
                         return Err(Error {
                             at: word.at,
@@ -474,13 +470,20 @@ mod tests {
         captures: Vec<Vec<u8>>,
     }
 
+    /// It has no files: no directory holds a name, and nothing is there.
+    impl Tree for Bare {
+        fn names(&mut self, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn has(&mut self, _: &str) -> bool {
+            false
+        }
+    }
+
     impl Machine for Bare {
         fn run(&mut self, _: &[Ready]) -> u8 {
             127
-        }
-
-        fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
-            Vec::new()
         }
 
         fn out(&mut self, bytes: &[u8]) -> bool {
@@ -559,14 +562,20 @@ mod tests {
         bare: Bare,
     }
 
+    impl Tree for Kept {
+        fn names(&mut self, path: &str) -> Vec<String> {
+            self.bare.names(path)
+        }
+
+        fn has(&mut self, path: &str) -> bool {
+            self.bare.has(path)
+        }
+    }
+
     impl Machine for Kept {
         fn run(&mut self, pipeline: &[Ready]) -> u8 {
             self.ran.push(pipeline.to_vec());
             0
-        }
-
-        fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
-            Vec::new()
         }
 
         fn out(&mut self, bytes: &[u8]) -> bool {
@@ -1066,7 +1075,7 @@ mod tests {
     #[test]
     fn a_session_starts_empty_at_the_root() {
         let session = Session::default();
-        assert_eq!((session.status(), session.directory.as_str()), (0, "/"));
+        assert_eq!(session.status(), 0);
         assert_eq!(session.variable("anything"), None);
         assert_eq!(session.variable("0"), None);
         assert_eq!(session.variable("1"), None);

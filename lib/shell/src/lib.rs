@@ -15,6 +15,7 @@ pub mod lex;
 pub mod parse;
 pub mod run;
 pub mod sh;
+pub mod walk;
 
 /// A place in a script: its line and its column, both counted from 1, the
 /// column in Unicode scalar values.

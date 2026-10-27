@@ -3,10 +3,12 @@
 //! unquoted `*` or `?` turned into a pattern, matched against names as the
 //! tree of files compares them.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::lex::{Part, Word};
+use crate::lex::{Part as Written, Word};
+use crate::walk::{Part, Tree, walk};
 use crate::{Code, Error};
 
 /// A piece of a pattern.
@@ -40,8 +42,8 @@ pub fn expand(word: &Word, value: impl Fn(&str) -> Option<String>) -> Result<Exp
     let mut wild = false;
     for part in &word.parts {
         let (chars, plain) = match part {
-            Part::Text { text, plain } => (text.clone(), *plain),
-            Part::Variable(name) => match value(name) {
+            Written::Text { text, plain } => (text.clone(), *plain),
+            Written::Variable(name) => match value(name) {
                 Some(value) => (value, false),
                 None => {
                     return Err(Error {
@@ -135,11 +137,30 @@ pub fn segments(pattern: &[Piece]) -> Vec<(Vec<Piece>, Option<String>)> {
         .collect()
 }
 
+/// The paths `pattern` matches in `tree`, from `directory` when it does
+/// not start at the root: each part between slashes with `*` or `?`
+/// matched against the names in its directory, in the order of those
+/// names in capitals, and the others taken as written.
+pub fn matching(directory: &str, pattern: &[Piece], tree: &mut impl Tree) -> Vec<String> {
+    let absolute = pattern.first() == Some(&Piece::Char('/'));
+    let parts: Vec<Part> = segments(pattern)
+        .into_iter()
+        .filter(|(pieces, _)| !pieces.is_empty())
+        .map(|(pieces, text)| match text {
+            Some(text) => Part::Name(text),
+            None => Part::Test(Box::new(move |name: &str| matches(&pieces, name))),
+        })
+        .collect();
+    let capitals = |a: &str, b: &str| a.to_uppercase().cmp(&b.to_uppercase());
+    walk(directory, absolute, &parts, capitals, tree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Pos;
     use crate::lex::{Token, tokens};
+    use crate::walk::tests::Host;
 
     fn word(text: &str) -> Word {
         match tokens(text).unwrap().remove(0).0 {
@@ -318,5 +339,113 @@ mod tests {
                 Expanded::Text("a*b".into()),
             ]
         );
+    }
+
+    /// The paths `pattern`, its `*` and `?` the wildcards, matches in
+    /// `tree` from `directory`.
+    fn matched(tree: &mut Host, directory: &str, pattern: &str) -> Vec<String> {
+        let pieces: Vec<Piece> = pattern
+            .chars()
+            .map(|c| match c {
+                '*' => Piece::Any,
+                '?' => Piece::One,
+                c => Piece::Char(c),
+            })
+            .collect();
+        matching(directory, &pieces, tree)
+    }
+
+    #[test]
+    fn a_pattern_finds_the_paths_it_matches_part_by_part() {
+        let mut tree = Host::new(
+            "pattern-find",
+            &[
+                "System/a.meri",
+                "System/B.MERI",
+                "System/c.txt",
+                "System/d.meri/x",
+                "Other/x",
+                "Other/y/",
+                ".hidden",
+            ],
+        );
+        assert_eq!(
+            matched(&mut tree, "/", "/System/*.meri"),
+            ["/System/a.meri", "/System/B.MERI", "/System/d.meri"],
+            "in the order of their names in capitals"
+        );
+        assert_eq!(matched(&mut tree, "/", "/System/?.txt"), ["/System/c.txt"]);
+        assert_eq!(
+            matched(&mut tree, "/", "/system/C.*"),
+            ["/system/c.txt"],
+            "a part without a wildcard as written"
+        );
+        assert_eq!(matched(&mut tree, "/", "/*/x"), ["/Other/x"]);
+        assert_eq!(matched(&mut tree, "/", "/*/*/x"), ["/System/d.meri/x"]);
+        assert_eq!(
+            matched(&mut tree, "/", "/Other/*"),
+            ["/Other/x", "/Other/y"]
+        );
+        assert_eq!(
+            matched(&mut tree, "/System", "*.txt"),
+            ["c.txt"],
+            "from the directory, as written"
+        );
+        assert_eq!(matched(&mut tree, "/System/", "d*/x"), ["d.meri/x"]);
+        assert_eq!(
+            matched(&mut tree, "/System", "/Other/*"),
+            ["/Other/x", "/Other/y"],
+            "from the root wherever the directory is"
+        );
+        assert_eq!(matched(&mut tree, "/", "*"), [".hidden", "Other", "System"]);
+        assert_eq!(matched(&mut tree, "/", "/System//c.*"), ["/System/c.txt"]);
+        let none: [&str; 0] = [];
+        assert_eq!(matched(&mut tree, "/", "/nope/*"), none);
+        assert_eq!(
+            matched(&mut tree, "/", "/System/c.txt/*"),
+            none,
+            "a file holds none"
+        );
+        assert_eq!(matched(&mut tree, "/", "/System/e*"), none);
+        assert_eq!(matched(&mut tree, "/", "/Other/x/z?"), none);
+        assert_eq!(
+            matched(&mut tree, "/", "/*/X"),
+            ["/Other/X"],
+            "a last part as written, once something is there"
+        );
+        assert_eq!(matched(&mut tree, "/", "/*/nope"), none);
+    }
+
+    #[test]
+    fn only_the_directories_a_wildcard_is_in_are_listed() {
+        let mut tree = Host::new(
+            "pattern-listed",
+            &["System/Boot/a.meri", "System/Boot/b.txt"],
+        );
+        assert_eq!(
+            matched(&mut tree, "/", "/System/Boot/*.meri"),
+            ["/System/Boot/a.meri"]
+        );
+        assert_eq!(
+            tree.listed,
+            ["/System/Boot"],
+            "not the root, which holds mounts, nor /System"
+        );
+        tree.listed.clear();
+        assert_eq!(
+            matched(&mut tree, "/", "/S*/Boot/a*"),
+            ["/System/Boot/a.meri"]
+        );
+        assert_eq!(tree.listed, ["/", "/System/Boot"]);
+        tree.listed.clear();
+        assert_eq!(matched(&mut tree, "/System", "Boot/?.txt"), ["Boot/b.txt"]);
+        assert_eq!(tree.listed, ["/System/Boot"]);
+        assert_eq!(
+            tree.asked,
+            Vec::<String>::new(),
+            "what a listing found is there"
+        );
+        assert_eq!(matched(&mut tree, "/", "/S*/boot"), ["/System/boot"]);
+        assert_eq!(tree.asked, ["/System/boot"], "and the rest is looked for");
     }
 }

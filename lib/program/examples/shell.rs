@@ -16,10 +16,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use ::shell::Code;
-use ::shell::expand::{self, Piece};
 use ::shell::parse::{self, Statement};
 use ::shell::run::{Flow, Machine, Ready, Redirection, Session, Target};
 use ::shell::sh::{self, run::Stop};
+use ::shell::walk::Tree;
 use program::abi::{MESSAGE_BYTES, file};
 use program::layout::{Held, Typed};
 use program::{Ended, Error, Handle, KeyEvent, start::Sink};
@@ -323,15 +323,6 @@ fn lines(typed: &str) -> Lines {
     }
 }
 
-/// What the shell asks of a tree of files to match patterns in it.
-trait Tree {
-    /// The names in the directory at `path`, none when it is no directory.
-    fn names(&mut self, path: &str) -> Vec<String>;
-
-    /// Whether something is at `path`.
-    fn has(&mut self, path: &str) -> bool;
-}
-
 /// `line` with its last word completed to the name in `tree` it starts, or
 /// as far as the names it starts agree, compared in capitals and written
 /// as the first of them is; the word is a path from `directory` when it
@@ -365,53 +356,6 @@ fn completed(line: &str, directory: &str, tree: &mut impl Tree) -> Option<String
         .unwrap_or(0);
     let done = format!("{}{folder}{}", &line[..start], &first[..agreed]);
     (done.chars().count() > line.chars().count()).then_some(done)
-}
-
-/// The paths `pattern` matches in `tree`, from `directory` when it does
-/// not start at the root. Each part between slashes with `*` or `?` is
-/// matched against the names in the directory it is in, in the order of
-/// those names in capitals; a part without either stays as the pattern
-/// wrote it, and is not listed for, since a directory such as the root
-/// holds places that are no names in it. A path that ends in such a part
-/// counts once something is there.
-fn matching(directory: &str, pattern: &[Piece], tree: &mut impl Tree) -> Vec<String> {
-    let absolute = pattern.first() == Some(&Piece::Char('/'));
-    let base = if absolute { "/" } else { directory };
-    // Each path found so far: as the word shows it, and from the root.
-    let mut found = Vec::from([(String::new(), String::from(base))]);
-    let mut listed_last = true;
-    for (pieces, text) in expand::segments(pattern) {
-        if pieces.is_empty() {
-            continue;
-        }
-        let mut next = Vec::new();
-        for (shown, real) in &found {
-            let names = if let Some(text) = &text {
-                Vec::from([text.clone()])
-            } else {
-                let mut names = tree.names(real);
-                names.retain(|name| expand::matches(&pieces, name));
-                names.sort_by_cached_key(|name| name.to_uppercase());
-                names
-            };
-            for name in names {
-                let shown = if shown.is_empty() && !absolute {
-                    name.clone()
-                } else {
-                    format!("{shown}/{name}")
-                };
-                let slash = if real.ends_with('/') { "" } else { "/" };
-                next.push((shown, format!("{real}{slash}{name}")));
-            }
-        }
-        listed_last = text.is_none();
-        found = next;
-    }
-    found
-        .into_iter()
-        .filter(|(_, real)| listed_last || tree.has(real))
-        .map(|(shown, _)| shown)
-        .collect()
 }
 
 /// The line to init the shell started with, 0 when init did not start it.
@@ -776,10 +720,6 @@ impl Machine for System {
 
     // The runtime keeps the working directory, which `cd` changes, so the
     // session's is the root.
-    fn matching(&mut self, _: &str, pattern: &[Piece]) -> Vec<String> {
-        matching(&program::directory(), pattern, self)
-    }
-
     fn out(&mut self, bytes: &[u8]) -> bool {
         self.output().is_ok_and(|mut out| {
             let went = written(&mut out, bytes);
@@ -2532,18 +2472,6 @@ mod tests {
             }
             Some(at)
         }
-
-        fn matching(&mut self, directory: &str, pattern: &str) -> Vec<String> {
-            let pieces: Vec<Piece> = pattern
-                .chars()
-                .map(|c| match c {
-                    '*' => Piece::Any,
-                    '?' => Piece::One,
-                    c => Piece::Char(c),
-                })
-                .collect();
-            matching(directory, &pieces, self)
-        }
     }
 
     impl Tree for Host {
@@ -2571,91 +2499,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
-    }
-
-    #[test]
-    fn a_pattern_finds_the_paths_it_matches_part_by_part() {
-        let mut tree = Host::new(
-            "find",
-            &[
-                "System/a.meri",
-                "System/B.MERI",
-                "System/c.txt",
-                "System/d.meri/x",
-                "Other/x",
-                "Other/y/",
-                ".hidden",
-            ],
-        );
-        assert_eq!(
-            tree.matching("/", "/System/*.meri"),
-            ["/System/a.meri", "/System/B.MERI", "/System/d.meri"],
-            "in the order of their names in capitals"
-        );
-        assert_eq!(tree.matching("/", "/System/?.txt"), ["/System/c.txt"]);
-        assert_eq!(
-            tree.matching("/", "/system/C.*"),
-            ["/system/c.txt"],
-            "a part without a wildcard as written"
-        );
-        assert_eq!(tree.matching("/", "/*/x"), ["/Other/x"]);
-        assert_eq!(tree.matching("/", "/*/*/x"), ["/System/d.meri/x"]);
-        assert_eq!(tree.matching("/", "/Other/*"), ["/Other/x", "/Other/y"]);
-        assert_eq!(
-            tree.matching("/System", "*.txt"),
-            ["c.txt"],
-            "from the directory, as written"
-        );
-        assert_eq!(tree.matching("/System/", "d*/x"), ["d.meri/x"]);
-        assert_eq!(
-            tree.matching("/System", "/Other/*"),
-            ["/Other/x", "/Other/y"],
-            "from the root wherever the directory is"
-        );
-        assert_eq!(tree.matching("/", "*"), [".hidden", "Other", "System"]);
-        assert_eq!(tree.matching("/", "/System//c.*"), ["/System/c.txt"]);
-        let none: [&str; 0] = [];
-        assert_eq!(tree.matching("/", "/nope/*"), none);
-        assert_eq!(
-            tree.matching("/", "/System/c.txt/*"),
-            none,
-            "a file holds none"
-        );
-        assert_eq!(tree.matching("/", "/System/e*"), none);
-        assert_eq!(tree.matching("/", "/Other/x/z?"), none);
-        assert_eq!(
-            tree.matching("/", "/*/X"),
-            ["/Other/X"],
-            "a last part as written, once something is there"
-        );
-        assert_eq!(tree.matching("/", "/*/nope"), none);
-    }
-
-    #[test]
-    fn only_the_directories_a_wildcard_is_in_are_listed() {
-        let mut tree = Host::new("listed", &["System/Boot/a.meri", "System/Boot/b.txt"]);
-        assert_eq!(
-            tree.matching("/", "/System/Boot/*.meri"),
-            ["/System/Boot/a.meri"]
-        );
-        assert_eq!(
-            tree.listed,
-            ["/System/Boot"],
-            "not the root, which holds mounts, nor /System"
-        );
-        tree.listed.clear();
-        assert_eq!(tree.matching("/", "/S*/Boot/a*"), ["/System/Boot/a.meri"]);
-        assert_eq!(tree.listed, ["/", "/System/Boot"]);
-        tree.listed.clear();
-        assert_eq!(tree.matching("/System", "Boot/?.txt"), ["Boot/b.txt"]);
-        assert_eq!(tree.listed, ["/System/Boot"]);
-        assert_eq!(
-            tree.asked,
-            Vec::<String>::new(),
-            "what a listing found is there"
-        );
-        assert_eq!(tree.matching("/", "/S*/boot"), ["/System/boot"]);
-        assert_eq!(tree.asked, ["/System/boot"], "and the rest is looked for");
     }
 
     #[test]

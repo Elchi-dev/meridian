@@ -8,10 +8,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::commands::{self, File, Streams};
-use crate::expand::Piece;
 use crate::run::{Machine, Ready, Redirection, Target};
 use crate::sh::parse;
 use crate::sh::run::{Flow, Session, Stop};
+use crate::walk::Tree;
 
 /// Where one of the desk's streams goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +173,17 @@ impl Streams for On<'_> {
     }
 }
 
+/// It has no files: no directory holds a name, and nothing is there.
+impl Tree for Desk {
+    fn names(&mut self, _: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn has(&mut self, _: &str) -> bool {
+        false
+    }
+}
+
 impl Machine for Desk {
     /// Runs the commands one after another, what each writes without a
     /// place of its own for it the next one's to read.
@@ -198,10 +209,6 @@ impl Machine for Desk {
             piped = Some(core::mem::take(&mut self.pipe));
         }
         status
-    }
-
-    fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
-        Vec::new()
     }
 
     fn out(&mut self, bytes: &[u8]) -> bool {

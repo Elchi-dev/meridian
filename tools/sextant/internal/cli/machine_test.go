@@ -207,7 +207,10 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 		filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi"),
 		filepath.Join("x86_64-unknown-none", "debug", "kernel"),
 	}
-	for _, name := range []string{"basename", "cut", "dirname", "grep", "head", "hello", "init", "sed", "shell", "sort", "tail", "tee", "tr", "uniq", "wc"} {
+	for _, name := range []string{
+		"basename", "cut", "dirname", "expr", "grep", "head", "hello", "init",
+		"sed", "shell", "sort", "tail", "tee", "tr", "uniq", "wc",
+	} {
 		want = append(want, filepath.Join("x86_64-unknown-none", "debug", "examples", name))
 	}
 	built := r.code == ExitOK && len(lines) == len(want)

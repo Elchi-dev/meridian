@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 126] = [
+const CHECKS: [(&str, Check); 127] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -143,6 +143,7 @@ const CHECKS: [(&str, Check); 126] = [
     ("tools.sed.program", sed_as_a_program),
     ("tools.sed.wide", sed_on_wide_lines),
     ("tools.sed.pipes", sed_among_the_tools),
+    ("tools.expr", expr_on_its_words),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2593,14 +2594,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"38\n"
+        b"40\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, nineteen twice",
+        "ls should write the programs' names into the pipe, twenty twice",
     )?;
     expect(
         same(
@@ -3832,6 +3833,31 @@ fn sed_among_the_tools() -> Outcome {
             && lines[4] == lines[5]
             && lines[3].parse::<usize>().is_ok_and(|count| count > 2),
         "sed should take the lines head, tail, grep and uniq take",
+    )
+}
+
+/// expr works out arithmetic by precedence, matches at the start of a
+/// text, ends with 1 for a value that is zero and says what it cannot
+/// read or work out; sh scripts count with it.
+fn expr_on_its_words() -> Outcome {
+    let checked = same(
+        &shell_on("expr 1 + 2 '*' 3; expr abc : 'a\\(.\\)'; expr 0; echo $?")?,
+        &ran(0, b"7\nb\n0\nexpr ended with 1\n1\n"),
+    ) && same(
+        &shell_on("expr 1 / 0; expr 1 +; expr; echo $?")?,
+        &ran(
+            0,
+            b"expr: a division by zero\nexpr ended with 3\n\
+              expr: an expression ends too soon\nexpr ended with 2\n\
+              expr: an expression ends too soon\nexpr ended with 2\n2\n",
+        ),
+    ) && same(
+        &shell_on("#!/bin/sh\ni=0; while [ $i -lt 3 ]; do i=$(expr $i + 1); done; echo $i")?,
+        &ran(0, b"3\n"),
+    );
+    expect(
+        checked,
+        "expr should work out its words, end as POSIX says, and count in a script",
     )
 }
 

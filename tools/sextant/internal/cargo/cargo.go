@@ -55,6 +55,8 @@ var (
 	Tee = Part{Package: "program", Target: "x86_64-unknown-none", File: "tee", Example: "tee"}
 	// Sed runs a script on the lines of its files or its input.
 	Sed = Part{Package: "program", Target: "x86_64-unknown-none", File: "sed", Example: "sed"}
+	// Expr evaluates the expression its words make.
+	Expr = Part{Package: "program", Target: "x86_64-unknown-none", File: "expr", Example: "expr"}
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
@@ -68,7 +70,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

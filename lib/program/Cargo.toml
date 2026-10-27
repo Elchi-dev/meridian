@@ -96,6 +96,10 @@ test = true
 name = "sed"
 test = true
 
+[[example]]
+name = "expr"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

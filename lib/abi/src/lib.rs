@@ -87,6 +87,16 @@ pub mod file {
     pub const WRITE: u32 = 1 << 1;
     pub const APPEND: u32 = 1 << 2;
     pub const RUN: u32 = 1 << 5;
+
+    /// What OPEN does by whether the file is there, as Windows numbers it:
+    /// make it, failing when it is there; make it, emptying one that is;
+    /// open it only when it is there; open it, making it when it is not;
+    /// and empty it, only when it is there.
+    pub const CREATE_NEW: u64 = 1;
+    pub const CREATE_ALWAYS: u64 = 2;
+    pub const OPEN_EXISTING: u64 = 3;
+    pub const OPEN_ALWAYS: u64 = 4;
+    pub const TRUNCATE_EXISTING: u64 = 5;
 }
 
 /// Why a call failed. Each error is an answer counting down from the top
@@ -639,6 +649,16 @@ mod tests {
         assert_eq!(
             [file::READ, file::WRITE, file::APPEND, file::RUN],
             [1, 2, 4, 0x20]
+        );
+        assert_eq!(
+            [
+                file::CREATE_NEW,
+                file::CREATE_ALWAYS,
+                file::OPEN_EXISTING,
+                file::OPEN_ALWAYS,
+                file::TRUNCATE_EXISTING
+            ],
+            [1, 2, 3, 4, 5]
         );
     }
 

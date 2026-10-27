@@ -245,6 +245,47 @@ pub fn may_open(
     access(token, descriptor, wanted, WRITES).map_err(Refusal::Denied)
 }
 
+/// What OPEN does with a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// Opens it as it is.
+    Open,
+    /// Makes it, empty.
+    Create,
+    /// Empties it.
+    Empty,
+}
+
+/// Why OPEN does nothing with a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoDisposition {
+    /// What to do is none of the ways there are.
+    Unknown,
+    /// It is not there, and what to do takes one that is.
+    Missing,
+    /// It is there, and what to do makes one that is not.
+    Exists,
+}
+
+/// What OPEN does by `how`, one of [`file::CREATE_NEW`] and the four after
+/// it, or 0 for [`file::OPEN_EXISTING`], when a file `exists` or not.
+///
+/// # Errors
+///
+/// When `how` is none of them, or does nothing with a file that `exists`
+/// or does not.
+pub fn disposition(how: u64, exists: bool) -> Result<Disposition, NoDisposition> {
+    use file::{CREATE_ALWAYS, CREATE_NEW, OPEN_ALWAYS, OPEN_EXISTING, TRUNCATE_EXISTING};
+    match (how, exists) {
+        (0 | OPEN_EXISTING | OPEN_ALWAYS, true) => Ok(Disposition::Open),
+        (CREATE_NEW | CREATE_ALWAYS | OPEN_ALWAYS, false) => Ok(Disposition::Create),
+        (CREATE_ALWAYS | TRUNCATE_EXISTING, true) => Ok(Disposition::Empty),
+        (CREATE_NEW, true) => Err(NoDisposition::Exists),
+        (0 | OPEN_EXISTING | TRUNCATE_EXISTING, false) => Err(NoDisposition::Missing),
+        _ => Err(NoDisposition::Unknown),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use security::{Group, Privileges, Restriction};
@@ -462,5 +503,28 @@ mod tests {
             ),
             Ok(())
         );
+    }
+
+    #[test]
+    fn open_does_as_windows_does_by_whether_the_file_is_there() {
+        use Disposition::{Create, Empty, Open};
+        use NoDisposition::{Exists, Missing};
+        let ways = [
+            (0, Ok(Open), Err(Missing)),
+            (file::CREATE_NEW, Err(Exists), Ok(Create)),
+            (file::CREATE_ALWAYS, Ok(Empty), Ok(Create)),
+            (file::OPEN_EXISTING, Ok(Open), Err(Missing)),
+            (file::OPEN_ALWAYS, Ok(Open), Ok(Create)),
+            (file::TRUNCATE_EXISTING, Ok(Empty), Err(Missing)),
+        ];
+        for (how, there, not_there) in ways {
+            assert_eq!(disposition(how, true), there, "{how}, there");
+            assert_eq!(disposition(how, false), not_there, "{how}, not there");
+        }
+        for how in [6, 7, 1 << 32, u64::MAX] {
+            for exists in [true, false] {
+                assert_eq!(disposition(how, exists), Err(NoDisposition::Unknown));
+            }
+        }
     }
 }

@@ -12,13 +12,23 @@ const PAGE: u64 = 4096;
 /// Where a program's image starts in its address space.
 pub const CODE_AT: u64 = 0x40_0000;
 
-/// The top of a program's stack, and how many pages it has below.
+/// The top of a program's stack, and how many pages it has below unless
+/// it asks for more in its notes, up to [`STACK_MOST`] (decision record
+/// 0022).
 pub const STACK_TOP: u64 = 0x80_0000;
 pub const STACK_PAGES: u64 = 16;
+pub const STACK_MOST: u64 = 256;
 
-/// The most an image may take: what lies between [`CODE_AT`] and the page
-/// under the stack, which stays unmapped so a stack that runs over faults.
-pub const IMAGE_MAX: u64 = STACK_TOP - (STACK_PAGES + 1) * PAGE - CODE_AT;
+/// The most an image may take beside a stack of [`STACK_PAGES`].
+pub const IMAGE_MAX: u64 = image_max(STACK_PAGES);
+
+/// The most an image may take beside a stack of `pages` pages: what lies
+/// between [`CODE_AT`] and the page under the stack, which stays unmapped
+/// so a stack that runs over faults.
+#[must_use]
+pub const fn image_max(pages: u64) -> u64 {
+    STACK_TOP - (pages + 1) * PAGE - CODE_AT
+}
 
 /// Where the memory a program asks for lies: from [`HEAP_START`] up to
 /// [`HEAP_END`], 64 GiB of room. What was given back is never given
@@ -82,8 +92,12 @@ impl Heap {
 /// Why a program does not get to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// Its image takes this many bytes, more than [`IMAGE_MAX`].
+    /// Its image takes this many bytes, more than fits above its stack.
     TooBig(u64),
+    /// It asks for this many pages of stack, more than [`STACK_MOST`].
+    Stack(u32),
+    /// A Meridian note of this kind holds what the kind cannot.
+    BadNote(u32),
     /// The page at this address, as linked, would be writable and
     /// executable at once.
     WritableCode(u64),
@@ -102,31 +116,50 @@ pub enum Refusal {
 pub struct Metadata<'a> {
     /// Its name, empty when it gives none.
     pub name: &'a [u8],
+    /// The pages of stack it gets: what it asks for, but at least
+    /// [`STACK_PAGES`].
+    pub stack: u64,
 }
 
 /// Reads the Meridian notes among `notes`.
 ///
 /// # Errors
 ///
-/// When none says the file is a `.mexec` file, or one says it is of a
-/// version this kernel does not know.
+/// When none says the file is a `.mexec` file, one says it is of a
+/// version this kernel does not know, or it asks for more stack than
+/// [`STACK_MOST`] or in a note that holds no four bytes.
 pub fn metadata<'a>(notes: impl Iterator<Item = Note<'a>>) -> Result<Metadata<'a>, Refusal> {
     let mut version = None;
     let mut name: &[u8] = &[];
+    let mut stack = Ok(STACK_PAGES);
     for note in notes.filter(|n| n.owner == abi::NOTE_OWNER) {
         match note.kind {
             abi::NOTE_VERSION => {
                 version = Some(note.desc.try_into().map_or(0, u32::from_le_bytes));
             }
             abi::NOTE_NAME => name = note.desc,
+            abi::NOTE_STACK => stack = stack_pages(note.desc),
             _ => {}
         }
     }
     match version {
-        Some(abi::MEXEC_VERSION) => Ok(Metadata { name }),
+        Some(abi::MEXEC_VERSION) => stack.map(|stack| Metadata { name, stack }),
         Some(other) => Err(Refusal::Version(other)),
         None => Err(Refusal::NotMeridian),
     }
+}
+
+/// The pages of stack a note of the kind [`abi::NOTE_STACK`] holding
+/// `desc` asks for, at least [`STACK_PAGES`].
+fn stack_pages(desc: &[u8]) -> Result<u64, Refusal> {
+    let pages = desc
+        .try_into()
+        .map(u32::from_le_bytes)
+        .map_err(|_| Refusal::BadNote(abi::NOTE_STACK))?;
+    if u64::from(pages) > STACK_MOST {
+        return Err(Refusal::Stack(pages));
+    }
+    Ok(u64::from(pages).max(STACK_PAGES))
 }
 
 /// Where the list of the files the loader read lies, physically, and how
@@ -175,11 +208,17 @@ pub fn module_kept(module: &Module, regions: &[MemoryRegion]) -> bool {
 ///
 /// # Errors
 ///
-/// When the image is too big, a page is to be writable and executable, or
-/// the entry is not on an executable page of the image.
-pub fn place(span: (u64, u64), entry: u64, segments: &[Segment]) -> Result<u64, Refusal> {
+/// When the image is too big to fit above a stack of `stack` pages, a
+/// page is to be writable and executable, or the entry is not on an
+/// executable page of the image.
+pub fn place(
+    span: (u64, u64),
+    entry: u64,
+    segments: &[Segment],
+    stack: u64,
+) -> Result<u64, Refusal> {
     let (first, size) = span;
-    if size > IMAGE_MAX {
+    if size > image_max(stack) {
         return Err(Refusal::TooBig(size));
     }
     for page in (0..size.div_ceil(PAGE)).map(|i| first + i * PAGE) {
@@ -365,9 +404,81 @@ mod tests {
             note(b"Meridian", 2, b"hello"),
             note(b"Meridian", 77, b"a kind to come"),
         ];
-        assert_eq!(metadata(notes.into_iter()), Ok(Metadata { name: b"hello" }));
+        assert_eq!(
+            metadata(notes.into_iter()),
+            Ok(Metadata {
+                name: b"hello",
+                stack: STACK_PAGES
+            })
+        );
         let nameless = [note(b"Meridian", 1, &[1, 0, 0, 0])];
-        assert_eq!(metadata(nameless.into_iter()), Ok(Metadata { name: b"" }));
+        assert_eq!(
+            metadata(nameless.into_iter()),
+            Ok(Metadata {
+                name: b"",
+                stack: STACK_PAGES
+            })
+        );
+    }
+
+    #[test]
+    fn a_program_may_ask_for_a_bigger_stack() {
+        let asking = |pages: u32| {
+            let desc = pages.to_le_bytes();
+            let notes = [
+                note(b"Meridian", 1, &[1, 0, 0, 0]),
+                Note {
+                    owner: b"Meridian",
+                    kind: 3,
+                    desc: &desc,
+                },
+            ];
+            metadata(notes.into_iter()).map(|m| m.stack)
+        };
+        assert_eq!(asking(256), Ok(256));
+        assert_eq!(asking(17), Ok(17));
+        assert_eq!(asking(16), Ok(16));
+        assert_eq!(asking(1), Ok(STACK_PAGES), "less is the least there is");
+        assert_eq!(asking(0), Ok(STACK_PAGES));
+        assert_eq!(asking(257), Err(Refusal::Stack(257)));
+        assert_eq!(asking(u32::MAX), Err(Refusal::Stack(u32::MAX)));
+        let other = [
+            note(b"Meridian", 1, &[1, 0, 0, 0]),
+            note(b"GNU", 3, &[0, 1, 0, 0]),
+        ];
+        assert_eq!(
+            metadata(other.into_iter()).map(|m| m.stack),
+            Ok(STACK_PAGES),
+            "another owner's kind 3 asks for nothing"
+        );
+    }
+
+    #[test]
+    fn a_stack_note_holds_four_bytes() {
+        for desc in [&[][..], &[1, 0, 0], &[1, 0, 0, 0, 0]] {
+            let notes = [
+                note(b"Meridian", 1, &[1, 0, 0, 0]),
+                Note {
+                    owner: b"Meridian",
+                    kind: 3,
+                    desc,
+                },
+            ];
+            assert_eq!(
+                metadata(notes.into_iter()),
+                Err(Refusal::BadNote(3)),
+                "{desc:?}"
+            );
+        }
+        let later = [
+            note(b"Meridian", 1, &[2, 0, 0, 0]),
+            note(b"Meridian", 3, &[1]),
+        ];
+        assert_eq!(
+            metadata(later.into_iter()),
+            Err(Refusal::Version(2)),
+            "a version it does not know comes first"
+        );
     }
 
     #[test]
@@ -454,13 +565,16 @@ mod tests {
 
     #[test]
     fn a_program_starts_where_its_entry_lands_in_its_space() {
-        assert_eq!(place((0, 0x8000), 0x26e0, &program()), Ok(CODE_AT + 0x26e0));
+        assert_eq!(
+            place((0, 0x8000), 0x26e0, &program(), STACK_PAGES),
+            Ok(CODE_AT + 0x26e0)
+        );
         let moved = program().map(|s| Segment {
             vaddr: s.vaddr + 0x10_0000,
             ..s
         });
         assert_eq!(
-            place((0x10_0000, 0x8000), 0x10_26e0, &moved),
+            place((0x10_0000, 0x8000), 0x10_26e0, &moved, STACK_PAGES),
             Ok(CODE_AT + 0x26e0),
             "linked elsewhere, it still starts at its image's spot"
         );
@@ -470,32 +584,52 @@ mod tests {
     fn a_program_starts_only_in_its_code() {
         let segments = program();
         assert_eq!(
-            place((0, 0x8000), 0x100, &segments),
+            place((0, 0x8000), 0x100, &segments, STACK_PAGES),
             Err(Refusal::BadEntry(0x100)),
             "data"
         );
         assert_eq!(
-            place((0, 0x8000), 0x6f00, &segments),
+            place((0, 0x8000), 0x6f00, &segments, STACK_PAGES),
             Err(Refusal::BadEntry(0x6f00))
         );
         assert_eq!(
-            place((0, 0x8000), 0x9000, &segments),
+            place((0, 0x8000), 0x9000, &segments, STACK_PAGES),
             Err(Refusal::BadEntry(0x9000)),
             "past the image"
         );
         assert_eq!(
-            place((0x1000, 0x7000), 0x26e0, &segments[1..]),
+            place((0x1000, 0x7000), 0x26e0, &segments[1..], STACK_PAGES),
             Ok(CODE_AT + 0x16e0)
         );
         assert_eq!(
-            place((0x3000, 0x5000), 0x26e0, &segments),
+            place((0x3000, 0x5000), 0x26e0, &segments, STACK_PAGES),
             Err(Refusal::BadEntry(0x26e0)),
             "code, but before the image"
         );
         assert_eq!(
-            place((0, 0x8000), 0x5e87, &segments),
+            place((0, 0x8000), 0x5e87, &segments, STACK_PAGES),
             Ok(CODE_AT + 0x5e87),
             "the code's last byte"
+        );
+    }
+
+    #[test]
+    fn an_image_has_to_fit_above_its_own_stack() {
+        assert_eq!(image_max(STACK_MOST), 0x2f_f000);
+        let code = [segment(0, image_max(STACK_MOST), false, true)];
+        assert_eq!(
+            place((0, image_max(STACK_MOST)), 0, &code, STACK_MOST),
+            Ok(CODE_AT)
+        );
+        let size = image_max(STACK_MOST) + 1;
+        assert_eq!(
+            place((0, size), 0, &code, STACK_MOST),
+            Err(Refusal::TooBig(size))
+        );
+        assert_eq!(
+            place((0, size), 0, &code, STACK_PAGES),
+            Ok(CODE_AT),
+            "beside a smaller stack it fits"
         );
     }
 
@@ -508,10 +642,10 @@ mod tests {
             "the guard page stays"
         );
         let code = [segment(0, IMAGE_MAX, false, true)];
-        assert_eq!(place((0, IMAGE_MAX), 0, &code), Ok(CODE_AT));
+        assert_eq!(place((0, IMAGE_MAX), 0, &code, STACK_PAGES), Ok(CODE_AT));
         let more = [segment(0, IMAGE_MAX + 1, false, true)];
         assert_eq!(
-            place((0, IMAGE_MAX + PAGE), 0, &more),
+            place((0, IMAGE_MAX + PAGE), 0, &more, STACK_PAGES),
             Err(Refusal::TooBig(IMAGE_MAX + PAGE))
         );
     }
@@ -524,7 +658,7 @@ mod tests {
         ];
         assert_eq!(page_flags(&shared, 0x10), Err(Refusal::WritableCode(0)));
         assert_eq!(
-            place((0, 0x1000), 0, &shared),
+            place((0, 0x1000), 0, &shared, STACK_PAGES),
             Err(Refusal::WritableCode(0))
         );
         let later = [
@@ -533,7 +667,7 @@ mod tests {
             segment(0x2800, 0x800, true, false),
         ];
         assert_eq!(
-            place((0, 0x3000), 0, &later),
+            place((0, 0x3000), 0, &later, STACK_PAGES),
             Err(Refusal::WritableCode(0x2000)),
             "whichever page it is"
         );
@@ -567,6 +701,6 @@ mod tests {
             segment(0x3000, 0x10, true, false),
         ];
         assert_eq!(page_flags(&gap, 0x1000), Ok(None), "between segments");
-        assert_eq!(place((0, 0x4000), 0, &gap), Ok(CODE_AT));
+        assert_eq!(place((0, 0x4000), 0, &gap, STACK_PAGES), Ok(CODE_AT));
     }
 }

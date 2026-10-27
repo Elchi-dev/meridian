@@ -256,10 +256,12 @@ pub const NOT_SAME_VOLUME: u64 = Error::NotSameVolume.code();
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
 /// bytes hold [`MEXEC_VERSION`]. A note of the kind [`NOTE_NAME`] holds the
-/// program's name, in UTF-8.
+/// program's name, in UTF-8, and one of the kind [`NOTE_STACK`] the pages
+/// of stack it asks for, four bytes little endian.
 pub const NOTE_OWNER: &[u8] = b"Meridian";
 pub const NOTE_VERSION: u32 = 1;
 pub const NOTE_NAME: u32 = 2;
+pub const NOTE_STACK: u32 = 3;
 pub const MEXEC_VERSION: u32 = 1;
 
 /// The longest message a channel takes, in bytes.

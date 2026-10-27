@@ -24,7 +24,9 @@ use program::layout::{Held, Typed};
 use program::{Ended, Error, Handle, KeyEvent, start::Sink};
 use services::{About, MESSAGE};
 
-program::main!(shell);
+// The sh dialect runs a script by recursion, a few KiB of stack for each
+// command running inside another.
+program::main!(shell, stack = 256);
 
 /// What a key does to the line being typed.
 #[derive(Clone, Debug, PartialEq, Eq)]

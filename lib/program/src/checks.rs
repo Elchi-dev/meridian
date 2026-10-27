@@ -21,10 +21,11 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 83] = [
+const CHECKS: [(&str, Check); 85] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
+    ("stack", the_stack_asked_for),
     ("channel", round_trip),
     ("channel.empty", nothing_waits),
     ("channel.room", room_too_small),
@@ -65,6 +66,7 @@ const CHECKS: [(&str, Check); 83] = [
     ("shell.script", shell_runs_a_script),
     ("shell.builtins", the_shells_own_commands),
     ("shell.status", shell_ends_with_the_status),
+    ("shell.deep", functions_call_each_other_deep),
     ("shell.programs", shell_starts_programs),
     ("shell.files", shell_writes_files),
     ("shell.patterns", shell_matches_patterns),
@@ -156,6 +158,25 @@ fn formatted() -> Outcome {
     let mut line = crate::Line::new();
     let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{two}{four}"));
     expect(line.as_str() == "24", "a line should hold what was written")
+}
+
+/// A program gets the stack its note asks for: hello asks for 32 pages
+/// when it runs these checks, and this goes 96 KiB down into them, past
+/// the 64 KiB every program gets.
+fn the_stack_asked_for() -> Outcome {
+    /// Goes down the stack until it stands 96 KiB below `top`, and answers
+    /// the sum of what it kept on the way: 0.
+    fn down(top: usize) -> u64 {
+        let room = core::hint::black_box([0u8; 256]);
+        let here = core::ptr::from_ref(&room) as usize;
+        let below = if top - here < 96 * 1024 { down(top) } else { 0 };
+        below + u64::from(room[here % room.len()])
+    }
+    let top = 0u8;
+    expect(
+        down(core::ptr::from_ref(&top) as usize) == 0,
+        "a program should get the stack its note asks for",
+    )
 }
 
 fn time_goes_on() -> Outcome {
@@ -1650,6 +1671,22 @@ fn shell_ends_with_the_status() -> Outcome {
                 b"a\n1:14: unset-variable: set the variable with let before this\n",
             ),
         "a script should stop at a variable never set",
+    )
+}
+
+/// A function may call itself as deep as the language lets it, 64 calls,
+/// on the stack the shell asks for, and one more is an error.
+fn functions_call_each_other_deep() -> Outcome {
+    let checked = same(
+        &shell_on("fn down { down }\ndown")?,
+        &ran(
+            2,
+            b"1:11: too-deep: a function calls itself, or others call each other, too deep\n",
+        ),
+    );
+    expect(
+        checked,
+        "a function calling itself should go 64 deep and stop with an error",
     )
 }
 

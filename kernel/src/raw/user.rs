@@ -18,7 +18,7 @@ use channel::MESSAGE;
 use handles::{Handle, Rights, Table};
 use kernel::object::Object;
 use kernel::process::{Outcome, State};
-use kernel::program::{self, Refusal, STACK_PAGES};
+use kernel::program::{self, Refusal};
 use kernel::syscall::{self, Call};
 use kernel::thread::THREADS;
 use paging::Flags;
@@ -151,7 +151,8 @@ fn start_file_as(
     let segments = elf.segments().map_err(Error::Elf)?;
     let segments = segments.as_slice();
     let about = program::metadata(elf.notes()).map_err(Error::Refused)?;
-    let entry = program::place((first, size), elf.entry(), segments).map_err(Error::Refused)?;
+    let entry = program::place((first, size), elf.entry(), segments, about.stack)
+        .map_err(Error::Refused)?;
     let mut image = vec![0u8; usize::try_from(size).map_err(|_| Error::NoMemory)?];
     elf.load(&mut image, CODE_AT).map_err(Error::Elf)?;
     let root = memory::new_space().ok_or(Error::NoMemory)?;
@@ -164,7 +165,7 @@ fn start_file_as(
         }
     }
     process.name = about.name.iter().copied().take(NAME).collect();
-    spawn(core, root, entry, argument, process)
+    spawn(core, root, entry, argument, process, about.stack)
 }
 
 /// Starts `program` as [`start`] does, holding a handle with `rights` to
@@ -234,20 +235,21 @@ fn launch(
         memory::release_space(root);
         return Err(Error::NoMemory);
     }
-    spawn(core, root, CODE_AT, argument, process)
+    spawn(core, root, CODE_AT, argument, process, program::STACK_PAGES)
 }
 
 /// Gives the program whose image is mapped in the address space at `root`
-/// its stack and a thread that enters it at `entry`.
+/// its stack of `pages` pages and a thread that enters it at `entry`.
 fn spawn(
     core: usize,
     root: u64,
     entry: u64,
     argument: u64,
     process: Box<Process>,
+    pages: u64,
 ) -> Result<usize, Error> {
     let stack = Flags::USER | Flags::WRITABLE | Flags::NO_EXECUTE;
-    let bottom = STACK_TOP - STACK_PAGES * 4096;
+    let bottom = STACK_TOP - pages * 4096;
     let stacked = (bottom..STACK_TOP)
         .step_by(4096)
         .all(|page| memory::map_fresh_in(root, page, stack, &[]).is_ok());

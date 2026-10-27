@@ -230,9 +230,31 @@ unsafe impl GlobalAlloc for Allocator {
 /// kernel starts the program with a handle, whose start messages the
 /// runtime reads first (decision record 0017), and it ends with the code
 /// main returns. Also gives the program its panic handler, its heap, and the
-/// notes that make its file a `.mexec` file.
+/// notes that make its file a `.mexec` file. With `stack = pages`, the
+/// program asks for that many pages of stack, up to 256, instead of 16
+/// (decision record 0022).
 #[macro_export]
 macro_rules! main {
+    ($main:path, stack = $pages:literal) => {
+        $crate::main!($main);
+
+        core::arch::global_asm!(
+            ".pushsection .note.meridian, \"a\", @note",
+            ".balign 4",
+            ".long 9",
+            ".long 4",
+            ".long {stack_kind}",
+            ".asciz \"Meridian\"",
+            ".balign 4",
+            ".long {pages}",
+            ".popsection",
+            stack_kind = const $crate::abi::NOTE_STACK,
+            pages = const {
+                let pages: u32 = $pages;
+                pages
+            },
+        );
+    };
     ($main:path) => {
         #[cfg(not(test))]
         extern "C" fn __program_main(argument: u64) -> ! {

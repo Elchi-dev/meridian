@@ -30,7 +30,9 @@ for the owner `Meridian` they mean what this page says.
   writable and executable at once is refused, so the linker has to put
   code and data on pages of their own, as it does by default.
 - The whole image fits between 4 MiB, where it starts, and the stack below
-  8 MiB: 4,124,672 bytes at most.
+  8 MiB with the unmapped page under it: 4,124,672 bytes at most beside
+  the 16 pages of stack every program gets, 4,096 bytes less for each
+  page more it asks for.
 - Its entry point lies in an executable segment.
 
 ## The notes
@@ -46,18 +48,24 @@ left alone.
 | --- | --- | --- |
 | 1 | `NOTE_VERSION` | the format's version, a 32-bit little-endian number: 1 |
 | 2 | `NOTE_NAME` | the program's name in UTF-8, without a zero byte |
+| 3 | `NOTE_STACK` | the pages of stack the program asks for, a 32-bit little-endian number |
 
 A file is a `.mexec` file of version 1 when it carries a note of kind 1
 whose description is the four bytes `01 00 00 00`. The kernel refuses an
 ELF file without that note, and one whose note names a version it does not
 know. A name is optional; the kernel keeps up to 32 bytes of it for its
-log. Kinds it does not know are skipped, so later versions can add notes
+log. A program gets 16 pages of stack, 64 KiB, or as many as a note of
+kind 3 asks for, up to 256 (decision record 0022); the kernel refuses a
+file asking for more, and one whose note of kind 3 holds other than four
+bytes. Kinds it does not know are skipped, so later versions can add notes
 that older kernels pass over.
 
 ## Writing one
 
 A program built on `lib/program` gets its notes from `main!`, which
-writes them with the crate's name as the program's name:
+writes them with the crate's name as the program's name, and asks for
+more stack when given the pages, as in `program::main!(shell, stack =
+256)`:
 
 ```rust
 #![no_std]

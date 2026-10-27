@@ -7,6 +7,11 @@
 
 use program::Handle;
 
+// Running the checks, one of which goes past the 64 KiB of stack every
+// program gets, it asks for more.
+#[cfg(feature = "qemu-test")]
+program::main!(hello, stack = 32);
+#[cfg(not(feature = "qemu-test"))]
 program::main!(hello);
 
 #[cfg_attr(test, allow(dead_code))]

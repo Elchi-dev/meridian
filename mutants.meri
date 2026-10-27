@@ -261,3 +261,17 @@ allow {
     mutation = "false to true"
     reason = "a volume mounted without a writer is read only, and a read-only volume refuses every write, removal and new directory before it reaches the writer, so what the writer would answer is never asked"
 }
+
+allow {
+    file = "kernel/src/raw/user.rs"
+    line = "None => false,"
+    mutation = "false to true"
+    reason = "hold_object is only asked about what a handle table holds, and a table holds only numbers of objects, so it never meets a number that is none"
+}
+
+allow {
+    file = "kernel/src/raw/vfs.rs"
+    line = "return false;"
+    mutation = "false to true"
+    reason = "hold is only asked about the slot of a file a handle stands for, and an open file stays in its slot while any handle stands for it, so the slot is never empty there"
+}

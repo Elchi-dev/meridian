@@ -2721,6 +2721,11 @@ mod tests {
             "0>&1: a stream read and one written cannot stand for each other\n"
         );
         assert_eq!(
+            unmade(0, &Target::Copy(2)),
+            "0>&2: a stream read and one written cannot stand for each other\n",
+            "2 is a stream programs have"
+        );
+        assert_eq!(
             unmade(1, &Target::Text(Vec::new())),
             "1<<: a here-document is read on stream 0\n"
         );

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 118] = [
+const CHECKS: [(&str, Check); 119] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -108,6 +108,7 @@ const CHECKS: [(&str, Check); 118] = [
     ("shell.partial", a_character_cut_short_shows),
     ("shell.closes", files_close_when_a_command_cannot_start),
     ("shell.shared", the_shared_commands),
+    ("shell.terminal", streams_that_are_terminals),
     ("shell.test.files", test_asks_the_files),
     ("shell.sh", the_sh_dialect),
     ("shell.sh.streams", sh_streams),
@@ -2796,6 +2797,28 @@ fn the_shared_commands() -> Outcome {
     expect(
         checked,
         "echo, printf, test and [ should run as lib/shell has them, with their statuses",
+    )
+}
+
+/// `test -t` sees a stream as a terminal only where the command has the
+/// shell's own and the shell has the console's: not one handed to the
+/// shell, not one redirected, and none past 2.
+fn streams_that_are_terminals() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "test -t 0; echo $?; test -t 1; echo $?; test -t 2; echo $?; test -t 5; echo $?",
+        )?,
+        &ran(0, b"0\n1\n1\n1\n"),
+    ) && same(
+        &shell_on("#!/bin/sh\ntest -t 0 <<EOF\nx\nEOF\necho $?")?,
+        &ran(0, b"1\n"),
+    ) && same(
+        &shell_reading(&["-c", "test -t 0; echo $?"], Some(b""))?,
+        &ran(0, b"1\n"),
+    );
+    expect(
+        checked,
+        "test -t should see only the console the shell was not handed another for",
     )
 }
 

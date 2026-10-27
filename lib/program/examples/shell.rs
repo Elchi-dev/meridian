@@ -19,7 +19,8 @@ use ::shell::Code;
 use ::shell::expand::{self, Piece};
 use ::shell::parse::{self, Redirect, Statement};
 use ::shell::run::{Flow, Machine, Ready, Session};
-use program::{Ended, Error, Handle, KeyEvent, abi::file, layout, start::Sink};
+use program::layout::{Held, Typed};
+use program::{Ended, Error, Handle, KeyEvent, abi::file, start::Sink};
 use services::{About, MESSAGE};
 
 program::main!(shell);
@@ -37,34 +38,26 @@ enum Edit {
     Nothing,
 }
 
-/// The line being typed, and which shift keys are held.
+/// The line being typed, and which shift and control keys are held.
 #[derive(Default)]
 struct Editor {
     line: String,
-    left_shift: bool,
-    right_shift: bool,
+    held: Held,
 }
 
 impl Editor {
     fn feed(&mut self, key: KeyEvent) -> Edit {
-        match key.usage {
-            0xe1 => self.left_shift = key.pressed,
-            0xe5 => self.right_shift = key.pressed,
-            _ if key.pressed => {}
-            _ => return Edit::Nothing,
-        }
-        let shift = self.left_shift || self.right_shift;
-        match layout::us(key.usage, shift).filter(|_| key.pressed) {
-            Some('\n') => Edit::Run(core::mem::take(&mut self.line)),
-            Some('\u{8}') => match self.line.pop() {
+        match self.held.feed(key) {
+            Typed::Char('\n') => Edit::Run(core::mem::take(&mut self.line)),
+            Typed::Char('\u{8}') => match self.line.pop() {
                 Some(_) => Edit::Erase,
                 None => Edit::Nothing,
             },
-            Some(c) => {
+            Typed::Char(c) => {
                 self.line.push(c);
                 Edit::Type(c)
             }
-            None => Edit::Nothing,
+            Typed::End | Typed::Nothing => Edit::Nothing,
         }
     }
 }
@@ -783,6 +776,17 @@ mod tests {
         assert_eq!(
             edits(&[down(0x52), down(0x29), down(0x3a), up(0x04)]),
             vec![Edit::Nothing; 4]
+        );
+        assert_eq!(
+            edits(&[down(0xe0), down(0x04), down(0x07), up(0xe0), down(0x04)]),
+            [
+                Edit::Nothing,
+                Edit::Nothing,
+                Edit::Nothing,
+                Edit::Nothing,
+                Edit::Type('a')
+            ],
+            "nor do keys with control held"
         );
     }
 

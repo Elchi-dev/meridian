@@ -339,7 +339,7 @@ pub fn input(room: &mut [u8; abi::MESSAGE_BYTES]) -> Result<usize, Error> {
         return Ok(0);
     }
     let read = match start::given().input {
-        Some(end) => input_from(end, room),
+        Some(end) => stream(end, room),
         None => Ok(typed_into(room)),
     };
     if read == Ok(0) {
@@ -348,9 +348,15 @@ pub fn input(room: &mut [u8; abi::MESSAGE_BYTES]) -> Result<usize, Error> {
     read
 }
 
-/// The next message waiting at `end` in `room`, once one came, and 0
-/// bytes once its other end closed. A handle a message brings is closed.
-fn input_from(end: Handle, room: &mut [u8]) -> Result<usize, Error> {
+/// Takes the next piece of the stream that comes over the channel end
+/// `end` into `room`, waiting for one, and answers its length: 0 for the
+/// empty message that ends a stream, and once the other end closed. A
+/// handle a message brings is closed.
+///
+/// # Errors
+///
+/// When the handle is not the program's, or the piece does not fit.
+pub fn stream(end: Handle, room: &mut [u8]) -> Result<usize, Error> {
     loop {
         match receive(end, room) {
             Ok((len, brought)) => {

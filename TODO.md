@@ -153,7 +153,8 @@ Loader and UEFI:
 - [x] The shell starts a program by its name in `/System/Boot/meridian/programs` or by its path (SPAWN takes paths), and says how it ended
 - [x] Programs start with their arguments and a standard output, a channel or a file, in start messages (ADR 0017, 0018)
 - [x] Standard input, from a channel or the keyboard
-- [ ] Standard error, and pipes between programs
+- [x] Pipes between programs and the shell's own commands, and `<`
+- [ ] Standard error
 - [x] The shell runs Meridian's shell language: lines and blocks typed at the console, `-c` and script files, its own commands under Linux and Windows names, `>` and `>>` (ADR 0016)
 - [ ] The shell's sh dialect (ADR 0016)
 - [x] `wc`, the first command-line tool

@@ -19,8 +19,9 @@ use ::shell::Code;
 use ::shell::expand::{self, Piece};
 use ::shell::parse::{self, Redirect, Statement};
 use ::shell::run::{Flow, Machine, Ready, Session};
+use program::abi::{MESSAGE_BYTES, file};
 use program::layout::{Held, Typed};
-use program::{Ended, Error, Handle, KeyEvent, abi::file, start::Sink};
+use program::{Ended, Error, Handle, KeyEvent, start::Sink};
 use services::{About, MESSAGE};
 
 program::main!(shell);
@@ -74,6 +75,8 @@ enum Command<'a> {
     Clear,
     Services,
     Empty,
+    /// `true` or `false` in a pipeline, which end so.
+    Status(u8),
     /// A program, by its name in [`PROGRAMS`] or by its path, and the
     /// words it is handed.
     Program(&'a str, &'a [String]),
@@ -101,12 +104,14 @@ fn command(words: &[String]) -> Command<'_> {
         "help" => Command::Help,
         "echo" => Command::Echo(rest),
         "ls" | "dir" => Command::List(rest),
-        "cat" | "type" | "mkdir" | "md" | "rm" | "del" if rest.is_empty() => Command::Missing(word),
+        "mkdir" | "md" | "rm" | "del" if rest.is_empty() => Command::Missing(word),
         "cat" | "type" => Command::Show(rest),
         "mkdir" | "md" => Command::MakeDirectory(rest),
         "rm" | "del" => Command::Remove(rest),
         "clear" | "cls" => Command::Clear,
         "services" => Command::Services,
+        "true" => Command::Status(0),
+        "false" => Command::Status(1),
         _ => Command::Program(word, rest),
     }
 }
@@ -394,19 +399,17 @@ struct System;
 
 impl Machine for System {
     fn run(&mut self, pipeline: &[Ready]) -> u8 {
-        let [ready] = pipeline else {
-            let _ =
-                program::write("|: pipes need a standard input, which programs do not have yet\n");
-            return 2;
-        };
-        let Some(mut out) = redirected(&ready.redirections) else {
+        let Some(stages) = plumbed(pipeline) else {
             return 1;
         };
-        let status = run(command(&ready.words), &mut out);
-        if let Out::File { handle, .. } = out {
-            let _ = program::close(handle);
-        }
-        status
+        let alone = stages.len() == 1;
+        let going: Vec<Going> = stages
+            .into_iter()
+            .map(|(words, input, out)| begin(words, input, out, alone))
+            .collect();
+        // Each one has to be waited for; the last one's status is the
+        // pipeline's.
+        going.into_iter().fold(0, |_, command| command.finish())
     }
 
     fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String> {
@@ -439,11 +442,71 @@ impl Tree for System {
     }
 }
 
-/// Where a command's text goes: the shell's own output, or a file from
-/// its byte `at` on.
+/// Where a command reads: the shell's own input, a file from its byte
+/// `at` on, or the pipe from the command before it.
+enum In {
+    Mine,
+    File { handle: Handle, at: u64 },
+    Pipe(Handle),
+}
+
+impl In {
+    /// Takes the next piece of what is read into `room`, and answers its
+    /// length: 0 at the end.
+    #[cfg_attr(test, allow(dead_code))]
+    fn take(&mut self, room: &mut [u8; MESSAGE_BYTES]) -> Result<usize, Error> {
+        match self {
+            In::Mine => program::input(room),
+            In::File { handle, at } => {
+                let len = program::read(*handle, *at, room)?;
+                *at += len as u64;
+                Ok(len)
+            }
+            In::Pipe(end) => program::stream(*end, room),
+        }
+    }
+
+    /// The channel end a program reading here is handed, which goes with
+    /// it: the pipe, one a thread of the shell fills from the file, or a
+    /// duplicate of the shell's own input; none for the keyboard.
+    #[cfg_attr(test, allow(dead_code))]
+    fn handed(self) -> Option<Handle> {
+        match self {
+            In::Pipe(end) => Some(end),
+            In::Mine => program::duplicate(program::start::given().input?).ok(),
+            In::File { .. } => {
+                let (into, from) = program::channel().ok()?;
+                let mut file = self;
+                let fed = program::thread(move || {
+                    let mut pipe = Out::Pipe(into);
+                    let copied = copy(&mut file, &mut pipe);
+                    file.close();
+                    pipe.close();
+                    u64::from(!copied)
+                });
+                if fed.is_err() {
+                    let _ = (program::close(into), program::close(from));
+                    return None;
+                }
+                Some(from)
+            }
+        }
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn close(self) {
+        if let In::File { handle, .. } | In::Pipe(handle) = self {
+            let _ = program::close(handle);
+        }
+    }
+}
+
+/// Where a command's text goes: the shell's own output, a file from its
+/// byte `at` on, or the pipe to the command after it.
 enum Out {
     Mine,
     File { handle: Handle, at: u64 },
+    Pipe(Handle),
 }
 
 impl Out {
@@ -456,49 +519,256 @@ impl Out {
                 *at += text.len() as u64;
                 Ok(())
             }
+            Out::Pipe(end) => program::start::pieces(text.as_bytes())
+                .try_for_each(|piece| program::send_waiting(*end, piece)),
         }
     }
+
+    /// Where a program writing here writes: the file or the pipe, which go
+    /// with it, or the shell's own output.
+    #[cfg_attr(test, allow(dead_code))]
+    fn handed(self) -> Option<Sink> {
+        match self {
+            Out::File { handle, .. } => Some(Sink::File(handle)),
+            Out::Pipe(end) => Some(Sink::Channel(end)),
+            Out::Mine => inherited(),
+        }
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn close(self) {
+        if let Out::File { handle, .. } | Out::Pipe(handle) = self {
+            let _ = program::close(handle);
+        }
+    }
+}
+
+/// Copies what `input` holds to `out` up to its end, and says whether all
+/// of it went. A character cut between two pieces waits for its rest.
+#[cfg_attr(test, allow(dead_code))]
+fn copy(input: &mut In, out: &mut Out) -> bool {
+    let mut room = [0u8; MESSAGE_BYTES];
+    let mut held = Vec::new();
+    loop {
+        let len = match input.take(&mut room) {
+            Ok(0) => return held.is_empty() || out.say(&String::from_utf8_lossy(&held)).is_ok(),
+            Ok(len) => len,
+            Err(_) => return false,
+        };
+        held.extend_from_slice(&room[..len]);
+        let whole = whole(&held);
+        let text = String::from_utf8_lossy(&held[..whole]).into_owned();
+        held.drain(..whole);
+        if out.say(&text).is_err() {
+            return false;
+        }
+    }
+}
+
+/// How much of `bytes` can be shown now: all of it, but for a character
+/// at its end that the next piece may finish.
+fn whole(bytes: &[u8]) -> usize {
+    match core::str::from_utf8(bytes) {
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        _ => bytes.len(),
+    }
+}
+
+/// Each command of `pipeline` with where it reads and where it writes:
+/// the files its redirections lead to, else the pipes between it and the
+/// commands beside it, else the shell's own. None once something did not
+/// open, after saying so and closing what had.
+#[cfg_attr(test, allow(dead_code))]
+fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], In, Out)>> {
+    let mut stages: Vec<(&[String], In, Out)> = Vec::new();
+    let mut next = In::Mine;
+    let mut failed = false;
+    for (i, ready) in pipeline.iter().enumerate() {
+        let Some((from, into)) = redirected(&ready.redirections) else {
+            failed = true;
+            break;
+        };
+        let input = match from {
+            Some(file) => {
+                core::mem::replace(&mut next, In::Mine).close();
+                file
+            }
+            None => core::mem::replace(&mut next, In::Mine),
+        };
+        let out = if i + 1 == pipeline.len() {
+            into.unwrap_or(Out::Mine)
+        } else {
+            let Ok((write, read)) = program::channel() else {
+                let _ = program::write("|: no channel is left for the pipe\n");
+                input.close();
+                if let Some(file) = into {
+                    file.close();
+                }
+                failed = true;
+                break;
+            };
+            next = In::Pipe(read);
+            match into {
+                Some(file) => {
+                    let _ = program::close(write);
+                    file
+                }
+                None => Out::Pipe(write),
+            }
+        };
+        stages.push((&ready.words, input, out));
+    }
+    if failed {
+        next.close();
+        for (_, input, out) in stages {
+            input.close();
+            out.close();
+        }
+        return None;
+    }
+    Some(stages)
 }
 
 /// Opens the files `redirections` lead to, in their order as sh does, and
-/// answers where the command's text goes: the last one, at its end. Says
-/// what went wrong and answers none when one does not open.
+/// answers the last one to read and the last one to write, at its end.
+/// Says what went wrong and answers none when one does not open.
 #[cfg_attr(test, allow(dead_code))]
-fn redirected(redirections: &[(Redirect, String)]) -> Option<Out> {
-    let mut out = Out::Mine;
+fn redirected(redirections: &[(Redirect, String)]) -> Option<(Option<In>, Option<Out>)> {
+    let (mut from, mut into) = (None::<In>, None::<Out>);
     for (how, path) in redirections {
-        let opened = opening(*how).map(|how| program::open_with(path, file::WRITE, how));
-        if let Out::File { handle, .. } = out {
-            let _ = program::close(handle);
-        }
-        match opened {
-            Some(Ok(handle)) => {
-                let at = program::info(handle).map_or(0, |i| i.size);
-                out = Out::File { handle, at };
-            }
-            Some(Err(e)) => {
+        let opened = match opening(*how) {
+            Some(how) => program::open_with(path, file::WRITE, how),
+            None => program::open(path, file::READ),
+        };
+        let handle = match opened {
+            Ok(handle) => handle,
+            Err(e) => {
                 let _ = program::write(&trouble(path, e));
+                if let Some(file) = from {
+                    file.close();
+                }
+                if let Some(file) = into {
+                    file.close();
+                }
                 return None;
             }
-            None => {
-                let _ = program::write(&format!("< {path}: commands read no standard input yet\n"));
-                return None;
+        };
+        if *how == Redirect::In {
+            if let Some(file) = from.replace(In::File { handle, at: 0 }) {
+                file.close();
+            }
+        } else {
+            let at = program::info(handle).map_or(0, |i| i.size);
+            if let Some(file) = into.replace(Out::File { handle, at }) {
+                file.close();
             }
         }
     }
-    Some(out)
+    Some((from, into))
 }
 
-/// Runs `command`, its text going to `out`, and answers its status: a
-/// program's, or for the shell's own 0, and 1 when something went wrong.
+/// A command of a pipeline on its way: done already, a program, or one of
+/// the shell's own in a thread, which sends its status over a channel.
+enum Going {
+    Done(u8),
+    Program(String, Handle),
+    Thread(Handle),
+}
+
+impl Going {
+    /// Waits until the command ended, and answers its status.
+    #[cfg_attr(test, allow(dead_code))]
+    fn finish(self) -> u8 {
+        match self {
+            Going::Done(status) => status,
+            Going::Program(word, child) => {
+                let ended = program::wait(child);
+                let _ = program::close(child);
+                match ended {
+                    Ok(ended) => {
+                        if let Some(line) = ending(&word, ended) {
+                            let _ = program::write(&line);
+                        }
+                        status(ended)
+                    }
+                    Err(e) => {
+                        let _ = program::write(&trouble(&word, e));
+                        1
+                    }
+                }
+            }
+            Going::Thread(end) => {
+                let mut room = [0u8; 1];
+                let status = loop {
+                    match program::receive(end, &mut room) {
+                        Ok((1, _)) => break room[0],
+                        Err(Error::Empty) => program::sleep(1),
+                        _ => break 1,
+                    }
+                };
+                let _ = program::close(end);
+                status
+            }
+        }
+    }
+}
+
+/// Starts the command `words` with what it reads and where it writes:
+/// a program, or one of the shell's own, at once when it is `alone` and in
+/// a thread of its own in a pipeline.
 #[cfg_attr(test, allow(dead_code))]
-fn run(command: Command<'_>, out: &mut Out) -> u8 {
+fn begin(words: &[String], input: In, out: Out, alone: bool) -> Going {
+    if let Command::Program(word, arguments) = command(words) {
+        return start(word, arguments, input, out);
+    }
+    if alone {
+        let (mut input, mut out) = (input, out);
+        let status = run(command(words), &mut input, &mut out);
+        input.close();
+        out.close();
+        return Going::Done(status);
+    }
+    let Ok((mine, theirs)) = program::channel() else {
+        let _ = program::write("|: no channel is left for the pipe\n");
+        input.close();
+        out.close();
+        return Going::Done(1);
+    };
+    let words = words.to_vec();
+    let started = program::thread(move || {
+        let (mut input, mut out) = (input, out);
+        let status = run(command(&words), &mut input, &mut out);
+        input.close();
+        out.close();
+        let _ = program::send(theirs, &[status], None);
+        let _ = program::close(theirs);
+        0
+    });
+    if started.is_err() {
+        let _ = program::write("|: no thread is left for the pipe\n");
+        let _ = program::close(mine);
+        return Going::Done(1);
+    }
+    Going::Thread(mine)
+}
+
+/// Runs `command`, reading `input` and its text going to `out`, and
+/// answers its status: a program's, or for the shell's own 0, and 1 when
+/// something went wrong.
+#[cfg_attr(test, allow(dead_code))]
+fn run(command: Command<'_>, input: &mut In, out: &mut Out) -> u8 {
     let done = match command {
-        Command::Program(word, arguments) => return start(word, arguments, out),
+        Command::Program(word, arguments) => {
+            let input = core::mem::replace(input, In::Mine);
+            let out = core::mem::replace(out, Out::Mine);
+            return start(word, arguments, input, out).finish();
+        }
+        Command::Status(status) => return status,
         Command::Help => out.say(HELP).is_ok(),
         Command::Echo(words) => out.say(&format!("{}\n", words.join(" "))).is_ok(),
         Command::List([]) => list(HOME, out),
         Command::List(paths) => every(paths, |path| list(path, out)),
+        Command::Show([]) => copy(input, out),
         Command::Show(paths) => every(paths, |path| show(path, out)),
         Command::MakeDirectory(paths) => every(paths, |path| done(path, program::make_directory)),
         Command::Remove(paths) => every(paths, |path| done(path, program::remove)),
@@ -581,46 +851,28 @@ fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
     None
 }
 
-/// Starts the program `word` names, handing it `arguments` and the file
-/// `out` leads to, which goes with it, or else the shell's own standard
-/// output, waits until it ended, and answers its status.
+/// Starts the program `word` names, handing it `arguments`, what it
+/// reads and where it writes, which go with it.
 #[cfg_attr(test, allow(dead_code))]
-fn start(word: &str, arguments: &[String], out: &mut Out) -> u8 {
+fn start(word: &str, arguments: &[String], input: In, out: Out) -> Going {
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let output = match core::mem::replace(out, Out::Mine) {
-        Out::File { handle, .. } => Some(Sink::File(handle)),
-        Out::Mine => inherited(),
-    };
     let given = program::start::Given {
-        output,
+        input: input.handed(),
+        output: out.handed(),
         ..program::start::Given::default()
     };
-    let child = match program::spawn_handing(&program_name(word, &mut System), &arguments, given) {
+    match program::spawn_handing(&program_name(word, &mut System), &arguments, given) {
         Ok((child, start)) => {
             let _ = program::close(start);
-            child
+            Going::Program(word.into(), child)
         }
         Err(Error::NotFound) if !word.starts_with('/') => {
             let _ = program::write(&format!("{word}: no such command\n"));
-            return 127;
+            Going::Done(127)
         }
         Err(e) => {
             let _ = program::write(&trouble(word, e));
-            return 126;
-        }
-    };
-    let ended = program::wait(child);
-    let _ = program::close(child);
-    match ended {
-        Ok(ended) => {
-            if let Some(line) = ending(word, ended) {
-                let _ = program::write(&line);
-            }
-            status(ended)
-        }
-        Err(e) => {
-            let _ = program::write(&trouble(word, e));
-            1
+            Going::Done(126)
         }
     }
 }
@@ -853,9 +1105,21 @@ mod tests {
             let w = words(&format!("{name} /a /b"));
             assert_eq!(command(&w), Command::Remove(&w[1..]));
         }
-        for name in ["cat", "type", "mkdir", "md", "rm", "del"] {
+        for name in ["mkdir", "md", "rm", "del"] {
             assert_eq!(command(&words(name)), Command::Missing(name));
         }
+        for name in ["cat", "type"] {
+            assert_eq!(
+                command(&words(name)),
+                Command::Show(&[]),
+                "it shows what it reads"
+            );
+        }
+        assert_eq!(
+            (command(&words("true")), command(&words("false x"))),
+            (Command::Status(0), Command::Status(1)),
+            "for a pipeline, where the language does not see them"
+        );
         for name in ["clear", "cls", "cls now"] {
             assert_eq!(command(&words(name)), Command::Clear);
         }
@@ -960,6 +1224,19 @@ mod tests {
         assert!(every(&paths, |_| true));
         assert!(every(&[], |_| false), "none went wrong");
         assert!(!every(&paths, |path| path != "d"), "nor the last");
+    }
+
+    #[test]
+    fn a_character_cut_short_waits_for_the_next_piece() {
+        let e = "\u{e9}".as_bytes();
+        assert_eq!(whole(b"abc"), 3);
+        assert_eq!(whole(b""), 0);
+        assert_eq!(whole(&[b'a', e[0]]), 1, "the first half of the \u{e9}");
+        assert_eq!(whole(&[b'a', e[0], e[1]]), 3);
+        let euro = "\u{20ac}".as_bytes();
+        assert_eq!(whole(&euro[..2]), 0, "two bytes of three");
+        assert_eq!(whole(&[0xff, b'a']), 2, "what can never be text goes on");
+        assert_eq!(whole(&[b'a', 0xff, e[0]]), 3, "so does what comes after");
     }
 
     #[test]

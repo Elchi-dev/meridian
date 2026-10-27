@@ -14,14 +14,14 @@ use security::{Integrity, Privileges, Restriction, Token};
 use crate::{
     Ended, Error, Handle, Info, channel, close, duplicate, info, key, list, log, make_directory,
     map, open, open_with, raw, read, receive, remove, send, sleep, spawn, spawn_handing,
-    spawn_restricted, spawn_with, start, terminate, token, unmap, wait, write, write_file,
+    spawn_restricted, spawn_with, start, stream, terminate, token, unmap, wait, write, write_file,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 44] = [
+const CHECKS: [(&str, Check); 53] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -58,13 +58,22 @@ const CHECKS: [(&str, Check); 44] = [
     ("spawn.arguments", arguments_arrive),
     ("spawn.output", output_goes_where_it_is_handed),
     ("spawn.input", input_is_read_to_its_end),
+    ("stream", streams_end_and_close_what_they_bring),
     ("shell.script", shell_runs_a_script),
+    ("shell.builtins", the_shells_own_commands),
     ("shell.status", shell_ends_with_the_status),
     ("shell.programs", shell_starts_programs),
     ("shell.files", shell_writes_files),
     ("shell.patterns", shell_matches_patterns),
     ("shell.file", shell_runs_a_file),
     ("shell.redirections", shell_redirects),
+    ("shell.pipes", shell_pipes),
+    ("shell.pipes.trouble", pipes_that_go_wrong),
+    ("shell.pipes.files", pipes_and_files),
+    ("shell.pipes.long", a_long_pipeline),
+    ("shell.input", shell_hands_its_input_on),
+    ("shell.redirections.both", reading_and_writing_files_at_once),
+    ("shell.output.file", programs_write_into_the_shells_file),
     ("console", writes_on_the_console),
 ];
 
@@ -1210,9 +1219,30 @@ type Ran = (Result<Ended, Error>, Vec<u8>);
 /// and answers how it ended and what it wrote, which has to fit in the
 /// messages a channel holds, since nothing takes them until it ended.
 fn shell_with(words: &[&str]) -> Result<Ran, &'static str> {
+    shell_reading(words, None)
+}
+
+/// Starts the shell with `words` as [`shell_with`] does, and with a
+/// standard input that brings `input` and ends, when that is some.
+fn shell_reading(words: &[&str], input: Option<&[u8]>) -> Result<Ran, &'static str> {
     let (mine, theirs) = pair()?;
-    let (child, back) = spawn_handing("shell.mexec", words, output(start::Sink::Channel(theirs)))
-        .map_err(|_| "the shell should start")?;
+    let mut given = output(start::Sink::Channel(theirs));
+    let into = match input {
+        Some(_) => {
+            let (into, from) = pair()?;
+            given.input = Some(from);
+            Some(into)
+        }
+        None => None,
+    };
+    let (child, back) =
+        spawn_handing("shell.mexec", words, given).map_err(|_| "the shell should start")?;
+    if let (Some(into), Some(input)) = (into, input) {
+        for piece in start::pieces(input) {
+            let _ = crate::send_waiting(into, piece);
+        }
+        let _ = close(into);
+    }
     let ended = wait(child);
     let said = drained(mine);
     expect(
@@ -1265,12 +1295,108 @@ fn input_is_read_to_its_end() -> Outcome {
     Ok(())
 }
 
+/// A stream's pieces come as sent, an empty one ends it as the other end
+/// closing does, a handle one brings is closed, and a piece longer than
+/// the room stays.
+fn streams_end_and_close_what_they_bring() -> Outcome {
+    let (mine, theirs) = pair()?;
+    let (kept, brought) = pair()?;
+    let mut room = [0u8; MESSAGE_BYTES];
+    expect(
+        send(theirs, b"one", None) == Ok(())
+            && send(theirs, b"two", Some(brought)) == Ok(())
+            && send(theirs, b"", None) == Ok(())
+            && stream(mine, &mut room) == Ok(3)
+            && room[..3] == *b"one"
+            && stream(mine, &mut room) == Ok(3)
+            && room[..3] == *b"two"
+            && stream(mine, &mut room) == Ok(0),
+        "pieces should come as sent, and an empty one end the stream",
+    )?;
+    expect(
+        send(kept, b"x", None) == Err(Error::Closed) && close(kept) == Ok(()),
+        "a handle a piece brought should be closed",
+    )?;
+    let mut small = [0u8; 2];
+    expect(
+        send(theirs, b"long", None) == Ok(())
+            && stream(mine, &mut small) == Err(Error::TooSmall)
+            && stream(mine, &mut room) == Ok(4),
+        "a piece longer than the room should stay for a read with room enough",
+    )?;
+    expect(
+        close(theirs) == Ok(()) && stream(mine, &mut room) == Ok(0) && close(mine) == Ok(()),
+        "a stream should end once its other end closed",
+    )?;
+    expect(
+        stream(Handle(0x7777_0042), &mut room) == Err(Error::BadHandle),
+        "a stranger's handle should bring no stream",
+    )
+}
+
 fn shell_runs_a_script() -> Outcome {
     let script = "let a = hi; echo $a there\nif false { echo no } else { echo yes }\n\
                   for x in 1 2 { echo $x }\nfn f { return 3 }\nf; echo $?";
     expect(
         shell_on(script)? == ran(0, b"hi there\nyes\n1\n2\n3\n"),
         "the shell should run the script after -c, its variables, blocks and functions",
+    )
+}
+
+/// The shell's own commands, each as `help` names it, and what they say
+/// when they are missing what they need.
+fn the_shells_own_commands() -> Outcome {
+    expect(
+        shell_on("echo; echo  a   b")? == ran(0, b"\na b\n"),
+        "echo should write its words with one space between",
+    )?;
+    expect(
+        shell_on("md; rm")? == ran(1, b"md needs a path\nrm needs a path\n"),
+        "md and rm without a path should say they need one",
+    )?;
+    expect(
+        shell_on("services")? == ran(1, b"services: init did not start this shell\n"),
+        "services should say init did not start a shell hello started",
+    )?;
+    expect(
+        shell_on("clear | wc")? == ran(0, b"0 0 1\n"),
+        "clear should write one form feed",
+    )?;
+    let listed = shell_on("ls")?;
+    let want: &[u8] = if booted_from_disk() {
+        b"meridian/\n"
+    } else {
+        b"/System/Boot: no such file\n"
+    };
+    expect(
+        listed.1.windows(want.len()).any(|w| w == want),
+        "ls without a path should list /System/Boot",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    expect(
+        shell_on("ls /System/Boot/meridian/programs/wh*; dir /System/Boot/meridian/programs/wc*")?
+            == ran(
+                0,
+                b"/System/Boot/meridian/programs/whoami.mexec\n\
+                  /System/Boot/meridian/programs/whoami_again.mexec\n\
+                  /System/Boot/meridian/programs/wc.mexec\n\
+                  /System/Boot/meridian/programs/wc_again.mexec\n",
+            ),
+        "ls and dir of files should show their paths",
+    )?;
+    expect(
+        shell_on(
+            "type /System/Boot/meridian/boot.meri | wc; cat /System/Boot/meridian/boot.meri | wc",
+        )?
+        .1
+        .split(|&b| b == b'\n')
+        .take(2)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .all(|w| w[0] == w[1] && !w[0].is_empty()),
+        "type should show a file as cat does",
     )
 }
 
@@ -1418,17 +1544,24 @@ fn shell_runs_a_file() -> Outcome {
 
 fn shell_redirects() -> Outcome {
     expect(
-        shell_on("echo a | echo b; cat < /System/x")?
-            == ran(
-                1,
-                b"|: pipes need a standard input, which programs do not have yet\n\
-                  < /System/x: commands read no standard input yet\n",
-            ),
-        "a pipe and < should say they need a standard input, which nothing has yet",
+        shell_on("cat < /System/x")? == ran(1, b"/System/x: no such file\n"),
+        "a redirection from a file that is not there should say so",
     )?;
     if !booted_from_disk() {
         return Ok(());
     }
+    expect(
+        shell_on("echo a > /System/Boot/x")?
+            == ran(1, b"/System/Boot/x: on a volume that is only read\n"),
+        "a redirection into a file that cannot be written should say why",
+    )?;
+    let script = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!("cat < {script} | wc; wc < {script}"))?;
+    let (first, second) = said.split_at(said.len() / 2);
+    expect(
+        ended == Ok(Ended::Exited(0)) && first == second && first.ends_with(b"\n"),
+        "< should hand the shell's own commands and programs the file to read",
+    )?;
     let (ended, said) = shell_on(
         "echo a > /System/r1 > /System/r2; cat /System/r1 /System/r2; rm /System/r1 /System/r2",
     )?;
@@ -1443,6 +1576,185 @@ fn shell_redirects() -> Outcome {
         "of two redirections the shell should make both files and write into the last",
     )
 }
+
+fn shell_pipes() -> Outcome {
+    expect(
+        shell_on("echo one two | wc")? == ran(0, b"1 2 8\n"),
+        "what one command writes the next should read",
+    )?;
+    expect(
+        shell_on("echo x | cat | cat | wc | cat")? == ran(0, b"1 1 2\n"),
+        "the shell's own commands should read and write pipes too",
+    )?;
+    expect(
+        shell_on("arguments a 'b c' | wc; echo a | arguments")? == ran(0, b"2 3 6\n"),
+        "a program should write into a pipe, and one that reads nothing should end",
+    )?;
+    expect(
+        shell_on("true | false")? == ran(1, b"")
+            && shell_on("false | true")? == ran(0, b"")
+            && shell_on("nope | wc")? == ran(0, b"nope: no such command\n0 0 0\n"),
+        "a pipeline should end as its last command, and one that never started write nothing",
+    )?;
+    expect(
+        shell_on("help | wc")?
+            == ran(
+                0,
+                alloc::format!("2 {HELP_WORDS} {HELP_BYTES}\n").as_bytes(),
+            ),
+        "a builtin writing more than a message holds should go whole through the pipe",
+    )
+}
+
+/// A command of a pipeline that does not start, or reads what is not
+/// there, leaves the others to end as they would.
+fn pipes_that_go_wrong() -> Outcome {
+    expect(
+        shell_on("cat /nope | wc")? == ran(0, b"/nope: no such file\n0 0 0\n"),
+        "a command that writes nothing into a pipe should leave the next one an empty stream",
+    )?;
+    expect(
+        shell_on("echo a | cat /nope")? == ran(1, b"/nope: no such file\n"),
+        "a pipeline should end as its last command when that went wrong",
+    )?;
+    expect(
+        shell_on("echo a | nope")? == ran(127, b"nope: no such command\n"),
+        "a program that is nowhere should end a pipeline with 127",
+    )?;
+    expect(
+        shell_on("echo a | /System/Boot/meridian/programs")?.0 == Ok(Ended::Exited(126)),
+        "a path that is no program should end a pipeline with 126",
+    )?;
+    expect(
+        shell_on("exitwith | wc")? == ran(0, b"exitwith ended with 2989\n0 0 0\n"),
+        "a program that ends without writing should close its end of the pipe",
+    )
+}
+
+/// Redirections go before pipes: a command that writes into a file
+/// writes nothing into its pipe, and one that reads a file reads nothing
+/// from its pipe.
+fn pipes_and_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo a b > /System/p1 | wc; echo c d | wc < /System/p1\n\
+         wc < /System/p1 | cat > /System/p2 | wc; cat /System/p2 /System/p1\n\
+         rm /System/p1 /System/p2",
+    )?;
+    if said.starts_with(b"/System/p1: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should be made for a pipeline",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"0 0 0\n1 2 4\n0 0 0\n1 2 4\na b\n",
+        "a redirection should take the place of the pipe on its side",
+    )
+}
+
+/// Seven of the shell's own commands and a program, each reading what the
+/// one before wrote, all at once.
+fn a_long_pipeline() -> Outcome {
+    expect(
+        shell_on("echo x y | cat | cat | cat | cat | cat | cat | wc")? == ran(0, b"1 2 4\n"),
+        "a long pipeline should go through every command",
+    )?;
+    expect(
+        shell_on("echo x | wc | wc | wc")? == ran(0, b"1 3 6\n"),
+        "programs one after another should each read what the last wrote",
+    )
+}
+
+/// The shell's own standard input goes to the first command of a
+/// pipeline, and to a command alone, a program or one of the shell's own.
+fn shell_hands_its_input_on() -> Outcome {
+    let input = b"one two\nthree\n";
+    expect(
+        shell_reading(&["-c", "wc"], Some(input))? == ran(0, b"2 3 14\n"),
+        "a program should read the shell's own input",
+    )?;
+    expect(
+        shell_reading(&["-c", "cat | wc"], Some(input))? == ran(0, b"2 3 14\n"),
+        "the first command of a pipeline should read it",
+    )?;
+    expect(
+        shell_reading(&["-c", "cat"], Some(input))? == ran(0, input),
+        "cat should show what it reads",
+    )?;
+    expect(
+        shell_reading(&["-c", "echo x | wc; wc"], Some(b"a\n"))? == ran(0, b"1 1 2\n1 1 2\n"),
+        "a command after a pipeline should still read the shell's own input",
+    )?;
+    expect(
+        shell_reading(&["-c", "wc; wc"], Some(b"a b\n"))? == ran(0, b"1 2 4\n0 0 0\n"),
+        "what one command read the next should not read again",
+    )
+}
+
+/// A command that reads one file and writes another, the last of two
+/// files to read winning, as in sh.
+fn reading_and_writing_files_at_once() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo one > /System/f1; echo two three > /System/f2\n\
+         cat < /System/f1 > /System/f3; wc < /System/f1 < /System/f2 >> /System/f3\n\
+         cat /System/f3; rm /System/f1 /System/f2 /System/f3",
+    )?;
+    if said.starts_with(b"/System/f1: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"one\n1 2 10\n",
+        "a command should read one file and write another, and read the last it is given",
+    )
+}
+
+/// Started with a file as its standard output, the shell writes there,
+/// and so do the programs it starts, each after what was there.
+fn programs_write_into_the_shells_file() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, READ, WRITE};
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/shell.out";
+    let file = match open_with(path, WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "the shell's output should be made")?,
+    };
+    let (child, back) = spawn_handing(
+        "shell.mexec",
+        &[
+            "-c",
+            "echo first; arguments a 'b c'; echo x y | wc; echo last",
+        ],
+        output(start::Sink::File(file)),
+    )
+    .map_err(|_| "the shell should start")?;
+    let ended = wait(child);
+    let _ = (close(child), close(back));
+    let reader = open(path, READ).map_err(|_| "the shell's output should open")?;
+    let mut room = [0u8; 64];
+    let len = read(reader, 0, &mut room).unwrap_or(0);
+    let _ = close(reader);
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && room[..len] == *b"first\na\nb c\n1 2 4\nlast\n"
+            && remove(path) == Ok(()),
+        "the shell and its programs should write one after another into the shell's file",
+    )
+}
+
+/// What `help` shows, counted as wc counts.
+const HELP_WORDS: usize = 47;
+const HELP_BYTES: usize = 218;
 
 fn writes_on_the_console() -> Outcome {
     // The first piece would end inside the last character. Spaces, since

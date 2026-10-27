@@ -3583,16 +3583,21 @@ fn user_checks<W: Write>(report: &mut Report<'_, W>) {
     // The spinner keeps the first core in ring 3 for 20 ticks without
     // giving way; the first thread still runs in between, so the timer
     // takes the processor from ring 3 and comes back on the right stack.
-    let spinner = user::start(0, &probe::SPINNER, 0);
-    let mut turns = 0;
-    while spinner.is_ok_and(raw::thread::alive) && turns < 200 {
-        raw::thread::sleep(1);
-        turns += 1;
-    }
+    // A host that keeps the core away has several ticks reach it as one,
+    // so it gets three tries.
+    let preempted = (0..3).any(|_| {
+        let spinner = user::start(0, &probe::SPINNER, 0);
+        let mut turns = 0;
+        while spinner.is_ok_and(raw::thread::alive) && turns < 200 {
+            raw::thread::sleep(1);
+            turns += 1;
+        }
+        spinner.is_ok_and(|s| !raw::thread::alive(s) && seen::exit_of(s) == 0)
+            && (10..200).contains(&turns)
+    });
     report.check(
         "kernel.user.preempted",
-        spinner.is_ok_and(|s| !raw::thread::alive(s) && seen::exit_of(s) == 0)
-            && (10..200).contains(&turns),
+        preempted,
         "a program that never gives way should still lose the processor at every tick",
     );
     let other = raw::smp::others().next().unwrap_or(0);

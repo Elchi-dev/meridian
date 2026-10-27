@@ -1400,6 +1400,32 @@ mod tests {
     }
 
     #[test]
+    fn directories_past_cluster_65535_know_their_parents() {
+        let Some(mut image) = formatted("high") else {
+            return;
+        };
+        image[512 + NEXT..512 + NEXT + 4].copy_from_slice(&70_000u32.to_le_bytes());
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (outer, _) = w.create(root, "outer", true).unwrap();
+        let (inner, _) = w.create(outer.first, "inner", true).unwrap();
+        assert!(
+            outer.first >= 1 << 16 && inner.first >= 1 << 16,
+            "both past 65535"
+        );
+        assert_eq!(
+            w.rename(root, "outer", inner.first, "x"),
+            Err(Error::Inside),
+            "inner's .. leads to outer, its high half too"
+        );
+        assert!(w.rename(outer.first, "inner", root, "top").is_ok());
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "high", "/"), ["outer", "top"]);
+        assert!(sound(&now, "high"));
+    }
+
+    #[test]
     fn a_rename_refuses_what_it_cannot_do() {
         let Some(image) = formatted("unmoved") else {
             return;

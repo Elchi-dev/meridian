@@ -13,15 +13,15 @@ use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
     Ended, Error, Handle, Info, channel, close, info, key, list, log, make_directory, map, open,
-    open_with, raw, read, receive, remove, send, sleep, spawn, spawn_restricted, spawn_with,
-    terminate, token, unmap, wait, write, write_file,
+    open_with, raw, read, receive, remove, send, sleep, spawn, spawn_handing, spawn_restricted,
+    spawn_with, start, terminate, token, unmap, wait, write, write_file,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 34] = [
+const CHECKS: [(&str, Check); 35] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -55,6 +55,7 @@ const CHECKS: [(&str, Check); 34] = [
     ("file.write_refused", writes_refused),
     ("spawn.file", child_from_its_file),
     ("spawn.arguments", arguments_arrive),
+    ("spawn.output", output_goes_where_it_is_handed),
     ("console", writes_on_the_console),
 ];
 
@@ -1062,6 +1063,65 @@ fn arguments_arrive() -> Outcome {
         ended == Ok(Ended::Exited(0)) && closed && got.iter().eq(sent.iter().map(|a| a.as_bytes())),
         "the child should send back each word it was started with, as it was",
     )
+}
+
+/// Takes every message waiting at `end` once the child that sent them
+/// ended, and answers their bytes.
+fn drained(end: Handle) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut room = [0u8; MESSAGE_BYTES];
+    while let Ok((len, _)) = receive(end, &mut room) {
+        bytes.extend_from_slice(&room[..len]);
+    }
+    bytes
+}
+
+/// What a child writes goes to the standard output it was handed: a
+/// channel, and a file where /System takes one, at its end.
+fn output_goes_where_it_is_handed() -> Outcome {
+    let words = ["first", "second line"];
+    let want = b"first\nsecond line\n";
+    let (mine, theirs) = pair()?;
+    let (child, back) = spawn_handing(
+        "arguments.mexec",
+        &words,
+        Some(start::Sink::Channel(theirs)),
+    )
+    .map_err(|_| "arguments should start with an output")?;
+    let ended = wait(child);
+    let _ = drained(back);
+    expect(
+        ended == Ok(Ended::Exited(0)) && drained(mine) == want,
+        "what the child writes should come through the channel it was handed",
+    )?;
+    expect(
+        close(child) == Ok(()) && close(back) == Ok(()) && close(mine) == Ok(()),
+        "the handles should close",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/output.txt";
+    let file = match open_with(path, abi::file::WRITE, abi::file::CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "a file should be made for the output")?,
+    };
+    write_file(file, 0, b"before\n").map_err(|_| "the file should take a line")?;
+    let (child, back) = spawn_handing("arguments.mexec", &words, Some(start::Sink::File(file)))
+        .map_err(|_| "arguments should start with a file")?;
+    let ended = wait(child);
+    let _ = drained(back);
+    let _ = close(child);
+    let _ = close(back);
+    let reader = open(path, abi::file::READ).map_err(|_| "the output should open")?;
+    let mut room = [0u8; 64];
+    let len = read(reader, 0, &mut room).unwrap_or(0);
+    let _ = close(reader);
+    expect(
+        ended == Ok(Ended::Exited(0)) && room[..len] == *b"before\nfirst\nsecond line\n",
+        "what the child writes should go after what the file held",
+    )?;
+    expect(remove(path) == Ok(()), "the output should go")
 }
 
 fn writes_on_the_console() -> Outcome {

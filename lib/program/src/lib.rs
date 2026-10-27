@@ -208,6 +208,20 @@ pub fn spawn(name: &str, carry: Option<Handle>) -> Result<Handle, Error> {
 /// As for [`spawn`], and when no channel is left or the messages cannot
 /// be sent.
 pub fn spawn_with(name: &str, arguments: &[&str]) -> Result<(Handle, Handle), Error> {
+    spawn_handing(name, arguments, None)
+}
+
+/// Starts the program `name` as [`spawn_with`] does, handing it `output`
+/// as its standard output too, when that is some.
+///
+/// # Errors
+///
+/// As for [`spawn_with`].
+pub fn spawn_handing(
+    name: &str,
+    arguments: &[&str],
+    output: Option<start::Sink>,
+) -> Result<(Handle, Handle), Error> {
     let (mine, theirs) = channel()?;
     let child = match spawn(name, Some(theirs)) {
         Ok(child) => child,
@@ -217,6 +231,13 @@ pub fn spawn_with(name: &str, arguments: &[&str]) -> Result<(Handle, Handle), Er
             return Err(e);
         }
     };
+    if let Some(output) = output {
+        let (kind, handle) = match output {
+            start::Sink::Channel(h) => (start::Kind::Output, h),
+            start::Sink::File(h) => (start::Kind::OutputFile, h),
+        };
+        send(mine, &[kind.byte()], Some(handle))?;
+    }
     let end = alloc::vec::Vec::from([start::Kind::End.byte()]);
     for message in arguments
         .iter()
@@ -264,12 +285,28 @@ pub struct KeyEvent {
     pub pressed: bool,
 }
 
-/// Writes `text` to the console, in pieces as long as one call takes.
+/// Writes `text` to the program's standard output: the channel or the
+/// file its parent handed it (decision record 0017), at the file's end, or
+/// the console when it was handed none.
 ///
 /// # Errors
 ///
 /// When the kernel refuses a piece.
 pub fn write(text: &str) -> Result<(), Error> {
+    match start::given().output {
+        Some(start::Sink::Channel(end)) => {
+            start::pieces(text.as_bytes()).try_for_each(|piece| send_waiting(end, piece))
+        }
+        Some(start::Sink::File(file)) => {
+            let end = info(file)?.size;
+            write_file(file, end, text.as_bytes())
+        }
+        None => console(text),
+    }
+}
+
+/// Writes `text` to the console, in pieces as long as one call takes.
+fn console(text: &str) -> Result<(), Error> {
     let mut rest = text;
     while !rest.is_empty() {
         let mut take = rest.len().min(abi::WRITE_BYTES);

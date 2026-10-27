@@ -216,7 +216,8 @@ reached the kernel with every call, and starts it with no free frame at
 all, then one more after each refusal, until it starts. Test images also
 carry `exitwith`, which exits with the number it is sent, or runs out of
 stack when sent anything else, for hello's checks of SPAWN and WAIT, and
-`arguments`, which sends back the arguments it starts with.
+`arguments`, which sends back the arguments it starts with and writes
+them, a line each, to its standard output.
 
 ## Objects and handles (M3)
 
@@ -433,7 +434,10 @@ channel is the program's line, and ends them; a parent that hands over
 nothing still sends the end. A program started with no channel reads
 none. A parent hands a program its arguments there too, the words it
 starts with, each as it is (decision record 0018), which
-`program::arguments` answers.
+`program::arguments` answers, and its standard output: a channel, which
+gets the text in messages, or a file, which gets it at its end.
+`program::write` writes there, and to the console when the parent handed
+neither.
 Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
 itself. The test image does that with a list of setup, which runs whoami

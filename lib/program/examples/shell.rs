@@ -80,8 +80,9 @@ enum Command<'a> {
     Services,
     Exit,
     Empty,
-    /// A program, by its name in [`PROGRAMS`] or by its path.
-    Program(&'a str),
+    /// A program, by its name in [`PROGRAMS`] or by its path, and the
+    /// words it is handed.
+    Program(&'a str, Vec<&'a str>),
     Missing(&'a str),
 }
 
@@ -112,7 +113,7 @@ fn parse(line: &str) -> Command<'_> {
         "clear" | "cls" => Command::Clear,
         "services" => Command::Services,
         "exit" => Command::Exit,
-        other => Command::Program(other),
+        other => Command::Program(other, rest.split_whitespace().collect()),
     }
 }
 
@@ -234,7 +235,7 @@ fn run(line: &str) -> bool {
         Command::Services => services(),
         Command::Exit => return false,
         Command::Empty => Ok(()),
-        Command::Program(word) => start(word),
+        Command::Program(word, arguments) => start(word, &arguments),
         Command::Missing(word) => program::write(&format!("{word} needs a path\n")),
     };
     true
@@ -291,9 +292,12 @@ fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
 
 /// Starts the program `word` names and waits until it ended.
 #[cfg_attr(test, allow(dead_code))]
-fn start(word: &str) -> Result<(), Error> {
-    let child = match program::spawn(&program_path(word), None) {
-        Ok(child) => child,
+fn start(word: &str, arguments: &[&str]) -> Result<(), Error> {
+    let child = match program::spawn_with(&program_path(word), arguments) {
+        Ok((child, start)) => {
+            let _ = program::close(start);
+            child
+        }
         Err(Error::NotFound) if !word.starts_with('/') => {
             return program::write(&format!("{word}: no such command\n"));
         }
@@ -540,7 +544,12 @@ mod tests {
             Command::Services,
             "it takes no words"
         );
-        assert_eq!(parse("dir C:"), Command::Program("dir"));
+        assert_eq!(parse("dir C:"), Command::Program("dir", vec!["C:"]));
+        assert_eq!(
+            parse("cp  a   'b c' "),
+            Command::Program("cp", vec!["a", "'b", "c'"]),
+            "words at spaces, quotes not yet"
+        );
         assert_eq!(
             parse("rm -rf /"),
             Command::Remove("-rf /"),
@@ -548,12 +557,12 @@ mod tests {
         );
         assert_eq!(
             parse("Help"),
-            Command::Program("Help"),
+            Command::Program("Help", vec![]),
             "commands are lower case"
         );
         assert_eq!(
             parse(" /System/Boot/meridian/programs/hello.mexec "),
-            Command::Program("/System/Boot/meridian/programs/hello.mexec")
+            Command::Program("/System/Boot/meridian/programs/hello.mexec", vec![])
         );
     }
 
@@ -693,7 +702,7 @@ mod tests {
                 .any(|w| w == word);
             assert!(named, "help leaves out {word}");
             assert!(
-                !matches!(parse(word), Command::Program(_)),
+                !matches!(parse(word), Command::Program(..)),
                 "{word} is no command"
             );
         }
@@ -706,7 +715,7 @@ mod tests {
                 "help names {word}, which the shell does not know"
             );
         }
-        assert_eq!(parse("nope"), Command::Program("nope"));
+        assert_eq!(parse("nope"), Command::Program("nope", vec![]));
     }
 
     #[test]

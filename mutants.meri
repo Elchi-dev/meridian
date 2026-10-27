@@ -289,3 +289,10 @@ allow {
     mutation = "true to false"
     reason = "every pattern holds a * or a ?, so some part of it is listed, which sets this before the paths are filtered by it"
 }
+
+allow {
+    file = "lib/shell/src/sh/run.rs"
+    line = "let body = self.characters(&doc.body, doc.word.at, true, machine)?;"
+    mutation = "true to false"
+    reason = "the lexer marks every part of a here-document's body quoted already, so quoting all of it once more changes nothing"
+}

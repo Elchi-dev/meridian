@@ -169,8 +169,12 @@ Loader and UEFI:
   - [x] Its arithmetic: C's operators on 64-bit integers that wrap, variables read and set, `&&`, `||` and `?:` working out only the side they take
   - [x] `echo`, `printf`, `test` and `[`, `true`, `false` and `:` in lib/shell for both dialects (ADR 0021)
   - [x] The shell program running those for both dialects
-  - [ ] Capturing what commands write, for `$(...)`
-  - [ ] Expansions, running, and choosing the dialect
+  - [x] Capturing what commands write, for `$(...)`
+  - [x] Its expansions but names of files: parameters in every `${...}` form, `$(...)`, arithmetic, `~`, fields split by `IFS`
+  - [x] Running a script: variables, functions, compound commands, pipelines, blocks' redirections, here-documents, subshells, `set -e`, `-u` and `-C`, the builtins POSIX calls special
+  - [x] Choosing the dialect by a script's first line
+  - [ ] Names of files matched by patterns, `read`, `&` with `$!` and `wait`, `.`, `exec`, `trap` for `EXIT`, `getopts`
+  - [ ] The `sh` command and an interactive sh session
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`
 - [ ] More command-line tools

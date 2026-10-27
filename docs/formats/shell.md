@@ -191,6 +191,10 @@ with status 127 and says so.
 
 ## 9. The sh dialect
 
+The shell reads a script as sh when its first line is `#!/bin/sh` or
+`#!sh`; blanks after the `#!` and at the line's end are let be. Any
+other script is read in Meridian's dialect.
+
 The sh dialect reads scripts as POSIX sh does, and reports its errors in
 the same form. A quote, a `${`, a `$(`, a `$((` or a backquote that the
 script leaves open is an error (`unclosed`), reported where it opens.
@@ -227,6 +231,33 @@ integers that wrap as other shells' do. What is not C's arithmetic there
 is an error (`bad-arithmetic`), and so are dividing by 0
 (`division-by-zero`) and a variable whose value is no whole number
 (`not-a-number`), each reported at the word the arithmetic stands in.
+
+Running a script can go wrong too, reported at the word it happens in:
+a parameter that is not set where `set -u` asks for one
+(`unset-parameter`), a `${...}` that is no parameter expansion
+(`bad-substitution`), an assignment to a read-only variable
+(`read-only`), `>&` or `<&` with a word that is no stream's number nor
+`-` (`bad-copy`), and a function call, an `eval` or a `$(...)` that
+would run more than 64 deep inside other commands, compound commands
+among them (`too-deep`). An error in the
+commands of a `$(...)` is reported at the word the `$(...)` stands in,
+and ends only it, with 2. Such an error ends the script with 2.
+`${name?word}` and `${name:?word}` say `name: word` themselves, or that
+the parameter is not set or empty when there is no word, and end the
+script with 1, as an error of a builtin POSIX calls special does.
+
+Meridian's programs have the streams 0, 1 and 2, so a redirection of
+any other stream, or a copy of one, is refused when its command runs:
+the command does not run and its status is 1. `$$` is 0, as Meridian
+gives a process no number it can know itself by yet. A here-document's
+text is expanded as inside double quotes, unless its word is quoted.
+
+A pipeline whose commands are all programs or the shell's own commands
+runs them side by side, as Meridian's dialect does. One with a
+function, a builtin POSIX calls special or a compound command in it runs
+its commands one after another, each in a copy of the session, what one
+wrote the next one's input; so each part has to end before the next
+starts.
 
 The commands inside a `$(...)` are read as the script's own are, so a
 `case` inside one ends where it should, and what is wrong in them is

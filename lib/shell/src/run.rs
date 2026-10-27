@@ -75,6 +75,40 @@ pub trait Machine {
     /// does not start at the root, in the order of their names compared in
     /// capitals.
     fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String>;
+
+    /// Writes `bytes` where the shell's own output goes now: its output,
+    /// or the text the innermost capture takes. Says whether all went.
+    fn out(&mut self, bytes: &[u8]) -> bool;
+
+    /// Writes `bytes` where the shell says what went wrong, and says
+    /// whether all went.
+    fn err(&mut self, bytes: &[u8]) -> bool;
+
+    /// Takes what the commands it runs write without a file of their own
+    /// for it, and what [`Machine::out`] writes, into a text until the
+    /// matching [`Machine::end_capture`], as `$(...)` does. Captures nest,
+    /// each taking what is written inside it.
+    fn begin_capture(&mut self);
+
+    /// Ends the innermost capture and answers the text it took.
+    fn end_capture(&mut self) -> Vec<u8>;
+
+    /// Makes `redirections` the streams of all it runs, and of what
+    /// [`Machine::out`] and [`Machine::err`] write, until the matching
+    /// [`Machine::end_redirections`], as the redirections of a compound
+    /// command or a function are. Says what went wrong and answers false
+    /// when one of them cannot be made, which makes none.
+    fn begin_redirections(&mut self, redirections: &[Redirection]) -> bool;
+
+    /// Ends the innermost redirections, closing what they opened.
+    fn end_redirections(&mut self);
+
+    /// The working directory, from the root.
+    fn directory(&mut self) -> String;
+
+    /// Makes `path` the working directory again, as a subshell's end does
+    /// for one its `cd` left.
+    fn set_directory(&mut self, path: &str);
 }
 
 /// How statements ended: on to the next, out of a loop, a function or
@@ -433,8 +467,12 @@ mod tests {
     use crate::parse::script;
 
     /// A machine with no programs and no files, so only what the shell
-    /// has itself runs: every program it is asked for is not there.
-    struct Bare;
+    /// has itself runs: every program it is asked for is not there. It
+    /// keeps what is written only into a capture.
+    #[derive(Default)]
+    struct Bare {
+        captures: Vec<Vec<u8>>,
+    }
 
     impl Machine for Bare {
         fn run(&mut self, _: &[Ready]) -> u8 {
@@ -444,6 +482,41 @@ mod tests {
         fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
             Vec::new()
         }
+
+        fn out(&mut self, bytes: &[u8]) -> bool {
+            if let Some(capture) = self.captures.last_mut() {
+                capture.extend_from_slice(bytes);
+            }
+            true
+        }
+
+        fn err(&mut self, _: &[u8]) -> bool {
+            true
+        }
+
+        fn begin_capture(&mut self) {
+            self.captures.push(Vec::new());
+        }
+
+        fn end_capture(&mut self) -> Vec<u8> {
+            self.captures.pop().unwrap_or_default()
+        }
+
+        /// It has no files, so a redirection to one cannot be made; the
+        /// others change nothing it keeps.
+        fn begin_redirections(&mut self, redirections: &[Redirection]) -> bool {
+            redirections
+                .iter()
+                .all(|r| matches!(r.target, Target::Copy(_) | Target::Close | Target::Text(_)))
+        }
+
+        fn end_redirections(&mut self) {}
+
+        fn directory(&mut self) -> String {
+            String::from("/")
+        }
+
+        fn set_directory(&mut self, _: &str) {}
     }
 
     #[test]
@@ -478,19 +551,51 @@ mod tests {
     }
 
     /// A machine that keeps the pipelines it is asked to run and ends
-    /// each with 0, as one whose programs all go well would.
+    /// each with 0, as one whose programs all go well would; what is
+    /// written it keeps as [`Bare`] does.
     #[derive(Default)]
-    struct Kept(Vec<Vec<Ready>>);
+    struct Kept {
+        ran: Vec<Vec<Ready>>,
+        bare: Bare,
+    }
 
     impl Machine for Kept {
         fn run(&mut self, pipeline: &[Ready]) -> u8 {
-            self.0.push(pipeline.to_vec());
+            self.ran.push(pipeline.to_vec());
             0
         }
 
         fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
             Vec::new()
         }
+
+        fn out(&mut self, bytes: &[u8]) -> bool {
+            self.bare.out(bytes)
+        }
+
+        fn err(&mut self, bytes: &[u8]) -> bool {
+            self.bare.err(bytes)
+        }
+
+        fn begin_capture(&mut self) {
+            self.bare.begin_capture();
+        }
+
+        fn end_capture(&mut self) -> Vec<u8> {
+            self.bare.end_capture()
+        }
+
+        fn begin_redirections(&mut self, redirections: &[Redirection]) -> bool {
+            self.bare.begin_redirections(redirections)
+        }
+
+        fn end_redirections(&mut self) {}
+
+        fn directory(&mut self) -> String {
+            self.bare.directory()
+        }
+
+        fn set_directory(&mut self, _: &str) {}
     }
 
     #[test]
@@ -502,7 +607,7 @@ mod tests {
             .unwrap();
         let made = |stream, target| Redirection { stream, target };
         assert_eq!(
-            kept.0,
+            kept.ran,
             [[
                 Ready {
                     words: Vec::from([String::from("cat")]),
@@ -523,7 +628,9 @@ mod tests {
     /// A session that ran `text` through to its end.
     fn ran(text: &str) -> Session {
         let mut session = Session::new();
-        session.run(&script(text).unwrap(), &mut Bare).unwrap();
+        session
+            .run(&script(text).unwrap(), &mut Bare::default())
+            .unwrap();
         session
     }
 
@@ -533,7 +640,7 @@ mod tests {
 
     fn failure(text: &str) -> (usize, usize, Code) {
         let e = Session::new()
-            .run(&script(text).unwrap(), &mut Bare)
+            .run(&script(text).unwrap(), &mut Bare::default())
             .unwrap_err();
         (e.at.line, e.at.column, e.code)
     }
@@ -828,7 +935,7 @@ mod tests {
         let mut session = Session::new();
         let flow = session.run(
             &script("let a = 1\nreturn 9\nlet a = 2").unwrap(),
-            &mut Bare,
+            &mut Bare::default(),
         );
         assert_eq!(
             flow,
@@ -844,15 +951,18 @@ mod tests {
     #[test]
     fn break_outside_a_loop_ends_the_script() {
         let mut session = Session::new();
-        let flow = session.run(&script("let a = 1\nbreak\nlet a = 2").unwrap(), &mut Bare);
+        let flow = session.run(
+            &script("let a = 1\nbreak\nlet a = 2").unwrap(),
+            &mut Bare::default(),
+        );
         assert_eq!(
             (flow, session.variable("a").as_deref()),
             (Ok(Flow::Break), Some("1"))
         );
-        let flow = Session::new().run(&script("continue").unwrap(), &mut Bare);
+        let flow = Session::new().run(&script("continue").unwrap(), &mut Bare::default());
         assert_eq!(flow, Ok(Flow::Continue));
         assert_eq!(
-            Session::new().run(&script("true").unwrap(), &mut Bare),
+            Session::new().run(&script("true").unwrap(), &mut Bare::default()),
             Ok(Flow::Next)
         );
     }
@@ -861,7 +971,7 @@ mod tests {
     fn exit_leaves_every_block_loop_and_function_it_is_in() {
         let ended = |text: &str| {
             let mut session = Session::new();
-            let flow = session.run(&script(text).unwrap(), &mut Bare);
+            let flow = session.run(&script(text).unwrap(), &mut Bare::default());
             (flow, session.status(), session.variable("a"))
         };
         let one = Some(String::from("1"));
@@ -896,7 +1006,7 @@ mod tests {
         let mut session = Session::new();
         let flow = session.run(
             &script("fn f { let b = 1; for c in x { exit } }\nf y").unwrap(),
-            &mut Bare,
+            &mut Bare::default(),
         );
         assert_eq!(flow, Ok(Flow::Exit));
         assert_eq!(
@@ -909,7 +1019,7 @@ mod tests {
             "what the blocks and the call held went with them"
         );
         assert_eq!(
-            session.run(&script("let a = 9").unwrap(), &mut Bare),
+            session.run(&script("let a = 9").unwrap(), &mut Bare::default()),
             Ok(Flow::Next)
         );
         assert_eq!(session.variable("a").as_deref(), Some("9"), "it runs on");
@@ -918,7 +1028,10 @@ mod tests {
     #[test]
     fn functions_call_each_other_only_so_deep() {
         let e = Session::new()
-            .run(&script("fn down { down }\ndown").unwrap(), &mut Bare)
+            .run(
+                &script("fn down { down }\ndown").unwrap(),
+                &mut Bare::default(),
+            )
             .unwrap_err();
         assert_eq!(
             (e.code, e.at),
@@ -937,7 +1050,7 @@ mod tests {
             lines.push(format!("fn f{calls} {{ let r = deepest }}"));
             format!("let r = -\n{}\nf0\n", lines.join("\n"))
         };
-        let too_deep = Session::new().run(&script(&chain(DEPTH)).unwrap(), &mut Bare);
+        let too_deep = Session::new().run(&script(&chain(DEPTH)).unwrap(), &mut Bare::default());
         assert_eq!(
             too_deep.map(|_| ()).unwrap_err().code,
             Code::TooDeep,

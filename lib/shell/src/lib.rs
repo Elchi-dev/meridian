@@ -104,6 +104,14 @@ pub enum Code {
     DivisionByZero,
     /// In the sh dialect, a variable in arithmetic whose value is no integer.
     NotANumber,
+    /// In the sh dialect, a parameter that is not set where `set -u` or `${name?}` asks for one.
+    UnsetParameter,
+    /// In the sh dialect, a `${...}` that is no parameter expansion.
+    BadSubstitution,
+    /// In the sh dialect, an assignment to a read-only variable.
+    ReadOnly,
+    /// In the sh dialect, `>&` or `<&` with a word that is no stream's number nor `-`.
+    BadCopy,
 }
 
 impl Code {
@@ -147,6 +155,10 @@ impl Code {
             Code::BadArithmetic => "bad-arithmetic",
             Code::DivisionByZero => "division-by-zero",
             Code::NotANumber => "not-a-number",
+            Code::UnsetParameter => "unset-parameter",
+            Code::BadSubstitution => "bad-substitution",
+            Code::ReadOnly => "read-only",
+            Code::BadCopy => "bad-copy",
         }
     }
 
@@ -174,7 +186,9 @@ impl Code {
             Code::UnsetVariable => "set the variable with let before this",
             Code::NoMatch => "no file matches the pattern; quote it to mean the word itself",
             Code::BadStatus => "return a number from 0 to 255",
-            Code::TooDeep => "a function calls itself, or others call each other, too deep",
+            Code::TooDeep => {
+                "commands run inside each other too deep, as a function calling itself without end does"
+            }
             Code::Unclosed => "close what starts here before the script ends",
             Code::TooNested => "this nests past 16 levels; move the inner part out",
             Code::Unexpected => "this does not belong here; quote it to mean the word itself",
@@ -192,6 +206,12 @@ impl Code {
             Code::BadArithmetic => "write the arithmetic with numbers, names and C's operators",
             Code::DivisionByZero => "divide by something other than 0",
             Code::NotANumber => "give the variable a whole number before counting with it",
+            Code::UnsetParameter => "give the parameter a value first, or write ${name:-default}",
+            Code::BadSubstitution => {
+                "write ${name}, or ${name} with an operator such as :- after it"
+            }
+            Code::ReadOnly => "this variable is read only, so it keeps its value",
+            Code::BadCopy => "write >&N or <&N with N a stream's number, or - to close it",
         }
     }
 }
@@ -220,7 +240,7 @@ impl fmt::Display for Error {
 mod tests {
     use super::*;
 
-    const CODES: [Code; 36] = [
+    const CODES: [Code; 40] = [
         Code::LoneCarriageReturn,
         Code::UnterminatedQuote,
         Code::BadVariable,
@@ -257,6 +277,10 @@ mod tests {
         Code::BadArithmetic,
         Code::DivisionByZero,
         Code::NotANumber,
+        Code::UnsetParameter,
+        Code::BadSubstitution,
+        Code::ReadOnly,
+        Code::BadCopy,
     ];
 
     #[test]
@@ -339,7 +363,7 @@ mod tests {
                 "16:31: unset-variable: set the variable with let before this",
                 "17:33: no-match: no file matches the pattern; quote it to mean the word itself",
                 "18:35: bad-status: return a number from 0 to 255",
-                "19:37: too-deep: a function calls itself, or others call each other, too deep",
+                "19:37: too-deep: commands run inside each other too deep, as a function calling itself without end does",
                 "20:39: unclosed: close what starts here before the script ends",
                 "21:41: too-nested: this nests past 16 levels; move the inner part out",
                 "22:43: unexpected: this does not belong here; quote it to mean the word itself",
@@ -357,6 +381,10 @@ mod tests {
                 "34:67: bad-arithmetic: write the arithmetic with numbers, names and C's operators",
                 "35:69: division-by-zero: divide by something other than 0",
                 "36:71: not-a-number: give the variable a whole number before counting with it",
+                "37:73: unset-parameter: give the parameter a value first, or write ${name:-default}",
+                "38:75: bad-substitution: write ${name}, or ${name} with an operator such as :- after it",
+                "39:77: read-only: this variable is read only, so it keeps its value",
+                "40:79: bad-copy: write >&N or <&N with N a stream's number, or - to close it",
             ]
         );
     }

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 85] = [
+const CHECKS: [(&str, Check); 97] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -108,6 +108,18 @@ const CHECKS: [(&str, Check); 85] = [
     ("shell.closes", files_close_when_a_command_cannot_start),
     ("shell.shared", the_shared_commands),
     ("shell.test.files", test_asks_the_files),
+    ("shell.sh", the_sh_dialect),
+    ("shell.sh.streams", sh_streams),
+    ("shell.sh.streams.errors", sh_errors_follow_stream_2),
+    ("shell.sh.here", sh_here_documents),
+    ("shell.sh.session", sh_session),
+    ("shell.sh.errors", sh_errors),
+    ("shell.sh.files", sh_files),
+    ("shell.sh.pipes", sh_pipelines),
+    ("shell.sh.captures", sh_captures),
+    ("shell.sh.functions", sh_function_streams),
+    ("shell.sh.parameters", sh_parameters),
+    ("shell.sh.file", sh_script_files),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -1679,10 +1691,7 @@ fn shell_ends_with_the_status() -> Outcome {
 fn functions_call_each_other_deep() -> Outcome {
     let checked = same(
         &shell_on("fn down { down }\ndown")?,
-        &ran(
-            2,
-            b"1:11: too-deep: a function calls itself, or others call each other, too deep\n",
-        ),
+        &ran(2, b"1:11: too-deep: commands run inside each other too deep, as a function calling itself without end does\n"),
     );
     expect(
         checked,
@@ -2793,6 +2802,309 @@ fn test_asks_the_files() -> Outcome {
     expect(
         what && allowed,
         "test should ask the files what they are and what may be done with them",
+    )
+}
+
+/// A script whose first line names sh runs as sh: its functions, loops
+/// and `case`, a `$(...)` around a pipeline with a program in it, and the
+/// status `exit` gives.
+fn the_sh_dialect() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             f() { echo \"f:$1\"; }\n\
+             for i in a b; do f $i; done\n\
+             x=$(echo cap | wc); echo \"[$x]\"\n\
+             case $x in *4) echo four;; esac\n\
+             exit 3",
+        )?,
+        &ran(3, b"f:a\nf:b\n[1 1 4]\nfour\n"),
+    );
+    expect(
+        checked,
+        "a script whose first line names sh should run as sh",
+    )
+}
+
+/// In sh, the redirections of a compound command hold for all inside it,
+/// `2>&1` takes stream 1 as it is then, a capture too, a closed stream
+/// takes nothing, and a stream past 2 is refused.
+fn sh_streams() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             { echo a; echo b >&2; } 2>&-\n\
+             x=$( { echo c; echo d >&2; } 2>&1 ); echo \"[$x]\"\n\
+             echo e >&-; echo \"closed $?\"\n\
+             { echo f >&2; } 2>&1 >&-\n\
+             echo g 3>&1; echo \"three $?\"",
+        )?,
+        &ran(
+            0,
+            b"a\n[c\nd]\nclosed 1\nf\n\
+              3: Meridian's programs have the streams 0, 1 and 2\nthree 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "sh's redirections should hold for a whole block, copy and close streams",
+    )
+}
+
+/// In sh, what goes wrong in a block goes where the block's stream 2
+/// does: what a command says itself, that a command is not there, how a
+/// program ended, and that a redirection could not be made.
+fn sh_errors_follow_stream_2() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             { cat /nope; nope; cat < /nope; wc /nope; } 2>&-\n\
+             x=$( { cat /nope; nope; wc /nope; } 2>&1 ); echo \"[$x]\"\n\
+             { cat < /nope; } 2>&-; echo \"status $?\"",
+        )?,
+        &ran(
+            0,
+            b"[/nope: no such file\nnope: no such command\n\
+              wc: /nope: no such file\nwc ended with 1]\nstatus 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "what goes wrong in a block should go where the block's stream 2 goes",
+    )
+}
+
+/// In sh, a here-document is the text its command reads, a program's or
+/// the shell's own, expanded unless its word is quoted, and one on a
+/// compound command is read inside it.
+fn sh_here_documents() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             v=two\n\
+             wc <<EOF\n\
+             one $v\n\
+             EOF\n\
+             wc <<'EOF' | wc\n\
+             x $v y\n\
+             EOF\n\
+             cat <<EOF\n\
+             three\n\
+             EOF\n\
+             { wc; } <<EOF\n\
+             in a frame\n\
+             EOF\n",
+        )?,
+        &ran(0, b"1 2 8\n1 3 6\nthree\n1 3 11\n"),
+    );
+    expect(
+        checked,
+        "a here-document should be what programs and the shell's commands read",
+    )
+}
+
+/// In sh, the `cd` of a subshell stays in it, `$(...)` runs in a copy of
+/// the session, export says what it marked, and set sets the parameters.
+fn sh_session() -> Outcome {
+    let inside = if booted_from_disk() { "/System" } else { "/" };
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             cd /\n\
+             (cd /System 2>&-; pwd); pwd\n\
+             a=1; b=$(a=2; echo $a); echo \"$a$b\"\n\
+             export e=1; export -p\n\
+             set -- x 'y z'; echo $# \"$2\"",
+        )?,
+        &ran(
+            0,
+            alloc::format!("{inside}\n/\n12\nexport e='1'\n2 y z\n").as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "a subshell should keep its cd, and export and set should do their part",
+    )
+}
+
+/// In sh, what does not read stops the script before it runs, an error
+/// in it stops it where it is, both with 2, and `${name?}`, a special
+/// builtin's trouble and `set -e` stop it with 1.
+fn sh_errors() -> Outcome {
+    for (script, status, said) in [
+        (
+            "#!sh\nif true; then",
+            2,
+            &b"2:10: missing-command: put a command here\n"[..],
+        ),
+        (
+            "#!/bin/sh\necho a\necho ${a;b}\necho c",
+            2,
+            b"a\n3:6: bad-substitution: write ${name}, or ${name} with an operator such as :- after it\n",
+        ),
+        ("#!/bin/sh\necho ${u?gone}; echo no", 1, b"u: gone\n"),
+        ("#!/bin/sh\nset -e\necho a\nfalse\necho b", 1, b"a\n"),
+        (
+            "#!/bin/sh\nreadonly r=1; r=2",
+            2,
+            b"2:15: read-only: this variable is read only, so it keeps its value\n",
+        ),
+        (
+            "#!/bin/sh\nf() { f; }; f",
+            2,
+            b"2:7: too-deep: commands run inside each other too deep, as a function calling itself without end does\n",
+        ),
+        (
+            "#!/bin/sh\nshift; echo no",
+            1,
+            b"shift: 1: more than the 0 parameters there are\n",
+        ),
+    ] {
+        expect(
+            same(&shell_on(script)?, &ran(status, said)),
+            "a sh script should stop as POSIX has it, saying why",
+        )?;
+    }
+    Ok(())
+}
+
+/// In sh, `set -C` makes `>` refuse a file that is there while `>|`
+/// writes it, and `<>` opens one to read and write.
+fn sh_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "#!/bin/sh\n\
+         set -C\n\
+         echo x > /System/c1 || exit 9\n\
+         echo y > /System/c1; echo \"again $?\"\n\
+         echo z >| /System/c1; wc <> /System/c1; rm /System/c1",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said == b"/System/c1: on a volume that is only read\n",
+            "on /System read only the first file should not be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"/System/c1: there already\nagain 1\n1 1 2\n",
+        "set -C should keep a file from being written over, but for >|",
+    )?;
+    expect(
+        open("/System/c1", abi::file::READ) == Err(Error::NotFound),
+        "the file should be gone",
+    )
+}
+
+/// In sh, a pipeline with a function or a compound command in it runs
+/// its commands in their order, what one writes the next one's input, a
+/// program's among them, and inside a `$(...)` too.
+fn sh_pipelines() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             f() { echo x; echo y; }\n\
+             f | wc\n\
+             echo one two | f | wc\n\
+             x=$(f | wc); echo \"[$x]\"\n\
+             f | { wc; echo end; }",
+        )?,
+        &ran(0, b"2 2 4\n2 2 4\n[2 2 4]\n2 2 4\nend\n"),
+    );
+    expect(
+        checked,
+        "a pipeline with a function in it should hand on what each part writes",
+    )
+}
+
+/// In sh, a `$(...)` takes more than a channel holds while its commands
+/// run, and one inside another takes what is written inside it.
+fn sh_captures() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             x=$(for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo $i; done)\n\
+             echo \"$x\" | wc\n\
+             y=$(echo a; z=$(echo b | wc); echo \"$z\"); echo \"[$y]\"\n\
+             x=$(exit 4); echo \"[$x] $?\"",
+        )?,
+        &ran(0, b"12 12 27\n[a\n1 1 2]\n[] 4\n"),
+    );
+    expect(
+        checked,
+        "a capture should take all its commands write, and one inside another its own",
+    )
+}
+
+/// In sh, a function's own redirections hold inside those of its call, and
+/// the call's take its streams as they are.
+fn sh_function_streams() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             f() { echo in; } >&2\n\
+             f; f 2>&-; echo \"closed $?\"\n\
+             g() { echo $1 >&2; wc; }\n\
+             g a 2>&1 <<EOF\n\
+             one two\n\
+             EOF\n",
+        )?,
+        &ran(0, b"in\nclosed 1\na\n1 2 8\n"),
+    );
+    expect(
+        checked,
+        "a function's redirections should hold inside those its call makes",
+    )
+}
+
+/// In sh, `$0` names the script, a `-c` one the shell, which hands it no
+/// parameters; `set` gives it some, and the shell's commands and tests
+/// run in it as in Meridian's dialect.
+fn sh_parameters() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             echo $0 $# $$\n\
+             set -- a 'b c'; for p; do echo \"[$p]\"; done\n\
+             shift; echo $1\n\
+             [ \"$1\" = \"b c\" ] && test -n \"$1\" && echo both",
+        )?,
+        &ran(0, b"shell 0 0\n[a]\n[b c]\nb c\nboth\n"),
+    );
+    expect(
+        checked,
+        "a sh script should have its name and the parameters set gives it",
+    )
+}
+
+/// A script in a file whose first line names sh runs as sh, with its path
+/// as `$0`.
+fn sh_script_files() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, WRITE};
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/script-sh.sh";
+    let file = match open_with(path, WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "the script should be made")?,
+    };
+    let written = write_file(
+        file,
+        0,
+        b"#!/bin/sh\nfor x in a b; do echo \"$0 $x\"; done\nexit $#\n",
+    );
+    let _ = close(file);
+    let ended = shell_with(&[path])?;
+    expect(
+        written == Ok(())
+            && remove(path) == Ok(())
+            && same(
+                &ended,
+                &ran(0, b"/System/script-sh.sh a\n/System/script-sh.sh b\n"),
+            ),
+        "the shell should run a sh script in a file, its path as $0",
     )
 }
 

@@ -263,6 +263,27 @@ fn in_name(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// The parts of `text` read as a word is, but to its end, its blanks and
+/// operators characters like any other: the word of `${name:-word}` and
+/// its kin, and what `$((...))` holds.
+///
+/// # Errors
+///
+/// As [`tokens`], at what `text` leaves open.
+pub fn text(text: &str) -> Result<Vec<Part>, Error> {
+    let mut chars = Chars::new(text);
+    let mut parts = Vec::new();
+    loop {
+        if chars.joins() || special(&mut chars, &mut parts)? {
+            continue;
+        }
+        match chars.next() {
+            Some(c) => push(&mut parts, c, false),
+            None => return Ok(parts),
+        }
+    }
+}
+
 /// The tokens of `script`, each with where it starts.
 ///
 /// # Errors
@@ -1958,5 +1979,64 @@ done < "$1"
             (Some('\\'), Some('d'), None)
         );
         assert_eq!(chars.pos, Pos { line: 3, column: 3 });
+    }
+
+    /// What [`text`] reads `written` as, written short.
+    fn as_text(written: &str) -> String {
+        written_short(&text(written).unwrap())
+    }
+
+    #[test]
+    fn a_text_keeps_blanks_and_operators_as_characters() {
+        assert_eq!(as_text("a b;c|d&e<f>g(h)"), "a b;c|d&e<f>g(h)");
+        assert_eq!(as_text("a\tb\nc #d"), "a\tb\nc #d");
+        assert_eq!(as_text(""), "");
+        assert_eq!(text("").unwrap(), Vec::new());
+        assert_eq!(as_text("~/x"), "~/x");
+    }
+
+    #[test]
+    fn a_text_reads_quotes_and_escapes_as_a_word_does() {
+        assert_eq!(as_text("'x y'z"), "[x y]z");
+        assert_eq!(as_text("\"a $b\""), "[a ]\"$p{b}");
+        assert_eq!(as_text("\\*a"), "[*]a");
+        assert_eq!(as_text("a\\"), "a\\");
+        assert_eq!(as_text("''"), "[]");
+        assert_eq!(as_text("$'a\\tb'"), "[a\tb]");
+    }
+
+    #[test]
+    fn a_text_reads_expansions_as_a_word_does() {
+        assert_eq!(as_text("$a${b:-c}"), "$p{a}$b{b:-c}");
+        assert_eq!(
+            as_text("$(echo a)$((1 + 2))`x`"),
+            "$c{echo a}$a{1 + 2}$c{x}"
+        );
+        assert_eq!(as_text("a$"), "a$");
+        assert_eq!(as_text("$ x"), "$ x");
+    }
+
+    #[test]
+    fn a_text_joins_lines_a_backslash_ends() {
+        assert_eq!(as_text("a\\\nb"), "ab");
+        assert_eq!(as_text("\\\n\\\n"), "");
+        assert_eq!(as_text("'a\\\nb'"), "[a\\\nb]");
+    }
+
+    #[test]
+    fn a_text_left_open_is_an_error_where_it_opened() {
+        for (written, at) in [
+            ("ab'cd", (1, 3)),
+            ("\"x", (1, 1)),
+            ("a\n${b", (2, 1)),
+            ("$(echo", (1, 1)),
+        ] {
+            let e = text(written).unwrap_err();
+            assert_eq!(
+                (e.code, (e.at.line, e.at.column)),
+                (Code::Unclosed, at),
+                "{written:?}"
+            );
+        }
     }
 }

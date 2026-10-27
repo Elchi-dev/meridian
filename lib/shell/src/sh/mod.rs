@@ -4,6 +4,10 @@
 //! matched against ([`pattern`]).
 
 pub mod arith;
+#[cfg(test)]
+mod desk;
+pub mod expand;
 pub mod lex;
 pub mod parse;
 pub mod pattern;
+pub mod run;

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 75] = [
+const CHECKS: [(&str, Check); 76] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -75,6 +75,7 @@ const CHECKS: [(&str, Check); 75] = [
     ("shell.pipes.files", pipes_and_files),
     ("shell.pipes.long", a_long_pipeline),
     ("shell.input", shell_hands_its_input_on),
+    ("shell.input.ended", input_that_ended_stays_ended),
     ("shell.redirections.both", reading_and_writing_files_at_once),
     ("shell.output.file", programs_write_into_the_shells_file),
     ("shell.bytes", bytes_go_through_as_they_are),
@@ -1403,6 +1404,31 @@ fn shell_reading(words: &[&str], input: Option<&[u8]>) -> Result<Ran, &'static s
     Ok((ended, said))
 }
 
+/// Starts the shell with `words` as [`shell_with`] does, with a standard
+/// input that brings `input` and then the empty message that ends a
+/// stream, while the end that wrote it stays open until the shell ended.
+fn shell_reading_to_the_end(words: &[&str], input: &[u8]) -> Result<Ran, &'static str> {
+    let (mine, theirs) = pair()?;
+    let (into, from) = pair()?;
+    let mut given = output(start::Sink::Channel(theirs));
+    given.input = Some(from);
+    let (child, back) =
+        spawn_handing("shell.mexec", words, given).map_err(|_| "the shell should start")?;
+    for piece in start::pieces(input).chain([&[][..]]) {
+        let _ = crate::send_waiting(into, piece);
+    }
+    let ended = wait(child);
+    let said = drained(mine);
+    expect(
+        close(child) == Ok(())
+            && close(back) == Ok(())
+            && close(mine) == Ok(())
+            && close(into) == Ok(()),
+        "the shell's handles should close",
+    )?;
+    Ok((ended, said))
+}
+
 /// The shell run on the script `text`.
 fn shell_on(text: &str) -> Result<Ran, &'static str> {
     shell_with(&["-c", text])
@@ -1790,6 +1816,18 @@ fn shell_pipes() -> Outcome {
                 alloc::format!("2 {HELP_WORDS} {HELP_BYTES}\n").as_bytes(),
             ),
         "a builtin writing more than a message holds should go whole through the pipe",
+    )
+}
+
+/// Once the shell's input ended with an empty message, reading it again
+/// finds the end at once, though nothing closed the end that wrote it.
+fn input_that_ended_stays_ended() -> Outcome {
+    expect(
+        same(
+            &shell_reading_to_the_end(&["-c", "cat; cat; echo done"], b"x\n")?,
+            &ran(0, b"x\ndone\n"),
+        ),
+        "a second read after the end should find the end, and not wait for more",
     )
 }
 

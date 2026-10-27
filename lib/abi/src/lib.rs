@@ -168,9 +168,11 @@ pub enum Error {
     Unwritable,
     /// The file is open, so it stays.
     InUse,
+    /// A directory would move into itself, or into a directory inside it.
+    Inside,
 }
 
-const ERRORS: [Error; 24] = [
+const ERRORS: [Error; 25] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -195,6 +197,7 @@ const ERRORS: [Error; 24] = [
     Error::NotEmpty,
     Error::Unwritable,
     Error::InUse,
+    Error::Inside,
 ];
 
 impl Error {
@@ -241,6 +244,7 @@ pub const DISK_FULL: u64 = Error::DiskFull.code();
 pub const NOT_EMPTY: u64 = Error::NotEmpty.code();
 pub const UNWRITABLE: u64 = Error::Unwritable.code();
 pub const IN_USE: u64 = Error::InUse.code();
+pub const INSIDE: u64 = Error::Inside.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -783,7 +787,8 @@ mod tests {
         assert_eq!(EXISTS, u64::MAX - 18);
         assert_eq!(UNWRITABLE, u64::MAX - 22);
         assert_eq!(IN_USE, u64::MAX - 23);
-        assert_eq!(ERRORS.last(), Some(&Error::InUse));
+        assert_eq!(INSIDE, u64::MAX - 24);
+        assert_eq!(ERRORS.last(), Some(&Error::Inside));
     }
 
     #[test]
@@ -831,6 +836,7 @@ mod tests {
             NOT_EMPTY,
             UNWRITABLE,
             IN_USE,
+            INSIDE,
         ];
         assert_eq!(errors.len(), ERRORS.len());
         for (i, &e) in errors.iter().enumerate() {
@@ -1084,7 +1090,8 @@ mod tests {
         assert_eq!(answer(NOT_A_DIRECTORY), Err(Error::NotADirectory));
         assert_eq!(answer(UNWRITABLE), Err(Error::Unwritable));
         assert_eq!(answer(IN_USE), Err(Error::InUse));
-        assert_eq!(answer(IN_USE - 1), Ok(IN_USE - 1), "just below them");
+        assert_eq!(answer(INSIDE), Err(Error::Inside));
+        assert_eq!(answer(INSIDE - 1), Ok(INSIDE - 1), "just below them");
         assert_eq!(answer(0), Ok(0));
         assert_eq!(answer(0x4_0003), Ok(0x4_0003), "a handle");
         assert_eq!(answer(USER_END), Ok(USER_END));
@@ -1127,6 +1134,7 @@ mod tests {
             (Error::NotEmpty, NOT_EMPTY),
             (Error::Unwritable, UNWRITABLE),
             (Error::InUse, IN_USE),
+            (Error::Inside, INSIDE),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

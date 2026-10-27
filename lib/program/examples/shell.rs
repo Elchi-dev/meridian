@@ -156,6 +156,7 @@ fn trouble(path: &str, e: Error) -> String {
         Error::Exists => "there already",
         Error::NotEmpty => "a directory that holds something",
         Error::InUse => "open, so it stays",
+        Error::Inside => "a directory, which cannot go inside itself",
         Error::DiskFull => "no room left on its disk",
         Error::Unwritable => "could not be written",
         _ => "could not be read",
@@ -1640,6 +1641,10 @@ mod tests {
             (Error::Exists, "/a: there already\n"),
             (Error::NotEmpty, "/a: a directory that holds something\n"),
             (Error::InUse, "/a: open, so it stays\n"),
+            (
+                Error::Inside,
+                "/a: a directory, which cannot go inside itself\n",
+            ),
             (Error::DiskFull, "/a: no room left on its disk\n"),
             (Error::Unwritable, "/a: could not be written\n"),
         ];

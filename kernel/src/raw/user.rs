@@ -865,6 +865,7 @@ fn file_answer(e: super::vfs::Error) -> u64 {
         Error::NotEmpty => syscall::NOT_EMPTY,
         Error::InUse => syscall::IN_USE,
         Error::Unwritable => syscall::UNWRITABLE,
+        Error::Inside => syscall::INSIDE,
     }
 }
 

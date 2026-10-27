@@ -40,6 +40,8 @@ pub enum Error {
     InUse,
     /// Its volume could not be written.
     Unwritable,
+    /// A directory would move into itself, or into a directory inside it.
+    Inside,
 }
 
 impl From<fat::Error> for Error {
@@ -51,6 +53,7 @@ impl From<fat::Error> for Error {
             fat::Error::Exists => Error::Exists,
             fat::Error::NotEmpty => Error::NotEmpty,
             fat::Error::BadName => Error::BadPath,
+            fat::Error::Inside => Error::Inside,
             fat::Error::NotFat | fat::Error::NotFat32 | fat::Error::Read | fat::Error::BadChain => {
                 Error::Read
             }
@@ -727,6 +730,7 @@ mod tests {
             (fat::Error::Exists, Error::Exists),
             (fat::Error::NotEmpty, Error::NotEmpty),
             (fat::Error::BadName, Error::BadPath),
+            (fat::Error::Inside, Error::Inside),
         ];
         for (from, to) in pairs {
             assert_eq!(Error::from(from), to, "{from:?}");

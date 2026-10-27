@@ -280,6 +280,32 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             Err(Error::NotFound) => {}
             Err(e) => return Err(e),
         }
+        let first = if directory_too {
+            self.take_zeroed()?
+        } else {
+            0
+        };
+        let entry = Entry {
+            first,
+            size: 0,
+            directory: directory_too,
+        };
+        let place = self.make(directory, name, &entry)?;
+        if directory_too {
+            let sector = self.fat.volume.first_sector(first).ok_or(Error::BadChain)?;
+            self.put_entry(
+                Place { sector, index: 0 },
+                &short_entry(b".          ", 0x10, first),
+            )?;
+            self.point_up(&entry, directory)?;
+        }
+        Ok((entry, place))
+    }
+
+    /// Writes the entries that call `entry` `name` in the directory whose
+    /// first cluster is `directory`, its long ones before its short one,
+    /// and answers where that lies.
+    fn make(&mut self, directory: u32, name: &str, entry: &Entry) -> Result<Place, Error> {
         let (short, needs_long) =
             name::short_for(name, |candidate| self.taken(directory, candidate))?
                 .ok_or(Error::Exists)?;
@@ -291,43 +317,110 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             0
         };
         entries[..count].copy_from_slice(&longs[..count]);
-        let first = if directory_too {
-            self.take_zeroed()?
-        } else {
-            0
-        };
-        let attributes = if directory_too { 0x10 } else { 0x20 };
-        entries[count] = short_entry(&short, attributes, first);
+        let attributes = if entry.directory { 0x10 } else { 0x20 };
+        entries[count] = short_entry(&short, attributes, entry.first);
+        entries[count][28..32].copy_from_slice(&entry.size.to_le_bytes());
         let mut places = [Place {
             sector: 0,
             index: 0,
         }; MOST];
         self.free_run(directory, count + 1, &mut places)?;
-        for (place, entry) in places.iter().zip(&entries[..=count]) {
-            self.put_entry(*place, entry)?;
+        for (place, bytes) in places.iter().zip(&entries[..=count]) {
+            self.put_entry(*place, bytes)?;
         }
-        if directory_too {
-            let parent = if directory == self.fat.volume.root {
-                0
-            } else {
-                directory
-            };
-            let sector = self.fat.volume.first_sector(first).ok_or(Error::BadChain)?;
-            self.put_entry(
-                Place { sector, index: 0 },
-                &short_entry(b".          ", 0x10, first),
-            )?;
-            self.put_entry(
-                Place { sector, index: 1 },
-                &short_entry(b"..         ", 0x10, parent),
-            )?;
+        Ok(places[count])
+    }
+
+    /// Whether the directory whose first cluster is `directory` is the one
+    /// whose first cluster is `outer`, or lies inside it, going up by each
+    /// directory's `..` to the root.
+    fn within(&mut self, mut directory: u32, outer: u32) -> Result<bool, Error> {
+        let top = self.fat.volume.root;
+        // A walk up longer than there are clusters loops.
+        for _ in 0..self.fat.volume.clusters {
+            if directory == outer {
+                return Ok(true);
+            }
+            if directory == top {
+                return Ok(false);
+            }
+            let sector = self
+                .fat
+                .volume
+                .first_sector(directory)
+                .ok_or(Error::BadChain)?;
+            let size = self.fat.volume.sector_size as usize;
+            let mut room = [0u8; 4096];
+            self.fat.sector(sector, &mut room[..size])?;
+            let up = &room[32..64];
+            if up[..11] != *b"..         " {
+                return Err(Error::BadChain);
+            }
+            directory = u32::from(u16::from_le_bytes([up[20], up[21]])) << 16
+                | u32::from(u16::from_le_bytes([up[26], up[27]]));
+            if directory == 0 {
+                directory = top;
+            }
         }
-        let entry = Entry {
-            first,
-            size: 0,
-            directory: directory_too,
+        Err(Error::BadChain)
+    }
+
+    /// Has the `..` of the directory `entry` lead to the directory whose
+    /// first cluster is `parent`, which FAT32 writes as 0 for the root.
+    fn point_up(&mut self, entry: &Entry, parent: u32) -> Result<(), Error> {
+        let parent = if parent == self.fat.volume.root {
+            0
+        } else {
+            parent
         };
-        Ok((entry, places[count]))
+        let sector = self
+            .fat
+            .volume
+            .first_sector(entry.first)
+            .ok_or(Error::BadChain)?;
+        self.put_entry(
+            Place { sector, index: 1 },
+            &short_entry(b"..         ", 0x10, parent),
+        )
+    }
+
+    /// Moves the entry called `name` in the directory whose first cluster
+    /// is `from` to the directory whose first cluster is `to`, called `new`
+    /// there, which may be the same name in other capitals. It keeps its
+    /// clusters, and a directory its `..` leading to where it now is.
+    /// Answers the entry and where its short entry now lies.
+    ///
+    /// # Errors
+    ///
+    /// When no entry has the name, another has the new name already, the
+    /// new name is not one [`name::valid`] allows, a directory would go
+    /// inside itself, the directory grows and no cluster is left, or the
+    /// volume cannot be read or written.
+    pub fn rename(
+        &mut self,
+        from: u32,
+        name: &str,
+        to: u32,
+        new: &str,
+    ) -> Result<(Entry, Place), Error> {
+        if !name::valid(new) {
+            return Err(Error::BadName);
+        }
+        let (entry, place) = self.fat.lookup_at(from, name)?;
+        if entry.directory && self.within(to, entry.first)? {
+            return Err(Error::Inside);
+        }
+        match self.fat.lookup_at(to, new) {
+            Ok((_, there)) if there != place => return Err(Error::Exists),
+            Ok(_) | Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        let moved = self.make(to, new, &entry)?;
+        self.clear(from, place)?;
+        if entry.directory && from != to {
+            self.point_up(&entry, to)?;
+        }
+        Ok((entry, moved))
     }
 
     /// Whether a short entry of the directory at `directory` has the name
@@ -413,6 +506,17 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
                 return Err(Error::NotEmpty);
             }
         }
+        self.clear(directory, place)?;
+        if entry.first != 0 {
+            self.give_back(entry.first)?;
+        }
+        Ok(())
+    }
+
+    /// Marks the short entry at `place` in the directory whose first
+    /// cluster is `directory` deleted, and the long entries of its name
+    /// before it, leaving its clusters as they are.
+    fn clear(&mut self, directory: u32, place: Place) -> Result<(), Error> {
         let mut longs = [Place {
             sector: 0,
             index: 0,
@@ -444,9 +548,6 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             self.fat.sector(at.sector, &mut room[..size])?;
             room[at.index * 32] = 0xe5;
             self.put(at.sector, &room[..size])?;
-        }
-        if entry.first != 0 {
-            self.give_back(entry.first)?;
         }
         Ok(())
     }
@@ -1158,6 +1259,168 @@ mod tests {
         assert_eq!(listed(&now, "rmdir", "/"), Vec::<String>::new());
         assert_eq!(fsinfo(&now).0, 80_627, "every cluster back");
         assert!(sound(&now, "rmdir"));
+    }
+
+    #[test]
+    fn a_renamed_file_keeps_its_bytes_under_its_new_name() {
+        let Some(image) = formatted("rename") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (mut file, place) = w.create(root, "notes.txt", false).unwrap();
+        w.write_at(&mut file, 0, &pattern(3000, 4)).unwrap();
+        w.save(place, &file).unwrap();
+        let free = fsinfo(&image.borrow()).0;
+        let (moved, at) = w
+            .rename(root, "NOTES.TXT", root, "A much longer name.text")
+            .unwrap();
+        assert_eq!((moved.first, moved.size), (file.first, 3000));
+        assert_ne!(at, place, "a long name needs entries of its own");
+        let now = image.borrow().clone();
+        assert_eq!(
+            typed(&now, "rename", "A much longer name.text"),
+            pattern(3000, 4)
+        );
+        assert_eq!(listed(&now, "rename", "/"), ["A much longer name.text"]);
+        assert_eq!(fsinfo(&now).0, free, "no cluster taken or given back");
+        assert!(sound(&now, "rename"));
+        let (_, short) = w
+            .rename(root, "a much longer NAME.text", root, "B.TXT")
+            .unwrap();
+        assert_eq!(w.fat.lookup_at(root, "b.txt"), Ok((moved, short)));
+        assert_eq!(
+            w.fat.lookup(root, "A much longer name.text"),
+            Err(Error::NotFound)
+        );
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "rename", "/"), ["B.TXT"]);
+        assert!(
+            sound(&now, "rename"),
+            "the long entries went with the old name"
+        );
+    }
+
+    #[test]
+    fn a_name_can_change_its_capitals_only() {
+        let Some(image) = formatted("capitals") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        w.create(root, "readme.md", false).unwrap();
+        assert!(w.rename(root, "readme.md", root, "README.md").is_ok());
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "capitals", "/"), ["README.md"]);
+        assert!(sound(&now, "capitals"));
+    }
+
+    #[test]
+    fn a_file_moves_into_another_directory() {
+        let Some(image) = formatted("move") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (folder, _) = w.create(root, "folder", true).unwrap();
+        let (mut file, place) = w.create(root, "f.bin", false).unwrap();
+        w.write_at(&mut file, 0, &pattern(700, 9)).unwrap();
+        w.save(place, &file).unwrap();
+        w.rename(root, "f.bin", folder.first, "g.bin").unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "move", "/"), ["folder"]);
+        assert_eq!(listed(&now, "move", "/folder"), ["g.bin"]);
+        assert_eq!(typed(&now, "move", "folder/g.bin"), pattern(700, 9));
+        assert!(sound(&now, "move"));
+        w.rename(folder.first, "g.bin", root, "back.bin").unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(typed(&now, "move", "back.bin"), pattern(700, 9));
+        assert_eq!(listed(&now, "move", "/folder"), Vec::<String>::new());
+        assert!(sound(&now, "move"));
+    }
+
+    #[test]
+    fn a_moved_directory_takes_what_it_holds_and_knows_its_new_parent() {
+        let Some(image) = formatted("movedir") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (a, _) = w.create(root, "a", true).unwrap();
+        let (b, _) = w.create(root, "b", true).unwrap();
+        let (inner, _) = w.create(a.first, "inner", true).unwrap();
+        let (mut file, place) = w.create(inner.first, "deep.txt", false).unwrap();
+        w.write_at(&mut file, 0, b"deep").unwrap();
+        w.save(place, &file).unwrap();
+        w.rename(a.first, "inner", b.first, "moved").unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(typed(&now, "movedir", "b/moved/deep.txt"), b"deep");
+        assert_eq!(listed(&now, "movedir", "/a"), Vec::<String>::new());
+        assert!(sound(&now, "movedir"), "its .. leads to b now");
+        w.rename(b.first, "moved", root, "top").unwrap();
+        let now = image.borrow().clone();
+        assert_eq!(typed(&now, "movedir", "top/deep.txt"), b"deep");
+        assert!(sound(&now, "movedir"), "and to the root, as 0");
+        assert_eq!(
+            w.fat.find("top/deep.txt").map(|e| e.size),
+            Ok(4),
+            "found from the root again"
+        );
+    }
+
+    #[test]
+    fn a_directory_goes_nowhere_inside_itself() {
+        let Some(image) = formatted("within") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        let (a, _) = w.create(root, "a", true).unwrap();
+        let (inner, _) = w.create(a.first, "inner", true).unwrap();
+        let (deeper, _) = w.create(inner.first, "deeper", true).unwrap();
+        assert_eq!(w.rename(root, "a", a.first, "a2"), Err(Error::Inside));
+        assert_eq!(w.rename(root, "a", deeper.first, "a2"), Err(Error::Inside));
+        assert_eq!(
+            w.rename(a.first, "inner", inner.first, "x"),
+            Err(Error::Inside)
+        );
+        assert!(
+            w.rename(inner.first, "deeper", a.first, "up").is_ok(),
+            "upwards is fine"
+        );
+        assert!(w.rename(root, "a", root, "renamed").is_ok(), "and in place");
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "within", "/renamed"), ["inner", "up"]);
+        assert!(sound(&now, "within"));
+    }
+
+    #[test]
+    fn a_rename_refuses_what_it_cannot_do() {
+        let Some(image) = formatted("unmoved") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        w.create(root, "one", false).unwrap();
+        w.create(root, "two", false).unwrap();
+        assert_eq!(w.rename(root, "one", root, "TWO"), Err(Error::Exists));
+        assert_eq!(w.rename(root, "three", root, "four"), Err(Error::NotFound));
+        assert_eq!(w.rename(root, "one", root, "..."), Err(Error::BadName));
+        let (file, _) = w.create(root, "file", false).unwrap();
+        assert_eq!(
+            w.rename(root, "one", file.first, "x"),
+            Err(Error::BadChain),
+            "an empty file has no cluster to be a directory in"
+        );
+        let now = image.borrow().clone();
+        assert_eq!(listed(&now, "unmoved", "/"), ["one", "two", "file"]);
+        assert!(sound(&now, "unmoved"));
     }
 
     #[test]

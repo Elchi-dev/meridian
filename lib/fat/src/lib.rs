@@ -39,6 +39,8 @@ pub enum Error {
     NotEmpty,
     /// A name with no letter in it, or longer than 255 UTF-16 units.
     BadName,
+    /// A directory would move into itself, or into a directory inside it.
+    Inside,
 }
 
 /// The geometry of a FAT32 volume, from its boot sector.

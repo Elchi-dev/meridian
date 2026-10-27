@@ -94,6 +94,7 @@ at 0.x until the native API is stable.
 
 - sextant cleans absolute folders from its settings, so a folder written with forward slashes on Windows, or with `..` in it, matches the same folder found another way.
 - The kernel no longer reads the task state through an empty task register, which Ubuntu's OVMF leaves behind.
+- The shell says that a directory given with `<` is one, where it ended the command with 1 without a word, and `cp` names both files when the copy goes wrong once both are open.
 
 ### Verified
 

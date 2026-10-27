@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 77] = [
+const CHECKS: [(&str, Check); 81] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -97,6 +97,13 @@ const CHECKS: [(&str, Check); 77] = [
     ("shell.pipes.own", the_shells_own_commands_in_pipes),
     ("shell.carry.itself", no_copy_onto_itself),
     ("shell.carry.capitals", a_move_to_other_capitals),
+    ("shell.trouble", the_shells_own_commands_say_what_went_wrong),
+    (
+        "shell.output.gone",
+        the_shell_ends_with_1_when_its_output_is_gone,
+    ),
+    ("shell.partial", a_character_cut_short_shows),
+    ("shell.closes", files_close_when_a_command_cannot_start),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -2547,6 +2554,126 @@ fn no_copy_onto_itself() -> Outcome {
 }
 
 /// mv to the same name in other capitals renames the file, and grep counts
+/// What the shell's own commands say when a path is missing, a directory
+/// where a file has to be, or no directory where one has to be, and how
+/// they end: each with 1, a file listed alone with 0. A pattern whose last
+/// part is a name finds the paths where it is.
+fn the_shells_own_commands_say_what_went_wrong() -> Outcome {
+    let said = |script: &str, want: &[u8]| -> Result<bool, &'static str> {
+        Ok(same(&shell_on(script)?, &ran(0, want)))
+    };
+    let checked = said(
+        "cat /nope; echo $?; cat /System; echo $?; cat < /System; echo $?",
+        b"/nope: no such file\n1\n/System: a directory, not a file\n1\n\
+          /System: a directory, not a file\n1\n",
+    )? && said(
+        "ls /nope; echo $?; ls /System/Boot/meridian/programs/wc.mexec; echo $?",
+        b"/nope: no such file\n1\n/System/Boot/meridian/programs/wc.mexec\n0\n",
+    )? && said(
+        "cp /System /nope/x; echo $?; cp /System/Boot/meridian/boot.meri /nope/x; echo $?",
+        b"/System: a directory, not a file\n1\n/nope/x: no such file\n1\n",
+    )? && said(
+        "cp a b /System/Boot/meridian/boot.meri; echo $?",
+        b"/System/Boot/meridian/boot.meri: not a directory, so one path alone goes there\n1\n",
+    )? && said(
+        "echo /System/Boot/m*/programs",
+        b"/System/Boot/meridian/programs\n",
+    )?;
+    expect(
+        checked,
+        "cat, ls and cp should say what is wrong with a path and end with 1",
+    )
+}
+
+/// Starts the shell with `-c text` and an output whose other end is gone
+/// before it starts, so that nothing it writes there arrives; what it says
+/// went wrong comes on a channel of its own.
+fn shell_into_nothing(text: &str) -> Result<Ran, &'static str> {
+    let (gone, theirs) = pair()?;
+    expect(close(gone) == Ok(()), "the output's other end should close")?;
+    let (mine, errors) = pair()?;
+    let mut given = output(start::Sink::Channel(theirs));
+    given.error = Some(start::Sink::Channel(errors));
+    let (child, back) =
+        spawn_handing("shell.mexec", &["-c", text], given).map_err(|_| "the shell should start")?;
+    let ended = wait(child);
+    let said = drained(mine);
+    expect(
+        close(child) == Ok(()) && close(back) == Ok(()) && close(mine) == Ok(()),
+        "the shell's handles should close",
+    )?;
+    Ok((ended, said))
+}
+
+/// cat, cat with `<` and ls end with 1 when what they write goes nowhere,
+/// and say nothing, as there is nowhere to say it.
+fn the_shell_ends_with_1_when_its_output_is_gone() -> Outcome {
+    let mut all = true;
+    for script in [
+        "cat /System/Boot/meridian/boot.meri",
+        "cat < /System/Boot/meridian/boot.meri",
+        "ls /System/Boot/meridian",
+    ] {
+        all &= same(&shell_into_nothing(script)?, &ran(1, b""));
+    }
+    expect(
+        all,
+        "cat and ls should end with 1 when their output is gone",
+    )
+}
+
+/// A file that ends in the middle of a character shows the rest of it as
+/// a character that is not there, read by cat from the file or through
+/// `<`.
+fn a_character_cut_short_shows() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, WRITE};
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/cut.txt";
+    let file = match open_with(path, WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "a file should be made on /System")?,
+    };
+    let written = write_file(file, 0, b"a\xc3") == Ok(()) && close(file) == Ok(());
+    let shown = same(
+        &shell_on("cat /System/cut.txt; cat < /System/cut.txt")?,
+        &ran(0, b"a\xef\xbf\xbda\xef\xbf\xbd"),
+    );
+    expect(
+        written && shown && remove(path) == Ok(()),
+        "a character a file cuts short should show as one that is not there",
+    )
+}
+
+/// The files a command opened for its redirections close when a later one
+/// cannot open, alone and in a pipeline, so the file can go right after.
+fn files_close_when_a_command_cannot_start() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on("echo f > /System/f")?;
+    if said.starts_with(b"/System/f: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should be made",
+        );
+    }
+    let alone = same(
+        &shell_on("cat < /System/f > /nope/x; rm /System/f; echo $?")?,
+        &ran(0, b"/nope/x: no such file\n0\n"),
+    );
+    let made = same(&shell_on("echo f > /System/f")?, &ran(0, b""));
+    let piped = same(
+        &shell_on("cat < /System/f | wc > /nope/x; rm /System/f; echo $?")?,
+        &ran(0, b"/nope/x: no such file\n0\n"),
+    );
+    expect(
+        same(&(ended, said), &ran(0, b"")) && alone && made && piped,
+        "a file a command opened should close when the command cannot start",
+    )
+}
+
 /// in each of several files by its name.
 fn a_move_to_other_capitals() -> Outcome {
     if !booted_from_disk() {

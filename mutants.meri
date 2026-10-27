@@ -275,3 +275,17 @@ allow {
     mutation = "false to true"
     reason = "hold is only asked about the slot of a file a handle stands for, and an open file stays in its slot while any handle stands for it, so the slot is never empty there"
 }
+
+allow {
+    file = "lib/program/examples/shell.rs"
+    line = "Command::Empty => true,"
+    mutation = "true to false"
+    reason = "the shell's language makes no command without words, so nothing reaches this arm until the sh dialect, where a redirection alone is a command, runs"
+}
+
+allow {
+    file = "lib/program/examples/shell.rs"
+    line = "let mut listed_last = true;"
+    mutation = "true to false"
+    reason = "every pattern holds a * or a ?, so some part of it is listed, which sets this before the paths are filtered by it"
+}

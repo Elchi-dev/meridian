@@ -1674,8 +1674,8 @@ fn keep_screen<W: Write>(report: &mut Report<'_, W>, name: &str) -> bool {
     Com1::already_open().receive(1 << 24) == Some(b'\r')
 }
 
-/// The shell, on the console, typed at with keys sextant presses: echo
-/// shows its words, ls lists a directory with its subdirectories marked,
+/// The shell, on the console, typed at with keys sextant presses: it
+/// starts in /System, echo shows its words, ls lists a directory with its subdirectories marked,
 /// or booted from a CD says there is none, cat shows a file longer than
 /// one read to its end, a command it does not know is named as one, a
 /// program's name runs it from its file, and exit ends it.
@@ -1722,6 +1722,9 @@ fn shell_checks<W: Write>(
         false
     };
     let greeted = waited_for("Meridian shell. Type help to see what it knows.");
+    // A shell started at the root goes to its home, /System.
+    typed(&["p", "w", "d", "ret"]);
+    let home = waited_for("/System");
     typed(&["e", "c", "h", "o", "spc", "h", "i", "ret"]);
     let echoed = waited_for("> echo hi") && waited_for("hi");
     typed(&[
@@ -1766,6 +1769,7 @@ fn shell_checks<W: Write>(
     report.check(
         "kernel.shell",
         greeted
+            && home
             && echoed
             && listed
             && shown
@@ -1777,7 +1781,7 @@ fn shell_checks<W: Write>(
             && recalled
             && completed
             && ended,
-        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, finish a path with tab, and end at exit with its status",
+        "the shell should greet, start in /System, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, finish a path with tab, and end at exit with its status",
     );
 }
 

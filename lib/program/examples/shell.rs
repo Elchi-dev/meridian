@@ -660,12 +660,14 @@ impl In {
             In::File { .. } => {
                 let (into, from) = program::channel().ok()?;
                 let mut file = self;
+                // What the thread ends with goes nowhere: the command reading
+                // the pipe sees its end either way.
                 let fed = program::thread(move || {
                     let mut pipe = Out::Pipe(into);
-                    let copied = copy(&mut file, &mut pipe);
+                    let _ = copy(&mut file, &mut pipe);
                     file.close();
                     pipe.close();
-                    u64::from(!copied)
+                    0
                 });
                 if fed.is_err() {
                     let _ = (program::close(into), program::close(from));
@@ -759,22 +761,27 @@ impl Out {
 }
 
 /// Copies what `input` holds to `out` up to its end, byte for byte but on
-/// the shell's own output, and says whether all of it went.
+/// the shell's own output.
 #[cfg_attr(test, allow(dead_code))]
-fn copy(input: &mut In, out: &mut Out) -> bool {
+fn copy(input: &mut In, out: &mut Out) -> Result<(), Error> {
     let mut room = [0u8; MESSAGE_BYTES];
     let mut held = Vec::new();
     loop {
-        match input.take(&mut room) {
-            Ok(0) => return held.is_empty() || out.say(&String::from_utf8_lossy(&held)).is_ok(),
-            Ok(len) => {
-                if out.put(&room[..len], &mut held).is_err() {
-                    return false;
-                }
-            }
-            Err(_) => return false,
+        let len = input.take(&mut room)?;
+        if len == 0 {
+            return said_last(&held, out);
         }
+        out.put(&room[..len], &mut held)?;
     }
+}
+
+/// Says what is `held` back at the end of a text, a character the end cut
+/// short, which shows as one that is not there.
+fn said_last(held: &[u8], out: &mut Out) -> Result<(), Error> {
+    if held.is_empty() {
+        return Ok(());
+    }
+    out.say(&String::from_utf8_lossy(held))
 }
 
 /// How much of `bytes` can be shown now: all of it, but for a character
@@ -820,11 +827,9 @@ impl Streams {
 fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
     let mut stages: Vec<(&[String], Streams)> = Vec::new();
     let mut next = In::Mine;
-    let mut failed = false;
     for (i, ready) in pipeline.iter().enumerate() {
         let Some(mut files) = redirected(&ready.redirections) else {
-            failed = true;
-            break;
+            return abandoned(next, stages);
         };
         let input = match files.from.take() {
             Some(file) => {
@@ -844,8 +849,7 @@ fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
             let _ = program::write_error("|: no channel is left for the pipe\n");
             input.close();
             files.close();
-            failed = true;
-            break;
+            return abandoned(next, stages);
         };
         let errors = match files.errors.take() {
             None => Out::MyErrors,
@@ -861,14 +865,18 @@ fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
         };
         stages.push((&ready.words, Streams { input, out, errors }));
     }
-    if failed {
-        next.close();
-        for (_, streams) in stages {
-            streams.close();
-        }
-        return None;
-    }
     Some(stages)
+}
+
+/// Closes what a pipeline that cannot start opened: the pipe to the stage
+/// that was not reached, and the stages before it, and answers none.
+#[cfg_attr(test, allow(dead_code))]
+fn abandoned(next: In, stages: Vec<(&[String], Streams)>) -> Option<Vec<(&[String], Streams)>> {
+    next.close();
+    for (_, streams) in stages {
+        streams.close();
+    }
+    None
 }
 
 /// Where a command's redirections send what goes wrong: into a file, or
@@ -943,6 +951,12 @@ fn redirected(redirections: &[(Redirect, Option<String>)]) -> Option<Files> {
             }
         };
         match how {
+            Redirect::In if program::info(handle).is_ok_and(|info| info.directory) => {
+                let _ = program::write_error(&trouble(path, Error::NotAFile));
+                let _ = program::close(handle);
+                files.close();
+                return None;
+            }
             Redirect::In => {
                 if let Some(file) = files.from.replace(In::File { handle, at: 0 }) {
                     file.close();
@@ -1063,7 +1077,7 @@ fn run(command: Command<'_>, streams: &mut Streams) -> u8 {
             false
         }
         Command::List(paths) => every(paths, |path| list(path, out, errors)),
-        Command::Show([]) => copy(input, out),
+        Command::Show([]) => copy(input, out).is_ok(),
         Command::Show(paths) => every(paths, |path| show(path, out, errors)),
         Command::MakeDirectory(paths) => {
             every(paths, |path| done(path, program::make_directory, errors))
@@ -1141,37 +1155,36 @@ fn copy_file(from: &str, to: &str) -> Result<(), String> {
         return Err(format!("{from}: copied onto itself\n"));
     }
     let source = program::open(from, file::READ).map_err(|e| trouble(from, e))?;
-    let copied =
-        copy_from(source, to).map_err(|(reading, e)| trouble(if reading { from } else { to }, e));
+    let copied = copy_from(source, from, to);
     let _ = program::close(source);
     copied
 }
 
-/// Copies the open file `source` to `to`, and says, with what went wrong,
-/// whether it was reading.
+/// Copies the open file `source`, which is at `from`, to `to`, and says
+/// what went wrong as the shell says it.
 #[cfg_attr(test, allow(dead_code))]
-fn copy_from(source: Handle, to: &str) -> Result<(), (bool, Error)> {
-    if program::info(source).map_err(|e| (true, e))?.directory {
-        return Err((true, Error::NotAFile));
+fn copy_from(source: Handle, from: &str, to: &str) -> Result<(), String> {
+    if program::info(source).is_ok_and(|info| info.directory) {
+        return Err(trouble(from, Error::NotAFile));
     }
     let target =
-        program::open_with(to, file::WRITE, file::CREATE_ALWAYS).map_err(|e| (false, e))?;
+        program::open_with(to, file::WRITE, file::CREATE_ALWAYS).map_err(|e| trouble(to, e))?;
     let mut room = [0u8; 4096];
     let mut at = 0;
     let copied = loop {
-        match program::read(source, at, &mut room) {
+        let len = match program::read(source, at, &mut room) {
             Ok(0) => break Ok(()),
-            Ok(len) => {
-                if let Err(e) = program::write_file(target, at, &room[..len]) {
-                    break Err((false, e));
-                }
-                at += len as u64;
-            }
-            Err(e) => break Err((true, e)),
+            Ok(len) => len,
+            Err(e) => break Err(e),
+        };
+        if let Err(e) = program::write_file(target, at, &room[..len]) {
+            break Err(e);
         }
+        at += len as u64;
     };
     let _ = program::close(target);
-    copied
+    // Once both are open, what goes wrong is the copy's, so it names both.
+    copied.map_err(|e| trouble(&format!("{from} to {to}"), e))
 }
 
 /// Moves the file or directory at `from` to `to`, and a file across
@@ -1300,77 +1313,82 @@ fn inherited(sink: Option<Sink>) -> Option<Sink> {
     })
 }
 
+/// Says on `errors` what went wrong with `path` when a call about it
+/// failed, and answers whether `done` went well; nothing is said when it
+/// was the output that failed, as there is nowhere to say it.
+#[cfg_attr(test, allow(dead_code))]
+fn reported(done: Result<(), Option<Error>>, path: &str, errors: &mut Out) -> bool {
+    if let Err(Some(e)) = done {
+        let _ = errors.say(&trouble(path, e));
+    }
+    done.is_ok()
+}
+
 /// Shows the names in the directory at `path`, or the path of a file, and
 /// says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
 fn list(path: &str, out: &mut Out, errors: &mut Out) -> bool {
-    let directory = match program::open(path, file::READ) {
-        Ok(d) => d,
-        Err(e) => {
-            let _ = errors.say(&trouble(path, e));
-            return false;
-        }
-    };
+    let listed = program::open(path, file::READ)
+        .map_err(Some)
+        .and_then(|directory| {
+            let listed = put_names(directory, path, out);
+            let _ = program::close(directory);
+            listed
+        });
+    reported(listed, path, errors)
+}
+
+/// Puts on `out` each name in the open `directory` at `path`, a
+/// directory's with a `/` after it, or `path` when it is a file; the error
+/// of a call about it, or none when `out` failed.
+#[cfg_attr(test, allow(dead_code))]
+fn put_names(directory: Handle, path: &str, out: &mut Out) -> Result<(), Option<Error>> {
     let mut room = [0u8; 1024];
-    let mut done = true;
-    for index in 0.. {
-        let said = match program::list(directory, index, &mut room) {
+    let mut index = 0;
+    loop {
+        let line = match program::list(directory, index, &mut room) {
             Ok((len, is_directory)) => {
-                let name = String::from_utf8_lossy(&room[..len]);
                 let slash = if is_directory { "/" } else { "" };
-                out.say(&format!("{name}{slash}\n"))
+                format!("{}{slash}\n", String::from_utf8_lossy(&room[..len]))
             }
-            Err(Error::NotFound) => break,
-            Err(Error::NotADirectory) => {
-                done = out.say(&format!("{path}\n")).is_ok();
-                break;
-            }
-            Err(e) => {
-                let _ = errors.say(&trouble(path, e));
-                done = false;
-                break;
-            }
+            Err(Error::NotFound) => return Ok(()),
+            Err(Error::NotADirectory) => return out.say(&format!("{path}\n")).map_err(|_| None),
+            Err(e) => return Err(Some(e)),
         };
-        if said.is_err() {
-            done = false;
-            break;
-        }
+        out.say(&line).map_err(|_| None)?;
+        index += 1;
     }
-    let _ = program::close(directory);
-    done
 }
 
 /// Shows what the file at `path` holds, byte for byte but on the shell's
 /// own output, and says whether that went well.
 #[cfg_attr(test, allow(dead_code))]
 fn show(path: &str, out: &mut Out, errors: &mut Out) -> bool {
-    let file = match program::open(path, file::READ) {
-        Ok(f) => f,
-        Err(e) => {
-            let _ = errors.say(&trouble(path, e));
-            return false;
-        }
-    };
+    let shown = program::open(path, file::READ)
+        .map_err(Some)
+        .and_then(|file| {
+            let shown = put_file(file, out);
+            let _ = program::close(file);
+            shown
+        });
+    reported(shown, path, errors)
+}
+
+/// Puts on `out` what the open `file` holds; the error of a call about it,
+/// or none when `out` failed.
+#[cfg_attr(test, allow(dead_code))]
+fn put_file(file: Handle, out: &mut Out) -> Result<(), Option<Error>> {
     let mut room = [0u8; 4096];
-    let mut offset = 0;
+    let mut at = 0;
     let mut held = Vec::new();
-    let done = loop {
-        match program::read(file, offset, &mut room) {
-            Ok(0) => break held.is_empty() || out.say(&String::from_utf8_lossy(&held)).is_ok(),
-            Ok(len) => {
-                if out.put(&room[..len], &mut held).is_err() {
-                    break false;
-                }
-                offset += len as u64;
-            }
-            Err(e) => {
-                let _ = errors.say(&trouble(path, e));
-                break false;
-            }
+    loop {
+        let len = program::read(file, at, &mut room).map_err(Some)?;
+        if len == 0 {
+            return said_last(&held, out).map_err(|_| None);
         }
-    };
-    let _ = program::close(file);
-    done
+        out.put(&room[..len], &mut held).map_err(|_| None)?;
+        at += len as u64;
+    }
 }
 
 #[cfg(test)]

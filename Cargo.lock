@@ -130,6 +130,7 @@ dependencies = [
  "abi",
  "heap",
  "meri",
+ "regex",
  "security",
  "services",
  "shell",

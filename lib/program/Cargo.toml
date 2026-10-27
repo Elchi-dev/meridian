@@ -12,6 +12,7 @@ publish.workspace = true
 abi = { path = "../abi" }
 heap = { path = "../heap" }
 meri = { path = "../meri" }
+regex = { path = "../regex" }
 security = { path = "../security" }
 services = { path = "../services" }
 shell = { path = "../shell" }

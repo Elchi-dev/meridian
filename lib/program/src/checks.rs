@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 119] = [
+const CHECKS: [(&str, Check); 120] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -136,6 +136,7 @@ const CHECKS: [(&str, Check); 119] = [
     ("shell.sh.exec.files", sh_exec_files),
     ("shell.sh.read.files", sh_read_files),
     ("tools.refused", tools_refuse_what_is_no_text),
+    ("tools.grep", grep_expressions),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2307,7 +2308,7 @@ fn head_grep_and_sort() -> Outcome {
             == ran(
                 2,
                 b"head: x is no count of lines\nhead ended with 2\n\
-                  grep: needs the text to look for\ngrep ended with 2\n\
+                  grep: needs a pattern to look for\ngrep ended with 2\n\
                   sort: -x is no option\nsort ended with 2\n\
                   grep: /nope: no such file\ngrep ended with 2\n",
             ),
@@ -3570,6 +3571,62 @@ fn tools_refuse_what_is_no_text() -> Outcome {
                     ],
                 ),
         "grep, sort and head should pass on lines that are no text as they are",
+    )
+}
+
+/// grep takes basic expressions, extended ones with -E and texts as they
+/// are with -F, and whole lines with -x; -q says nothing and ends with 0
+/// once it took a line, -l names the files that hold one, -s keeps quiet
+/// about a file it cannot read, and a pattern that is no expression ends
+/// it with 2.
+fn grep_expressions() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'a.c\\nabc\\naac\\n' | grep -c a.c\n\
+             printf 'a.c\\nabc\\n' | grep -F a.c\n\
+             printf 'aa\\nab\\n' | grep -E '^a+$'\n\
+             printf 'ab\\nabab\\nabx\\n' | grep -xc 'ab*'\n\
+             printf 'ab\\nabab\\n' | grep -x '\\(ab\\)*'",
+        )?,
+        &ran(0, b"3\na.c\naa\n1\nab\nabab\n"),
+    );
+    expect(
+        checked,
+        "grep should match basic and extended expressions, texts as they are and whole lines",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf 'x\\n' | grep -q x; echo $?; printf 'x\\n' | grep -l x; grep 'a\\{2'; echo $?",
+        )?,
+        &ran(
+            0,
+            b"0\n(standard input)\n\
+              grep: a\\{2: an interval that is no count from 0 to 255\ngrep ended with 2\n2\n",
+        ),
+    );
+    expect(
+        checked,
+        "grep -q and -l should say only what they are for, and grep refuse what is no expression",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "grep -l = {boot} /nope; grep -ls = /nope {boot}; echo $?"
+        ))?,
+        &ran(
+            0,
+            alloc::format!(
+                "{boot}\ngrep: /nope: no such file\ngrep ended with 2\n{boot}\ngrep ended with 2\n2\n"
+            )
+            .as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "grep -l should name the files that hold a line, and -s keep quiet about one it cannot read",
     )
 }
 

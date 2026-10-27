@@ -279,7 +279,7 @@ func TestQEMUTestsOnTheRealRepository(t *testing.T) {
 	if r.code != ExitOK {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
 	}
-	for _, want := range []string{"== QEMU test image\n", "ok      uefi.keyboard.enter\n", "ok      boot.uefi_version\n", "ok      boot.kernel.file\n", "checks passed in QEMU\n"} {
+	for _, want := range []string{"== QEMU test image, writing copies\n", "ok      uefi.keyboard.enter\n", "ok      boot.uefi_version\n", "ok      boot.kernel.file\n", "checks passed in QEMU\n"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("missing %q in:\n%s", want, r.stdout)
 		}

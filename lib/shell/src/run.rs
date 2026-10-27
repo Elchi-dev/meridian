@@ -103,9 +103,14 @@ pub trait Machine: Tree {
     /// The working directory, from the root.
     fn directory(&mut self) -> String;
 
-    /// Makes `path` the working directory again, as a subshell's end does
-    /// for one its `cd` left.
-    fn set_directory(&mut self, path: &str);
+    /// Makes `path`, from the working directory when it does not start at
+    /// the root, the working directory, as sh's `cd` does and a subshell's
+    /// end does for one its `cd` left.
+    ///
+    /// # Errors
+    ///
+    /// What to say, a line, when it cannot.
+    fn set_directory(&mut self, path: &str) -> Result<(), String>;
 
     /// Reads a line from the stream 0 in force, with its line end when it
     /// has one, and moves that stream past it, so what reads it after
@@ -533,7 +538,9 @@ mod tests {
             String::from("/")
         }
 
-        fn set_directory(&mut self, _: &str) {}
+        fn set_directory(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
 
         fn line(&mut self) -> Option<Vec<u8>> {
             None
@@ -626,7 +633,9 @@ mod tests {
             self.bare.directory()
         }
 
-        fn set_directory(&mut self, _: &str) {}
+        fn set_directory(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
 
         fn line(&mut self) -> Option<Vec<u8>> {
             None

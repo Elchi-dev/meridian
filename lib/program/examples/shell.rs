@@ -448,6 +448,8 @@ fn sh_script(text: &str, zero: &str) -> u8 {
         }
     };
     let mut session = sh::run::Session::new(zero.into(), 0, Vec::new());
+    session.set_variable("HOME", HOME.into());
+    session.set_variable("PWD", program::directory());
     let mut system = System::default();
     let ran = session.run(&items, &mut system);
     match session.finish(ran, &mut system) {
@@ -803,8 +805,8 @@ impl Machine for System {
         program::directory()
     }
 
-    fn set_directory(&mut self, path: &str) {
-        let _ = program::change_directory(path);
+    fn set_directory(&mut self, path: &str) -> Result<(), String> {
+        program::change_directory(path).map_err(|e| trouble(path, e))
     }
 
     fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {

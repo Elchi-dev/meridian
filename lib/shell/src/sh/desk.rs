@@ -1,6 +1,5 @@
 //! A machine for the sh dialect's tests to run scripts on: it has no
-//! programs, only lib/shell's shared commands and a `cd` and `pwd` of its
-//! own, and no files but those of a host tree it may be given for patterns
+//! programs, only lib/shell's shared commands and a `pwd` of its own, and no files but those of a host tree it may be given for patterns
 //! to match, and it keeps what is written, the texts commands were given to
 //! read, and the commands it ran.
 
@@ -151,14 +150,6 @@ impl Desk {
             streams,
         };
         match words {
-            [cd, path] if cd == "cd" => {
-                on.desk.directory = if path.starts_with('/') {
-                    path.clone()
-                } else {
-                    format!("{}/{path}", on.desk.directory.trim_end_matches('/'))
-                };
-                0
-            }
             [pwd] if pwd == "pwd" => {
                 let said = format!("{}\n", on.desk.directory);
                 u8::from(!on.out(said.as_bytes()))
@@ -279,8 +270,34 @@ impl Machine for Desk {
         self.directory.clone()
     }
 
-    fn set_directory(&mut self, path: &str) {
-        self.directory = path.into();
+    /// Goes to `path`, `.` staying and `..` going up; with files, only to
+    /// a path where something is.
+    fn set_directory(&mut self, path: &str) -> Result<(), String> {
+        let whole = if path.starts_with('/') {
+            String::from(path)
+        } else {
+            format!("{}/{path}", self.directory)
+        };
+        let mut names: Vec<&str> = Vec::new();
+        for name in whole.split('/') {
+            match name {
+                "" | "." => {}
+                ".." => {
+                    names.pop();
+                }
+                name => names.push(name),
+            }
+        }
+        let directory = format!("/{}", names.join("/"));
+        if self
+            .files
+            .as_mut()
+            .is_some_and(|files| !files.has(&directory))
+        {
+            return Err(format!("{path}: no such file\n"));
+        }
+        self.directory = directory;
+        Ok(())
     }
 
     fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 102] = [
+const CHECKS: [(&str, Check); 103] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -125,6 +125,7 @@ const CHECKS: [(&str, Check); 102] = [
     ("shell.sh.read", sh_read),
     ("shell.sh.trap", sh_trap),
     ("shell.sh.dot", sh_dot),
+    ("shell.sh.cd", sh_cd),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3263,6 +3264,29 @@ fn sh_dot() -> Outcome {
     expect(
         ended == Ok(Ended::Exited(0)) && said == b"in sourced\nsourced\n",
         ". should run a file's commands in the session itself",
+    )
+}
+
+/// In sh, `cd` goes to `$HOME`, which the shell sets to /System, without a
+/// word, and back with `-`, keeping `PWD` and `OLDPWD`.
+fn sh_cd() -> Outcome {
+    let want: &[u8] = if booted_from_disk() {
+        b"/System\n/\n/ /System\ncd: /nope: no such file\n1\n"
+    } else {
+        b"cd: /System: no such file\n/\n/\n/ /\ncd: /nope: no such file\n1\n"
+    };
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             cd /; cd; pwd\n\
+             cd -; echo \"$PWD $OLDPWD\"\n\
+             cd /nope; echo $?",
+        )?,
+        &ran(0, want),
+    );
+    expect(
+        checked,
+        "cd should go home, back, and say where it cannot go",
     )
 }
 

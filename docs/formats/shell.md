@@ -281,6 +281,10 @@ in the 64, a `return` ending them; it takes the file's path, from the
 working directory when it does not start at the root, as Meridian has no
 `PATH` to look in yet. A file it cannot read ends the script, with 1.
 
+`cd` is the session's own in sh: without a word it goes to `$HOME`,
+which the shell sets to `/System`, with `-` back to `$OLDPWD`, and it
+keeps `PWD`, which the shell sets as a script starts, and `OLDPWD`.
+
 `getopts` takes options as POSIX's does, saying `getopts: -x: no such
 option` or `getopts: -x: needs an argument` unless its list starts with
 `:`.

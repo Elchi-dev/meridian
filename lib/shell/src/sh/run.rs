@@ -70,7 +70,7 @@ const SPECIAL: [&str; 13] = [
 
 /// The builtins POSIX calls no special ones that the session runs itself,
 /// as they read or set its variables.
-const REGULAR: [&str; 2] = ["getopts", "read"];
+const REGULAR: [&str; 3] = ["cd", "getopts", "read"];
 
 /// A sh session: its variables, functions and parameters, its options,
 /// and the status of its last command.
@@ -176,6 +176,12 @@ impl Session {
 
     pub(super) fn flag(&self, letter: char) -> bool {
         self.options.contains(&letter)
+    }
+
+    /// Gives the variable `name` the value `value`, as the shell starting
+    /// a script does for `HOME` and `PWD`; a read-only one keeps its value.
+    pub fn set_variable(&mut self, name: &str, value: String) {
+        let _ = self.assign(name, value);
     }
 
     /// Sets the variable `name` to `value`; an error when it is read only.
@@ -537,10 +543,10 @@ impl Session {
             }
             let flow = self.around(&ready.redirections, machine, |session, machine| {
                 let words = &ready.words[1..];
-                Ok(if name == "read" {
-                    session.read(words, machine)
-                } else {
-                    session.getopts(words, machine)
+                Ok(match name.as_str() {
+                    "read" => session.read(words, machine),
+                    "cd" => session.cd(words, machine),
+                    _ => session.getopts(words, machine),
                 })
             });
             self.restore(kept);
@@ -658,7 +664,7 @@ impl Session {
         });
         let ran = copy.finish(ran, machine);
         let status = copy.ended(ran, machine);
-        machine.set_directory(&directory);
+        let _ = machine.set_directory(&directory);
         status
     }
 
@@ -892,6 +898,43 @@ impl Session {
             }
         }
         self.status = u8::from(!ended);
+        Flow::Next
+    }
+
+    /// `cd`: makes the directory its word names the working directory,
+    /// `$HOME` without one, and `$OLDPWD`, which it says, for `-`; `PWD`
+    /// and `OLDPWD` hold where it went and where it was. `-L` and `-P`
+    /// before the word change nothing, as Meridian has no links.
+    fn cd(&mut self, words: &[String], machine: &mut impl Machine) -> Flow {
+        let words: Vec<&String> = words
+            .iter()
+            .skip_while(|w| *w == "-L" || *w == "-P")
+            .collect();
+        let (path, say) = match words[..] {
+            [] => match self.variable("HOME") {
+                Some(home) => (home, false),
+                None => return self.complained("cd", "HOME is not set", machine),
+            },
+            [dash] if dash == "-" => match self.variable("OLDPWD") {
+                Some(old) => (old, true),
+                None => return self.complained("cd", "OLDPWD is not set", machine),
+            },
+            [path] => (path.clone(), false),
+            _ => return self.complained("cd", "takes one directory", machine),
+        };
+        let before = machine.directory();
+        if let Err(said) = machine.set_directory(&path) {
+            let _ = machine.err(format!("cd: {said}").as_bytes());
+            self.status = 1;
+            return Flow::Next;
+        }
+        let now = machine.directory();
+        let _ = self.assign("OLDPWD", before);
+        let _ = self.assign("PWD", now.clone());
+        self.status = 0;
+        if say && !machine.out(format!("{now}\n").as_bytes()) {
+            self.status = 1;
+        }
         Flow::Next
     }
 
@@ -3012,5 +3055,58 @@ mod tests {
                 "{script}"
             );
         }
+    }
+
+    #[test]
+    fn cd_goes_home_back_and_keeps_pwd() {
+        assert_eq!(out("HOME=/h; cd; pwd; echo $PWD $OLDPWD"), "/h\n/h /\n");
+        assert_eq!(out("cd /a; cd /b; cd -; pwd; echo $OLDPWD"), "/a\n/a\n/b\n");
+        assert_eq!(out("cd /d; cd ..; pwd; cd d/./e; pwd"), "/\n/d/e\n");
+        assert_eq!(out("cd -P /p; cd -L q; pwd"), "/p/q\n");
+        assert_eq!(out("HOME=/t cd; pwd; echo \"[$HOME]\""), "/t\n[]\n");
+        assert_eq!(
+            out("(cd /d; echo $PWD); echo \"[$PWD]\"; pwd"),
+            "/d\n[]\n/\n"
+        );
+    }
+
+    #[test]
+    fn cd_says_what_is_wrong() {
+        for (script, said_) in [
+            ("cd -; echo $?", "cd: OLDPWD is not set\n"),
+            ("cd; echo $?", "cd: HOME is not set\n"),
+            ("cd a b; echo $?", "cd: takes one directory\n"),
+        ] {
+            assert_eq!(
+                said(script, &[]),
+                (String::from("2\n"), String::from(said_)),
+                "{script}"
+            );
+        }
+        let mut desk = Desk::with_files("cd", &["d/"]);
+        let mut session = Session::new(String::from("s"), 1, Vec::new());
+        let _ = session.run(
+            &parse::script("cd /d; cd /nope; echo $? $PWD; pwd").unwrap(),
+            &mut desk,
+        );
+        assert_eq!(desk.out, b"1 /d\n/d\n");
+        assert_eq!(desk.err, b"cd: /nope: no such file\n");
+    }
+
+    #[test]
+    fn a_session_is_given_its_variables() {
+        let mut session = Session::new(String::from("s"), 1, Vec::new());
+        session.set_variable("HOME", String::from("/h"));
+        assert_eq!(session.variable("HOME").as_deref(), Some("/h"));
+        let _ = session.run(
+            &parse::script("readonly HOME").unwrap(),
+            &mut Desk::default(),
+        );
+        session.set_variable("HOME", String::from("/other"));
+        assert_eq!(
+            session.variable("HOME").as_deref(),
+            Some("/h"),
+            "read only, it stays"
+        );
     }
 }

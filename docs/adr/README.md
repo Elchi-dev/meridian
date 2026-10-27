@@ -22,3 +22,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0014](0014-give-every-process-a-security-token-in-the-shape-of-windows-own.md) | Give every process a security token in the shape of Windows' own | accepted |
 | [0015](0015-write-only-to-partitions-meridian-made-and-to-others-once-unlocked.md) | Write only to partitions Meridian made, and to others once unlocked | accepted |
 | [0016](0016-give-the-shell-a-language-of-its-own-and-a-posix-sh-mode.md) | Give the shell a language of its own and a POSIX sh mode | accepted |
+| [0017](0017-give-programs-standard-input-and-output-over-the-channel-they-start-with.md) | Give programs standard input and output over the channel they start with | accepted |

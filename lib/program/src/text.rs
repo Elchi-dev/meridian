@@ -60,6 +60,46 @@ impl Lines {
     }
 }
 
+/// What a tool makes of one text it reads in pieces.
+pub trait Reader {
+    /// Takes in `piece`, and says whether more are wanted.
+    fn feed(&mut self, piece: &[u8]) -> bool;
+
+    /// What the tool writes for the text.
+    fn finish(self) -> Vec<u8>;
+}
+
+/// Reads each of `files`, or the standard input without one, with a
+/// reader from `fresh`, and writes what each made, after the line [`named`]
+/// writes for it when there are more than one. Says, as `tool`, what went
+/// wrong with any, and answers whether all went well.
+pub fn each_file<R: Reader>(tool: &str, files: &[String], mut fresh: impl FnMut() -> R) -> bool {
+    let sources = sources(files);
+    let several = sources.len() > 1;
+    let mut failed = false;
+    for (i, path) in sources.into_iter().enumerate() {
+        let mut reader = fresh();
+        if let Err(e) = pieces(path, |piece| reader.feed(piece)) {
+            failed = true;
+            let _ = crate::write_error(&trouble(tool, path.unwrap_or("-"), e));
+            continue;
+        }
+        let mut said = if several { named(i, path) } else { Vec::new() };
+        said.extend(reader.finish());
+        failed |= crate::write_bytes(&said).is_err();
+    }
+    !failed
+}
+
+/// The line that names the file at `path`, the `i`th of several, with an
+/// empty line before it after the first, as POSIX's head and tail write
+/// it; `-` for the standard input.
+#[must_use]
+pub fn named(i: usize, path: Option<&str>) -> Vec<u8> {
+    let gap = if i > 0 { "\n" } else { "" };
+    format!("{gap}==> {} <==\n", path.unwrap_or("-")).into_bytes()
+}
+
 /// What a tool reads: each of `files`, or its standard input, as none,
 /// when it was given no file.
 #[must_use]
@@ -166,6 +206,13 @@ mod tests {
             trouble("wc", "/x", Error::Unreadable),
             "wc: /x: could not be read\n"
         );
+    }
+
+    #[test]
+    fn each_of_several_files_comes_after_a_line_that_names_it() {
+        assert_eq!(named(0, Some("/a")), b"==> /a <==\n");
+        assert_eq!(named(1, Some("/b")), b"\n==> /b <==\n");
+        assert_eq!(named(2, None), b"\n==> - <==\n", "the input as -");
     }
 
     #[test]

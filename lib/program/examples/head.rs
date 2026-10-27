@@ -45,8 +45,9 @@ impl First {
             lines: Lines::default(),
         }
     }
+}
 
-    /// Takes in `piece`, and says whether more are wanted.
+impl text::Reader for First {
     fn feed(&mut self, piece: &[u8]) -> bool {
         if self.left == 0 {
             return false;
@@ -75,42 +76,21 @@ impl First {
     }
 }
 
-/// The line that names the file at `path`, the `i`th of several, with an
-/// empty line before it after the first, as POSIX's head writes it.
-fn header(i: usize, path: Option<&str>) -> Vec<u8> {
-    let gap = if i > 0 { "\n" } else { "" };
-    format!("{gap}==> {} <==\n", path.unwrap_or("-")).into_bytes()
-}
-
 #[cfg_attr(test, allow(dead_code))]
 fn head(_: Handle) -> u64 {
-    let (count, files) = match asked(program::arguments()) {
-        Ok(asked) => asked,
+    match asked(program::arguments()) {
+        Ok((count, files)) => u64::from(!text::each_file("head", files, || First::new(count))),
         Err(why) => {
             let _ = program::write_error(&why);
-            return 2;
+            2
         }
-    };
-    let sources = text::sources(files);
-    let named = sources.len() > 1;
-    let mut failed = false;
-    for (i, path) in sources.into_iter().enumerate() {
-        let mut first = First::new(count);
-        if let Err(e) = text::pieces(path, |piece| first.feed(piece)) {
-            failed = true;
-            let _ = program::write_error(&text::trouble("head", path.unwrap_or("-"), e));
-            continue;
-        }
-        let mut said = if named { header(i, path) } else { Vec::new() };
-        said.extend(first.finish());
-        failed |= program::write_bytes(&said).is_err();
     }
-    u64::from(failed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use program::text::Reader;
 
     fn words(text: &str) -> Vec<String> {
         text.split_whitespace().map(String::from).collect()
@@ -151,13 +131,6 @@ mod tests {
             asked(&words("-n -1")),
             Err("head: -1 is no count of lines\n".into())
         );
-    }
-
-    #[test]
-    fn each_of_several_files_comes_after_a_line_that_names_it() {
-        assert_eq!(header(0, Some("/a")), b"==> /a <==\n");
-        assert_eq!(header(1, Some("/b")), b"\n==> /b <==\n");
-        assert_eq!(header(2, None), b"\n==> - <==\n", "the input as -");
     }
 
     #[test]

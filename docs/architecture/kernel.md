@@ -499,8 +499,8 @@ the shell's own commands in a pipeline running in a thread of its own,
 and `<` hands a command a file to read, which a thread of the shell
 feeds to a program. Started
 with `-c` and a script, or a script's path, the shell runs that and ends
-with its status. Every image carries the tools `wc`, `head`, `grep`,
-which looks for a text as it is, and `sort`, which read the files they
+with its status. Every image carries the tools `wc`, `head`, `tail`,
+`grep`, which looks for a text as it is, `sort` and `uniq`, which read the files they
 are given or else their standard input, the runtime's `program::text`
 cutting it into lines, and write bytes on as they are. The test image checks the console's
 text, cursor, cells, scrolling and clearing on the screen, that a

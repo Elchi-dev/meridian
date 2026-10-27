@@ -1445,15 +1445,19 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
                 "shell_again.mexec",
                 "sort.mexec",
                 "sort_again.mexec",
+                "tail.mexec",
+                "tail_again.mexec",
                 "threads.mexec",
                 "threads_again.mexec",
+                "uniq.mexec",
+                "uniq_again.mexec",
                 "wc.mexec",
                 "wc_again.mexec",
                 "whoami.mexec",
                 "whoami_again.mexec",
             ]
             && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the eleven programs test images carry, each twice",
+        "the programs' directory should list the thirteen programs test images carry, each twice",
     );
 }
 

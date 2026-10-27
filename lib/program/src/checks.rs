@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 70] = [
+const CHECKS: [(&str, Check); 75] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -87,6 +87,11 @@ const CHECKS: [(&str, Check); 70] = [
     ("tools.input", tools_read_the_shells_input),
     ("tools.long", long_lines_and_many),
     ("tools.empty", tools_given_nothing),
+    ("tools.tail", tail_and_uniq),
+    ("tools.tail.files", tail_and_uniq_on_files),
+    ("tools.chain", the_tools_one_after_another),
+    ("tools.input.more", tail_and_uniq_read_the_shells_input),
+    ("tools.named", files_named_past_one_not_there),
     ("shell.pipes.own", the_shells_own_commands_in_pipes),
     ("shell.carry.itself", no_copy_onto_itself),
     ("shell.carry.capitals", a_move_to_other_capitals),
@@ -2266,6 +2271,128 @@ fn long_lines_and_many() -> Outcome {
     expect(
         shell_on(&script)? == ran(0, want.as_bytes()),
         "a hundred lines out of order should come out of sort in order",
+    )
+}
+
+/// tail takes the last lines and uniq each run of a line once, in a
+/// pipeline after sort as they are used, and they say what they cannot
+/// take.
+fn tail_and_uniq() -> Outcome {
+    expect(
+        shell_on(
+            "arguments b a b c a b | sort | uniq; arguments b a b | sort | uniq -c\n\
+                  arguments 1 2 3 4 5 | tail -n 2; arguments x y | tail",
+        )? == ran(0, b"a\nb\nc\n1 a\n2 b\n4\n5\nx\ny\n"),
+        "uniq should take each run once or count it, and tail the last lines",
+    )?;
+    expect(
+        shell_on("tail -n x; uniq /a /b; uniq /nope")?
+            == ran(
+                2,
+                b"tail: x is no count of lines\ntail ended with 2\n\
+                  uniq: reads one file at most\nuniq ended with 2\n\
+                  uniq: /nope: no such file\nuniq ended with 2\n",
+            ),
+        "tail and uniq should say what they cannot take",
+    )
+}
+
+/// tail and uniq on files: several at once for tail, named, one given
+/// with `<`, and none taken.
+fn tail_and_uniq_on_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo a > /System/u1; echo a >> /System/u1; echo b >> /System/u1; echo c > /System/u2",
+    )?;
+    if said.starts_with(b"/System/u1: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should be made",
+        );
+    }
+    let checked = same(
+        &shell_on("tail -n 1 /System/u1 /System/u2; tail -n 0 /System/u1")?,
+        &ran(0, b"==> /System/u1 <==\nb\n\n==> /System/u2 <==\nc\n"),
+    ) && same(
+        &shell_on("uniq -c /System/u1; uniq < /System/u1; tail -n 2 < /System/u1")?,
+        &ran(0, b"2 a\n1 b\na\nb\na\nb\n"),
+    ) && same(
+        &shell_on("tail /System/u1 /nope")?,
+        &ran(
+            1,
+            b"==> /System/u1 <==\na\na\nb\ntail: /nope: no such file\ntail ended with 1\n",
+        ),
+    );
+    let removed = shell_on("rm /System/u1 /System/u2")? == ran(0, b"");
+    expect(
+        checked && removed,
+        "tail and uniq should read files as head and sort do, and say which is not there",
+    )
+}
+
+/// tail and uniq alone at the shell read what the shell reads.
+fn tail_and_uniq_read_the_shells_input() -> Outcome {
+    let input = b"a\na\nb\nc\nc\nc\n";
+    expect(
+        same(
+            &shell_reading(&["-c", "uniq -c"], Some(input))?,
+            &ran(0, b"2 a\n1 b\n3 c\n"),
+        ) && same(
+            &shell_reading(&["-c", "tail -n 2"], Some(input))?,
+            &ran(0, b"c\nc\n"),
+        ),
+        "uniq and tail should read the shell's input",
+    )
+}
+
+/// head and tail go on naming the files after one that is not there,
+/// which they say on their standard error.
+fn files_named_past_one_not_there() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "cd /System/Boot/meridian; head -n 0 boot.meri /nope boot.meri; tail -n 0 /nope boot.meri",
+    )?;
+    expect(
+        same(
+            &(ended, said),
+            &ran(
+                1,
+                b"==> boot.meri <==\nhead: /nope: no such file\n\n==> boot.meri <==\n\
+                  head ended with 1\ntail: /nope: no such file\n\n==> boot.meri <==\n\
+                  tail ended with 1\n",
+            ),
+        ),
+        "the files after one that is not there should keep their names and the gaps before them",
+    )
+}
+
+/// The tools one after another as they are used: the most common word of
+/// a text, and the last of two hundred lines through a pipe.
+fn the_tools_one_after_another() -> Outcome {
+    expect(
+        same(
+            &shell_on(
+                "arguments b c a b c b | sort | uniq -c | sort -r | head -n 1\n\
+                 arguments a b a | sort | uniq | wc",
+            )?,
+            &ran(0, b"3 b\n2 2 4\n"),
+        ),
+        "sort, uniq -c, sort -r and head should find the most common word",
+    )?;
+    let numbers: Vec<String> = (1..=200u32).map(|n| alloc::format!("{n}")).collect();
+    expect(
+        same(
+            &shell_on(&alloc::format!(
+                "arguments {} | tail -n 3",
+                numbers.join(" ")
+            ))?,
+            &ran(0, b"198\n199\n200\n"),
+        ),
+        "tail should keep the last lines of two hundred that came through a pipe",
     )
 }
 

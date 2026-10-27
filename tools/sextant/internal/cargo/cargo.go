@@ -39,6 +39,10 @@ var (
 	Grep = Part{Package: "program", Target: "x86_64-unknown-none", File: "grep", Example: "grep"}
 	// Sort puts the lines of files or its standard input in order.
 	Sort = Part{Package: "program", Target: "x86_64-unknown-none", File: "sort", Example: "sort"}
+	// Tail shows the last lines of files or its standard input.
+	Tail = Part{Package: "program", Target: "x86_64-unknown-none", File: "tail", Example: "tail"}
+	// Uniq shows each run of the same line once.
+	Uniq = Part{Package: "program", Target: "x86_64-unknown-none", File: "uniq", Example: "uniq"}
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
@@ -52,7 +56,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

@@ -25,3 +25,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0017](0017-give-programs-standard-input-and-output-over-the-channel-they-start-with.md) | Give programs standard input and output over the channel they start with | accepted |
 | [0018](0018-hand-a-program-its-arguments-as-start-messages.md) | Hand a program its arguments as start messages | accepted |
 | [0019](0019-let-a-handle-be-duplicated-and-close-an-object-with-its-last-handle.md) | Let a handle be duplicated, and close an object with its last handle | accepted |
+| [0020](0020-keep-a-program-s-working-directory-in-its-runtime-handed-over-at-its-start.md) | Keep a program's working directory in its runtime, handed over at its start | accepted |

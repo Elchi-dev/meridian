@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 
 use crate::{Error, abi};
 
-/// What the tool `tool` says when the file at `path` could not be read.
+/// What the tool `tool` says when the file at `path` could not be read,
+/// or written by one that writes files.
 #[must_use]
 pub fn trouble(tool: &str, path: &str, e: Error) -> String {
     let why = match e {
@@ -17,6 +18,9 @@ pub fn trouble(tool: &str, path: &str, e: Error) -> String {
         Error::BadArgument => "not a path",
         Error::Denied => "not allowed",
         Error::TooLong => "too long a path",
+        Error::ReadOnly => "on a volume that is only read",
+        Error::DiskFull => "no room left on its disk",
+        Error::Unwritable => "could not be written",
         _ => "could not be read",
     };
     format!("{tool}: {path}: {why}\n")
@@ -205,6 +209,18 @@ mod tests {
         assert_eq!(
             trouble("wc", "/x", Error::Unreadable),
             "wc: /x: could not be read\n"
+        );
+        assert_eq!(
+            trouble("tee", "/System/x", Error::ReadOnly),
+            "tee: /System/x: on a volume that is only read\n"
+        );
+        assert_eq!(
+            trouble("tee", "/x", Error::DiskFull),
+            "tee: /x: no room left on its disk\n"
+        );
+        assert_eq!(
+            trouble("tee", "/x", Error::Unwritable),
+            "tee: /x: could not be written\n"
         );
     }
 

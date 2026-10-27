@@ -1,7 +1,7 @@
 # 0015. Write only to partitions Meridian made, and to others once unlocked
 
-- Status: proposed
-- Date: 2026-10-26
+- Status: accepted
+- Date: 2026-10-27
 
 ## Context
 
@@ -28,19 +28,28 @@ and the rule needs a mechanism before they land:
 ## Decision
 
 A partition counts as Meridian's when its unique GUID is listed in
-`made.meri` on Meridian's system partition. Meridian adds a partition
-there when it creates one, the installer and sextant included, and never
-for one it finds. An unlock lists the partition's unique GUID in
+`made.meri` on the Meridian system partition of the running install: the
+one on the disk the loader started from. A list on any other disk does
+not count. Meridian adds a partition there when it creates one, the
+installer and sextant included (the system partition itself and the EFI
+system partition it made come first), and never for one it finds. An unlock lists the partition's unique GUID in
 `unlocked.meri` next to it, which Settings writes, with the partition's
 name and size as the person saw them when they agreed.
 
 Every write goes through the kernel's disk layer, which knows each
 partition's sectors and whether it may be written: one of Meridian's, or
-an unlocked one, and while Strata is not stable only on a virtio disk.
-The drivers' write functions are no longer reachable from anywhere else,
-and a write that reaches past the end of its partition is refused like
-one to a partition that may not be written. The GPT itself is written
-only on a disk whose every partition is Meridian's.
+an unlocked one. The drivers' write functions are no longer reachable
+from anywhere else, and a write that reaches past the end of its
+partition is refused like one to a partition that may not be written.
+The GPT itself is written only on a disk whose every partition is
+Meridian's. A disk without a GPT has no unique GUIDs, so nothing on it
+is Meridian's.
+
+Above the disk layer, the tree of files mounts every volume on an AHCI
+or NVMe disk read only until Strata is stable, so until then files are
+written only on virtio disks. The disk layer itself still lets the
+kernel's own checks write to Meridian's partitions behind all three
+drivers.
 
 ## Alternatives considered
 
@@ -57,7 +66,9 @@ only on a disk whose every partition is Meridian's.
 
 ## Consequences
 
-The unlock is visible and can be undone by removing a line. Wiping or
+The unlock is visible and can be undone by removing a line. A Meridian
+started from a USB stick reads the stick's lists, so it cannot vouch for
+a partition on the PC's disks that it did not make itself. Wiping or
 recreating a partition gives it a new unique GUID, so an unlock does not
 carry over to whatever takes its place. A Meridian system partition is
 needed before anything else can be written, which the installer creates

@@ -1934,10 +1934,25 @@ fn init_services_checks<W: Write>(
 }
 
 /// Files and directories made, written, shown and removed by what is typed
-/// at the shell, `shown` waiting for each line it should show.
+/// at the shell, `shown` waiting for each line it should show. On a machine
+/// whose virtio disk only reads, /System hangs read only, and the shell
+/// says so instead.
 fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -> bool) {
-    // The machine that types has a virtio disk that writes to a copy, so
-    // /System takes files there.
+    let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
+    if virtio::read_only(offered) {
+        type_line(report, "md /System/New");
+        let md = shown("/System/New: on a volume that is only read");
+        type_line(report, "echo hi > /System/a");
+        let echo = shown("/System/a: on a volume that is only read");
+        type_line(report, "rm /System/made.meri");
+        let rm = shown("/System/made.meri: on a volume that is only read");
+        report.check(
+            "kernel.shell.files",
+            md && echo && rm,
+            "typed at the shell, md, echo into a file and rm should say that /System is only read where its disk only reads",
+        );
+        return;
+    }
     type_line(report, "md /System/New");
     type_line(report, "ls /System");
     let made = shown("New/");

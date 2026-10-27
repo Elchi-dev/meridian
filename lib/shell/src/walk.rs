@@ -117,6 +117,17 @@ pub(crate) mod tests {
             }
         }
 
+        /// Makes the file `name`, right under the tree's root, hold `bytes`.
+        pub(crate) fn put(&self, name: &str, bytes: &[u8]) {
+            std::fs::write(self.root.join(name), bytes).unwrap();
+        }
+
+        /// What the file at `path` holds, none when nothing readable is
+        /// there.
+        pub(crate) fn read(&self, path: &str) -> Option<Vec<u8>> {
+            std::fs::read(self.find(path)?).ok()
+        }
+
         /// Where `path` is on the host, each name found in capitals, `.`
         /// staying and `..` going up as Meridian's paths do; none when
         /// nothing is there or the path does not start at the root.

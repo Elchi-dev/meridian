@@ -63,8 +63,8 @@ const DEEPEST_RUNNING: usize = 64;
 
 /// The builtins POSIX calls special: their errors end a script, and the
 /// variables assigned before them stay.
-const SPECIAL: [&str; 12] = [
-    "break", "continue", "return", "exit", ":", "eval", "export", "readonly", "set", "shift",
+const SPECIAL: [&str; 13] = [
+    "break", "continue", "return", "exit", ":", ".", "eval", "export", "readonly", "set", "shift",
     "trap", "unset",
 ];
 
@@ -940,6 +940,7 @@ impl Session {
             }
             "export" | "readonly" => self.mark(name, rest, machine),
             "trap" => self.trap(rest, at, machine),
+            "." => self.dot(rest, at, machine),
             "unset" => self.unset(rest, machine),
             "set" => self.set(rest, machine),
             _ => {
@@ -958,6 +959,31 @@ impl Session {
                 Ok(Flow::Next)
             }
         }
+    }
+
+    /// `.`: runs the commands of the file `rest` names in the session
+    /// itself, a `return` ending them, their errors said at `at`. A file
+    /// that cannot be read ends the script, as POSIX has it.
+    fn dot(&mut self, rest: &[String], at: Pos, machine: &mut impl Machine) -> Result<Flow, Stop> {
+        let [path] = rest else {
+            return Self::refused(".", "takes the path of one file", machine);
+        };
+        let text = match machine.text(path) {
+            Ok(text) => text,
+            Err(said) => {
+                let _ = machine.err(format!(".: {said}").as_bytes());
+                return Err(Stop::Said(1));
+            }
+        };
+        let items =
+            parse::script(&String::from_utf8_lossy(&text)).map_err(|e| failed(at, e.code))?;
+        let flow = self
+            .deeper(at, machine, |session, machine| session.run(&items, machine))
+            .map_err(|stop| placed(stop, at))?;
+        Ok(match flow {
+            Flow::Return => Flow::Next,
+            flow => flow,
+        })
     }
 
     /// `trap`: what the shell runs as it ends, set for `EXIT` or `0` with
@@ -2687,6 +2713,86 @@ mod tests {
         assert_eq!(
             out_to_the_end("(trap 'exit 5' EXIT; exit 2); echo $?"),
             "5\n"
+        );
+    }
+
+    /// How `script` ended, what it wrote and what it said went wrong, run
+    /// on a desk holding `/lib.sh` with `text` in it, in a tree `name`.
+    fn dotted(name: &str, text: &str, script: &str) -> (Result<Flow, Stop>, String, String) {
+        let mut desk = Desk::with_files(name, &["d/"]);
+        desk.files.as_ref().unwrap().put("lib.sh", text.as_bytes());
+        let mut session = Session::new(String::from("script"), 42, Vec::new());
+        let ended = session.run(&parse::script(script).unwrap(), &mut desk);
+        (
+            ended,
+            String::from_utf8(desk.out).unwrap(),
+            String::from_utf8(desk.err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn dot_runs_a_file_in_the_session_itself() {
+        let (ended, out, _) = dotted("dot", "a=1\nf() { echo f$a; }\n", ". /lib.sh; f; echo $a");
+        assert_eq!((ended, out.as_str()), (Ok(Flow::Next), "f1\n1\n"));
+        assert_eq!(
+            dotted("dot2", "echo in", "cd /d; . ../lib.sh").1,
+            "in\n",
+            "from the working directory"
+        );
+        assert_eq!(dotted("dot3", "false", ". /lib.sh; echo $?").1, "1\n");
+        assert_eq!(dotted("dot4", "", "false; . /lib.sh; echo $?").1, "0\n");
+    }
+
+    #[test]
+    fn return_ends_the_file_dot_runs() {
+        assert_eq!(
+            dotted("ret", "echo a; return 3; echo b", ". /lib.sh; echo $?").1,
+            "a\n3\n"
+        );
+        assert_eq!(
+            dotted(
+                "ret2",
+                "break",
+                "for i in 1 2; do . /lib.sh; echo no; done; echo $i"
+            )
+            .1,
+            "1\n",
+            "a break leaves the loop around the dot"
+        );
+    }
+
+    #[test]
+    fn a_file_dot_cannot_read_ends_the_script() {
+        let (ended, out, err) = dotted("nofile", "", ". /nope.sh; echo no");
+        assert_eq!(
+            (ended, out.as_str(), err.as_str()),
+            (Err(Stop::Said(1)), "", ".: /nope.sh: no such file\n")
+        );
+        let (ended, _, err) = dotted("twofiles", "", ". /lib.sh /lib.sh");
+        assert_eq!(
+            (ended, err.as_str()),
+            (Err(Stop::Said(1)), ".: takes the path of one file\n")
+        );
+    }
+
+    #[test]
+    fn what_is_wrong_in_the_file_is_said_at_the_dot() {
+        let at = |ended: Result<Flow, Stop>| match ended {
+            Err(Stop::Error(e)) => (e.at.line, e.at.column, e.code),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            at(dotted("bad", "fi", "echo a\n  . /lib.sh").0),
+            (2, 3, Code::Unexpected)
+        );
+        assert_eq!(
+            at(dotted("bad2", "echo ${a;b}", "  . /lib.sh").0),
+            (1, 3, Code::BadSubstitution)
+        );
+        assert_eq!(
+            at(dotted("deep", ". /lib.sh", ". /lib.sh").0),
+            (1, 1, Code::TooDeep),
+            "a file that runs itself goes only so deep"
         );
     }
 }

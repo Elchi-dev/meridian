@@ -111,6 +111,15 @@ pub trait Machine: Tree {
     /// has one, and moves that stream past it, so what reads it after
     /// starts there; none once it ended.
     fn line(&mut self) -> Option<Vec<u8>>;
+
+    /// What the file at `path`, from the working directory when it does
+    /// not start at the root, holds, as `.` reads it; what to say, a line,
+    /// when it cannot be read.
+    ///
+    /// # Errors
+    ///
+    /// When nothing is there, or it cannot be read.
+    fn text(&mut self, path: &str) -> Result<Vec<u8>, String>;
 }
 
 /// How statements ended: on to the next, out of a loop, a function or
@@ -529,6 +538,10 @@ mod tests {
         fn line(&mut self) -> Option<Vec<u8>> {
             None
         }
+
+        fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
+            Err(format!("{path}: no such file\n"))
+        }
     }
 
     #[test]
@@ -617,6 +630,10 @@ mod tests {
 
         fn line(&mut self) -> Option<Vec<u8>> {
             None
+        }
+
+        fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
+            Err(format!("{path}: no such file\n"))
         }
     }
 

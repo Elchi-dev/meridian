@@ -276,6 +276,11 @@ starts without its parent's trap, unless that one ignores. Meridian sends
 no signals, so a trap for any other condition is refused with 1, and the
 script goes on.
 
+`.` runs the commands of a file in the session itself, one level deeper
+in the 64, a `return` ending them; it takes the file's path, from the
+working directory when it does not start at the root, as Meridian has no
+`PATH` to look in yet. A file it cannot read ends the script, with 1.
+
 A pipeline whose commands are all programs or the shell's own commands
 runs them side by side, as Meridian's dialect does. One with a
 function, a builtin POSIX calls special or a compound command in it runs

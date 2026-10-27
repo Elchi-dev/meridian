@@ -283,6 +283,18 @@ impl Machine for Desk {
         self.directory = path.into();
     }
 
+    fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        let whole = if path.starts_with('/') {
+            String::from(path)
+        } else {
+            format!("{}/{path}", self.directory.trim_end_matches('/'))
+        };
+        self.files
+            .as_ref()
+            .and_then(|files| files.read(&whole))
+            .ok_or_else(|| format!("{path}: no such file\n"))
+    }
+
     fn line(&mut self) -> Option<Vec<u8>> {
         let (text, at) = match self.reading.iter_mut().rev().flatten().next() {
             Some((text, at)) => (&*text, at),

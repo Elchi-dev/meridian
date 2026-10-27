@@ -807,6 +807,12 @@ impl Machine for System {
         let _ = program::change_directory(path);
     }
 
+    fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        text_of(path)
+            .map(String::into_bytes)
+            .map_err(|e| trouble(path, e))
+    }
+
     fn line(&mut self) -> Option<Vec<u8>> {
         for level in self.levels.iter_mut().rev() {
             if let Level::Frame(Frame {

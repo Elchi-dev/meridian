@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 101] = [
+const CHECKS: [(&str, Check); 102] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -124,6 +124,7 @@ const CHECKS: [(&str, Check); 101] = [
     ("shell.sh.names", sh_names_of_files),
     ("shell.sh.read", sh_read),
     ("shell.sh.trap", sh_trap),
+    ("shell.sh.dot", sh_dot),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3229,6 +3230,39 @@ fn sh_trap() -> Outcome {
         &ran(3, b"trap: INT: Meridian sends no signals\nin\nsub\nbye 3\n"),
     );
     expect(checked, "a trap on EXIT should run as the script ends")
+}
+
+/// In sh, `.` runs the commands of a file in the session itself, and a
+/// file it cannot read ends the script.
+fn sh_dot() -> Outcome {
+    let checked = same(
+        &shell_on("#!/bin/sh\n. /System/nope.sh; echo no")?,
+        &ran(1, b".: /System/nope.sh: no such file\n"),
+    );
+    expect(
+        checked,
+        ". should end the script on a file that is not there",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "#!/bin/sh\n\
+         echo 'v=sourced; echo in $v' > /System/dot.sh || exit 9\n\
+         . /System/dot.sh\n\
+         echo \"$v\"\n\
+         rm /System/dot.sh",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said == b"/System/dot.sh: on a volume that is only read\n",
+            "on /System read only the file should not be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"in sourced\nsourced\n",
+        ". should run a file's commands in the session itself",
+    )
 }
 
 /// in each of several files by its name.

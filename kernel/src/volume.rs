@@ -624,6 +624,8 @@ mod tests {
             .unwrap();
         assert_eq!(v.list(&dir, 1, &mut room), Ok((5, false)));
         assert_eq!(&room[..5], b"b.txt");
+        assert_eq!(v.list(&dir, 0, &mut room), Ok((5, true)), "not the last");
+        assert_eq!(&room[..5], b"Inner");
         assert_eq!(v.list(&dir, 2, &mut room), Err(Error::NotFound));
         v.remove(&["Dir", "b.txt"], &system(), |_| false).unwrap();
         assert_eq!(v.list(&dir, 0, &mut room[..4]), Err(Error::TooSmall));

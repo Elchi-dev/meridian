@@ -947,6 +947,8 @@ fn files_written() -> Outcome {
         }
         other => other.map_err(|_| "a file should be made on /System")?,
     };
+    let other = open("/System/made.meri", READ).map_err(|_| "made.meri should open")?;
+    let size = info(other).map(|i| i.size);
     let bytes: Vec<u8> = (0..abi::WRITE_BYTES + 100)
         .map(|i| b'a' + (i % 26).to_le_bytes()[0])
         .collect();
@@ -963,6 +965,10 @@ fn files_written() -> Outcome {
         back == bytes && info(file).map(|i| i.size) == Ok(bytes.len() as u64),
         "the file should read back as written",
     )?;
+    expect(
+        info(other).map(|i| i.size) == size && close(other) == Ok(()),
+        "another file open on the volume should keep its size",
+    )?;
     let too_long = abi::Call::WriteFile {
         handle: file.0,
         at: bytes.as_ptr() as u64,
@@ -974,9 +980,17 @@ fn files_written() -> Outcome {
         "one call should take at most WRITE_BYTES",
     )?;
     let reader = open(path, READ).map_err(|_| "the file should open again")?;
+    let too_long = abi::Call::WriteFile {
+        handle: reader.0,
+        at: bytes.as_ptr() as u64,
+        len: (abi::WRITE_BYTES + 1) as u64,
+        offset: 0,
+    };
     expect(
-        write_file(reader, 0, b"x") == Err(Error::Denied) && remove(path) == Err(Error::InUse),
-        "a handle that may only read should not write, and an open file should stay",
+        write_file(reader, 0, b"x") == Err(Error::Denied)
+            && abi::answer(raw::call(too_long).0) == Err(Error::Denied)
+            && remove(path) == Err(Error::InUse),
+        "a handle that may only read should not write, whatever it hands over, and an open file should stay",
     )?;
     expect(
         close(reader) == Ok(()) && close(file) == Ok(()),

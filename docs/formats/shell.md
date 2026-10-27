@@ -144,7 +144,9 @@ NAME` without `in` after it is one too (`expected-in`).
 anywhere else they end the script. `return` ends a function, with the
 status it is given, a number from 0 to 255, or with 0; any other word is
 an error (`bad-status`). Outside a function it ends the script the same
-way.
+way. `exit` ends the script, or the session, from inside any block, loop
+or function, with the status it is given in the same way, or with that
+of the last pipeline.
 
 `true` ends with 0 and `false` with 1, without running anything. A name a
 function was made with is a command from then on, before any program of

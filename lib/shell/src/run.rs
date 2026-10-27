@@ -31,14 +31,28 @@ pub trait Machine {
     fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String>;
 }
 
-/// How statements ended: on to the next, or out of a loop, a function or
-/// the script.
+/// How statements ended: on to the next, out of a loop, a function or
+/// the script, or with `exit` out of the script or the session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
     Next,
     Break,
     Continue,
     Return,
+    Exit,
+}
+
+/// Why running stopped short: an error, or `exit`, which leaves every
+/// block, loop and function it is in.
+enum Stop {
+    Error(Error),
+    Exit,
+}
+
+impl From<Error> for Stop {
+    fn from(e: Error) -> Stop {
+        Stop::Error(e)
+    }
 }
 
 /// How deep functions may call each other.
@@ -127,6 +141,18 @@ impl Session {
         statements: &[Statement],
         machine: &mut impl Machine,
     ) -> Result<Flow, Error> {
+        match self.statements(statements, machine) {
+            Ok(flow) => Ok(flow),
+            Err(Stop::Exit) => Ok(Flow::Exit),
+            Err(Stop::Error(e)) => Err(e),
+        }
+    }
+
+    fn statements(
+        &mut self,
+        statements: &[Statement],
+        machine: &mut impl Machine,
+    ) -> Result<Flow, Stop> {
         for statement in statements {
             let flow = self.statement(statement, machine)?;
             if flow != Flow::Next {
@@ -143,10 +169,10 @@ impl Session {
         statements: &[Statement],
         first: Option<(&str, String)>,
         machine: &mut impl Machine,
-    ) -> Result<Flow, Error> {
+    ) -> Result<Flow, Stop> {
         let scope = first.map(|(n, v)| (n.into(), v)).into_iter().collect();
         self.scopes.push(scope);
-        let flow = self.run(statements, machine);
+        let flow = self.statements(statements, machine);
         self.scopes.pop();
         flow
     }
@@ -155,7 +181,7 @@ impl Session {
         &mut self,
         statement: &Statement,
         machine: &mut impl Machine,
-    ) -> Result<Flow, Error> {
+    ) -> Result<Flow, Stop> {
         match statement {
             Statement::List(list) => self.status = self.list(list, machine)?,
             Statement::Let { name, value } => {
@@ -187,7 +213,7 @@ impl Session {
                     match self.block(body, Some((name, item)), machine)? {
                         Flow::Break => break,
                         Flow::Return => return Ok(Flow::Return),
-                        Flow::Next | Flow::Continue => {}
+                        Flow::Next | Flow::Continue | Flow::Exit => {}
                     }
                 }
             }
@@ -200,7 +226,7 @@ impl Session {
                     match flow {
                         Flow::Break => break,
                         Flow::Return => return Ok(Flow::Return),
-                        Flow::Next | Flow::Continue => {}
+                        Flow::Next | Flow::Continue | Flow::Exit => {}
                     }
                 }
                 self.status = last;
@@ -212,22 +238,32 @@ impl Session {
             Statement::Break => return Ok(Flow::Break),
             Statement::Continue => return Ok(Flow::Continue),
             Statement::Return(word) => {
-                self.status = match word {
-                    None => 0,
-                    Some(w) => self.text(w)?.parse().map_err(|_| Error {
-                        at: w.at,
-                        code: Code::BadStatus,
-                    })?,
-                };
+                self.status = self.given_status(word.as_ref(), 0)?;
                 return Ok(Flow::Return);
+            }
+            Statement::Exit(word) => {
+                self.status = self.given_status(word.as_ref(), self.status)?;
+                return Err(Stop::Exit);
             }
         }
         Ok(Flow::Next)
     }
 
+    /// The status `word` gives `return` or `exit`, or `otherwise` without
+    /// one.
+    fn given_status(&self, word: Option<&Word>, otherwise: u8) -> Result<u8, Error> {
+        let Some(w) = word else {
+            return Ok(otherwise);
+        };
+        self.text(w)?.parse().map_err(|_| Error {
+            at: w.at,
+            code: Code::BadStatus,
+        })
+    }
+
     /// Runs `list`, each pipeline after the first only as its join says,
     /// and answers the status of the last that ran.
-    fn list(&mut self, list: &List, machine: &mut impl Machine) -> Result<u8, Error> {
+    fn list(&mut self, list: &List, machine: &mut impl Machine) -> Result<u8, Stop> {
         let mut status = self.pipeline(&list.first, machine)?;
         for (join, pipeline) in &list.rest {
             let runs = match join {
@@ -241,7 +277,7 @@ impl Session {
         Ok(status)
     }
 
-    fn pipeline(&mut self, pipeline: &Pipeline, machine: &mut impl Machine) -> Result<u8, Error> {
+    fn pipeline(&mut self, pipeline: &Pipeline, machine: &mut impl Machine) -> Result<u8, Stop> {
         let status = if let [one] = pipeline.commands.as_slice() {
             self.single(one, machine)?
         } else {
@@ -262,7 +298,7 @@ impl Session {
 
     /// Runs a command alone: `true`, `false`, a function, or whatever the
     /// machine runs.
-    fn single(&mut self, command: &Command, machine: &mut impl Machine) -> Result<u8, Error> {
+    fn single(&mut self, command: &Command, machine: &mut impl Machine) -> Result<u8, Stop> {
         let ready = self.ready(command, machine)?;
         let name = ready.words.first().map_or("", String::as_str);
         if name == "true" {
@@ -280,10 +316,10 @@ impl Session {
             return Ok(machine.run(&[ready]));
         };
         if self.arguments.len() == DEPTH {
-            return Err(Error {
+            return Err(Stop::Error(Error {
                 at: command.words[0].at,
                 code: Code::TooDeep,
-            });
+            }));
         }
         self.arguments.push(ready.words[1..].to_vec());
         self.status = 0;
@@ -698,6 +734,64 @@ mod tests {
             Session::new().run(&script("true").unwrap(), &mut Bare),
             Ok(Flow::Next)
         );
+    }
+
+    #[test]
+    fn exit_leaves_every_block_loop_and_function_it_is_in() {
+        let ended = |text: &str| {
+            let mut session = Session::new();
+            let flow = session.run(&script(text).unwrap(), &mut Bare);
+            (flow, session.status(), session.variable("a"))
+        };
+        let one = Some(String::from("1"));
+        assert_eq!(
+            ended("let a = 1\nexit 4\nlet a = 2"),
+            (Ok(Flow::Exit), 4, one.clone())
+        );
+        assert_eq!(
+            ended("let a = 1; false; exit\nlet a = 2"),
+            (Ok(Flow::Exit), 1, one.clone()),
+            "without a word, with the last status"
+        );
+        assert_eq!(
+            ended("let a = 1\nfor x in a b { while true { exit 2 } }\nlet a = 2"),
+            (Ok(Flow::Exit), 2, one.clone())
+        );
+        assert_eq!(
+            ended("let a = 1\nfn f { exit 3; let a = 2 }\nf; let a = 4"),
+            (Ok(Flow::Exit), 3, one.clone())
+        );
+        assert_eq!(
+            ended("let a = 1\nfn f { exit 5 }\nif f { let a = 2 } else { let a = 3 }\nlet a = 4"),
+            (Ok(Flow::Exit), 5, one.clone()),
+            "from a condition too"
+        );
+        assert_eq!(
+            ended("let a = 1\nfn f { exit 6 }\nwhile f or true { let a = 2 }"),
+            (Ok(Flow::Exit), 6, one.clone())
+        );
+        assert_eq!(failure("exit 256"), (1, 6, Code::BadStatus));
+        assert_eq!(failure("exit $a"), (1, 6, Code::UnsetVariable));
+        let mut session = Session::new();
+        let flow = session.run(
+            &script("fn f { let b = 1; for c in x { exit } }\nf y").unwrap(),
+            &mut Bare,
+        );
+        assert_eq!(flow, Ok(Flow::Exit));
+        assert_eq!(
+            (
+                session.variable("b"),
+                session.variable("c"),
+                session.variable("1")
+            ),
+            (None, None, None),
+            "what the blocks and the call held went with them"
+        );
+        assert_eq!(
+            session.run(&script("let a = 9").unwrap(), &mut Bare),
+            Ok(Flow::Next)
+        );
+        assert_eq!(session.variable("a").as_deref(), Some("9"), "it runs on");
     }
 
     #[test]

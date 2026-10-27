@@ -79,6 +79,8 @@ pub enum Statement {
     Break,
     Continue,
     Return(Option<Word>),
+    /// `exit`, and the status it is given.
+    Exit(Option<Word>),
 }
 
 /// The statements of `script`.
@@ -234,13 +236,18 @@ impl Parser {
                 self.next += 1;
                 Statement::Continue
             }
-            Some("return") => {
-                self.next += 1;
-                let Some(Token::Word(w)) = self.peek().cloned() else {
-                    return Ok(Statement::Return(None));
+            Some(keyword @ ("return" | "exit")) => {
+                let made = if keyword == "exit" {
+                    Statement::Exit
+                } else {
+                    Statement::Return
                 };
                 self.next += 1;
-                Statement::Return(Some(w))
+                let Some(Token::Word(w)) = self.peek().cloned() else {
+                    return Ok(made(None));
+                };
+                self.next += 1;
+                made(Some(w))
             }
             _ => Statement::List(self.list()?),
         };
@@ -449,6 +456,8 @@ mod tests {
             Statement::Continue => "continue".into(),
             Statement::Return(None) => "return".into(),
             Statement::Return(Some(w)) => format!("return {}", word(w)),
+            Statement::Exit(None) => "exit".into(),
+            Statement::Exit(Some(w)) => format!("exit {}", word(w)),
         }
     }
 
@@ -718,6 +727,11 @@ mod tests {
         ("return", &["return"]),
         ("return $?", &["return ${?}"]),
         ("return; a", &["return", "a"]),
+        ("exit", &["exit"]),
+        ("exit 3", &["exit 3"]),
+        ("exit\na", &["exit", "a"]),
+        ("echo exit", &["echo exit"]),
+        ("'exit' 3", &["[exit] 3"]),
         ("echo break return fn", &["echo break return fn"]),
         ("'break'", &["[break]"]),
         ("a # if { x", &["a"]),
@@ -785,6 +799,8 @@ mod tests {
         ("let x = 1 2", 1, 11, Code::ExpectedEnd),
         ("let x = 1 | y", 1, 11, Code::ExpectedEnd),
         ("return a b", 1, 10, Code::ExpectedEnd),
+        ("exit 1 2", 1, 8, Code::ExpectedEnd),
+        ("exit | a", 1, 6, Code::ExpectedEnd),
     ];
 
     #[test]

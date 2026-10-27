@@ -179,6 +179,10 @@ pub fn remove(path: &str, token: &Token) -> Result<(), Error> {
 /// When either path is none, the two are on different volumes, or the
 /// volume says no.
 pub fn rename(from: &str, to: &str, token: &Token) -> Result<(), Error> {
+    // Both are paths before either is looked for.
+    if Path::parse(from).is_none() {
+        return Err(Error::BadPath);
+    }
     let to = Path::parse(to).ok_or(Error::BadPath)?;
     let (target, to_names) = MOUNTS.lock().find(&to).ok_or(Error::NotFound)?;
     on_path(from, |v, names, volume| {

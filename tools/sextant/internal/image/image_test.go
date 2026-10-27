@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Elchi-dev/meridian/tools/sextant/internal/disk/gpt"
 	"github.com/Elchi-dev/meridian/tools/sextant/internal/meri"
 )
 
@@ -386,11 +387,29 @@ func TestATestDiskHasMeridiansSystemAndPartitionsOfOthers(t *testing.T) {
 }
 
 func TestTheSystemPartitionListsWhatMeridianMayWrite(t *testing.T) {
+	checkLists(t, testDisk(t), 4, []int{0, 1}, []int{2})
+}
+
+func TestEveryUnlockedPartitionIsListedWhereverItIs(t *testing.T) {
+	others := []Other{
+		{Partition: gpt.Partition{Name: "Not listed", Type: gpt.MeridianSystem, Size: 1 << 20}},
+		{Partition: gpt.Partition{Name: "First unlocked", Type: gpt.BasicData, Size: 1 << 20}, Unlocked: true},
+		{Partition: gpt.Partition{Name: "Second unlocked", Type: gpt.BasicData, Size: 2 << 20}, Unlocked: true},
+	}
+	path := diskFile(t, Contents{Seed: "others", Time: stamp, Files: files(), System: TestSystem, Others: others})
+	checkLists(t, path, 5, []int{0, 1}, []int{3, 4})
+}
+
+// checkLists checks the disk at path, of count partitions: its system
+// partition, the second, holds FAT32 that fsck.fat takes, whose made.meri
+// lists the partitions at made and whose unlocked.meri those at unlocked,
+// each by its GUID, name and size.
+func checkLists(t *testing.T, path string, count int, made, unlocked []int) {
+	t.Helper()
 	mtype := tool(t, "mtype")
 	fsck := tool(t, "fsck.fat")
-	path := testDisk(t)
 	parts := partitionsOf(t, path)
-	if len(parts) != 4 {
+	if len(parts) != count {
 		t.Fatalf("partitions: %+v", parts)
 	}
 	system := parts[1]
@@ -419,7 +438,7 @@ func TestTheSystemPartitionListsWhatMeridianMayWrite(t *testing.T) {
 		}
 		return root.Blocks("partition")
 	}
-	check := func(file string, blocks []*meri.Block, want []sfdiskPartition) {
+	check := func(file string, blocks []*meri.Block, want []int) {
 		t.Helper()
 		if len(blocks) != len(want) {
 			t.Fatalf("%s lists %d partitions, want %d", file, len(blocks), len(want))
@@ -427,13 +446,14 @@ func TestTheSystemPartitionListsWhatMeridianMayWrite(t *testing.T) {
 		for i, b := range blocks {
 			name, _ := b.String("name", "")
 			size, _ := b.Size("size", 0)
-			if !b.Labelled || !strings.EqualFold(b.Label, want[i].UUID) || name != want[i].Name || size != want[i].Size*512 {
-				t.Errorf("%s, partition %d: %q %q %d, want %+v", file, i, b.Label, name, size, want[i])
+			p := parts[want[i]]
+			if !b.Labelled || !strings.EqualFold(b.Label, p.UUID) || name != p.Name || size != p.Size*512 {
+				t.Errorf("%s, partition %d: %q %q %d, want %+v", file, i, b.Label, name, size, p)
 			}
 		}
 	}
-	check(MadePath, listed(MadePath), parts[:2])
-	check(UnlockedPath, listed(UnlockedPath), parts[2:3])
+	check(MadePath, listed(MadePath), made)
+	check(UnlockedPath, listed(UnlockedPath), unlocked)
 }
 
 func TestAPlainDiskListsNothing(t *testing.T) {
@@ -449,6 +469,23 @@ func TestAPlainDiskListsNothing(t *testing.T) {
 	room := data[parts[1].Start*512 : (parts[1].Start+parts[1].Size)*512]
 	if !bytes.Equal(room, make([]byte, len(room))) {
 		t.Error("without a system partition there is no list, and the other partition stays empty")
+	}
+}
+
+func TestNamesAreWrittenAsMeriStringsWithOnlyWhatNeedsIt(t *testing.T) {
+	for name, want := range map[string]string{
+		"Data":       `"Data"`,
+		"EFI system": `"EFI system"`,
+		"a~b":        `"a~b"`,
+		"a\x1fb":     `"a\u{1F}b"`,
+		`q"b\`:       `"q\"b\\"`,
+		"\x7f":       `"\u{7F}"`,
+		"\x00":       `"\u{0}"`,
+		"é":          "\"é\"",
+	} {
+		if got := meriString(name); got != want {
+			t.Errorf("%q written as %s, want %s", name, got, want)
+		}
 	}
 }
 

@@ -162,6 +162,51 @@ pub fn listed(list: &[u8]) -> Result<Vec<Guid>, meri::Error> {
     Ok(found)
 }
 
+/// Where the lists are, at the root of the volume on a Meridian system
+/// partition: the partitions Meridian made, and those the person unlocked.
+pub const MADE: &str = "made.meri";
+pub const UNLOCKED: &str = "unlocked.meri";
+
+/// The most bytes a list may have, far more than a disk's partitions need.
+const LONGEST: u32 = 64 * 1024;
+
+/// What Meridian may write by the lists on its system partition.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Lists {
+    pub made: Vec<Guid>,
+    pub unlocked: Vec<Guid>,
+}
+
+impl Lists {
+    /// The lists on the FAT32 volume `read` reads, as [`fat::Fat::open`]
+    /// takes it, which Strata takes the place of later. A list that is not
+    /// there, longer than 64 KiB, cannot be read or is no .meri document
+    /// names nothing, and so does a volume that is no FAT32 one.
+    pub fn read(read: impl FnMut(u64, &mut [u8]) -> bool) -> Lists {
+        let Ok(mut fat) = fat::Fat::open(read) else {
+            return Lists::default();
+        };
+        let mut list = |name| {
+            let root = fat.volume.root;
+            let Ok(entry) = fat.lookup(root, name) else {
+                return Vec::new();
+            };
+            if entry.size > LONGEST {
+                return Vec::new();
+            }
+            let mut bytes = vec![0u8; entry.size as usize];
+            fat.read_file(&entry, &mut bytes)
+                .ok()
+                .and_then(|_| listed(&bytes).ok())
+                .unwrap_or_default()
+        };
+        Lists {
+            made: list(MADE),
+            unlocked: list(UNLOCKED),
+        }
+    }
+}
+
 /// Why a partition may be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
@@ -483,6 +528,123 @@ unique = "C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3"
             "not the partitions before the error"
         );
         assert!(listed(b"partition \"A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1\" {").is_err());
+    }
+
+    /// A FAT32 volume in memory, as sextant formats a system partition,
+    /// with the directories `directories` and then the files `files` at
+    /// its root.
+    fn system_volume(directories: &[&str], files: &[(&str, &[u8])]) -> Vec<u8> {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        let total = 66_700;
+        let image = Rc::new(RefCell::new(vec![0u8; total * 512]));
+        let put = |image: &Rc<RefCell<Vec<u8>>>| {
+            let image = Rc::clone(image);
+            move |at: u64, bytes: &[u8]| {
+                let start = usize::try_from(at).unwrap() * 512;
+                image.borrow_mut()[start..start + bytes.len()].copy_from_slice(bytes);
+                true
+            }
+        };
+        fat::format::format(total as u64, 0, 7, b"SYSTEM     ", put(&image)).unwrap();
+        let from = Rc::clone(&image);
+        let fat = fat::Fat::open(move |at, into: &mut [u8]| {
+            let start = usize::try_from(at).unwrap() * 512;
+            into.copy_from_slice(&from.borrow()[start..start + into.len()]);
+            true
+        })
+        .unwrap();
+        let mut w = fat::write::Writer::new(fat, put(&image));
+        let root = w.fat.volume.root;
+        for name in directories {
+            w.create(root, name, true).unwrap();
+        }
+        for (name, bytes) in files {
+            let (mut entry, place) = w.create(root, name, false).unwrap();
+            w.write_at(&mut entry, 0, bytes).unwrap();
+            w.save(place, &entry).unwrap();
+        }
+        drop(w);
+        Rc::try_unwrap(image).unwrap().into_inner()
+    }
+
+    const MADE_AB: &[u8] = br#"partition "A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1" {}
+partition "B2B2B2B2-B2B2-B2B2-B2B2-B2B2B2B2B2B2" {}
+"#;
+    const UNLOCKED_C: &[u8] = br#"partition "C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3" {}
+"#;
+
+    #[test]
+    fn the_lists_are_read_from_the_system_partition() {
+        let volume = system_volume(&[], &[(MADE, MADE_AB), (UNLOCKED, UNLOCKED_C)]);
+        let lists = Lists::read(reader(&volume));
+        assert_eq!(lists.made, [A, B]);
+        assert_eq!(lists.unlocked, [C]);
+        let made_only = system_volume(&[], &[(MADE, MADE_AB)]);
+        assert_eq!(
+            Lists::read(reader(&made_only)),
+            Lists {
+                made: vec![A, B],
+                unlocked: vec![]
+            },
+            "no unlocked.meri: nothing unlocked"
+        );
+        let unlocked_only = system_volume(&[], &[(UNLOCKED, UNLOCKED_C)]);
+        assert_eq!(Lists::read(reader(&unlocked_only)).made, []);
+        assert_eq!(Lists::read(reader(&unlocked_only)).unlocked, [C]);
+    }
+
+    #[test]
+    fn a_list_that_cannot_be_trusted_names_nothing() {
+        let broken = system_volume(
+            &[],
+            &[
+                (
+                    MADE,
+                    b"partition \"A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1\" {",
+                ),
+                (UNLOCKED, UNLOCKED_C),
+            ],
+        );
+        let lists = Lists::read(reader(&broken));
+        assert_eq!((lists.made, lists.unlocked), (vec![], vec![C]));
+        let mut long = MADE_AB.to_vec();
+        long.resize(64 * 1024, b'\n');
+        assert_eq!(
+            Lists::read(reader(&system_volume(&[], &[(MADE, &long)]))).made,
+            [A, B],
+            "64 KiB is not too long"
+        );
+        long.push(b'\n');
+        assert_eq!(
+            Lists::read(reader(&system_volume(&[], &[(MADE, &long)]))).made,
+            []
+        );
+        let folder = system_volume(&[MADE], &[(UNLOCKED, MADE_AB)]);
+        assert_eq!(
+            Lists::read(reader(&folder)).made,
+            [],
+            "a directory of the list's name"
+        );
+        assert_eq!(Lists::read(reader(&folder)).unlocked, [A, B]);
+        assert_eq!(
+            Lists::read(reader(&[0u8; 8192])),
+            Lists::default(),
+            "no FAT32"
+        );
+        let full = system_volume(&[], &[(MADE, MADE_AB), (UNLOCKED, UNLOCKED_C)]);
+        let mut only_the_start = reader(&full);
+        let data = fat::Fat::open(reader(&full))
+            .unwrap()
+            .volume
+            .first_sector(3)
+            .unwrap();
+        let start_only = |lba, into: &mut [u8]| lba < data && only_the_start(lba, into);
+        assert_eq!(
+            Lists::read(start_only),
+            Lists::default(),
+            "files whose clusters cannot be read"
+        );
     }
 
     #[test]

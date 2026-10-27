@@ -2156,6 +2156,18 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
             abi::file::READ,
             0,
         ) == Err(raw::vfs::Error::NotFound);
+    if !(made && written && stays && gone) {
+        // What the console shows tells which answer did not come, where
+        // nothing else can be asked.
+        let _ = writeln!(
+            report.out,
+            "kernel: the shell's files: made {made}, written {written}, kept {stays}, gone {gone}"
+        );
+        let rows = raw::console::shape().map_or(0, |((_, rows), _)| rows);
+        for row in (0..rows).filter_map(raw::console::row) {
+            let _ = writeln!(report.out, "kernel: the console shows {row:?}");
+        }
+    }
     report.check(
         "kernel.shell.files",
         made && written && stays && gone,

@@ -6,7 +6,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::{Error, abi};
+use crate::{Error, Handle, abi};
 
 /// What the tool `tool` says when the file at `path` could not be read,
 /// or written by one that writes files.
@@ -153,6 +153,103 @@ pub fn pieces(path: Option<&str>, mut each: impl FnMut(&[u8]) -> bool) -> Result
     read
 }
 
+/// What gives a text a piece at a time, as it is asked for.
+pub trait Pieces {
+    /// Reads the next piece onto the end of `held`, and says whether
+    /// there was one.
+    ///
+    /// # Errors
+    ///
+    /// When the text cannot be read.
+    fn more(&mut self, held: &mut Vec<u8>) -> Result<bool, Error>;
+}
+
+/// A file, or the standard input, read a piece at a time.
+pub enum Source {
+    Input,
+    File(Handle, u64),
+}
+
+impl Source {
+    /// The file at `path`, or the standard input for `-`.
+    ///
+    /// # Errors
+    ///
+    /// When the file does not open.
+    pub fn open(path: &str) -> Result<Source, Error> {
+        if path == "-" {
+            return Ok(Source::Input);
+        }
+        Ok(Source::File(crate::open(path, abi::file::READ)?, 0))
+    }
+
+    /// Closes the file, when it is one.
+    pub fn close(self) {
+        if let Source::File(file, _) = self {
+            let _ = crate::close(file);
+        }
+    }
+}
+
+impl Pieces for Source {
+    fn more(&mut self, held: &mut Vec<u8>) -> Result<bool, Error> {
+        let mut room = [0u8; abi::MESSAGE_BYTES];
+        let len = match self {
+            Source::Input => crate::input(&mut room)?,
+            Source::File(file, at) => {
+                let len = crate::read(*file, *at, &mut room)?;
+                *at += len as u64;
+                len
+            }
+        };
+        held.extend_from_slice(&room[..len]);
+        Ok(len > 0)
+    }
+}
+
+/// The lines of a text that comes in pieces, taken one at a time as they
+/// are asked for, so that no more of it is held than a line.
+pub struct LineReader<P> {
+    pieces: P,
+    held: Vec<u8>,
+    open: bool,
+}
+
+impl<P: Pieces> LineReader<P> {
+    pub fn new(pieces: P) -> LineReader<P> {
+        LineReader {
+            pieces,
+            held: Vec::new(),
+            open: true,
+        }
+    }
+
+    /// The next line, without its line feed; none at the end, where a
+    /// last line without one still comes.
+    ///
+    /// # Errors
+    ///
+    /// When the text cannot be read.
+    pub fn line(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        loop {
+            if let Some(feed) = self.held.iter().position(|&b| b == b'\n') {
+                let mut line: Vec<u8> = self.held.drain(..=feed).collect();
+                line.pop();
+                return Ok(Some(line));
+            }
+            if !self.open {
+                return Ok((!self.held.is_empty()).then(|| core::mem::take(&mut self.held)));
+            }
+            self.open = self.pieces.more(&mut self.held)?;
+        }
+    }
+
+    /// What the lines came from.
+    pub fn into_pieces(self) -> P {
+        self.pieces
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +350,69 @@ mod tests {
         let mut last = Vec::new();
         held.finish(|l| last.extend_from_slice(l));
         assert_eq!(last, b"part");
+    }
+
+    /// A text in memory, given in the pieces it was cut into.
+    struct Cut(alloc::collections::VecDeque<Vec<u8>>);
+
+    impl Pieces for Cut {
+        fn more(&mut self, held: &mut Vec<u8>) -> Result<bool, Error> {
+            let Some(piece) = self.0.pop_front() else {
+                return Ok(false);
+            };
+            held.extend_from_slice(&piece);
+            Ok(true)
+        }
+    }
+
+    /// The lines a reader takes from `text` cut into pieces of `size`.
+    fn read(text: &[u8], size: usize) -> Vec<Vec<u8>> {
+        let mut reader = LineReader::new(Cut(text.chunks(size).map(<[u8]>::to_vec).collect()));
+        let mut lines = Vec::new();
+        while let Some(line) = reader.line().unwrap() {
+            lines.push(line);
+        }
+        assert_eq!(reader.line(), Ok(None), "and none after the end");
+        lines
+    }
+
+    #[test]
+    fn a_reader_takes_lines_whole_wherever_the_pieces_are_cut() {
+        for size in [1, 2, 3, 128] {
+            assert_eq!(
+                read(b"one\ntwo\n\nfour", size),
+                [
+                    b"one".to_vec(),
+                    b"two".to_vec(),
+                    Vec::new(),
+                    b"four".to_vec()
+                ],
+                "pieces of {size}"
+            );
+        }
+        assert_eq!(read(b"", 4), Vec::<Vec<u8>>::new());
+        assert_eq!(read(b"\n", 4), [Vec::<u8>::new()]);
+        assert_eq!(
+            read(b"last\n", 2),
+            [b"last".to_vec()],
+            "no empty line after the last feed"
+        );
+        assert_eq!(
+            read(&[0xff, b'\n', 0xfe], 1),
+            [Vec::from([0xff]), Vec::from([0xfe])]
+        );
+    }
+
+    #[test]
+    fn a_reader_holds_no_more_than_the_line_it_is_on() {
+        let mut reader =
+            LineReader::new(Cut(Vec::from([b"a\nb".to_vec(), b"\nc\n".to_vec()]).into()));
+        assert_eq!(reader.line(), Ok(Some(b"a".to_vec())));
+        assert_eq!(reader.held, b"b", "the rest of its piece waits");
+        assert_eq!(reader.line(), Ok(Some(b"b".to_vec())));
+        assert_eq!(reader.pieces.0.len(), 0, "the second piece was read for it");
+        assert_eq!(reader.line(), Ok(Some(b"c".to_vec())));
+        assert_eq!(reader.line(), Ok(None));
+        assert_eq!(reader.into_pieces().0.len(), 0);
     }
 }

@@ -13,8 +13,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use program::abi::{MESSAGE_BYTES, file::READ};
-use program::{Error, Handle, text};
+use program::text::{self, Pieces, Source};
+use program::{Error, Handle};
 
 program::main!(cmp);
 
@@ -101,50 +101,6 @@ fn differ(first: &str, second: &str, (byte, line): (u64, u64)) -> String {
 /// other went on.
 fn ended(shorter: &str) -> String {
     format!("cmp: EOF on {shorter}\n")
-}
-
-/// What gives a text a piece at a time.
-trait Pieces {
-    /// Reads the next piece onto the end of `held`; false at the end.
-    fn more(&mut self, held: &mut Vec<u8>) -> Result<bool, Error>;
-}
-
-/// A file or the standard input, read a piece at a time.
-enum Source {
-    Input,
-    File(Handle, u64),
-}
-
-impl Source {
-    fn open(path: &str) -> Result<Source, Error> {
-        if path == "-" {
-            return Ok(Source::Input);
-        }
-        Ok(Source::File(program::open(path, READ)?, 0))
-    }
-
-    fn close(self) {
-        if let Source::File(file, _) = self {
-            let _ = program::close(file);
-        }
-    }
-}
-
-impl Pieces for Source {
-    #[cfg_attr(test, allow(dead_code))]
-    fn more(&mut self, held: &mut Vec<u8>) -> Result<bool, Error> {
-        let mut room = [0u8; MESSAGE_BYTES];
-        let len = match self {
-            Source::Input => program::input(&mut room)?,
-            Source::File(file, at) => {
-                let len = program::read(*file, *at, &mut room)?;
-                *at += len as u64;
-                len
-            }
-        };
-        held.extend_from_slice(&room[..len]);
-        Ok(len > 0)
-    }
 }
 
 #[cfg_attr(test, allow(dead_code))]

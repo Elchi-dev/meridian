@@ -81,8 +81,9 @@ fn value(session: &Session, name: &str) -> Value {
         "#" => Value::One(session.positional().len().to_string()),
         "?" => Value::One(session.status().to_string()),
         "$" => Value::One(session.process().to_string()),
-        // No list runs in the background yet, so none was started last.
-        "!" => Value::Unset,
+        "!" => session
+            .background()
+            .map_or(Value::Unset, |job| Value::One(job.to_string())),
         "-" => Value::One(session.flags()),
         "0" => Value::One(session.zero().into()),
         digits if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {

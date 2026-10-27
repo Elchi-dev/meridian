@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 109] = [
+const CHECKS: [(&str, Check); 111] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -130,6 +130,8 @@ const CHECKS: [(&str, Check); 109] = [
     ("shell.sh.command.paths", sh_command_paths),
     ("shell.sh.started", sh_started),
     ("shell.sh.exec", sh_exec),
+    ("shell.sh.jobs", sh_jobs),
+    ("shell.sh.jobs.many", sh_jobs_side_by_side),
     ("shell.sh.exec.files", sh_exec_files),
     ("shell.sh.read.files", sh_read_files),
     ("tools.refused", tools_refuse_what_is_no_text),
@@ -3371,6 +3373,52 @@ fn sh_exec() -> Outcome {
         ),
     );
     expect(checked, "exec should make its redirections the shell's own")
+}
+
+/// In sh, `&` starts what the shell runs whole as a job, its stream 0
+/// closed, `$!` names it, and `wait` waits for it and ends as it ended.
+fn sh_jobs() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             wc & wait $!; echo \"waited $? ${!:+job}\"\n\
+             nope & wait $!; echo $?\n\
+             wait $!; echo $?\n\
+             echo x | wc &\n\
+             wait $!; echo \"pipe $? $!\"",
+        )?,
+        &ran(
+            0,
+            b"0 0 0\nwaited 0 job\nnope: no such command\n127\n\
+              wait: 2: no such job\n127\n\
+              1 1 2\npipe 0 3\n",
+        ),
+    );
+    expect(checked, "& should start a job, and wait wait for it")
+}
+
+/// In sh, two jobs run side by side, each reading what a here-document
+/// gives its stream 0, in whichever order they end, and `wait` alone waits
+/// for both.
+fn sh_jobs_side_by_side() -> Outcome {
+    let (ended, said) = shell_on(
+        "#!/bin/sh\n\
+         wc <<EOF &\n\
+         one\n\
+         EOF\n\
+         wc <<EOF &\n\
+         two words\n\
+         EOF\n\
+         wait; echo \"all $?\"",
+    )?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let mut lines: Vec<&str> = text.lines().collect();
+    let last = lines.pop();
+    lines.sort_unstable();
+    expect(
+        ended == Ok(Ended::Exited(0)) && last == Some("all 0") && lines == ["1 1 4", "1 2 10"],
+        "two jobs should each read their here-document, and wait wait for both",
+    )
 }
 
 /// In sh, `exec` sends what a subshell writes into a file from then on,

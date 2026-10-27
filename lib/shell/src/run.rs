@@ -73,6 +73,17 @@ pub trait Machine: Tree {
     /// status of its last command: 127 for one that names nothing there is.
     fn run(&mut self, pipeline: &[Ready]) -> u8;
 
+    /// Starts `pipeline` as [`Machine::run`] runs it, but goes on without
+    /// waiting, stream 0 of its first command closed unless a redirection
+    /// gives it one, as POSIX has it for a list run with `&`; answers the
+    /// number of the job, counted from 1.
+    fn start(&mut self, pipeline: &[Ready]) -> u64;
+
+    /// Waits for the job `job`, or for every job started with none, and
+    /// answers how it ended, 0 for every job; none for a job that is none
+    /// it started, or one waited for already.
+    fn wait(&mut self, job: Option<u64>) -> Option<u8>;
+
     /// Writes `bytes` where the shell's own output goes now: its output,
     /// or the text the innermost capture takes. Says whether all went.
     fn out(&mut self, bytes: &[u8]) -> bool;
@@ -507,6 +518,25 @@ mod tests {
     #[derive(Default)]
     struct Bare {
         captures: Vec<Vec<u8>>,
+        /// How each job it ran to its end as it started it ended, until
+        /// it was waited for.
+        jobs: Vec<Option<u8>>,
+    }
+
+    impl Bare {
+        fn job(&mut self, status: u8) -> u64 {
+            self.jobs.push(Some(status));
+            self.jobs.len() as u64
+        }
+
+        fn waited(&mut self, job: Option<u64>) -> Option<u8> {
+            let Some(job) = job else {
+                self.jobs.iter_mut().for_each(|job| *job = None);
+                return Some(0);
+            };
+            let at = usize::try_from(job).ok()?.checked_sub(1)?;
+            self.jobs.get_mut(at)?.take()
+        }
     }
 
     /// It has no files: no directory holds a name, and nothing is there.
@@ -523,6 +553,15 @@ mod tests {
     impl Machine for Bare {
         fn run(&mut self, _: &[Ready]) -> u8 {
             127
+        }
+
+        fn start(&mut self, pipeline: &[Ready]) -> u64 {
+            let status = self.run(pipeline);
+            self.job(status)
+        }
+
+        fn wait(&mut self, job: Option<u64>) -> Option<u8> {
+            self.waited(job)
         }
 
         fn out(&mut self, bytes: &[u8]) -> bool {
@@ -637,6 +676,15 @@ mod tests {
         fn run(&mut self, pipeline: &[Ready]) -> u8 {
             self.ran.push(pipeline.to_vec());
             0
+        }
+
+        fn start(&mut self, pipeline: &[Ready]) -> u64 {
+            let status = self.run(pipeline);
+            self.bare.job(status)
+        }
+
+        fn wait(&mut self, job: Option<u64>) -> Option<u8> {
+            self.bare.waited(job)
         }
 
         fn out(&mut self, bytes: &[u8]) -> bool {

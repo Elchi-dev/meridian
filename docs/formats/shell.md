@@ -292,9 +292,14 @@ keeps `PWD`, which the shell sets as a script starts, and `OLDPWD`.
 `local`, which POSIX has not but dash and bash have, makes variables a
 function's own, put back as they were once it returns.
 
-A list run with `&` runs to its end in a subshell before the shell goes
-on, as the shell starts no jobs yet: `$!` stays unset, `wait` ends with
-0, and a job `wait` is asked for is none, which ends it with 127.
+A pipeline run with `&` whose commands the shell runs whole, programs and
+its own commands, starts as a job, its first command's stream 0 closed
+unless a redirection gives it one, and `$!` gives the job's number,
+counted from 1. Any other list run with `&`, a function or a block among
+it, runs to its end in a subshell before the shell goes on, and `$!`
+stays as it was. `wait` waits for the jobs its words number and ends as
+the last one did, or with 127 for a number that is no job it has not
+waited for yet; alone, it waits for every job and ends with 0.
 
 `command -v` says what a name stands for: a function's or a builtin's
 name, or the path of a program's file; on a CD, where the programs are

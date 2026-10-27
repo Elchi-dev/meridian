@@ -82,6 +82,8 @@ pub struct Session {
     zero: String,
     process: u64,
     status: u8,
+    /// The number of the job started last, which `$!` gives.
+    background: Option<u64>,
     /// The letters of the options `set` turned on.
     options: BTreeSet<char>,
     /// How deep the command running stands inside others: compound
@@ -138,6 +140,7 @@ impl Session {
             zero,
             process,
             status: 0,
+            background: None,
             options: BTreeSet::new(),
             depth: 0,
             loops: 0,
@@ -167,6 +170,10 @@ impl Session {
 
     pub(super) fn process(&self) -> u64 {
         self.process
+    }
+
+    pub(super) fn background(&self) -> Option<u64> {
+        self.background
     }
 
     pub(super) fn zero(&self) -> &str {
@@ -207,11 +214,15 @@ impl Session {
     pub fn run(&mut self, items: &[Item], machine: &mut impl Machine) -> Result<Flow, Stop> {
         for item in items {
             // A list run with & runs in a subshell and ends with 0, as
-            // POSIX has it; this one runs to its end first.
+            // POSIX has it: a job the machine starts when it runs all of
+            // it, else run here to its end first.
             if item.background {
-                self.subshell(None, machine, |copy, machine| {
-                    copy.and_or(&item.and_or, machine)
-                });
+                let list = &item.and_or;
+                if list.rest.is_empty() && !list.first.not {
+                    self.in_background(&list.first.commands, machine);
+                } else {
+                    self.subshell(None, machine, |copy, machine| copy.and_or(list, machine));
+                }
                 self.status = 0;
                 continue;
             }
@@ -276,6 +287,33 @@ impl Session {
     /// it: side by side on the machine when it runs each of them, or else
     /// in their order, what one writes the next one's input.
     fn stages(&mut self, commands: &[Command], machine: &mut impl Machine) {
+        let stages = self.prepared_stages(commands, machine);
+        self.status = match Self::readies(&stages) {
+            Some(readies) => machine.run(&readies),
+            None => Self::in_order(commands, stages, machine),
+        };
+    }
+
+    /// Starts a pipeline run with `&` as a job when the machine runs each
+    /// of its commands, which `$!` then names; runs it here to its end
+    /// first otherwise, as [`Session::stages`] does.
+    fn in_background(&mut self, commands: &[Command], machine: &mut impl Machine) {
+        let stages = self.prepared_stages(commands, machine);
+        match Self::readies(&stages) {
+            Some(readies) => self.background = Some(machine.start(&readies)),
+            None => {
+                Self::in_order(commands, stages, machine);
+            }
+        }
+    }
+
+    /// Each of `commands` with a copy of the session to run in, and for a
+    /// simple command what it expanded to there.
+    fn prepared_stages(
+        &mut self,
+        commands: &[Command],
+        machine: &mut impl Machine,
+    ) -> Vec<(Session, Option<Result<Prepared, Stop>>)> {
         let mut stages = Vec::new();
         for command in commands {
             let mut copy = self.clone();
@@ -285,17 +323,28 @@ impl Session {
             };
             stages.push((copy, prepared));
         }
-        let readies: Vec<Ready> = stages
+        stages
+    }
+
+    /// What the machine runs for `stages`, when it runs each of them.
+    fn readies(stages: &[(Session, Option<Result<Prepared, Stop>>)]) -> Option<Vec<Ready>> {
+        stages
             .iter()
-            .filter_map(|(copy, prepared)| match prepared {
+            .map(|(copy, prepared)| match prepared {
                 Some(Ok(prepared)) if copy.machines(prepared) => Some(prepared.ready.clone()),
                 _ => None,
             })
-            .collect();
-        if readies.len() == commands.len() {
-            self.status = machine.run(&readies);
-            return;
-        }
+            .collect()
+    }
+
+    /// Runs `stages` in their order, each in its copy as a subshell, what
+    /// one writes the next one's input, and answers the last one's status.
+    fn in_order(
+        commands: &[Command],
+        stages: Vec<(Session, Option<Result<Prepared, Stop>>)>,
+        machine: &mut impl Machine,
+    ) -> u8 {
+        let mut status = 0;
         let mut input: Option<Vec<u8>> = None;
         for (i, (command, (mut copy, prepared))) in commands.iter().zip(stages).enumerate() {
             let last = i + 1 == commands.len();
@@ -308,6 +357,7 @@ impl Session {
             if !last {
                 machine.begin_capture();
             }
+            let directory = machine.directory();
             machine.begin_subshell();
             let ran = match prepared {
                 Some(Ok(prepared)) => copy.prepared(prepared, machine),
@@ -315,14 +365,16 @@ impl Session {
                 None => copy.command(command, machine),
             };
             machine.end_subshell();
+            let _ = machine.set_directory(&directory);
             if !last {
                 input = Some(machine.end_capture());
             }
             if fed {
                 machine.end_redirections();
             }
-            self.status = copy.ended(ran, machine);
+            status = copy.ended(ran, machine);
         }
+        status
     }
 
     /// The status a copy of the session ends with after `ran`, saying the
@@ -1057,14 +1109,21 @@ impl Session {
         Flow::Next
     }
 
-    /// `wait`: ends with 0, as every list run with `&` has run to its end
-    /// before the shell went on; a job it is asked for is none there is,
-    /// which ends it with 127.
+    /// `wait`: waits for the job each word numbers, as `$!` gave it, and
+    /// ends as the last one did, a word that numbers none it started
+    /// ending it with 127; alone, waits for every job and ends with 0.
     fn wait(&mut self, words: &[String], machine: &mut impl Machine) -> Flow {
         self.status = 0;
+        if words.is_empty() {
+            machine.wait(None);
+        }
         for word in words {
-            let _ = machine.err(format!("wait: {word}: no such job\n").as_bytes());
-            self.status = 127;
+            if let Some(status) = word.parse().ok().and_then(|job| machine.wait(Some(job))) {
+                self.status = status;
+            } else {
+                let _ = machine.err(format!("wait: {word}: no such job\n").as_bytes());
+                self.status = 127;
+            }
         }
         Flow::Next
     }
@@ -1722,6 +1781,7 @@ mod tests {
         assert_eq!(out("f() { b=2; }; f | echo; echo \"[$b]\""), "\n[]\n");
         assert_eq!(out("echo $((c = 5)) | echo; echo \"[$c]\""), "\n[]\n");
         assert_eq!(out("set -- a b | echo; echo $#"), "\n0\n");
+        assert_eq!(out("cd /x | :; pwd; : | cd /y; pwd"), "/\n/\n");
     }
 
     #[test]
@@ -2404,7 +2464,7 @@ mod tests {
     #[test]
     fn a_list_run_in_the_background_ends_with_0() {
         assert_eq!(out("false & echo $?"), "0\n");
-        assert_eq!(out("echo a & echo \"[$!]\""), "a\n[]\n");
+        assert_eq!(out("echo a & echo \"[$!]\""), "a\n[1]\n");
         assert_eq!(out("false && echo no || echo yes & echo $?"), "yes\n0\n");
     }
 
@@ -3330,9 +3390,18 @@ mod tests {
     }
 
     #[test]
-    fn wait_has_nothing_to_wait_for() {
+    fn wait_waits_for_the_jobs_started() {
         assert_eq!(out("echo a & wait; echo $?"), "a\n0\n");
-        assert_eq!(out("false; wait; echo $?"), "0\n");
+        assert_eq!(out("false & wait $!; echo $?"), "1\n");
+        assert_eq!(
+            out("false & true & wait 1; echo $?; wait 2; echo $?"),
+            "1\n0\n"
+        );
+        assert_eq!(
+            said("false & wait $!; wait $!; echo $?", &[]),
+            ("127\n".into(), "wait: 1: no such job\n".into()),
+            "a job is waited for once"
+        );
         assert_eq!(
             said("wait 12 x; echo $?", &[]),
             (
@@ -3341,9 +3410,33 @@ mod tests {
             )
         );
         assert_eq!(
-            out("false & wait $!; echo $?"),
-            "0\n",
-            "$! names none, so it waits for all"
+            out("false & wait; wait 1; echo $?"),
+            "127\n",
+            "wait alone waited for it"
+        );
+        assert_eq!(out("false; wait; echo $?"), "0\n");
+    }
+
+    #[test]
+    fn only_what_the_machine_runs_whole_becomes_a_job() {
+        assert_eq!(out("echo a | echo b & echo \"[$!]\""), "b\n[1]\n");
+        assert_eq!(out("f() { echo f; }; f & echo \"[$!]\""), "f\n[]\n");
+        assert_eq!(out("{ echo g; } & echo \"[$!]\""), "g\n[]\n");
+        assert_eq!(out("true && echo h & echo \"[$!]\""), "h\n[]\n");
+        assert_eq!(
+            out("echo a & f() { :; }; f & echo $!"),
+            "a\n1\n",
+            "$! names the last job"
+        );
+        assert_eq!(
+            out("x=1; x=2 echo $x & echo $x"),
+            "1\n1\n",
+            "a job's words are expanded once, as the session's are"
+        );
+        assert_eq!(
+            out("cd /d & pwd"),
+            "/\n",
+            "cd is the session's, so it ran in a copy"
         );
     }
 

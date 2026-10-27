@@ -632,6 +632,9 @@ fn typed(dialect: &mut impl Typing) -> u8 {
 struct System {
     levels: Vec<Level>,
     base: Frame,
+    /// The commands of each job started, by its number less one, until it
+    /// is waited for.
+    jobs: Vec<Option<Vec<Going>>>,
     /// What the shell's own input brought past the line `read` took last.
     left: Vec<u8>,
 }
@@ -680,6 +683,46 @@ struct Defaults {
 }
 
 impl System {
+    /// The commands of `pipeline` started on their streams, its own ones
+    /// in threads of their own when it has more than one or `background`;
+    /// the status it ends with, said why, when it cannot start.
+    fn going(&mut self, pipeline: &[Ready], background: bool) -> Result<Vec<Going>, u8> {
+        let Ok(mut defaults) = self.defaults() else {
+            let _ = program::write_error("|: no handle is left for the streams\n");
+            return Err(1);
+        };
+        if background {
+            core::mem::replace(&mut defaults.input, In::Closed).close();
+        }
+        let stages = match plumbed(pipeline, defaults) {
+            Ok(stages) => stages,
+            Err(said) => {
+                let _ = self.err(said.as_bytes());
+                return Err(1);
+            }
+        };
+        let alone = stages.len() == 1 && !background;
+        Ok(stages
+            .into_iter()
+            .map(|(words, streams)| begin(words, streams, alone))
+            .collect())
+    }
+
+    /// Waits for every command `going`, and answers the last one's
+    /// status. How they ended is said once all did, after all they wrote.
+    fn finished(&mut self, going: Vec<Going>) -> u8 {
+        let mut said = String::new();
+        let status = going.into_iter().fold(0, |_, command| {
+            let (status, line) = command.finish();
+            said.extend(line);
+            status
+        });
+        if !said.is_empty() {
+            let _ = self.err(said.as_bytes());
+        }
+        status
+    }
+
     /// A copy of what the innermost level that makes it reads from.
     fn input(&self) -> Result<In, Error> {
         for level in self.levels.iter().rev() {
@@ -798,35 +841,33 @@ fn capture() -> Option<Capture> {
 
 impl Machine for System {
     fn run(&mut self, pipeline: &[Ready]) -> u8 {
-        let Ok(defaults) = self.defaults() else {
-            let _ = program::write_error("|: no handle is left for the streams\n");
-            return 1;
-        };
-        let stages = match plumbed(pipeline, defaults) {
-            Ok(stages) => stages,
-            Err(said) => {
-                let _ = self.err(said.as_bytes());
-                return 1;
-            }
-        };
-        let alone = stages.len() == 1;
-        let going: Vec<Going> = stages
-            .into_iter()
-            .map(|(words, streams)| begin(words, streams, alone))
-            .collect();
-        // Each one has to be waited for, and the last one's status is the
-        // pipeline's. How they ended is said once all did, after all they
-        // wrote.
-        let mut said = String::new();
-        let status = going.into_iter().fold(0, |_, command| {
-            let (status, line) = command.finish();
-            said.extend(line);
-            status
-        });
-        if !said.is_empty() {
-            let _ = self.err(said.as_bytes());
+        match self.going(pipeline, false) {
+            Ok(going) => self.finished(going),
+            Err(status) => status,
         }
-        status
+    }
+
+    /// Starts the pipeline as a job and goes on, its first command's stream
+    /// 0 closed unless a redirection gives it one.
+    fn start(&mut self, pipeline: &[Ready]) -> u64 {
+        let going = self
+            .going(pipeline, true)
+            .unwrap_or_else(|status| Vec::from([Going::Done(status)]));
+        self.jobs.push(Some(going));
+        self.jobs.len() as u64
+    }
+
+    fn wait(&mut self, job: Option<u64>) -> Option<u8> {
+        let Some(job) = job else {
+            let jobs: Vec<Vec<Going>> = self.jobs.iter_mut().filter_map(Option::take).collect();
+            for going in jobs {
+                self.finished(going);
+            }
+            return Some(0);
+        };
+        let at = usize::try_from(job).ok()?.checked_sub(1)?;
+        let going = self.jobs.get_mut(at)?.take()?;
+        Some(self.finished(going))
     }
 
     // The runtime keeps the working directory, which `cd` changes, so the
@@ -2463,6 +2504,7 @@ mod tests {
         assert_eq!(asked(&words("-c --sh")), (Asked::Text("--sh"), false));
         assert_eq!(asked(&words("--sh -c")), (Asked::Unknown, true));
         assert_eq!(asked(&words("--sh /a.sh more")), (Asked::Unknown, true));
+        assert_eq!(asked(&words("--sh -c a b")), (Asked::Unknown, true));
         assert_eq!(
             asked(&words("-x --sh")),
             (Asked::Unknown, false),

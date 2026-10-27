@@ -71,6 +71,9 @@ pub struct Desk {
     pub ran: Vec<Vec<String>>,
     /// How many commands each pipeline it was asked to run had.
     pub pipelines: Vec<usize>,
+    /// How each job it ran to its end as it started it ended, until it was
+    /// waited for.
+    jobs: Vec<Option<u8>>,
     pub directory: String,
     /// The tree patterns match names in, none for one with no files.
     pub files: Option<Host>,
@@ -90,6 +93,7 @@ impl Default for Desk {
             fed: Vec::new(),
             ran: Vec::new(),
             pipelines: Vec::new(),
+            jobs: Vec::new(),
             directory: String::from("/"),
             files: None,
         }
@@ -269,6 +273,23 @@ impl Machine for Desk {
             piped = Some(core::mem::take(&mut self.pipe));
         }
         status
+    }
+
+    /// Runs the job to its end as it starts it, as a desk has no way to
+    /// run two things at once.
+    fn start(&mut self, pipeline: &[Ready]) -> u64 {
+        let status = self.run(pipeline);
+        self.jobs.push(Some(status));
+        self.jobs.len() as u64
+    }
+
+    fn wait(&mut self, job: Option<u64>) -> Option<u8> {
+        let Some(job) = job else {
+            self.jobs.iter_mut().for_each(|job| *job = None);
+            return Some(0);
+        };
+        let at = usize::try_from(job).ok()?.checked_sub(1)?;
+        self.jobs.get_mut(at)?.take()
     }
 
     fn out(&mut self, bytes: &[u8]) -> bool {

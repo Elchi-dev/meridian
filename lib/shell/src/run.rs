@@ -11,12 +11,58 @@ use crate::lex::Word;
 use crate::parse::{Command, Join, List, Pipeline, Redirect, Statement};
 use crate::{Code, Error};
 
-/// A command ready to run: its words, and the paths its redirections lead
-/// to, all expanded, none for `2>&1`.
+/// What a redirection makes one of a command's streams (decision record
+/// 0021).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// The file at the path, to read.
+    Read(String),
+    /// The file, made new; it must not be there yet.
+    Create(String),
+    /// The file, made new or emptied.
+    Write(String),
+    /// The file, written after what it holds, made when it is not there.
+    Append(String),
+    /// The file, to read and write, made when it is not there.
+    ReadWrite(String),
+    /// Where another of the command's streams goes once the redirections
+    /// before this one are made.
+    Copy(u32),
+    /// Nothing: the stream is closed, so reading it ends at once and
+    /// writing it fails.
+    Close,
+    /// A text the command reads, as a here-document's lines.
+    Text(Vec<u8>),
+}
+
+/// One of a command's redirections: which of its streams, made what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Redirection {
+    pub stream: u32,
+    pub target: Target,
+}
+
+/// A command ready to run: its words and its redirections, all expanded,
+/// the redirections in the order they are made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ready {
     pub words: Vec<String>,
-    pub redirections: Vec<(Redirect, Option<String>)>,
+    pub redirections: Vec<Redirection>,
+}
+
+/// The redirection the language's `how` with its expanded path makes;
+/// `2>&1` is the one without a path.
+fn redirection(how: Redirect, path: Option<String>) -> Redirection {
+    let path = path.unwrap_or_default();
+    let (stream, target) = match how {
+        Redirect::Out => (1, Target::Write(path)),
+        Redirect::Append => (1, Target::Append(path)),
+        Redirect::In => (0, Target::Read(path)),
+        Redirect::ErrorOut => (2, Target::Write(path)),
+        Redirect::ErrorAppend => (2, Target::Append(path)),
+        Redirect::ErrorToOutput => (2, Target::Copy(1)),
+    };
+    Redirection { stream, target }
 }
 
 /// What a session needs of the system it runs on.
@@ -335,7 +381,7 @@ impl Session {
         let mut redirections = Vec::new();
         for (how, path) in &command.redirections {
             let path = path.as_ref().map(|w| self.text(w)).transpose()?;
-            redirections.push((*how, path));
+            redirections.push(redirection(*how, path));
         }
         Ok(Ready {
             words,
@@ -398,6 +444,80 @@ mod tests {
         fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
             Vec::new()
         }
+    }
+
+    #[test]
+    fn the_languages_redirections_name_their_streams() {
+        let path = || Some(String::from("/a"));
+        let made = |stream, target| Redirection { stream, target };
+        let a = || String::from("/a");
+        assert_eq!(
+            redirection(Redirect::Out, path()),
+            made(1, Target::Write(a()))
+        );
+        assert_eq!(
+            redirection(Redirect::Append, path()),
+            made(1, Target::Append(a()))
+        );
+        assert_eq!(
+            redirection(Redirect::In, path()),
+            made(0, Target::Read(a()))
+        );
+        assert_eq!(
+            redirection(Redirect::ErrorOut, path()),
+            made(2, Target::Write(a()))
+        );
+        assert_eq!(
+            redirection(Redirect::ErrorAppend, path()),
+            made(2, Target::Append(a()))
+        );
+        assert_eq!(
+            redirection(Redirect::ErrorToOutput, None),
+            made(2, Target::Copy(1))
+        );
+    }
+
+    /// A machine that keeps the pipelines it is asked to run and ends
+    /// each with 0, as one whose programs all go well would.
+    #[derive(Default)]
+    struct Kept(Vec<Vec<Ready>>);
+
+    impl Machine for Kept {
+        fn run(&mut self, pipeline: &[Ready]) -> u8 {
+            self.0.push(pipeline.to_vec());
+            0
+        }
+
+        fn matching(&mut self, _: &str, _: &[Piece]) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_command_goes_to_the_machine_with_its_redirections_in_order() {
+        let mut kept = Kept::default();
+        let text = "let f = /b\ncat < /a > $f 2>&1 | wc 2>> /e";
+        Session::new()
+            .run(&script(text).unwrap(), &mut kept)
+            .unwrap();
+        let made = |stream, target| Redirection { stream, target };
+        assert_eq!(
+            kept.0,
+            [[
+                Ready {
+                    words: Vec::from([String::from("cat")]),
+                    redirections: Vec::from([
+                        made(0, Target::Read("/a".into())),
+                        made(1, Target::Write("/b".into())),
+                        made(2, Target::Copy(1)),
+                    ]),
+                },
+                Ready {
+                    words: Vec::from([String::from("wc")]),
+                    redirections: Vec::from([made(2, Target::Append("/e".into()))]),
+                },
+            ]]
+        );
     }
 
     /// A session that ran `text` through to its end.

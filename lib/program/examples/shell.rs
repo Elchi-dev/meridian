@@ -17,8 +17,8 @@ use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
 use ::shell::Code;
 use ::shell::expand::{self, Piece};
-use ::shell::parse::{self, Redirect, Statement};
-use ::shell::run::{Flow, Machine, Ready, Session};
+use ::shell::parse::{self, Statement};
+use ::shell::run::{Flow, Machine, Ready, Redirection, Session, Target};
 use program::abi::{MESSAGE_BYTES, file};
 use program::layout::{Held, Typed};
 use program::{Ended, Error, Handle, KeyEvent, start::Sink};
@@ -320,17 +320,6 @@ fn lines(typed: &str) -> Lines {
     }
 }
 
-/// How a redirection opens its file: `>` makes it new or empties it, and
-/// `>>` keeps what it holds. `<` opens none, since nothing reads a
-/// standard input yet.
-fn opening(how: Redirect) -> Option<u64> {
-    match how {
-        Redirect::Out | Redirect::ErrorOut => Some(file::CREATE_ALWAYS),
-        Redirect::Append | Redirect::ErrorAppend => Some(file::OPEN_ALWAYS),
-        Redirect::In | Redirect::ErrorToOutput => None,
-    }
-}
-
 /// What the shell asks of a tree of files to match patterns in it.
 trait Tree {
     /// The names in the directory at `path`, none when it is no directory.
@@ -627,8 +616,18 @@ impl Tree for System {
 /// `at` on, or the pipe from the command before it.
 enum In {
     Mine,
-    File { handle: Handle, at: u64 },
+    File {
+        handle: Handle,
+        at: u64,
+    },
     Pipe(Handle),
+    /// Nothing, which ends at once.
+    Closed,
+    /// A text, as a here-document's lines, from its byte `at` on.
+    Text {
+        text: Vec<u8>,
+        at: usize,
+    },
 }
 
 impl In {
@@ -644,18 +643,32 @@ impl In {
                 Ok(len)
             }
             In::Pipe(end) => program::stream(*end, room),
+            In::Closed => Ok(0),
+            In::Text { text, at } => {
+                let rest = &text[*at..];
+                let len = rest.len().min(room.len());
+                room[..len].copy_from_slice(&rest[..len]);
+                *at += len;
+                Ok(len)
+            }
         }
     }
 
     /// The channel end a program reading here is handed, which goes with
-    /// it: the pipe, one a thread of the shell fills from the file, or a
-    /// duplicate of the shell's own input; none for the keyboard.
+    /// it: the pipe, one a thread of the shell fills from the file or the
+    /// text, one whose writer is gone for nothing, or a duplicate of the
+    /// shell's own input; none for the keyboard.
     #[cfg_attr(test, allow(dead_code))]
     fn handed(self) -> Option<Handle> {
         match self {
             In::Pipe(end) => Some(end),
             In::Mine => program::duplicate(program::start::given().input?).ok(),
-            In::File { .. } => {
+            In::Closed => {
+                let (into, from) = program::channel().ok()?;
+                let _ = program::close(into);
+                Some(from)
+            }
+            In::File { .. } | In::Text { .. } => {
                 let (into, from) = program::channel().ok()?;
                 let mut file = self;
                 // What the thread ends with goes nowhere: the command reading
@@ -691,6 +704,8 @@ enum Out {
     MyErrors,
     File(Handle),
     Pipe(Handle),
+    /// Nowhere: each write fails, as one to a pipe nobody reads.
+    Closed,
 }
 
 impl Out {
@@ -724,6 +739,7 @@ impl Out {
             }
             Out::Pipe(end) => program::start::pieces(bytes)
                 .try_for_each(|piece| program::send_waiting(*end, piece)),
+            Out::Closed => Err(Error::Closed),
         }
     }
 
@@ -736,6 +752,11 @@ impl Out {
             Out::Pipe(end) => Some(Sink::Channel(end)),
             Out::Mine => inherited(program::start::given().output),
             Out::MyErrors => inherited(program::start::given().error),
+            Out::Closed => {
+                let (write, read) = program::channel().ok()?;
+                let _ = program::close(read);
+                Some(Sink::Channel(write))
+            }
         }
     }
 
@@ -754,6 +775,7 @@ impl Out {
             Out::MyErrors => Out::MyErrors,
             Out::File(handle) => Out::File(program::duplicate(*handle)?),
             Out::Pipe(handle) => Out::Pipe(program::duplicate(*handle)?),
+            Out::Closed => Out::Closed,
         })
     }
 }
@@ -850,16 +872,20 @@ fn plumbed(pipeline: &[Ready]) -> Option<Vec<(&[String], Streams)>> {
             return abandoned(next, stages);
         };
         let errors = match files.errors.take() {
-            None => Out::MyErrors,
-            Some(Errors::To(file)) => file,
-            Some(Errors::Output) => default.copy().unwrap_or(Out::MyErrors),
+            None | Some(Place::Errors) => Out::MyErrors,
+            Some(Place::Opened(file)) => file,
+            Some(Place::Output) => default.copy().unwrap_or(Out::MyErrors),
         };
         let out = match files.into.take() {
-            Some(file) => {
+            Some(Place::Opened(file)) => {
                 default.close();
                 file
             }
-            None => default,
+            Some(Place::Errors) => {
+                default.close();
+                Out::MyErrors
+            }
+            None | Some(Place::Output) => default,
         };
         stages.push((&ready.words, Streams { input, out, errors }));
     }
@@ -877,20 +903,23 @@ fn abandoned(next: In, stages: Vec<(&[String], Streams)>) -> Option<Vec<(&[Strin
     None
 }
 
-/// Where a command's redirections send what goes wrong: into a file, or
-/// with `2>&1` before any `>` where the command writes without one.
-enum Errors {
-    To(Out),
+/// Where stream 1 or 2 of a command goes after its redirections: an end
+/// a redirection opened or copied, or where the other of the two goes
+/// without a file of its own, as `2>&1` before any `>`, or `1>&2` before
+/// any `2>`, asks.
+enum Place {
+    Opened(Out),
     Output,
+    Errors,
 }
 
-/// The files a command's redirections opened, the last of each kind: to
+/// What a command's redirections made its streams, the last for each: to
 /// read, to write, and for what went wrong.
 #[derive(Default)]
 struct Files {
     from: Option<In>,
-    into: Option<Out>,
-    errors: Option<Errors>,
+    into: Option<Place>,
+    errors: Option<Place>,
 }
 
 impl Files {
@@ -899,75 +928,133 @@ impl Files {
         if let Some(file) = self.from {
             file.close();
         }
-        if let Some(Errors::To(file)) = self.errors {
-            file.close();
+        for place in [self.into, self.errors].into_iter().flatten() {
+            if let Place::Opened(file) = place {
+                file.close();
+            }
         }
-        if let Some(file) = self.into {
+    }
+
+    /// Where stream 1 or 2 goes.
+    fn place(&self, stream: u32) -> Option<&Place> {
+        if stream == 1 {
+            self.into.as_ref()
+        } else {
+            self.errors.as_ref()
+        }
+    }
+
+    /// Has stream 1 or 2 go to `place`, closing the end it went to.
+    #[cfg_attr(test, allow(dead_code))]
+    fn send(&mut self, stream: u32, place: Place) {
+        let slot = if stream == 1 {
+            &mut self.into
+        } else {
+            &mut self.errors
+        };
+        if let Some(Place::Opened(file)) = slot.replace(place) {
             file.close();
         }
     }
 
-    /// Has what goes wrong go to `errors`, closing the file it went to.
-    fn send_errors(&mut self, errors: Errors) {
-        if let Some(Errors::To(file)) = self.errors.replace(errors) {
+    /// Has stream 0 read from `input`, closing what it read from.
+    #[cfg_attr(test, allow(dead_code))]
+    fn read_from(&mut self, input: In) {
+        if let Some(file) = self.from.replace(input) {
             file.close();
         }
     }
 }
 
-/// Opens the files `redirections` lead to, in their order as sh does, and
-/// answers the last of each kind, one to write at its end. Says what went
-/// wrong and answers none when one does not open.
+/// The path, the rights and what OPEN does by whether the file is there,
+/// for a redirection to a file.
+fn opening(target: &Target) -> Option<(&str, u32, u64)> {
+    Some(match target {
+        Target::Read(path) => (path, file::READ, file::OPEN_EXISTING),
+        Target::Create(path) => (path, file::WRITE, file::CREATE_NEW),
+        Target::Write(path) => (path, file::WRITE, file::CREATE_ALWAYS),
+        Target::Append(path) => (path, file::WRITE, file::OPEN_ALWAYS),
+        Target::ReadWrite(path) => (path, file::READ | file::WRITE, file::OPEN_ALWAYS),
+        Target::Copy(_) | Target::Close | Target::Text(_) => return None,
+    })
+}
+
+/// What the shell says of a redirection Meridian has no way to make.
+fn unmade(stream: u32, target: &Target) -> String {
+    match target {
+        Target::Copy(other) if *other > 2 => {
+            format!("{other}: Meridian's programs have the streams 0, 1 and 2\n")
+        }
+        Target::Copy(other) => format!(
+            "{stream}>&{other}: a stream read and one written cannot stand for each other\n"
+        ),
+        _ => format!("{stream}<<: a here-document is read on stream 0\n"),
+    }
+}
+
+/// Makes the redirections, opening their files in their order as sh does,
+/// and answers what they made each stream. Says what went wrong and
+/// answers none when one cannot be made.
 #[cfg_attr(test, allow(dead_code))]
-fn redirected(redirections: &[(Redirect, Option<String>)]) -> Option<Files> {
+fn redirected(redirections: &[Redirection]) -> Option<Files> {
     let mut files = Files::default();
-    for (how, path) in redirections {
-        // `2>&1` is the one without a path.
-        let Some(path) = path.as_deref() else {
-            let errors = match files.into.as_ref().map(Out::copy) {
-                None => Errors::Output,
-                Some(Ok(copy)) => Errors::To(copy),
-                Some(Err(e)) => {
-                    let _ = program::write_error(&trouble("2>&1", e));
-                    files.close();
-                    return None;
-                }
+    let refused = |files: Files, said: &str| {
+        let _ = program::write_error(said);
+        files.close();
+        None
+    };
+    for Redirection { stream, target } in redirections {
+        let stream = *stream;
+        if stream > 2 {
+            return refused(
+                files,
+                &format!("{stream}: Meridian's programs have the streams 0, 1 and 2\n"),
+            );
+        }
+        if let Some((path, rights, how)) = opening(target) {
+            let handle = match program::open_with(path, rights, how) {
+                Ok(handle) => handle,
+                Err(e) => return refused(files, &trouble(path, e)),
             };
-            files.send_errors(errors);
-            continue;
-        };
-        let opened = match opening(*how) {
-            Some(how) => program::open_with(path, file::WRITE, how),
-            None => program::open(path, file::READ),
-        };
-        let handle = match opened {
-            Ok(handle) => handle,
-            Err(e) => {
-                let _ = program::write_error(&trouble(path, e));
-                files.close();
-                return None;
-            }
-        };
-        match how {
-            Redirect::In if program::info(handle).is_ok_and(|info| info.directory) => {
-                let _ = program::write_error(&trouble(path, Error::NotAFile));
+            if stream > 0 {
+                files.send(stream, Place::Opened(Out::File(handle)));
+            } else if program::info(handle).is_ok_and(|info| info.directory) {
                 let _ = program::close(handle);
-                files.close();
-                return None;
+                return refused(files, &trouble(path, Error::NotAFile));
+            } else {
+                files.read_from(In::File { handle, at: 0 });
             }
-            Redirect::In => {
-                if let Some(file) = files.from.replace(In::File { handle, at: 0 }) {
-                    file.close();
-                }
+            continue;
+        }
+        match (stream, target) {
+            (0, Target::Close) => files.read_from(In::Closed),
+            (0, Target::Text(text)) => files.read_from(In::Text {
+                text: text.clone(),
+                at: 0,
+            }),
+            (1 | 2, Target::Close) => files.send(stream, Place::Opened(Out::Closed)),
+            (_, Target::Copy(other)) if *other == stream => {}
+            (1 | 2, Target::Copy(other @ (1 | 2))) => {
+                let place = match files.place(*other) {
+                    None => {
+                        if *other == 1 {
+                            Place::Output
+                        } else {
+                            Place::Errors
+                        }
+                    }
+                    Some(Place::Output) => Place::Output,
+                    Some(Place::Errors) => Place::Errors,
+                    Some(Place::Opened(file)) => match file.copy() {
+                        Ok(copy) => Place::Opened(copy),
+                        Err(e) => {
+                            return refused(files, &trouble(&format!("{stream}>&{other}"), e));
+                        }
+                    },
+                };
+                files.send(stream, place);
             }
-            Redirect::Out | Redirect::Append => {
-                if let Some(file) = files.into.replace(Out::File(handle)) {
-                    file.close();
-                }
-            }
-            Redirect::ErrorOut | Redirect::ErrorAppend | Redirect::ErrorToOutput => {
-                files.send_errors(Errors::To(Out::File(handle)));
-            }
+            (_, target) => return refused(files, &unmade(stream, target)),
         }
     }
     Some(files)
@@ -2005,13 +2092,40 @@ mod tests {
     }
 
     #[test]
-    fn a_redirection_makes_its_file_new_or_adds_to_it() {
-        assert_eq!(opening(Redirect::Out), Some(file::CREATE_ALWAYS));
-        assert_eq!(opening(Redirect::Append), Some(file::OPEN_ALWAYS));
-        assert_eq!(opening(Redirect::In), None);
-        assert_eq!(opening(Redirect::ErrorOut), Some(file::CREATE_ALWAYS));
-        assert_eq!(opening(Redirect::ErrorAppend), Some(file::OPEN_ALWAYS));
-        assert_eq!(opening(Redirect::ErrorToOutput), None, "it opens nothing");
+    fn a_redirection_opens_its_file_as_its_target_asks() {
+        let a = || String::from("/a");
+        for (target, rights, how) in [
+            (Target::Read(a()), file::READ, file::OPEN_EXISTING),
+            (Target::Create(a()), file::WRITE, file::CREATE_NEW),
+            (Target::Write(a()), file::WRITE, file::CREATE_ALWAYS),
+            (Target::Append(a()), file::WRITE, file::OPEN_ALWAYS),
+            (
+                Target::ReadWrite(a()),
+                file::READ | file::WRITE,
+                file::OPEN_ALWAYS,
+            ),
+        ] {
+            assert_eq!(opening(&target), Some(("/a", rights, how)), "{target:?}");
+        }
+        for target in [Target::Copy(1), Target::Close, Target::Text(Vec::new())] {
+            assert_eq!(opening(&target), None, "{target:?} opens nothing");
+        }
+    }
+
+    #[test]
+    fn what_meridian_cannot_redirect_is_said_with_its_reason() {
+        assert_eq!(
+            unmade(2, &Target::Copy(3)),
+            "3: Meridian's programs have the streams 0, 1 and 2\n"
+        );
+        assert_eq!(
+            unmade(0, &Target::Copy(1)),
+            "0>&1: a stream read and one written cannot stand for each other\n"
+        );
+        assert_eq!(
+            unmade(1, &Target::Text(Vec::new())),
+            "1<<: a here-document is read on stream 0\n"
+        );
     }
 
     /// Directories and files on the host, in a directory of their own

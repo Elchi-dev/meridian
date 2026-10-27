@@ -982,7 +982,7 @@ fn every(paths: &[String], mut work: impl FnMut(&str) -> bool) -> bool {
 #[cfg_attr(test, allow(dead_code))]
 fn carry(
     paths: &[String],
-    mut each: impl FnMut(&str, &str) -> Result<(), (String, Error)>,
+    mut each: impl FnMut(&str, &str) -> Result<(), String>,
     errors: &mut Out,
 ) -> bool {
     let target = paths.last().map_or("", String::as_str);
@@ -994,8 +994,8 @@ fn carry(
     };
     let failed = pairs.iter().filter(|(from, to)| {
         each(from, to)
-            .inspect_err(|(path, e)| {
-                let _ = errors.say(&trouble(path, *e));
+            .inspect_err(|why| {
+                let _ = errors.say(why);
             })
             .is_err()
     });
@@ -1012,13 +1012,22 @@ fn is_directory(path: &str) -> bool {
     })
 }
 
-/// Copies the file at `from` to `to`, made new or emptied, and answers
-/// the path that went wrong with what did.
+/// Whether `from` and `to` lead to one file, as the tree compares names:
+/// in capitals.
+fn one_file(from: &str, to: &str) -> bool {
+    program::full_path(from).to_uppercase() == program::full_path(to).to_uppercase()
+}
+
+/// Copies the file at `from` to `to`, made new or emptied, but never onto
+/// itself, which emptying would lose, and says what went wrong.
 #[cfg_attr(test, allow(dead_code))]
-fn copy_file(from: &str, to: &str) -> Result<(), (String, Error)> {
-    let source = program::open(from, file::READ).map_err(|e| (String::from(from), e))?;
-    let copied = copy_from(source, to)
-        .map_err(|(reading, e)| (String::from(if reading { from } else { to }), e));
+fn copy_file(from: &str, to: &str) -> Result<(), String> {
+    if one_file(from, to) {
+        return Err(format!("{from}: copied onto itself\n"));
+    }
+    let source = program::open(from, file::READ).map_err(|e| trouble(from, e))?;
+    let copied =
+        copy_from(source, to).map_err(|(reading, e)| trouble(if reading { from } else { to }, e));
     let _ = program::close(source);
     copied
 }
@@ -1053,13 +1062,13 @@ fn copy_from(source: Handle, to: &str) -> Result<(), (bool, Error)> {
 /// Moves the file or directory at `from` to `to`, and a file across
 /// volumes by copying it and removing it after.
 #[cfg_attr(test, allow(dead_code))]
-fn move_file(from: &str, to: &str) -> Result<(), (String, Error)> {
+fn move_file(from: &str, to: &str) -> Result<(), String> {
     match program::rename(from, to) {
         Err(Error::NotSameVolume) => {
             copy_file(from, to)?;
-            program::remove(from).map_err(|e| (String::from(from), e))
+            program::remove(from).map_err(|e| trouble(from, e))
         }
-        other => other.map_err(|e| (String::from(from), e)),
+        other => other.map_err(|e| trouble(from, e)),
     }
 }
 
@@ -1489,6 +1498,18 @@ mod tests {
                 format!("{word} needs a path and where it goes\n")
             );
         }
+    }
+
+    #[test]
+    fn one_file_is_one_whichever_way_its_path_is_written() {
+        assert!(one_file("/System/a", "/system/A"), "in capitals");
+        assert!(
+            one_file("a", "/a"),
+            "from the working directory, the root here"
+        );
+        assert!(one_file("/x/../a", "/a/."));
+        assert!(!one_file("/a", "/b"));
+        assert!(!one_file("/a", "/a/b"));
     }
 
     #[test]

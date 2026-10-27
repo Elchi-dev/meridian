@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 61] = [
+const CHECKS: [(&str, Check); 62] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -82,6 +82,7 @@ const CHECKS: [(&str, Check); 61] = [
     ("shell.directory", the_working_directory),
     ("shell.errors", errors_go_where_2_sends_them),
     ("shell.errors.output", errors_go_with_the_output),
+    ("shell.carry.itself", no_copy_onto_itself),
     ("console", writes_on_the_console),
 ];
 
@@ -2127,6 +2128,29 @@ fn errors_go_with_the_output() -> Outcome {
     expect(
         ended == Ok(Ended::Exited(0)) && said == b"1 4 20\n",
         "2>&1 before a > should keep the pipe for what goes wrong while the output goes to the file",
+    )
+}
+
+/// cp never copies a file onto itself, which would empty it first, even
+/// written in other capitals.
+fn no_copy_onto_itself() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo kept > /System/s; cp /System/s /System/S; cd /System; copy s ./s\n\
+         cat /System/s; rm /System/s",
+    )?;
+    if said.starts_with(b"/System/s: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only nothing should be copied",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == b"/System/s: copied onto itself\ns: copied onto itself\nkept\n",
+        "cp should refuse to copy a file onto itself and leave what it holds",
     )
 }
 

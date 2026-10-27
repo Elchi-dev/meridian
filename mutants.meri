@@ -289,3 +289,17 @@ allow {
     mutation = "true to false"
     reason = "the lexer marks every part of a here-document's body quoted already, so quoting all of it once more changes nothing"
 }
+
+allow {
+    file = "lib/regex/src/reach.rs"
+    line = "fn holds_group(node: &Node) -> bool {"
+    mutation = "body to { true }"
+    reason = "it only spares the work of splitting a part that holds no subexpression; split anyway, such a part puts nothing in the spans"
+}
+
+allow {
+    file = "lib/regex/src/reach.rs"
+    line = "_ => false,"
+    mutation = "false to true"
+    reason = "it only spares the work of splitting a part that holds no subexpression; split anyway, such a part puts nothing in the spans"
+}

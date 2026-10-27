@@ -7,8 +7,8 @@
 use alloc::vec::Vec;
 
 use crate::parse::Node;
+use crate::same;
 use crate::set::Set;
-use crate::{lower, upper};
 
 /// How many instructions a program may have once its intervals are
 /// written out; an expression that needs more is refused.
@@ -180,7 +180,7 @@ impl Program {
                         best = Some((start, at));
                         continue;
                     }
-                    (Op::Char(want), Some(&c)) => self.same(c, *want),
+                    (Op::Char(want), Some(&c)) => same(c, *want, self.either_case),
                     (Op::Any, Some(_)) => true,
                     (Op::Set(set), Some(&c)) => set.takes(c, self.either_case),
                     // At the end of the text nothing more is taken.
@@ -224,14 +224,6 @@ impl Program {
                 _ => threads.list.push((pc, start)),
             }
         }
-    }
-
-    /// Whether the character `c` is `want`, or in either case when the
-    /// program says so.
-    fn same(&self, c: Option<char>, want: char) -> bool {
-        c.is_some_and(|c| {
-            c == want || (self.either_case && (lower(c) == lower(want) || upper(c) == upper(want)))
-        })
     }
 }
 

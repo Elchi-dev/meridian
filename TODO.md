@@ -167,7 +167,8 @@ Loader and UEFI:
   - [x] Its pattern matching notation: `*`, `?` and brackets with classes, for `case`, `${x%pattern}` and names of files
   - [x] Its arithmetic: C's operators on 64-bit integers that wrap, variables read and set, `&&`, `||` and `?:` working out only the side they take
   - [x] `echo`, `printf`, `test` and `[`, `true`, `false` and `:` in lib/shell for both dialects (ADR 0021)
-  - [ ] The shell program running those for both dialects, and capturing output for `$(...)`
+  - [x] The shell program running those for both dialects
+  - [ ] Capturing what commands write, for `$(...)`
   - [ ] Expansions, running, and choosing the dialect
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

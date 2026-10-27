@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 81] = [
+const CHECKS: [(&str, Check); 83] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -104,6 +104,8 @@ const CHECKS: [(&str, Check); 81] = [
     ),
     ("shell.partial", a_character_cut_short_shows),
     ("shell.closes", files_close_when_a_command_cannot_start),
+    ("shell.shared", the_shared_commands),
+    ("shell.test.files", test_asks_the_files),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -1381,6 +1383,9 @@ fn shell_with(words: &[&str]) -> Result<Ran, &'static str> {
 /// Starts the shell with `words` as [`shell_with`] does, and with a
 /// standard input that brings `input` and ends, when that is some. What
 /// the shell says went wrong comes through the same channel, in its order.
+/// What it says is read once it ended, so a script says at most 8
+/// messages, as many as a channel holds, or the shell waits for room for
+/// ever: each echo, each line a program writes and each complaint is one.
 fn shell_reading(words: &[&str], input: Option<&[u8]>) -> Result<Ran, &'static str> {
     let (mine, theirs) = pair()?;
     let mut given = output(start::Sink::Channel(theirs));
@@ -2288,18 +2293,18 @@ fn tools_on_files() -> Outcome {
     )
 }
 
-/// uniq on a file of 4900 bytes, more than one read of the file and more
+/// uniq on a file of 4880 bytes, more than one read of the file and more
 /// than one message of a pipe bring: every line comes, however it is
 /// given.
 fn uniq_on_a_big_file() -> Outcome {
     if !booted_from_disk() {
         return Ok(());
     }
-    // Tried once first, so that where /System only reads, a hundred
-    // writes do not each take their time to be refused. The line comes
-    // again first thing in the loop, and uniq takes it once.
-    let x = "x".repeat(40);
-    let (ended, said) = shell_on(&alloc::format!("echo line 00 {x} > /System/big"))?;
+    // Tried once first, so that where /System only reads, ten writes do
+    // not each take their time to be refused. The line comes again first
+    // thing in the loop, and uniq takes it once.
+    let x = "x".repeat(480);
+    let (ended, said) = shell_on(&alloc::format!("echo line 0 {x} > /System/big"))?;
     if said.starts_with(b"/System/big: on a volume that is only read\n") {
         return expect(
             ended == Ok(Ended::Exited(1)),
@@ -2308,10 +2313,9 @@ fn uniq_on_a_big_file() -> Outcome {
     }
     let made = same(&(ended, said), &ran(0, b""));
     let filled = shell_on(&alloc::format!(
-        "for a in 0 1 2 3 4 5 6 7 8 9 {{\nfor b in 0 1 2 3 4 5 6 7 8 9 {{\n\
-         echo line $a$b {x} >> /System/big\n}}\n}}"
+        "for a in 0 1 2 3 4 5 6 7 8 9 {{\necho line $a {x} >> /System/big\n}}"
     ))?;
-    let all = b"100 300 4900\n";
+    let all = b"10 30 4880\n";
     let checked = made
         && same(&filled, &ran(0, b""))
         && same(
@@ -2495,7 +2499,7 @@ fn tools_given_nothing() -> Outcome {
         "nothing read should give nothing written, and grep's 1",
     )?;
     expect(
-        shell_on("help | head -n 0 | wc; help | head -n 1 | wc")? == ran(0, b"0 0 0\n1 35 158\n"),
+        shell_on("help | head -n 0 | wc; help | head -n 1 | wc")? == ran(0, b"0 0 0\n1 41 190\n"),
         "head should take no line when told none, and one when told one",
     )
 }
@@ -2692,6 +2696,69 @@ fn files_close_when_a_command_cannot_start() -> Outcome {
     )
 }
 
+/// echo, printf, test and `[` run in the shell as lib/shell has them, with
+/// their statuses, in a pipeline too, and what goes wrong said before what
+/// printf writes at its end. Where the shell's output is a channel, it is
+/// no terminal.
+fn the_shared_commands() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf '%s-%03d|' a 7; echo -n x; echo y; test 1 -lt 2; echo $?; [ a = b ]; echo $?",
+        )?,
+        &ran(0, b"a-007|xy\n0\n1\n"),
+    ) && same(
+        &shell_on("test; echo $?; [ x; echo $?; printf '%d\\n' 9x; echo $?")?,
+        &ran(
+            0,
+            b"1\n[: needs a ] at its end\n2\nprintf: 9x: not all a number\n9\n1\n",
+        ),
+    ) && same(
+        &shell_on("printf 'p\\n' | wc; test -t 1; echo $?")?,
+        &ran(0, b"1 1 2\n1\n"),
+    );
+    expect(
+        checked,
+        "echo, printf, test and [ should run as lib/shell has them, with their statuses",
+    )
+}
+
+/// test asks the files on /System what they are and what may be done with
+/// them: a program's image may be run, whatever the capitals of its name,
+/// and one may write what the volume lets be written.
+fn test_asks_the_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let writable = open(boot, abi::file::WRITE).is_ok_and(|handle| close(handle) == Ok(()));
+    let programs = "/System/Boot/meridian/programs";
+    let what = same(
+        &shell_on(&alloc::format!(
+            "test -d /System; echo $?; test -f {boot}; echo $?; test -s {boot}; echo $?; \
+             test -e /nope; echo $?; test -r {boot}; echo $?"
+        ))?,
+        &ran(0, b"0\n0\n0\n1\n0\n"),
+    );
+    let allowed = same(
+        &shell_on(&alloc::format!(
+            "test -x {programs}/wc.mexec; echo $?; test -x {programs}/WC.MEXEC; echo $?; \
+             test -x {boot}; echo $?; test -w {boot}; echo $?"
+        ))?,
+        &ran(
+            0,
+            if writable {
+                b"0\n0\n1\n0\n"
+            } else {
+                b"0\n0\n1\n1\n"
+            },
+        ),
+    );
+    expect(
+        what && allowed,
+        "test should ask the files what they are and what may be done with them",
+    )
+}
+
 /// in each of several files by its name.
 fn a_move_to_other_capitals() -> Outcome {
     if !booted_from_disk() {
@@ -2755,8 +2822,8 @@ fn tools_refuse_what_is_no_text() -> Outcome {
 }
 
 /// What `help` shows, counted as wc counts.
-const HELP_WORDS: usize = 60;
-const HELP_BYTES: usize = 273;
+const HELP_WORDS: usize = 66;
+const HELP_BYTES: usize = 305;
 
 fn writes_on_the_console() -> Outcome {
     // The first piece would end inside the last character. Spaces, since

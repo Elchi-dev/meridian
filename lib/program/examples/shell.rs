@@ -137,7 +137,9 @@ impl Editor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command<'a> {
     Help,
-    Echo(&'a [String]),
+    /// echo, printf, test and their kin, which lib/shell runs alike for
+    /// both dialects (decision record 0021): all the words, the name first.
+    Shared(&'a [String]),
     List(&'a [String]),
     Show(&'a [String]),
     MakeDirectory(&'a [String]),
@@ -153,8 +155,6 @@ enum Command<'a> {
     ChangeDirectory(&'a [String]),
     WorkingDirectory,
     Empty,
-    /// `true` or `false` in a pipeline, which end so.
-    Status(u8),
     /// A program, by its name in [`PROGRAMS`] or by its path, and the
     /// words it is handed.
     Program(&'a str, &'a [String]),
@@ -163,7 +163,7 @@ enum Command<'a> {
 }
 
 /// What `help` says: the commands on its first line.
-const HELP: &str = "help, echo, cd or chdir, pwd, ls or dir, cat or type, cp or copy, \
+const HELP: &str = "help, echo, printf, test or [, true, false, cd or chdir, pwd, ls or dir, cat or type, cp or copy, \
                     mv or move, mkdir or md, rm or del, rmdir or rd, clear or cls, services, \
                     exit, or a program\n\
                     let, if, for, while and fn as blocks in braces; > PATH or >> PATH after a \
@@ -181,8 +181,8 @@ fn command(words: &[String]) -> Command<'_> {
         return Command::Empty;
     };
     match word.as_str() {
+        name if ::shell::commands::knows(name) => Command::Shared(words),
         "help" => Command::Help,
-        "echo" => Command::Echo(rest),
         "ls" | "dir" => Command::List(rest),
         "mkdir" | "md" | "rm" | "del" | "rmdir" | "rd" if rest.is_empty() => Command::Missing(word),
         "cp" | "copy" | "mv" | "move" if rest.len() < 2 => Command::Missing(word),
@@ -196,8 +196,6 @@ fn command(words: &[String]) -> Command<'_> {
         "services" => Command::Services,
         "cd" | "chdir" => Command::ChangeDirectory(rest),
         "pwd" => Command::WorkingDirectory,
-        "true" => Command::Status(0),
-        "false" => Command::Status(1),
         _ => Command::Program(word, rest),
     }
 }
@@ -1064,9 +1062,11 @@ fn run(command: Command<'_>, streams: &mut Streams) -> u8 {
             }
             return status;
         }
-        Command::Status(status) => return status,
+        Command::Shared(words) => {
+            let mut reach = Reach { input, out, errors };
+            return ::shell::commands::run(words, &mut reach).unwrap_or(127);
+        }
         Command::Help => out.say(HELP).is_ok(),
-        Command::Echo(words) => out.say(&format!("{}\n", words.join(" "))).is_ok(),
         Command::List([]) => list(&program::directory(), out, errors),
         Command::ChangeDirectory([]) | Command::WorkingDirectory => {
             out.say(&format!("{}\n", program::directory())).is_ok()
@@ -1097,6 +1097,80 @@ fn run(command: Command<'_>, streams: &mut Streams) -> u8 {
         }
     };
     u8::from(!done)
+}
+
+/// What the commands lib/shell runs reach in the shell: the streams of the
+/// command, and the files and streams they ask about.
+struct Reach<'a> {
+    input: &'a mut In,
+    out: &'a mut Out,
+    errors: &'a mut Out,
+}
+
+/// Writes `bytes` to `out` whole, and says whether all of them went.
+fn written(out: &mut Out, bytes: &[u8]) -> bool {
+    let mut held = Vec::new();
+    out.put(bytes, &mut held)
+        .and_then(|()| said_last(&held, out))
+        .is_ok()
+}
+
+/// Whether the file at `path` opens with the right `wanted`.
+fn may(path: &str, wanted: u32) -> bool {
+    program::open(path, wanted).is_ok_and(|handle| {
+        let _ = program::close(handle);
+        true
+    })
+}
+
+impl ::shell::commands::Streams for Reach<'_> {
+    fn out(&mut self, bytes: &[u8]) -> bool {
+        written(self.out, bytes)
+    }
+
+    fn err(&mut self, bytes: &[u8]) -> bool {
+        written(self.errors, bytes)
+    }
+
+    /// What is at `path`: a directory may always be gone into, and a file
+    /// run when it is a program's image and the right to run it is there.
+    fn file(&mut self, path: &str) -> Option<::shell::commands::File> {
+        use ::shell::commands::{Allowed, File, Kind};
+        let handle = program::open(path, 0).ok()?;
+        let info = program::info(handle);
+        let _ = program::close(handle);
+        let info = info.ok()?;
+        Some(File {
+            kind: if info.directory {
+                Kind::Directory
+            } else {
+                Kind::File
+            },
+            size: info.size,
+            allowed: Allowed {
+                read: may(path, file::READ),
+                write: may(path, file::WRITE),
+                run: info.directory
+                    || path
+                        .rsplit_once('.')
+                        .is_some_and(|(_, end)| end.eq_ignore_ascii_case("mexec"))
+                        && may(path, file::RUN),
+            },
+        })
+    }
+
+    /// A stream is a terminal where the command has the shell's own and
+    /// the shell has the console's: the keyboard to read, the screen to
+    /// write.
+    fn terminal(&mut self, stream: u32) -> bool {
+        let given = program::start::given();
+        match stream {
+            0 => matches!(self.input, In::Mine) && given.input.is_none(),
+            1 => matches!(self.out, Out::Mine) && given.output.is_none(),
+            2 => matches!(self.errors, Out::MyErrors) && given.error.is_none(),
+            _ => false,
+        }
+    }
 }
 
 /// Does `work` with each of `paths`, the ones after one that went wrong
@@ -1666,11 +1740,29 @@ mod tests {
     }
 
     #[test]
+    fn the_commands_lib_shell_runs_get_all_their_words() {
+        for line in [
+            "echo hello there",
+            "echo",
+            "printf %s x",
+            "test -n x",
+            "[ x ]",
+            "true",
+            ":",
+            "false x",
+        ] {
+            let w = words(line);
+            assert_eq!(
+                command(&w),
+                Command::Shared(&w),
+                "{line}: lib/shell's, all words"
+            );
+        }
+    }
+
+    #[test]
     fn the_first_word_says_which_command_runs() {
         assert_eq!(command(&words("help me")), Command::Help);
-        let echo = words("echo hello there");
-        assert_eq!(command(&echo), Command::Echo(&echo[1..]));
-        assert_eq!(command(&words("echo")), Command::Echo(&[]));
         for name in ["ls", "dir"] {
             let w = words(&format!("{name} /a /b"));
             assert_eq!(command(&w), Command::List(&w[1..]));
@@ -1698,11 +1790,6 @@ mod tests {
                 "it shows what it reads"
             );
         }
-        assert_eq!(
-            (command(&words("true")), command(&words("false x"))),
-            (Command::Status(0), Command::Status(1)),
-            "for a pipeline, where the language does not see them"
-        );
         for name in ["clear", "cls", "cls now"] {
             assert_eq!(command(&words(name)), Command::Clear);
         }
@@ -2250,8 +2337,9 @@ mod tests {
     #[test]
     fn help_names_every_command_the_shell_knows() {
         let known = [
-            "help", "echo", "cd", "chdir", "pwd", "ls", "dir", "cat", "type", "cp", "copy", "mv",
-            "move", "mkdir", "md", "rm", "del", "rmdir", "rd", "clear", "cls", "services", "exit",
+            "help", "echo", "printf", "test", "true", "false", "cd", "chdir", "pwd", "ls", "dir",
+            "cat", "type", "cp", "copy", "mv", "move", "mkdir", "md", "rm", "del", "rmdir", "rd",
+            "clear", "cls", "services", "exit",
         ];
         let (first, second) = HELP.split_once('\n').unwrap();
         let named: Vec<&str> = first

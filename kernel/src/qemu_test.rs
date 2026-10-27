@@ -1723,10 +1723,7 @@ fn shell_checks<W: Write>(
     };
     let greeted = waited_for("Meridian shell. Type help to see what it knows.");
     let disk = esp_of_disk().is_some();
-    // A shell started at the root goes to its home, /System, which a CD
-    // does not bring.
-    typed(&["p", "w", "d", "ret"]);
-    let home = waited_for(if disk { "/System" } else { "/" });
+    let started_well = shell_start_checks(&mut typed, &waited_for, disk);
     typed(&["e", "c", "h", "o", "spc", "h", "i", "ret"]);
     let echoed = waited_for("> echo hi") && waited_for("hi");
     typed(&[
@@ -1770,7 +1767,7 @@ fn shell_checks<W: Write>(
     report.check(
         "kernel.shell",
         greeted
-            && home
+            && started_well
             && echoed
             && listed
             && shown
@@ -1782,7 +1779,7 @@ fn shell_checks<W: Write>(
             && recalled
             && completed
             && ended,
-        "the shell should greet, start in /System, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, finish a path with tab, and end at exit with its status",
+        "the shell should greet, start in /System, see the console as a terminal, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, finish a path with tab, and end at exit with its status",
     );
 }
 
@@ -2073,6 +2070,40 @@ fn shell_language_checks(
         waited_for("/System/Boot/meridian/pro")
     };
     (block, wrong, once && again, completed)
+}
+
+/// The shell at the console starts in its home, /System, which a CD does
+/// not bring, and sees the console as a terminal, for `test -t`, which
+/// lib/shell runs.
+fn shell_start_checks(
+    typed: &mut dyn FnMut(&[&str]),
+    waited_for: &dyn Fn(&str) -> bool,
+    disk: bool,
+) -> bool {
+    typed(&["p", "w", "d", "ret"]);
+    let home = waited_for(if disk { "/System" } else { "/" });
+    typed(&[
+        "t",
+        "e",
+        "s",
+        "t",
+        "spc",
+        "minus",
+        "t",
+        "spc",
+        "1",
+        "semicolon",
+        "spc",
+        "e",
+        "c",
+        "h",
+        "o",
+        "spc",
+        "shift-4",
+        "shift-slash",
+        "ret",
+    ]);
+    home && waited_for("0")
 }
 
 /// Asks sextant to type `line` and press return, a key for each
@@ -3194,12 +3225,12 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     seen::forget();
     seen::READ_PROGRAMS.store(0, Ordering::Release);
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
-    // Its checks start the shell on a score of scripts, each starting
-    // programs read from their files, which takes the slower machine a few
-    // seconds, and more than ten beside the other machines of the Go tests.
+    // Its checks start the shell on scores of scripts, each starting
+    // programs read from their files, which takes the slower machine half
+    // a minute and more beside the other machines of the Go tests.
     report.check(
         "kernel.programs.hello",
-        ended_within(started, 0, 30 * raw::timer::HZ)
+        ended_within(started, 0, 60 * raw::timer::HZ)
             && seen::logged(b"Hello from ring 3, in Rust")
             && seen::ended(b"user: hello ended with 0\n"),
         "hello should run from its file, find every call working, greet, and have its end logged",

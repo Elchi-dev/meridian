@@ -45,6 +45,15 @@ pub trait Streams {
     fn terminal(&mut self, stream: u32) -> bool;
 }
 
+/// Whether `name` is one of these commands.
+#[must_use]
+pub fn knows(name: &str) -> bool {
+    matches!(
+        name,
+        "echo" | "printf" | "test" | "[" | "true" | "false" | ":"
+    )
+}
+
 /// Runs the command `words` name, when it is one of these, and answers
 /// its status; none when the first word names none of them.
 pub fn run(words: &[String], streams: &mut impl Streams) -> Option<u8> {
@@ -1399,5 +1408,20 @@ mod tests {
             ]),
             "name    |  size|    k\nboot.meri|  1024|    f\n"
         );
+    }
+
+    #[test]
+    fn the_names_known_are_those_that_run() {
+        for name in [
+            "echo", "printf", "test", "[", "true", "false", ":", "cd", "ls", "Echo", "", "[[",
+            "tst",
+        ] {
+            let words = [String::from(name), String::from("]")];
+            assert_eq!(
+                knows(name),
+                run(&words, &mut Kept::default()).is_some(),
+                "{name}"
+            );
+        }
     }
 }

@@ -29,6 +29,46 @@ impl Guid {
     pub fn is_zero(&self) -> bool {
         self.0 == [0; 16]
     }
+
+    /// The GUID `text` writes as Display does, such as
+    /// `C12A7328-F81F-11D2-BA4B-00A0C93EC93B`, in either case; none when
+    /// it is anything else.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Guid> {
+        let text = text.as_bytes();
+        if text.len() != 36 {
+            return None;
+        }
+        let mut nibbles = [0u8; 32];
+        let mut n = 0;
+        for (at, &c) in text.iter().enumerate() {
+            if matches!(at, 8 | 13 | 18 | 23) {
+                if c != b'-' {
+                    return None;
+                }
+                continue;
+            }
+            nibbles[n] = nibble(c)?;
+            n += 1;
+        }
+        let b: [u8; 16] = core::array::from_fn(|i| nibbles[2 * i] << 4 | nibbles[2 * i + 1]);
+        Some(Guid::new(
+            u32::from_be_bytes([b[0], b[1], b[2], b[3]]),
+            u16::from_be_bytes([b[4], b[5]]),
+            u16::from_be_bytes([b[6], b[7]]),
+            [b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]],
+        ))
+    }
+}
+
+/// The value of the hexadecimal digit `c`.
+fn nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
 }
 
 impl core::fmt::Display for Guid {
@@ -401,6 +441,68 @@ mod tests {
             esp.unique.to_string(),
             "D0501128-096F-4A49-832E-5BD507F44A38"
         );
+    }
+
+    #[test]
+    fn guids_are_read_from_their_text_in_either_case() {
+        let want = Guid::new(
+            0x0123_4567,
+            0x89ab,
+            0xcdef,
+            [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+        );
+        for text in [
+            "01234567-89AB-CDEF-0123-456789ABCDEF",
+            "01234567-89ab-cdef-0123-456789abcdef",
+            "01234567-89aB-CdEf-0123-456789AbcDeF",
+        ] {
+            assert_eq!(Guid::parse(text), Some(want), "{text}");
+        }
+        for guid in [EFI_SYSTEM, MERIDIAN_SYSTEM, want] {
+            assert_eq!(Guid::parse(&guid.to_string()), Some(guid));
+        }
+        assert_eq!(
+            Guid::parse("00000000-0000-0000-0000-000000000000"),
+            Some(Guid([0; 16]))
+        );
+        assert_eq!(
+            Guid::parse("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"),
+            Some(Guid([0xff; 16]))
+        );
+    }
+
+    #[test]
+    fn nothing_else_reads_as_a_guid() {
+        let good = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+        assert_eq!(Guid::parse(good), Some(EFI_SYSTEM));
+        for bad in [
+            "",
+            "C12A7328-F81F-11D2-BA4B-00A0C93EC93",
+            "C12A7328-F81F-11D2-BA4B-00A0C93EC93BB",
+            "C12A7328F81F-11D2-BA4B-00A0C93EC93BB",
+            "C12A732-8F81F-11D2-BA4B-00A0C93EC93B",
+            "C12A7328-F81F1-1D2-BA4B-00A0C93EC93B",
+            "C12A7328-F81F-11D2B-A4B-00A0C93EC93B",
+            "C12A7328-F81F-11D2-BA4B0-0A0C93EC93B",
+            "{C12A7328-F81F-11D2-BA4B-00A0C93EC9}",
+        ] {
+            assert_eq!(Guid::parse(bad), None, "{bad:?}");
+        }
+        // Each character just outside the digits and letters it takes.
+        for c in ['/', ':', '@', 'G', '`', 'g', ' ', '-'] {
+            let mut bad = String::from(good);
+            bad.replace_range(35..36, &c.to_string());
+            assert_eq!(Guid::parse(&bad), None, "{bad:?}");
+        }
+        for dash in [8, 13, 18, 23] {
+            let mut bad = String::from(good);
+            bad.replace_range(dash..=dash, "0");
+            assert_eq!(Guid::parse(&bad), None, "{bad:?}");
+        }
+        let mut non_ascii = String::from(good);
+        non_ascii.replace_range(34..36, "\u{e9}");
+        assert_eq!(non_ascii.len(), 36);
+        assert_eq!(Guid::parse(&non_ascii), None);
     }
 
     #[test]

@@ -153,6 +153,10 @@ an error (`bad-status`). Outside a function it ends the script the same
 way. `exit` ends the script, or the session, from inside any block, loop
 or function, with the status it is given in the same way, or with that
 of the last pipeline.
+After `and`, `or` or `not` the four are commands that do the same, so
+`cp /a /b or exit 1` ends the script when the copy failed. A `break` or
+`continue` in a `while` condition is that loop's: `break` ends it, and
+`continue` asks the condition again.
 
 `true` ends with 0 and `false` with 1, without running anything. A name a
 function was made with is a command from then on, before any program of

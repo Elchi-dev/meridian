@@ -169,11 +169,14 @@ pub enum Flow {
     Exit,
 }
 
-/// Why running stopped short: an error, or `exit`, which leaves every
-/// block, loop and function it is in.
+/// Why running stopped short: an error, `exit`, which leaves every
+/// block, loop and function it is in, or a `return`, `break` or
+/// `continue` run as a command after `and` or `or`, which leaves the
+/// statement it is in as the keyword would.
 enum Stop {
     Error(Error),
     Exit,
+    Jump(Flow),
 }
 
 impl From<Error> for Stop {
@@ -267,7 +270,7 @@ impl Session {
         machine: &mut impl Machine,
     ) -> Result<Flow, Error> {
         match self.statements(statements, machine) {
-            Ok(flow) => Ok(flow),
+            Ok(flow) | Err(Stop::Jump(flow)) => Ok(flow),
             Err(Stop::Exit) => Ok(Flow::Exit),
             Err(Stop::Error(e)) => Err(e),
         }
@@ -279,7 +282,10 @@ impl Session {
         machine: &mut impl Machine,
     ) -> Result<Flow, Stop> {
         for statement in statements {
-            let flow = self.statement(statement, machine)?;
+            let flow = match self.statement(statement, machine) {
+                Err(Stop::Jump(flow)) => flow,
+                ran => ran?,
+            };
             if flow != Flow::Next {
                 return Ok(flow);
             }
@@ -345,7 +351,15 @@ impl Session {
             Statement::While { condition, body } => {
                 // What the body ended with last, 0 while it never ran.
                 let mut last = 0;
-                while self.list(condition, machine)? == 0 {
+                loop {
+                    // A break or continue after `and` or `or` in the
+                    // condition is this loop's.
+                    match self.list(condition, machine) {
+                        Ok(0) => {}
+                        Ok(_) | Err(Stop::Jump(Flow::Break)) => break,
+                        Err(Stop::Jump(Flow::Continue)) => continue,
+                        Err(stop) => return Err(stop),
+                    }
                     let flow = self.block(body, None, machine)?;
                     last = self.status;
                     match flow {
@@ -426,11 +440,23 @@ impl Session {
     fn single(&mut self, command: &Command, machine: &mut impl Machine) -> Result<u8, Stop> {
         let ready = self.ready(command, machine)?;
         let name = ready.words.first().map_or("", String::as_str);
-        if name == "true" {
-            return Ok(0);
-        }
-        if name == "false" {
-            return Ok(1);
+        let word = command.words.get(1);
+        match name {
+            "true" => return Ok(0),
+            "false" => return Ok(1),
+            // After `and` or `or` these come as commands, as the statements
+            // they are at the start of one.
+            "exit" => {
+                self.status = self.given_status(word, self.status)?;
+                return Err(Stop::Exit);
+            }
+            "return" => {
+                self.status = self.given_status(word, 0)?;
+                return Err(Stop::Jump(Flow::Return));
+            }
+            "break" => return Err(Stop::Jump(Flow::Break)),
+            "continue" => return Err(Stop::Jump(Flow::Continue)),
+            _ => {}
         }
         let Some(body) = self
             .functions
@@ -1252,5 +1278,122 @@ mod tests {
         assert_eq!(ran("fn zero { return 0 }\nnot zero").status(), 1);
         assert_eq!(value("not false; let s = $?", "s").as_deref(), Some("0"));
         assert_eq!(value("not true; let s = $?", "s").as_deref(), Some("1"));
+    }
+
+    /// How a script ended: its flow, its status and the variable `a`.
+    fn ended(text: &str) -> (Result<Flow, Error>, u8, Option<String>) {
+        let mut session = Session::new();
+        let flow = session.run(&script(text).unwrap(), &mut Bare::default());
+        (flow, session.status(), session.variable("a"))
+    }
+
+    #[test]
+    fn exit_after_and_or_or_ends_the_script() {
+        let one = Some(String::from("1"));
+        assert_eq!(
+            ended("let a = 1\nfalse or exit 4\nlet a = 2"),
+            (Ok(Flow::Exit), 4, one.clone())
+        );
+        assert_eq!(
+            ended("let a = 1\nfalse || exit\nlet a = 2"),
+            (Ok(Flow::Exit), 1, one.clone()),
+            "without a word, with the status before it"
+        );
+        assert_eq!(
+            ended("let a = 1\ntrue && exit 3\nlet a = 2"),
+            (Ok(Flow::Exit), 3, one.clone())
+        );
+        assert_eq!(
+            ended("let a = 1\nfn f { while true { false or exit 5 } }\nf\nlet a = 2"),
+            (Ok(Flow::Exit), 5, one.clone()),
+            "from a loop in a function"
+        );
+        assert_eq!(
+            ended("let a = 1\nnot exit 6\nlet a = 2"),
+            (Ok(Flow::Exit), 6, one)
+        );
+        assert_eq!(
+            ended("let a = 1\ntrue or exit 4\nlet a = 2"),
+            (Ok(Flow::Next), 0, Some(String::from("2"))),
+            "only when its join says"
+        );
+        assert_eq!(failure("false or exit abc"), (1, 15, Code::BadStatus));
+        assert_eq!(failure("false or return 256"), (1, 17, Code::BadStatus));
+    }
+
+    #[test]
+    fn return_after_and_or_or_ends_the_function() {
+        assert_eq!(ran("fn f { false or return 3\nreturn 9 }\nf").status(), 3);
+        assert_eq!(
+            ran("fn f { false and return 3\nreturn 9 }\nf").status(),
+            9,
+            "only when its join says"
+        );
+        assert_eq!(
+            ran("fn f { false or return\nreturn 9 }\nf").status(),
+            0,
+            "without a word with 0, as the statement"
+        );
+        assert_eq!(
+            ended("let a = 1\nfn f { for x in a b { let a = $x; true and return } }\nf"),
+            (Ok(Flow::Next), 0, Some(String::from("a"))),
+            "out of its loop and its function, and no further"
+        );
+        assert_eq!(
+            ran("fn f { if false or return 6 { return 1 } }\nf").status(),
+            6,
+            "from an if's condition"
+        );
+        assert_eq!(
+            ended("let a = 1\nfalse or return 7\nlet a = 2"),
+            (Ok(Flow::Return), 7, Some(String::from("1"))),
+            "outside a function it ends the script"
+        );
+    }
+
+    #[test]
+    fn break_and_continue_after_and_or_or_leave_the_innermost_loop() {
+        let out = |text: &str| value(&format!("let out = ''\n{text}"), "out");
+        assert_eq!(
+            out("for x in a b c { let out = \"$out$x\"; true and break }").as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            out("for x in a b c { true && continue; let out = \"$out$x\" }").as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            out("for x in a b { for y in 1 2 { let out = \"$out$x$y\"; false || break } }")
+                .as_deref(),
+            Some("a1b1"),
+            "only the inner loop"
+        );
+        assert_eq!(
+            out("for x in a b c { if false or continue { }; let out = \"$out$x\" }").as_deref(),
+            Some(""),
+            "from an if's condition"
+        );
+    }
+
+    #[test]
+    fn break_and_continue_in_a_while_condition_are_that_loops() {
+        let out = |text: &str| value(&format!("let out = ''\n{text}"), "out");
+        assert_eq!(
+            out("for x in a b { while false or break { }; let out = \"$out$x\" }").as_deref(),
+            Some("ab"),
+            "the while ends, not the for around it"
+        );
+        // f fails the first time it runs and holds from then on, so the
+        // condition is asked again after its continue.
+        assert_eq!(
+            out("fn f { fn f { true }\nfalse }\nwhile f or continue { let out = yes; break }")
+                .as_deref(),
+            Some("yes")
+        );
+        assert_eq!(
+            ran("fn f { while false or return 8 { } }\nf").status(),
+            8,
+            "a return goes on out"
+        );
     }
 }

@@ -266,7 +266,7 @@ fn crash_screen_checks(report: &mut Report<'_, Com1>, screen: Option<&Canvas<'_>
     );
     if screen.is_some() {
         let _ = writeln!(report.out, "SCREEN {name}");
-        let answer = report.out.receive(1 << 24);
+        let answer = answer(report.out);
         report.check(
             "kernel.panic.kept",
             answer == Some(b'\r'),
@@ -1671,7 +1671,23 @@ fn console_cell_checks<W: Write>(
 /// is, not opened again: that would clear an answer that came quickly.
 fn keep_screen<W: Write>(report: &mut Report<'_, W>, name: &str) -> bool {
     let _ = writeln!(report.out, "SCREEN {name}");
-    Com1::already_open().receive(1 << 24) == Some(b'\r')
+    answer(&mut Com1::already_open()) == Some(b'\r')
+}
+
+/// The byte sextant answers a SCREEN with, once it kept the screen. Each
+/// look at the serial port takes QEMU's lock, which keeping the screen
+/// needs as well, so it looks only after some thousand pauses each time,
+/// for a few minutes at most.
+fn answer(serial: &mut Com1) -> Option<u8> {
+    for _ in 0..1 << 20 {
+        if let Some(byte) = serial.receive(1) {
+            return Some(byte);
+        }
+        for _ in 0..4096 {
+            core::hint::spin_loop();
+        }
+    }
+    None
 }
 
 /// The shell, on the console, typed at with keys sextant presses: it

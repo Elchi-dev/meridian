@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 43] = [
+const CHECKS: [(&str, Check); 44] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -57,6 +57,7 @@ const CHECKS: [(&str, Check); 43] = [
     ("handle.duplicate", duplicates_stand_for_the_same_object),
     ("spawn.arguments", arguments_arrive),
     ("spawn.output", output_goes_where_it_is_handed),
+    ("spawn.input", input_is_read_to_its_end),
     ("shell.script", shell_runs_a_script),
     ("shell.status", shell_ends_with_the_status),
     ("shell.programs", shell_starts_programs),
@@ -1231,6 +1232,39 @@ fn ran(status: u64, said: &[u8]) -> Ran {
     (Ok(Ended::Exited(status)), said.to_vec())
 }
 
+/// A child reads the standard input it is handed until an empty message
+/// comes, or until nothing can write to it any more: wc, which counts it.
+fn input_is_read_to_its_end() -> Outcome {
+    for empty_at_the_end in [true, false] {
+        let (into, from) = pair()?;
+        let (mine, theirs) = pair()?;
+        let given = start::Given {
+            input: Some(from),
+            output: Some(start::Sink::Channel(theirs)),
+            ..start::Given::default()
+        };
+        let (child, back) = spawn_handing("wc.mexec", &[], given).map_err(|_| "wc should start")?;
+        let sent = send(into, b"one two\n", None) == Ok(()) && send(into, b"three", None) == Ok(());
+        let ended = if empty_at_the_end {
+            let sent = send(into, b"", None) == Ok(());
+            let ended = wait(child);
+            sent.then_some(ended)
+        } else {
+            let closed = close(into) == Ok(());
+            closed.then(|| wait(child))
+        };
+        expect(
+            sent && ended == Some(Ok(Ended::Exited(0))) && drained(mine) == b"1 3 13\n",
+            "wc should count its standard input to the empty message or to the closed end",
+        )?;
+        if empty_at_the_end {
+            let _ = close(into);
+        }
+        let _ = (close(child), close(back), close(mine));
+    }
+    Ok(())
+}
+
 fn shell_runs_a_script() -> Outcome {
     let script = "let a = hi; echo $a there\nif false { echo no } else { echo yes }\n\
                   for x in 1 2 { echo $x }\nfn f { return 3 }\nf; echo $?";
@@ -1298,7 +1332,7 @@ fn shell_writes_files() -> Outcome {
     let (ended, said) = shell_on(
         "md /System/Sh; echo one > /System/Sh/a; echo two >> /System/Sh/a\n\
          arguments x 'y z' >> /System/Sh/a; cat /System/Sh/a; ls /System/Sh/*\n\
-         rm /System/Sh/a /System/Sh",
+         wc /System/Sh/a /System/Sh/a; rm /System/Sh/a /System/Sh",
     )?;
     if said.starts_with(b"/System/Sh: on a volume that is only read\n") {
         return expect(
@@ -1307,8 +1341,11 @@ fn shell_writes_files() -> Outcome {
         );
     }
     expect(
-        ended == Ok(Ended::Exited(0)) && said == b"one\ntwo\nx\ny z\n/System/Sh/a\n",
-        "the shell should make a directory, write a file and add to it, from a program too, show it, match it and remove both",
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"one\ntwo\nx\ny z\n/System/Sh/a\n\
+                     4 5 14 /System/Sh/a\n4 5 14 /System/Sh/a\n8 10 28 total\n",
+        "the shell should make a directory, write a file and add to it, from a program too, show it, match it, count it and remove both",
     )?;
     expect(
         open("/System/Sh", abi::file::READ) == Err(Error::NotFound),

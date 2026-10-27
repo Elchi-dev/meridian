@@ -12,6 +12,7 @@ use alloc::boxed::Box;
 
 use core::alloc::Layout;
 use core::fmt;
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 pub use abi;
 pub use abi::Error;
@@ -314,6 +315,77 @@ pub fn write(text: &str) -> Result<(), Error> {
             write_file(file, end, text.as_bytes())
         }
         None => console(text),
+    }
+}
+
+/// Whether the standard input ended, after which it reads nothing more.
+static INPUT_ENDED: AtomicBool = AtomicBool::new(false);
+
+/// The shift and control keys held while the keyboard is the input.
+static HELD: AtomicU8 = AtomicU8::new(0);
+
+/// Reads the next piece of the program's standard input into `room`, and
+/// answers how many bytes it took, 0 once the input ended. The input is
+/// the channel the parent handed over (decision record 0017), which ends
+/// with an empty message or once nothing can write to it any more, or
+/// else what is typed at the keyboard, shown on the console as it is
+/// typed, which ends at control and D.
+///
+/// # Errors
+///
+/// When the kernel refuses to read the channel.
+pub fn input(room: &mut [u8; abi::MESSAGE_BYTES]) -> Result<usize, Error> {
+    if INPUT_ENDED.load(Ordering::SeqCst) {
+        return Ok(0);
+    }
+    let read = match start::given().input {
+        Some(end) => input_from(end, room),
+        None => Ok(typed_into(room)),
+    };
+    if read == Ok(0) {
+        INPUT_ENDED.store(true, Ordering::SeqCst);
+    }
+    read
+}
+
+/// The next message waiting at `end` in `room`, once one came, and 0
+/// bytes once its other end closed. A handle a message brings is closed.
+fn input_from(end: Handle, room: &mut [u8]) -> Result<usize, Error> {
+    loop {
+        match receive(end, room) {
+            Ok((len, brought)) => {
+                if let Some(handle) = brought {
+                    let _ = close(handle);
+                }
+                return Ok(len);
+            }
+            Err(Error::Empty) => sleep(1),
+            Err(Error::Closed) => return Ok(0),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Waits for a key that types a character, shows it on the console and
+/// puts it in `room`, and answers its length: 0 at control and D.
+fn typed_into(room: &mut [u8]) -> usize {
+    loop {
+        let Some(key) = key() else {
+            sleep(1);
+            continue;
+        };
+        let mut held = layout::Held(HELD.load(Ordering::SeqCst));
+        let typed = held.feed(key);
+        HELD.store(held.0, Ordering::SeqCst);
+        match typed {
+            layout::Typed::Char(c) => {
+                let text = c.encode_utf8(room);
+                let _ = console(text);
+                return text.len();
+            }
+            layout::Typed::End => return 0,
+            layout::Typed::Nothing => {}
+        }
     }
 }
 

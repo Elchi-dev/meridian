@@ -440,7 +440,10 @@ starts with, each as it is (decision record 0018), which
 `program::arguments` answers, and its standard output: a channel, which
 gets the text in messages, or a file, which gets it at its end.
 `program::write` writes there, and to the console when the parent handed
-neither.
+neither. `program::input` reads the standard input a parent hands over, a
+channel that ends with an empty message or once nothing can write to it,
+or else the keys typed at the keyboard, shown as they are typed, until
+control and D.
 Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
 itself. The test image does that with a list of setup, which runs whoami

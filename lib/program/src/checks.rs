@@ -1366,7 +1366,7 @@ fn shell_matches_patterns() -> Outcome {
         )
     };
     expect(
-        shell_on("echo /System/Boot/meridian/programs/w*")? == found,
+        shell_on("echo /System/Boot/meridian/programs/wh*")? == found,
         "a pattern should become the paths it matches, in order",
     )?;
     expect(

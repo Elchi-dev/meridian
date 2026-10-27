@@ -500,7 +500,8 @@ pub(super) fn read_values(line: &[Char], ifs: &str, count: usize) -> Vec<String>
     };
     let mut values = Vec::new();
     let mut i = skip_white(0);
-    while values.len() + 1 < count && i < line.len() {
+    // Past the end of the line each name before the last gets nothing.
+    while values.len() + 1 < count {
         let start = i;
         while line.get(i).is_some_and(|c| !breaks(c)) {
             i += 1;

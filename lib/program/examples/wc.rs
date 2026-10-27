@@ -75,18 +75,6 @@ fn line(counts: Counts, name: Option<&str>) -> String {
     }
 }
 
-/// What wc says when the file at `path` could not be counted.
-fn trouble(path: &str, e: Error) -> String {
-    let why = match e {
-        Error::NotFound => "no such file",
-        Error::NotAFile => "a directory, not a file",
-        Error::BadArgument => "not a path from the root",
-        Error::Denied => "not allowed",
-        _ => "could not be read",
-    };
-    format!("wc: {path}: {why}\n")
-}
-
 #[cfg_attr(test, allow(dead_code))]
 fn wc(_: Handle) -> u64 {
     let paths = program::arguments();
@@ -112,7 +100,7 @@ fn wc(_: Handle) -> u64 {
             }
             Err(e) => {
                 failed = true;
-                program::write_error(&trouble(path, e))
+                program::write_error(&program::text::trouble("wc", path, e))
             }
         };
         failed |= written.is_err();
@@ -200,24 +188,6 @@ mod tests {
             counts(1, 2, 3) + counts(10, 20, 30),
             counts(11, 22, 33),
             "a total adds each"
-        );
-    }
-
-    #[test]
-    fn trouble_says_what_kept_a_file_from_being_counted() {
-        assert_eq!(trouble("/x", Error::NotFound), "wc: /x: no such file\n");
-        assert_eq!(
-            trouble("/System", Error::NotAFile),
-            "wc: /System: a directory, not a file\n"
-        );
-        assert_eq!(
-            trouble("x", Error::BadArgument),
-            "wc: x: not a path from the root\n"
-        );
-        assert_eq!(trouble("/x", Error::Denied), "wc: /x: not allowed\n");
-        assert_eq!(
-            trouble("/x", Error::Unreadable),
-            "wc: /x: could not be read\n"
         );
     }
 }

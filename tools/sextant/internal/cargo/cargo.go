@@ -33,6 +33,12 @@ var (
 	Init = Part{Package: "program", Target: "x86_64-unknown-none", File: "init", Example: "init"}
 	// Wc counts the lines, words and bytes of files or its standard input.
 	Wc = Part{Package: "program", Target: "x86_64-unknown-none", File: "wc", Example: "wc"}
+	// Head shows the first lines of files or its standard input.
+	Head = Part{Package: "program", Target: "x86_64-unknown-none", File: "head", Example: "head"}
+	// Grep shows the lines of files or its standard input that hold a text.
+	Grep = Part{Package: "program", Target: "x86_64-unknown-none", File: "grep", Example: "grep"}
+	// Sort puts the lines of files or its standard input in order.
+	Sort = Part{Package: "program", Target: "x86_64-unknown-none", File: "sort", Example: "sort"}
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
@@ -46,7 +52,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 62] = [
+const CHECKS: [(&str, Check); 70] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -82,7 +82,15 @@ const CHECKS: [(&str, Check); 62] = [
     ("shell.directory", the_working_directory),
     ("shell.errors", errors_go_where_2_sends_them),
     ("shell.errors.output", errors_go_with_the_output),
+    ("tools", head_grep_and_sort),
+    ("tools.files", tools_on_files),
+    ("tools.input", tools_read_the_shells_input),
+    ("tools.long", long_lines_and_many),
+    ("tools.empty", tools_given_nothing),
+    ("shell.pipes.own", the_shells_own_commands_in_pipes),
     ("shell.carry.itself", no_copy_onto_itself),
+    ("shell.carry.capitals", a_move_to_other_capitals),
+    ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
 
@@ -2131,6 +2139,165 @@ fn errors_go_with_the_output() -> Outcome {
     )
 }
 
+/// head, grep and sort, each in a pipeline, and what they say when they
+/// are given what they cannot take.
+fn head_grep_and_sort() -> Outcome {
+    expect(
+        shell_on(
+            "arguments c a b | sort; arguments c a b | sort -r; arguments one two three | head -n 2",
+        )? == ran(0, b"a\nb\nc\nc\nb\na\none\ntwo\n"),
+        "sort should put lines in order either way, and head take the first",
+    )?;
+    expect(
+        shell_on(
+            "arguments apple Banana cherry | grep an; arguments apple Banana | grep -ic A\n\
+                  arguments x y | grep -vn x; arguments x | grep z; echo $?",
+        )? == ran(0, b"Banana\n2\n2:y\ngrep ended with 1\n1\n"),
+        "grep should find the lines that hold its text, count them, take the others, and end with 1 without any",
+    )?;
+    expect(
+        shell_on("head -n x; grep; sort -x; grep a /nope")?
+            == ran(
+                2,
+                b"head: x is no count of lines\nhead ended with 2\n\
+                  grep: needs the text to look for\ngrep ended with 2\n\
+                  sort: -x is no option\nsort ended with 2\n\
+                  grep: /nope: no such file\ngrep ended with 2\n",
+            ),
+        "head, grep and sort should say what they cannot take and end with 2",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "cd /System/Boot/meridian; head -n 1 boot.meri boot.meri | grep -c ==; head -n 1 boot.meri | wc",
+    )?;
+    expect(
+        ended == Ok(Ended::Exited(0)) && said.starts_with(b"2\n1 "),
+        "head should name each of several files, and take one line of one",
+    )
+}
+
+/// head, grep and sort on files: several at once, named where they say
+/// so, a file given with `<`, and one that is not there.
+fn tools_on_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) =
+        shell_on("echo two > /System/t1; echo one > /System/t2; echo two two >> /System/t2")?;
+    if said.starts_with(b"/System/t1: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should be made",
+        );
+    }
+    let checked = shell_on("grep -n two /System/t1 /System/t2; sort /System/t1 /System/t2")?
+        == ran(
+            0,
+            b"/System/t1:1:two\n/System/t2:2:two two\none\ntwo\ntwo two\n",
+        )
+        && shell_on("head -n 1 /System/t1 /System/t2")?
+            == ran(0, b"==> /System/t1 <==\ntwo\n\n==> /System/t2 <==\none\n")
+        && shell_on("sort -r < /System/t2; grep -c two < /System/t2")?
+            == ran(0, b"two two\none\n1\n")
+        && shell_on("grep -c x /System/t1 /nope")?
+            == ran(
+                2,
+                b"/System/t1:0\ngrep: /nope: no such file\ngrep ended with 2\n",
+            )
+        && shell_on("head /nope; sort /System/t1 /nope")?
+            == ran(
+                2,
+                b"head: /nope: no such file\nhead ended with 1\n\
+                  sort: /nope: no such file\nsort ended with 2\n",
+            );
+    let removed = shell_on("rm /System/t1 /System/t2")? == ran(0, b"");
+    expect(
+        checked && removed,
+        "head, grep and sort should read several files, name them, take one given with <, and say which is not there",
+    )
+}
+
+/// head, grep and sort alone at the shell read what the shell reads.
+fn tools_read_the_shells_input() -> Outcome {
+    let input = b"pear\napple\nfig\n";
+    expect(
+        shell_reading(&["-c", "sort"], Some(input))? == ran(0, b"apple\nfig\npear\n")
+            && shell_reading(&["-c", "grep -v p"], Some(input))? == ran(0, b"fig\n")
+            && shell_reading(&["-c", "head -n 1; head"], Some(input))?
+                == ran(0, b"pear\napple\nfig\n"),
+        "the tools should read the shell's input, what one left for the next",
+    )
+}
+
+/// A line longer than a message holds goes through a pipe whole, and a
+/// hundred lines come out of sort in order.
+fn long_lines_and_many() -> Outcome {
+    let long = "x".repeat(300);
+    expect(
+        shell_on(&alloc::format!(
+            "echo {long} | grep x | wc; echo {long}y | grep -c y"
+        ))? == ran(0, b"1 1 301\n1\n"),
+        "a line of 300 bytes should go through two pipes whole",
+    )?;
+    // 37 and 100 share no factor, so this is each of 0 to 99 once, out of
+    // order.
+    let numbers: Vec<String> = (0..100u32)
+        .map(|n| alloc::format!("{:03}", (n * 37) % 100))
+        .collect();
+    let script = alloc::format!("arguments {} | sort", numbers.join(" "));
+    let want = (0..100u32).fold(String::new(), |mut want, n| {
+        let _ = core::fmt::Write::write_fmt(&mut want, format_args!("{n:03}\n"));
+        want
+    });
+    expect(
+        shell_on(&script)? == ran(0, want.as_bytes()),
+        "a hundred lines out of order should come out of sort in order",
+    )
+}
+
+/// The tools given nothing to read write nothing, and grep ends with 1 as
+/// it found nothing; head takes no line when told none.
+fn tools_given_nothing() -> Outcome {
+    expect(
+        shell_on("true | sort; true | head; true | wc; true | grep x; echo $?")?
+            == ran(0, b"0 0 0\ngrep ended with 1\n1\n"),
+        "nothing read should give nothing written, and grep's 1",
+    )?;
+    expect(
+        shell_on("help | head -n 0 | wc; help | head -n 1 | wc")? == ran(0, b"0 0 0\n1 35 158\n"),
+        "head should take no line when told none, and one when told one",
+    )
+}
+
+/// The shell's own commands write into pipes for the tools, and say what
+/// went wrong on the shell's standard error meanwhile.
+fn the_shells_own_commands_in_pipes() -> Outcome {
+    let listed: &[u8] = if booted_from_disk() {
+        b"22\n"
+    } else {
+        b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
+    };
+    expect(
+        shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
+            == ran(u64::from(!booted_from_disk()), listed),
+        "ls should write the programs' names into the pipe, eleven twice",
+    )?;
+    expect(
+        shell_on("help | grep -c or; pwd | wc; true | wc")? == ran(0, b"2\n1 1 2\n0 0 0\n"),
+        "help, pwd and true should write into a pipe, or not at all",
+    )?;
+    expect(
+        shell_on("cat /nope | cat | wc; services | wc")?
+            == ran(
+                0,
+                b"/nope: no such file\n0 0 0\nservices: init did not start this shell\n0 0 0\n",
+            ),
+        "the shell's own commands in a pipeline should say what went wrong on the shell's error",
+    )
+}
+
 /// cp never copies a file onto itself, which would empty it first, even
 /// written in other capitals.
 fn no_copy_onto_itself() -> Outcome {
@@ -2151,6 +2318,69 @@ fn no_copy_onto_itself() -> Outcome {
         ended == Ok(Ended::Exited(0))
             && said == b"/System/s: copied onto itself\ns: copied onto itself\nkept\n",
         "cp should refuse to copy a file onto itself and leave what it holds",
+    )
+}
+
+/// mv to the same name in other capitals renames the file, and grep counts
+/// in each of several files by its name.
+fn a_move_to_other_capitals() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "echo one > /System/m; mv /System/m /System/M; ls /System/M*; cat /System/m\n\
+         grep -c o /System/M /System/m /System/M; rm /System/M",
+    )?;
+    if said.starts_with(b"/System/m: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only nothing should be renamed",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == b"/System/M\none\n/System/M:1\n/System/m:1\n/System/M:1\n",
+        "mv should rename a file to other capitals, which a path in any capitals then finds",
+    )
+}
+
+/// The tools say a directory is no file, and pass lines that are no text
+/// on as they are.
+fn tools_refuse_what_is_no_text() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, WRITE};
+    let directory: &[u8] = if booted_from_disk() {
+        b"grep: /System/Boot: a directory, not a file\ngrep ended with 2\n\
+          head: /System/Boot: a directory, not a file\nhead ended with 1\n"
+    } else {
+        b"grep: /System/Boot: no such file\ngrep ended with 2\n\
+          head: /System/Boot: no such file\nhead ended with 1\n"
+    };
+    expect(
+        shell_on("grep x /System/Boot; head /System/Boot")? == ran(1, directory),
+        "a directory should be no file to read",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let file = match open_with("/System/raw", WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "a file should be made for the bytes")?,
+    };
+    let written = write_file(file, 0, &[0xff, b'x', b'\n', b'y', 0xfe, b'\n']);
+    let _ = close(file);
+    let ran_it = shell_on("grep x /System/raw; sort -r /System/raw; head -n 1 /System/raw")?;
+    let removed = remove("/System/raw") == Ok(());
+    expect(
+        written == Ok(())
+            && removed
+            && ran_it
+                == ran(
+                    0,
+                    &[
+                        0xff, b'x', b'\n', 0xff, b'x', b'\n', b'y', 0xfe, b'\n', 0xff, b'x', b'\n',
+                    ],
+                ),
+        "grep, sort and head should pass on lines that are no text as they are",
     )
 }
 

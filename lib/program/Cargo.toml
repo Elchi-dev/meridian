@@ -50,6 +50,18 @@ test = true
 name = "wc"
 test = true
 
+[[example]]
+name = "head"
+test = true
+
+[[example]]
+name = "grep"
+test = true
+
+[[example]]
+name = "sort"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

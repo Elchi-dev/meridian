@@ -201,13 +201,16 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 	}
 	r = runIn(realRoot(t), "build")
 	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
-	if r.code != ExitOK || len(lines) != 6 ||
+	if r.code != ExitOK || len(lines) != 9 ||
 		!strings.HasSuffix(lines[0], filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi")) ||
 		!strings.HasSuffix(lines[1], filepath.Join("x86_64-unknown-none", "debug", "kernel")) ||
-		!strings.HasSuffix(lines[2], filepath.Join("x86_64-unknown-none", "debug", "examples", "hello")) ||
-		!strings.HasSuffix(lines[3], filepath.Join("x86_64-unknown-none", "debug", "examples", "init")) ||
-		!strings.HasSuffix(lines[4], filepath.Join("x86_64-unknown-none", "debug", "examples", "shell")) ||
-		!strings.HasSuffix(lines[5], filepath.Join("x86_64-unknown-none", "debug", "examples", "wc")) {
+		!strings.HasSuffix(lines[2], filepath.Join("x86_64-unknown-none", "debug", "examples", "grep")) ||
+		!strings.HasSuffix(lines[3], filepath.Join("x86_64-unknown-none", "debug", "examples", "head")) ||
+		!strings.HasSuffix(lines[4], filepath.Join("x86_64-unknown-none", "debug", "examples", "hello")) ||
+		!strings.HasSuffix(lines[5], filepath.Join("x86_64-unknown-none", "debug", "examples", "init")) ||
+		!strings.HasSuffix(lines[6], filepath.Join("x86_64-unknown-none", "debug", "examples", "shell")) ||
+		!strings.HasSuffix(lines[7], filepath.Join("x86_64-unknown-none", "debug", "examples", "sort")) ||
+		!strings.HasSuffix(lines[8], filepath.Join("x86_64-unknown-none", "debug", "examples", "wc")) {
 		t.Fatalf("exit %d, stdout %q", r.code, r.stdout)
 	}
 	if loader, err := os.ReadFile(lines[0]); err != nil || bytes.Contains(loader, []byte("TESTS DONE")) {

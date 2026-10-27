@@ -27,6 +27,7 @@ pub mod layout;
 #[allow(unsafe_code)]
 mod raw;
 pub mod start;
+pub mod text;
 
 pub use raw::{Allocator, arguments};
 
@@ -390,17 +391,33 @@ pub fn write_error(text: &str) -> Result<(), Error> {
     write_to(start::given().error, text)
 }
 
+/// Writes `bytes` to the program's standard output as [`write`] does
+/// text, as they are, but on the console, which shows what is no text as
+/// such.
+///
+/// # Errors
+///
+/// When the kernel refuses a piece.
+pub fn write_bytes(bytes: &[u8]) -> Result<(), Error> {
+    put(start::given().output, bytes)
+}
+
 /// Writes `text` where `sink` leads, and to the console without one.
 fn write_to(sink: Option<start::Sink>, text: &str) -> Result<(), Error> {
+    put(sink, text.as_bytes())
+}
+
+/// Writes `bytes` where `sink` leads, and to the console without one.
+fn put(sink: Option<start::Sink>, bytes: &[u8]) -> Result<(), Error> {
     match sink {
         Some(start::Sink::Channel(end)) => {
-            start::pieces(text.as_bytes()).try_for_each(|piece| send_waiting(end, piece))
+            start::pieces(bytes).try_for_each(|piece| send_waiting(end, piece))
         }
         Some(start::Sink::File(file)) => {
             let end = info(file)?.size;
-            write_file(file, end, text.as_bytes())
+            write_file(file, end, bytes)
         }
-        None => console(text),
+        None => console(&String::from_utf8_lossy(bytes)),
     }
 }
 

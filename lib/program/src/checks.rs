@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 130] = [
+const CHECKS: [(&str, Check); 131] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -147,6 +147,7 @@ const CHECKS: [(&str, Check); 130] = [
     ("tools.sleep", sleep_waits),
     ("tools.cmp", cmp_on_files),
     ("tools.comm", comm_on_files),
+    ("tools.paste", paste_joins_lines),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2597,14 +2598,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"46\n"
+        b"48\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-three twice",
+        "ls should write the programs' names into the pipe, twenty-four twice",
     )?;
     expect(
         same(
@@ -3994,6 +3995,48 @@ fn comm_on_files() -> Outcome {
     expect(
         ended == Ok(Ended::Exited(0)) && said == b"a\n\t\tb\n\tc\n\t\td\n",
         "comm should put each line in the column of where it is",
+    )
+}
+
+/// paste puts lines side by side, each - taking the next line of the
+/// standard input, joins a file's lines into one with -s and its own
+/// delimiters with -d, and gives a file back as it was when the line
+/// feed joins it again.
+fn paste_joins_lines() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "paste; printf 'a\\nb\\nc\\n' | paste - -; printf '1\\n2\\n3\\n' | paste -s -d , -\n\
+             paste /nope; echo $?",
+        )?,
+        &ran(
+            0,
+            b"paste: needs a file to join\npaste ended with 1\na\tb\nc\t\n1,2,3\n\
+              paste: /nope: no such file\npaste ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "paste should join lines side by side, and a file's lines into one with -s",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "paste -s -d '\\n' {boot} | wc; wc < {boot}; paste {boot} {boot} | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let counts: Vec<Vec<u64>> = text
+        .lines()
+        .map(|line| line.split(' ').filter_map(|n| n.parse().ok()).collect())
+        .collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && counts.len() == 3
+            && counts[0] == counts[1]
+            && counts[2].first() == counts[1].first()
+            && counts[2].get(1).copied() == counts[1].get(1).map(|words| words * 2),
+        "paste should give a file back joined by its line feeds, and two side by side",
     )
 }
 

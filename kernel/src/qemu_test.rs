@@ -1790,7 +1790,9 @@ fn init_checks<W: Write>(
     seen::forget();
     let channel = raw::ipc::create();
     let channels = raw::ipc::live();
-    let started = channel.and_then(|(_, theirs)| {
+    // init reads its start messages first: there are none but the end.
+    let started = channel.and_then(|(ours, theirs)| {
+        raw::ipc::send(ours, &[0], None).ok()?;
         user::start_file_holding(0, file, &[theirs], Rights::READ | Rights::WRITE).ok()
     });
     raw::thread::sleep(60);

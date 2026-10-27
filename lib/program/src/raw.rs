@@ -154,15 +154,16 @@ unsafe impl GlobalAlloc for Allocator {
 }
 
 /// Makes `main`, a `fn(Handle) -> u64`, the program's main function: the
-/// kernel starts the program with a handle, and it ends with the code main
-/// returns. Also gives the program its panic handler, its heap, and the
+/// kernel starts the program with a handle, whose start messages the
+/// runtime reads first (decision record 0017), and it ends with the code
+/// main returns. Also gives the program its panic handler, its heap, and the
 /// notes that make its file a `.mexec` file.
 #[macro_export]
 macro_rules! main {
     ($main:path) => {
         #[cfg(not(test))]
         extern "C" fn __program_main(argument: u64) -> ! {
-            $crate::exit($main($crate::Handle(argument)))
+            $crate::exit($main($crate::start::begin($crate::Handle(argument))))
         }
 
         // The kernel enters with the stack pointer at the top of the

@@ -425,7 +425,12 @@ Each program a service runs starts with a line to init, a channel, over
 which it can ask about the service at a place in the list: init answers
 with its name, whether it waits, runs, rests between starts or ended, and
 how often it started, or that none is there (`lib/services`). The shell's
-`services` asks so and shows each.
+`services` asks so and shows each. Before a program's own code runs, the
+runtime reads the start messages its parent sent over the channel it
+started with (decision record 0017): init says there that the
+channel is the program's line, and ends them; a parent that hands over
+nothing still sends the end. A program started with no channel reads
+none.
 Without the list, as on a CD, the shell is the one service. Handed a
 channel end, init ends every service once the other end closes, and then
 itself. The test image does that with a list of setup, which runs whoami

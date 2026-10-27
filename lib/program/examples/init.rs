@@ -24,6 +24,7 @@ use core::sync::atomic::{
 };
 
 use meri::{Event, Reader, Value};
+use program::start::Kind;
 use program::{Ended, Error, Handle, abi::file, log};
 use services::{About, MESSAGE, State};
 
@@ -328,6 +329,13 @@ fn keep(slot: usize, service: &Service, waits: &[usize]) -> u64 {
         }
         let _ = match spawned {
             Ok(child) => {
+                // The child starts on its line, and the line is all it
+                // gets (decision record 0017).
+                for kind in [Kind::Line, Kind::End] {
+                    if let Some(ours) = ours {
+                        let _ = program::send(ours, &[kind.byte()], None);
+                    }
+                }
                 LINES[slot].store(ours.map_or(0, |h| h.0), SeqCst);
                 STARTS[slot].fetch_add(1, SeqCst);
                 set_state(slot, State::Running);

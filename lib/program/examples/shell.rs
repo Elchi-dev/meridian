@@ -187,8 +187,9 @@ fn shown(about: &About<'_>) -> String {
 static LINE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg_attr(test, allow(dead_code))]
-fn shell(line: Handle) -> u64 {
-    LINE.store(line.0, SeqCst);
+fn shell(_: Handle) -> u64 {
+    let line = program::start::given().line;
+    LINE.store(line.map_or(0, |h| h.0), SeqCst);
     let _ = program::write("Meridian shell. Type help to see what it knows.\n> ");
     let mut editor = Editor::default();
     loop {

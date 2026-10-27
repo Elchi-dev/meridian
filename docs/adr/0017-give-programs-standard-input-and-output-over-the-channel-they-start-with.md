@@ -35,7 +35,7 @@ each a message with one kind byte and, for most kinds, a handle:
 | 3 | standard error, a channel end to write to |
 | 4 | standard output, a file opened to write |
 | 5 | standard error, a file opened to write |
-| 6 | init's line, to ask about services over |
+| 6 | init's line, to ask about services over; without a handle, the start channel itself |
 | 0 | the end of what the parent sends, with no handle |
 
 Text on a channel goes as messages of up to 128 bytes, and an empty
@@ -70,7 +70,9 @@ builtins.
 The kernel does not change: it already starts programs with a handle and
 moves messages. The runtime grows the start messages, the streams on
 channels and files, and keeps the console for programs without them.
-init sends its line as a start message rather than as the handle itself,
-and the shell gets the line from there. Each start costs a few messages
+init starts each program with its line and says so in a start message
+of kind 6 without a handle, so the line goes on carrying the questions
+about services once the start messages are read, and the shell gets the
+line from what the runtime kept. Each start costs a few messages
 before `main`. Environment variables and a working directory, which 0016
 and Win32 need next, become two more kinds of start message.

@@ -357,11 +357,22 @@ fn heap_in_use() -> Outcome {
     Ok(())
 }
 
+/// Ends the start messages over `mine` to the child holding the other
+/// end, sending none before the end, as a parent may (decision record
+/// 0017).
+fn begin(mine: Handle) -> Outcome {
+    expect(
+        send(mine, &[crate::start::Kind::End.byte()], None) == Ok(()),
+        "the start messages should end",
+    )
+}
+
 /// Starts exitwith with one end of a fresh channel, and returns the
 /// process and the other end.
 fn exitwith() -> Result<(Handle, Handle), &'static str> {
     let (mine, theirs) = pair()?;
     let child = spawn("exitwith.mexec", Some(theirs)).map_err(|_| "exitwith should start")?;
+    begin(mine)?;
     expect(
         close(theirs) == Err(Error::BadHandle),
         "the end handed over should be gone from the parent",
@@ -472,6 +483,7 @@ fn child_ended_from_outside() -> Outcome {
 fn threads(word: &[u8]) -> Result<(Handle, Handle), &'static str> {
     let (mine, theirs) = pair()?;
     let child = spawn("threads.mexec", Some(theirs)).map_err(|_| "threads should start")?;
+    begin(mine)?;
     expect(send(mine, word, None) == Ok(()), "the word should go")?;
     Ok((child, mine))
 }
@@ -665,6 +677,7 @@ fn whoami(restriction: Option<Restriction>) -> Result<Token, &'static str> {
         Some(r) => spawn_restricted("whoami.mexec", Some(theirs), r),
     }
     .map_err(|_| "whoami should start")?;
+    begin(mine)?;
     let ended = wait(child);
     let mut room = [0u8; MESSAGE_BYTES];
     let got = receive(mine, &mut room);
@@ -725,6 +738,7 @@ fn child_from_its_file() -> Outcome {
     }
     let (mine, theirs) = pair()?;
     let child = spawn(exitwith, Some(theirs)).map_err(|_| "exitwith should start from its file")?;
+    begin(mine)?;
     expect(
         send(mine, &7u64.to_le_bytes(), None) == Ok(()),
         "the number should go to the child",

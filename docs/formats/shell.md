@@ -292,6 +292,11 @@ A list run with `&` runs to its end in a subshell before the shell goes
 on, as the shell starts no jobs yet: `$!` stays unset, `wait` ends with
 0, and a job `wait` is asked for is none, which ends it with 127.
 
+`command -v` says what a name stands for: a function's or a builtin's
+name, or the path of a program's file; on a CD, where the programs are
+those the loader brought, it finds none of them. `command` runs a command
+as if no function had its name.
+
 `getopts` takes options as POSIX's does, saying `getopts: -x: no such
 option` or `getopts: -x: needs an argument` unless its list starts with
 `:`.

@@ -809,6 +809,21 @@ impl Machine for System {
         program::change_directory(path).map_err(|e| trouble(path, e))
     }
 
+    /// A program is found by its path, or its name among the files of
+    /// [`PROGRAMS`]; on a CD, where only the loader brought programs, none
+    /// is found.
+    fn found(&mut self, name: &str) -> Option<String> {
+        let words = [String::from(name)];
+        match command(&words) {
+            Command::Program(word, _) => {
+                let path = program_name(word, self);
+                (path.starts_with('/') && self.has(&path)).then_some(path)
+            }
+            Command::Empty => None,
+            _ => Some(String::from(name)),
+        }
+    }
+
     fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
         text_of(path)
             .map(String::into_bytes)

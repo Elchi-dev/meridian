@@ -125,6 +125,11 @@ pub trait Machine: Tree {
     ///
     /// When nothing is there, or it cannot be read.
     fn text(&mut self, path: &str) -> Result<Vec<u8>, String>;
+
+    /// What `name` stands for among the commands it runs, as `command -v`
+    /// says it: its name for one of its own, the path of a program; none
+    /// for none.
+    fn found(&mut self, name: &str) -> Option<String>;
 }
 
 /// How statements ended: on to the next, out of a loop, a function or
@@ -549,6 +554,10 @@ mod tests {
         fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
             Err(format!("{path}: no such file\n"))
         }
+
+        fn found(&mut self, _: &str) -> Option<String> {
+            None
+        }
     }
 
     #[test]
@@ -643,6 +652,10 @@ mod tests {
 
         fn text(&mut self, path: &str) -> Result<Vec<u8>, String> {
             Err(format!("{path}: no such file\n"))
+        }
+
+        fn found(&mut self, _: &str) -> Option<String> {
+            None
         }
     }
 

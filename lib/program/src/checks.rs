@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 103] = [
+const CHECKS: [(&str, Check); 104] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -126,6 +126,7 @@ const CHECKS: [(&str, Check); 103] = [
     ("shell.sh.trap", sh_trap),
     ("shell.sh.dot", sh_dot),
     ("shell.sh.cd", sh_cd),
+    ("shell.sh.command", sh_command),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3288,6 +3289,28 @@ fn sh_cd() -> Outcome {
     expect(
         checked,
         "cd should go home, back, and say where it cannot go",
+    )
+}
+
+/// In sh, `command -v` finds the shell's own commands and, on a disk, a
+/// program's file, and `command` runs a command whose name a function has.
+fn sh_command() -> Outcome {
+    let want: &[u8] = if booted_from_disk() {
+        b"/System/Boot/meridian/programs/wc.mexec\nls\n1\nreal\n"
+    } else {
+        b"ls\n1\nreal\n"
+    };
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             command -v wc ls nope; echo $?\n\
+             echo() { printf 'fake\\n'; }; command echo real",
+        )?,
+        &ran(0, want),
+    );
+    expect(
+        checked,
+        "command should find commands and run them past functions",
     )
 }
 

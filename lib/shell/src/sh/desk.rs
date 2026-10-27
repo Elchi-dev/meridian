@@ -312,6 +312,11 @@ impl Machine for Desk {
             .ok_or_else(|| format!("{path}: no such file\n"))
     }
 
+    /// The shared commands and its `pwd` are its own; it has no programs.
+    fn found(&mut self, name: &str) -> Option<String> {
+        (commands::knows(name) || name == "pwd").then(|| String::from(name))
+    }
+
     fn line(&mut self) -> Option<Vec<u8>> {
         let (text, at) = match self.reading.iter_mut().rev().flatten().next() {
             Some((text, at)) => (&*text, at),

@@ -70,7 +70,7 @@ const SPECIAL: [&str; 13] = [
 
 /// The builtins POSIX calls no special ones that the session runs itself,
 /// as they read or set its variables.
-const REGULAR: [&str; 5] = ["cd", "getopts", "local", "read", "wait"];
+const REGULAR: [&str; 6] = ["cd", "command", "getopts", "local", "read", "wait"];
 
 /// A sh session: its variables, functions and parameters, its options,
 /// and the status of its last command.
@@ -526,7 +526,22 @@ impl Session {
             }
             return Ok(Flow::Next);
         };
-        if SPECIAL.contains(&name.as_str()) {
+        self.named(&name, ready, assigned, at, true, machine)
+    }
+
+    /// Runs the command `name`, the first of `ready`'s words, stands for:
+    /// a special builtin, a function unless `functions` is false, a
+    /// builtin of the session's own, or what the machine runs.
+    fn named(
+        &mut self,
+        name: &str,
+        ready: Ready,
+        assigned: Vec<(String, String)>,
+        at: Pos,
+        functions: bool,
+        machine: &mut impl Machine,
+    ) -> Result<Flow, Stop> {
+        if SPECIAL.contains(&name) {
             for (name, value) in assigned {
                 let _ = self.assign(&name, value);
             }
@@ -534,10 +549,13 @@ impl Session {
                 session.special(&ready.words, at, machine)
             });
         }
-        if let Some(function) = self.functions.get(&name).cloned() {
+        if functions && let Some(function) = self.functions.get(name).cloned() {
             return self.call(&function, &ready, assigned, at, machine);
         }
-        if REGULAR.contains(&name.as_str()) {
+        if name == "command" {
+            return self.command_word(ready, assigned, at, machine);
+        }
+        if REGULAR.contains(&name) {
             // The variables assigned before it hold while it runs, as
             // `IFS=: read a b` asks.
             let mut kept = Vec::new();
@@ -547,7 +565,7 @@ impl Session {
             }
             let flow = self.around(&ready.redirections, machine, |session, machine| {
                 let words = &ready.words[1..];
-                Ok(match name.as_str() {
+                Ok(match name {
                     "read" => session.read(words, machine),
                     "cd" => session.cd(words, machine),
                     "local" => session.local(words, machine),
@@ -562,6 +580,62 @@ impl Session {
         // assigned before one reach none of them.
         self.status = machine.run(&[ready]);
         Ok(Flow::Next)
+    }
+
+    /// `command`: with `-v`, says what each name after it stands for;
+    /// otherwise runs the command after it as if no function had its name.
+    /// A `-p` first changes nothing, as Meridian has no `PATH` yet.
+    fn command_word(
+        &mut self,
+        ready: Ready,
+        assigned: Vec<(String, String)>,
+        at: Pos,
+        machine: &mut impl Machine,
+    ) -> Result<Flow, Stop> {
+        let mut words = ready.words[1..].to_vec();
+        if words.first().is_some_and(|w| w == "-p") {
+            words.remove(0);
+        }
+        let Some(name) = words.first().cloned() else {
+            self.status = 0;
+            return Ok(Flow::Next);
+        };
+        if name == "-v" {
+            return self.around(&ready.redirections, machine, |session, machine| {
+                Ok(session.found(&words[1..], machine))
+            });
+        }
+        let ready = Ready {
+            words,
+            redirections: ready.redirections,
+        };
+        self.named(&name, ready, assigned, at, false, machine)
+    }
+
+    /// `command -v`: says what each of `names` stands for, a function's or
+    /// a builtin's name or the path of a program, and ends with 1 when one
+    /// stands for none.
+    fn found(&mut self, names: &[String], machine: &mut impl Machine) -> Flow {
+        self.status = 0;
+        for name in names {
+            let own = self.functions.contains_key(name)
+                || SPECIAL.contains(&name.as_str())
+                || REGULAR.contains(&name.as_str());
+            let found = if own {
+                Some(name.clone())
+            } else {
+                machine.found(name)
+            };
+            match found {
+                Some(found) => {
+                    if !machine.out(format!("{found}\n").as_bytes()) {
+                        self.status = 1;
+                    }
+                }
+                None => self.status = 1,
+            }
+        }
+        Flow::Next
     }
 
     /// Runs `run` with `redirections` made around it.
@@ -3235,5 +3309,37 @@ mod tests {
             "0\n",
             "$! names none, so it waits for all"
         );
+    }
+
+    #[test]
+    fn command_v_says_what_a_name_stands_for() {
+        assert_eq!(
+            out("f() { :; }; command -v f echo cd set read pwd"),
+            "f\necho\ncd\nset\nread\npwd\n"
+        );
+        assert_eq!(out("command -v nope; echo $?"), "1\n");
+        assert_eq!(out("command -v echo nope pwd; echo $?"), "echo\npwd\n1\n");
+        assert_eq!(out("command -p -v echo"), "echo\n");
+        assert_eq!(
+            said("command -v echo >&2", &[]),
+            (String::new(), "echo\n".into())
+        );
+    }
+
+    #[test]
+    fn command_runs_what_a_name_stands_for_but_a_function() {
+        assert_eq!(
+            out("echo() { printf 'fn\\n'; }; echo a; command echo b"),
+            "fn\nb\n"
+        );
+        assert_eq!(out("cd() { echo no; }; command cd /x; pwd"), "/x\n");
+        assert_eq!(out("command set -- a b; echo $#"), "2\n");
+        assert_eq!(out("command -p echo c"), "c\n");
+        assert_eq!(out("false; command; echo $?"), "0\n");
+        assert_eq!(
+            said("command nope; echo $?", &[]),
+            ("127\n".into(), "nope: not found\n".into())
+        );
+        assert_eq!(out("command command echo d"), "d\n");
     }
 }

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 129] = [
+const CHECKS: [(&str, Check); 130] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -146,6 +146,7 @@ const CHECKS: [(&str, Check); 129] = [
     ("tools.expr", expr_on_its_words),
     ("tools.sleep", sleep_waits),
     ("tools.cmp", cmp_on_files),
+    ("tools.comm", comm_on_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2596,14 +2597,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"44\n"
+        b"46\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-two twice",
+        "ls should write the programs' names into the pipe, twenty-three twice",
     )?;
     expect(
         same(
@@ -3944,6 +3945,55 @@ fn cmp_on_files() -> Outcome {
                 == b"/System/c1 /System/c2 differ: char 3, line 1\ncmp ended with 1\n\
                      3 143 130\ncmp ended with 1\n",
         "cmp should say where two files differ first, and with -l each byte",
+    )
+}
+
+/// comm says what words it cannot take, finds every line of a file in
+/// both when it compares the file with itself, and puts the lines of two
+/// sorted files in their three columns.
+fn comm_on_files() -> Outcome {
+    let checked = same(
+        &shell_on("comm /a; comm -4 /a /b")?,
+        &ran(
+            2,
+            b"comm: compares two files\ncomm ended with 2\n\
+              comm: -4 is no option\ncomm ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "comm should say what words it cannot take, and end with 2",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "comm -12 {boot} {boot} | wc; wc < {boot}; comm -3 {boot} - < {boot} | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let counts: Vec<&str> = text.lines().collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && counts.len() == 3
+            && counts[0] == counts[1]
+            && counts[2] == "0 0 0",
+        "comm should find every line of a file in both when it compares the file with itself",
+    )?;
+    let (ended, said) = shell_on(
+        "printf 'a\\nb\\nd\\n' > /System/c1 || exit 9\n\
+         printf 'b\\nc\\nd\\n' > /System/c2\n\
+         comm /System/c1 /System/c2; rm /System/c1 /System/c2",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/c1: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"a\n\t\tb\n\tc\n\t\td\n",
+        "comm should put each line in the column of where it is",
     )
 }
 

@@ -93,14 +93,14 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
         if let Some(drive) = raw::nvme::start(address) {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
-            take_disk(serial, Driver::Nvme, false, boot);
+            take_disk(serial, Driver::Nvme, boot);
         }
     }
     if let Some((at, header)) = found.virtio {
         raw::pci::enable(at);
         if let Some(drive) = raw::virtio::start(at, &header) {
             let _ = kernel::virtio_line(serial, drive.sectors, drive.read_only);
-            take_disk(serial, Driver::Virtio, drive.read_only, boot);
+            take_disk(serial, Driver::Virtio, boot);
         }
     }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
@@ -109,7 +109,7 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
         for drive in raw::ahci::drives().iter().flatten() {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
-            take_disk(serial, Driver::Ahci(drive.port), false, boot);
+            take_disk(serial, Driver::Ahci(drive.port), boot);
         }
     }
     match raw::disk::trust(boot) {
@@ -129,11 +129,10 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
     mount_system(serial, boot);
 }
 
-/// Takes the disk behind `driver` in, which says whether it only reads,
-/// logs what it holds, and hangs the partition the loader came from at
-/// /System/Boot when it is on it.
-fn take_disk(serial: &mut Serial, driver: Driver, read_only: bool, boot: [u8; 16]) {
-    raw::disk::add(driver, read_only);
+/// Takes the disk behind `driver` in, logs what it holds, and hangs the
+/// partition the loader came from at /System/Boot when it is on it.
+fn take_disk(serial: &mut Serial, driver: Driver, boot: [u8; 16]) {
+    raw::disk::add(driver);
     let mut read = move |lba, into: &mut [u8]| raw::disk::read_from(driver, lba, into);
     let _ = kernel::disk::describe(serial, &driver, &mut read);
     mount_boot(serial, &driver, boot, read);
@@ -207,7 +206,7 @@ fn mount_system(serial: &mut Serial, boot: [u8; 16]) {
     let (disk, driver, first) = (home.disk, home.driver, home.system.first);
     let read =
         Box::new(move |lba, into: &mut [u8]| raw::disk::read_from(driver, first + lba, into));
-    let writes = driver == Driver::Virtio && !home.read_only && home.writable;
+    let writes = driver == Driver::Virtio && !raw::virtio::read_only() && home.writable;
     let write = writes.then(|| -> raw::vfs::Writes {
         Box::new(move |lba, from: &[u8]| raw::disk::write(disk, first + lba, from).is_ok())
     });

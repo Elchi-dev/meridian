@@ -43,7 +43,6 @@ pub const CHECKS: Permit = Permit(());
 
 struct Disk {
     driver: Driver,
-    read_only: bool,
     table: Option<Table>,
     writable: Writable,
 }
@@ -71,13 +70,12 @@ pub fn read_from(driver: Driver, lba: u64, into: &mut [u8]) -> bool {
     }
 }
 
-/// Takes in the disk behind `driver`, which says whether it only reads,
-/// with its partition table, nothing on it writable until [`trust`].
-pub fn add(driver: Driver, read_only: bool) {
+/// Takes in the disk behind `driver` with its partition table, nothing on
+/// it writable until [`trust`].
+pub fn add(driver: Driver) {
     let table = Table::read(&mut |lba, into| read_from(driver, lba, into));
     DISKS.lock().push(Disk {
         driver,
-        read_only,
         table,
         writable: Writable::default(),
     });
@@ -88,8 +86,6 @@ pub fn add(driver: Driver, read_only: bool) {
 pub struct Home {
     pub disk: usize,
     pub driver: Driver,
-    /// Whether the disk says it only reads.
-    pub read_only: bool,
     pub system: Partition,
     /// Whether Meridian may write the whole system partition.
     pub writable: bool,
@@ -107,7 +103,6 @@ pub fn home(boot: [u8; 16]) -> Option<Home> {
         Some(Home {
             disk,
             driver: d.driver,
-            read_only: d.read_only,
             system,
             writable: d.writable.allows(system.first, system.sectors()),
         })

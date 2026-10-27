@@ -218,6 +218,12 @@ fn take(queue: &Queue, len: usize) -> Option<DeviceFrames> {
     DeviceFrames::take(len.div_ceil(4096).min(room))
 }
 
+/// Whether the device agreed to only read; none started counts as one
+/// that only reads.
+pub fn read_only() -> bool {
+    QUEUE.lock().as_ref().is_none_or(|q| q.drive.read_only)
+}
+
 /// Reads the sectors from `sector` on into `into`, which takes a whole
 /// number of them, as many frames at a time as the queue has room for.
 ///

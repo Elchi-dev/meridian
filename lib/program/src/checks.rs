@@ -12,16 +12,16 @@ use abi::{LOG_BYTES, MESSAGE_BYTES};
 use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
-    Ended, Error, Handle, Info, channel, close, info, key, list, log, make_directory, map, open,
-    open_with, raw, read, receive, remove, send, sleep, spawn, spawn_handing, spawn_restricted,
-    spawn_with, start, terminate, token, unmap, wait, write, write_file,
+    Ended, Error, Handle, Info, channel, close, duplicate, info, key, list, log, make_directory,
+    map, open, open_with, raw, read, receive, remove, send, sleep, spawn, spawn_handing,
+    spawn_restricted, spawn_with, start, terminate, token, unmap, wait, write, write_file,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 42] = [
+const CHECKS: [(&str, Check); 43] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -54,6 +54,7 @@ const CHECKS: [(&str, Check); 42] = [
     ("file.write", files_written),
     ("file.write_refused", writes_refused),
     ("spawn.file", child_from_its_file),
+    ("handle.duplicate", duplicates_stand_for_the_same_object),
     ("spawn.arguments", arguments_arrive),
     ("spawn.output", output_goes_where_it_is_handed),
     ("shell.script", shell_runs_a_script),
@@ -1040,6 +1041,68 @@ fn writes_refused() -> Outcome {
             && remove(&long) == Err(Error::TooLong)
             && make_directory(&long) == Err(Error::TooLong),
         "a stranger's handle should not write, nor a path past PATH_BYTES name anything",
+    )
+}
+
+/// A duplicate stands for what its handle stands for, which closes with
+/// the last of them: a channel end, an open file and a process.
+fn duplicates_stand_for_the_same_object() -> Outcome {
+    let (mine, theirs) = pair()?;
+    let copy = duplicate(mine).map_err(|_| "a channel end should be duplicated")?;
+    let mut room = [0u8; 8];
+    expect(
+        copy != mine
+            && send(copy, b"a", None) == Ok(())
+            && send(mine, b"b", None) == Ok(())
+            && receive(theirs, &mut room) == Ok((1, None))
+            && room[0] == b'a'
+            && receive(theirs, &mut room) == Ok((1, None))
+            && room[0] == b'b',
+        "both handles should send through the one end",
+    )?;
+    expect(
+        close(mine) == Ok(())
+            && send(theirs, b"c", None) == Ok(())
+            && receive(copy, &mut room) == Ok((1, None))
+            && room[0] == b'c',
+        "the end should stay open while its duplicate does",
+    )?;
+    expect(
+        close(copy) == Ok(())
+            && send(theirs, b"d", None) == Err(Error::Closed)
+            && receive(theirs, &mut room) == Err(Error::Closed)
+            && close(theirs) == Ok(()),
+        "the end should close with its last handle",
+    )?;
+    let (child, line) = exitwith()?;
+    let watcher = duplicate(child).map_err(|_| "a process should be duplicated")?;
+    expect(
+        send(line, &5u64.to_le_bytes(), None) == Ok(())
+            && wait(child) == Ok(Ended::Exited(5))
+            && close(child) == Ok(())
+            && wait(watcher) == Ok(Ended::Exited(5))
+            && close(watcher) == Ok(())
+            && close(line) == Ok(()),
+        "a duplicate should wait for the process after the first handle closed",
+    )?;
+    expect(
+        duplicate(Handle(0x7777_0042)) == Err(Error::BadHandle),
+        "a stranger's handle should not be duplicated",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let file = open("/System/Boot/meridian/boot.meri", abi::file::READ)
+        .map_err(|_| "boot.meri should open")?;
+    let again = duplicate(file).map_err(|_| "a file should be duplicated")?;
+    let size = info(file).map(|i| i.size);
+    expect(
+        close(file) == Ok(())
+            && info(again).map(|i| i.size) == size
+            && read(again, 0, &mut room).is_ok_and(|n| n > 0)
+            && close(again) == Ok(())
+            && info(again) == Err(Error::BadHandle),
+        "an open file should read through its duplicate after the first handle closed",
     )
 }
 

@@ -146,13 +146,23 @@ pub fn receive(end: Handle, room: &mut [u8]) -> Result<(usize, Option<Handle>), 
     received(rax, rdx)
 }
 
-/// Closes `handle`.
+/// Closes `handle`. What it stood for closes with the last handle to it.
 ///
 /// # Errors
 ///
 /// When the handle is not the program's.
 pub fn close(handle: Handle) -> Result<(), Error> {
     done(raw::call(Call::Close(handle.0)).0)
+}
+
+/// A second handle to what `handle` stands for, with the same rights
+/// (decision record 0019).
+///
+/// # Errors
+///
+/// When the handle is not the program's, or no room is left for another.
+pub fn duplicate(handle: Handle) -> Result<Handle, Error> {
+    answer(raw::call(Call::Duplicate(handle.0)).0).map(Handle)
 }
 
 /// Asks for `pages` fresh pages, zeroed and writable, and returns where
@@ -212,7 +222,8 @@ pub fn spawn_with(name: &str, arguments: &[&str]) -> Result<(Handle, Handle), Er
 }
 
 /// Starts the program `name` as [`spawn_with`] does, handing it `output`
-/// as its standard output too, when that is some.
+/// as its standard output too, when that is some. The handle goes with
+/// the program, and is closed when the program does not start.
 ///
 /// # Errors
 ///
@@ -228,6 +239,9 @@ pub fn spawn_handing(
         Err(e) => {
             let _ = close(mine);
             let _ = close(theirs);
+            if let Some(start::Sink::Channel(h) | start::Sink::File(h)) = output {
+                let _ = close(h);
+            }
             return Err(e);
         }
     };

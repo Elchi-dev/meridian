@@ -72,6 +72,11 @@ enum Command<'a> {
     Show(&'a [String]),
     MakeDirectory(&'a [String]),
     Remove(&'a [String]),
+    RemoveDirectory(&'a [String]),
+    /// `cp`: the paths, the last of them where the others go.
+    Copy(&'a [String]),
+    /// `mv`: the paths, the last of them where the others go.
+    Move(&'a [String]),
     Clear,
     Services,
     Empty,
@@ -85,8 +90,8 @@ enum Command<'a> {
 }
 
 /// What `help` says: the commands on its first line.
-const HELP: &str = "help, echo, ls or dir, cat or type, mkdir or md, rm or del, clear or cls, \
-                    services, exit, or a program\n\
+const HELP: &str = "help, echo, ls or dir, cat or type, cp or copy, mv or move, mkdir or md, \
+                    rm or del, rmdir or rd, clear or cls, services, exit, or a program\n\
                     let, if, for, while and fn as blocks in braces; > PATH or >> PATH after a \
                     command sends what it writes into a file\n";
 
@@ -104,15 +109,54 @@ fn command(words: &[String]) -> Command<'_> {
         "help" => Command::Help,
         "echo" => Command::Echo(rest),
         "ls" | "dir" => Command::List(rest),
-        "mkdir" | "md" | "rm" | "del" if rest.is_empty() => Command::Missing(word),
+        "mkdir" | "md" | "rm" | "del" | "rmdir" | "rd" if rest.is_empty() => Command::Missing(word),
+        "cp" | "copy" | "mv" | "move" if rest.len() < 2 => Command::Missing(word),
         "cat" | "type" => Command::Show(rest),
+        "cp" | "copy" => Command::Copy(rest),
+        "mv" | "move" => Command::Move(rest),
         "mkdir" | "md" => Command::MakeDirectory(rest),
         "rm" | "del" => Command::Remove(rest),
+        "rmdir" | "rd" => Command::RemoveDirectory(rest),
         "clear" | "cls" => Command::Clear,
         "services" => Command::Services,
         "true" => Command::Status(0),
         "false" => Command::Status(1),
         _ => Command::Program(word, rest),
+    }
+}
+
+/// What the shell says when the command `word` was given too few paths.
+fn missing(word: &str) -> String {
+    match word {
+        "cp" | "copy" | "mv" | "move" => format!("{word} needs a path and where it goes\n"),
+        _ => format!("{word} needs a path\n"),
+    }
+}
+
+/// The name `path` ends in, after its last slash.
+fn last_name(path: &str) -> &str {
+    let path = path.trim_end_matches('/');
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Where each path but the last of `paths` goes for cp and mv: into the
+/// last, by its own name, when that is a directory, or else to the last,
+/// which takes one path alone. None for more than one path going to what
+/// is no directory.
+fn destinations(paths: &[String], into_directory: bool) -> Option<Vec<(&str, String)>> {
+    let (target, sources) = paths.split_last()?;
+    if into_directory {
+        let slash = if target.ends_with('/') { "" } else { "/" };
+        return Some(
+            sources
+                .iter()
+                .map(|s| (s.as_str(), format!("{target}{slash}{}", last_name(s))))
+                .collect(),
+        );
+    }
+    match sources {
+        [one] => Some(Vec::from([(one.as_str(), target.clone())])),
+        _ => None,
     }
 }
 
@@ -794,8 +838,11 @@ fn run(command: Command<'_>, input: &mut In, out: &mut Out) -> u8 {
         Command::Clear => out.say("\u{c}").is_ok(),
         Command::Services => services(out),
         Command::Empty => true,
+        Command::RemoveDirectory(paths) => every(paths, |path| done(path, remove_directory)),
+        Command::Copy(paths) => carry(paths, copy_file),
+        Command::Move(paths) => carry(paths, move_file),
         Command::Missing(word) => {
-            let _ = program::write(&format!("{word} needs a path\n"));
+            let _ = program::write(&missing(word));
             false
         }
     };
@@ -806,6 +853,104 @@ fn run(command: Command<'_>, input: &mut In, out: &mut Out) -> u8 {
 /// too, and says whether all went well.
 fn every(paths: &[String], mut work: impl FnMut(&str) -> bool) -> bool {
     paths.iter().filter(|path| !work(path)).count() == 0
+}
+
+/// Does `each` with each path but the last of `paths` and where it goes,
+/// as [`destinations`] has it, says what went wrong with any, and says
+/// whether all went well.
+#[cfg_attr(test, allow(dead_code))]
+fn carry(
+    paths: &[String],
+    mut each: impl FnMut(&str, &str) -> Result<(), (String, Error)>,
+) -> bool {
+    let target = paths.last().map_or("", String::as_str);
+    let Some(pairs) = destinations(paths, is_directory(target)) else {
+        let _ = program::write(&format!(
+            "{target}: not a directory, so one path alone goes there\n"
+        ));
+        return false;
+    };
+    let failed = pairs.iter().filter(|(from, to)| {
+        each(from, to)
+            .inspect_err(|(path, e)| {
+                let _ = program::write(&trouble(path, *e));
+            })
+            .is_err()
+    });
+    failed.count() == 0
+}
+
+/// Whether `path` is a directory the shell can open.
+#[cfg_attr(test, allow(dead_code))]
+fn is_directory(path: &str) -> bool {
+    program::open(path, file::READ).is_ok_and(|handle| {
+        let directory = program::info(handle).is_ok_and(|i| i.directory);
+        let _ = program::close(handle);
+        directory
+    })
+}
+
+/// Copies the file at `from` to `to`, made new or emptied, and answers
+/// the path that went wrong with what did.
+#[cfg_attr(test, allow(dead_code))]
+fn copy_file(from: &str, to: &str) -> Result<(), (String, Error)> {
+    let source = program::open(from, file::READ).map_err(|e| (String::from(from), e))?;
+    let copied = copy_from(source, to)
+        .map_err(|(reading, e)| (String::from(if reading { from } else { to }), e));
+    let _ = program::close(source);
+    copied
+}
+
+/// Copies the open file `source` to `to`, and says, with what went wrong,
+/// whether it was reading.
+#[cfg_attr(test, allow(dead_code))]
+fn copy_from(source: Handle, to: &str) -> Result<(), (bool, Error)> {
+    if program::info(source).map_err(|e| (true, e))?.directory {
+        return Err((true, Error::NotAFile));
+    }
+    let target =
+        program::open_with(to, file::WRITE, file::CREATE_ALWAYS).map_err(|e| (false, e))?;
+    let mut room = [0u8; 4096];
+    let mut at = 0;
+    let copied = loop {
+        match program::read(source, at, &mut room) {
+            Ok(0) => break Ok(()),
+            Ok(len) => {
+                if let Err(e) = program::write_file(target, at, &room[..len]) {
+                    break Err((false, e));
+                }
+                at += len as u64;
+            }
+            Err(e) => break Err((true, e)),
+        }
+    };
+    let _ = program::close(target);
+    copied
+}
+
+/// Moves the file or directory at `from` to `to`, and a file across
+/// volumes by copying it and removing it after.
+#[cfg_attr(test, allow(dead_code))]
+fn move_file(from: &str, to: &str) -> Result<(), (String, Error)> {
+    match program::rename(from, to) {
+        Err(Error::NotSameVolume) => {
+            copy_file(from, to)?;
+            program::remove(from).map_err(|e| (String::from(from), e))
+        }
+        other => other.map_err(|e| (String::from(from), e)),
+    }
+}
+
+/// Removes the directory at `path`, which has to be empty, and no file.
+#[cfg_attr(test, allow(dead_code))]
+fn remove_directory(path: &str) -> Result<(), Error> {
+    let handle = program::open(path, file::READ)?;
+    let directory = program::info(handle).map(|i| i.directory);
+    let _ = program::close(handle);
+    if !directory? {
+        return Err(Error::NotADirectory);
+    }
+    program::remove(path)
 }
 
 /// Does `call` with `path`, says what went wrong when it did, and says
@@ -1146,8 +1291,29 @@ mod tests {
         }
         assert_eq!(command(&words("services now")), Command::Services);
         assert_eq!(command(&[]), Command::Empty);
-        let program = words("cp a b");
-        assert_eq!(command(&program), Command::Program("cp", &program[1..]));
+        let program = words("edit a b");
+        assert_eq!(command(&program), Command::Program("edit", &program[1..]));
+        for name in ["cp", "copy"] {
+            let w = words(&format!("{name} /a /b /c"));
+            assert_eq!(command(&w), Command::Copy(&w[1..]));
+        }
+        for name in ["mv", "move"] {
+            let w = words(&format!("{name} /a /b"));
+            assert_eq!(command(&w), Command::Move(&w[1..]));
+        }
+        for name in ["rmdir", "rd"] {
+            let w = words(&format!("{name} /a"));
+            assert_eq!(command(&w), Command::RemoveDirectory(&w[1..]));
+            assert_eq!(command(&words(name)), Command::Missing(name));
+        }
+        for name in ["cp", "copy", "mv", "move"] {
+            assert_eq!(command(&words(name)), Command::Missing(name));
+            assert_eq!(
+                command(&words(&format!("{name} /a"))),
+                Command::Missing(name),
+                "one path is not enough"
+            );
+        }
         assert_eq!(
             command(&words("Help")),
             Command::Program("Help", &[]),
@@ -1177,6 +1343,52 @@ mod tests {
         assert_eq!(asked(&words("/System/a.sh x")), Asked::Unknown);
         assert_eq!(asked(&words("-c a b")), Asked::Unknown);
         assert_eq!(asked(&words("-x a")), Asked::Unknown);
+    }
+
+    #[test]
+    fn a_command_short_of_paths_says_what_it_needs() {
+        assert_eq!(missing("rm"), "rm needs a path\n");
+        assert_eq!(missing("rd"), "rd needs a path\n");
+        for word in ["cp", "copy", "mv", "move"] {
+            assert_eq!(
+                missing(word),
+                format!("{word} needs a path and where it goes\n")
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_ends_in_its_name() {
+        assert_eq!(last_name("/System/a.txt"), "a.txt");
+        assert_eq!(last_name("a.txt"), "a.txt");
+        assert_eq!(last_name("/System/Dir/"), "Dir");
+        assert_eq!(last_name("Dir//"), "Dir");
+        assert_eq!(last_name("/"), "");
+    }
+
+    #[test]
+    fn what_cp_and_mv_carry_goes_into_a_directory_or_takes_the_last_name() {
+        let paths = words("/a/x.txt /b/y /c");
+        assert_eq!(
+            destinations(&paths, true),
+            Some(Vec::from([
+                ("/a/x.txt", String::from("/c/x.txt")),
+                ("/b/y", String::from("/c/y"))
+            ]))
+        );
+        assert_eq!(destinations(&paths, false), None, "two to no directory");
+        let one = words("/a/x.txt /c/z.txt");
+        assert_eq!(
+            destinations(&one, false),
+            Some(Vec::from([("/a/x.txt", String::from("/c/z.txt"))]))
+        );
+        let slash = words("/a/x.txt /c/");
+        assert_eq!(
+            destinations(&slash, true),
+            Some(Vec::from([("/a/x.txt", String::from("/c/x.txt"))])),
+            "a slash at its end is not doubled"
+        );
+        assert_eq!(destinations(&[], true), None);
     }
 
     #[test]
@@ -1585,8 +1797,8 @@ mod tests {
     #[test]
     fn help_names_every_command_the_shell_knows() {
         let known = [
-            "help", "echo", "ls", "dir", "cat", "type", "mkdir", "md", "rm", "del", "clear", "cls",
-            "services", "exit",
+            "help", "echo", "ls", "dir", "cat", "type", "cp", "copy", "mv", "move", "mkdir", "md",
+            "rm", "del", "rmdir", "rd", "clear", "cls", "services", "exit",
         ];
         let (first, second) = HELP.split_once('\n').unwrap();
         let named: Vec<&str> = first

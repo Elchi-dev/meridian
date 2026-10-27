@@ -476,8 +476,10 @@ The shell edits a line with either shift and backspace and runs it in
 Meridian's shell language (decision record 0016, `lib/shell`), taking
 more lines while a block is open, with one session's variables and
 functions for every line. Its own commands are `help`, `echo`, `ls` or
-`dir`, `cat` or `type`, `mkdir` or `md`, `rm` or `del`, `clear` or `cls`
-and `services`, reading the tree of files, where patterns match too. Any
+`dir`, `cat` or `type`, `cp` or `copy`, `mv` or `move`, `mkdir` or `md`,
+`rm` or `del`, `rmdir` or `rd`, `clear` or `cls` and `services`, reading
+the tree of files, where patterns match too; `mv` renames, and copies a
+file to another volume and removes it there. Any
 other word is a program: by its name in
 `/System/Boot/meridian/programs`, or on a CD, which holds none there,
 among the programs the loader brought, or by its path, started with SPAWN,

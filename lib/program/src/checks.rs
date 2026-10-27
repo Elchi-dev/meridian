@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 55] = [
+const CHECKS: [(&str, Check); 56] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -76,6 +76,7 @@ const CHECKS: [(&str, Check); 55] = [
     ("shell.redirections.both", reading_and_writing_files_at_once),
     ("shell.output.file", programs_write_into_the_shells_file),
     ("shell.bytes", bytes_go_through_as_they_are),
+    ("shell.carry", files_copied_and_moved),
     ("console", writes_on_the_console),
 ];
 
@@ -1848,9 +1849,70 @@ fn bytes_go_through_as_they_are() -> Outcome {
     )
 }
 
+/// cp and mv carry files where they are told, into a directory by their
+/// names, mv a directory too and a file across volumes, and rd removes
+/// only empty directories.
+fn files_copied_and_moved() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/C; echo one > /System/C/a; cp /System/C/a /System/C/b\n\
+         copy /System/C/a /System/C/b /System; mv /System/C/b /System/C/c\n\
+         ls /System/C/*; cat /System/a /System/b /System/C/c",
+    )?;
+    if said.starts_with(b"/System/C: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(2)),
+            "on /System read only nothing should be copied or moved",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"/System/C/a\n/System/C/c\none\none\none\n",
+        "cp should copy a file to a name and into a directory, and mv move one",
+    )?;
+    expect(
+        shell_on("move /System/C /System/D; ls /System/D/*; rd /System/D/a; rmdir /System/D")?
+            == ran(
+                1,
+                b"/System/D/a\n/System/D/c\n/System/D/a: not a directory\n\
+                  /System/D: a directory that holds something\n",
+            ),
+        "move should carry a directory and what it holds, and rd keep what is no empty directory",
+    )?;
+    expect(
+        shell_on(
+            "cp /System/a /System/b /System/x.txt; mv /System/Boot/meridian/boot.meri /System/D",
+        )? == ran(
+            1,
+            b"/System/x.txt: not a directory, so one path alone goes there\n\
+              /System/Boot/meridian/boot.meri: on a volume that is only read\n",
+        ),
+        "two paths should go into no file, and a file across volumes be copied though it stays",
+    )?;
+    expect(
+        shell_on(
+            "cat /System/D/boot.meri | wc; wc /System/Boot/meridian/boot.meri\n\
+             rm /System/a /System/b /System/D/a /System/D/c /System/D/boot.meri; rd /System/D",
+        )?
+        .1
+        .split(|&b| b == b'\n')
+        .take(2)
+        .map(|line| line.split(|&b| b == b' ').take(3).collect::<Vec<_>>())
+        .collect::<Vec<_>>()
+        .windows(2)
+        .all(|w| w[0] == w[1]),
+        "the copy across volumes should hold what the file holds",
+    )?;
+    expect(
+        open("/System/D", abi::file::READ) == Err(Error::NotFound),
+        "rd should remove the empty directory",
+    )
+}
+
 /// What `help` shows, counted as wc counts.
-const HELP_WORDS: usize = 47;
-const HELP_BYTES: usize = 218;
+const HELP_WORDS: usize = 56;
+const HELP_BYTES: usize = 255;
 
 fn writes_on_the_console() -> Outcome {
     // The first piece would end inside the last character. Spaces, since

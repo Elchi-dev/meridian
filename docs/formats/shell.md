@@ -193,7 +193,11 @@ with status 127 and says so.
 
 The shell reads a script as sh when its first line is `#!/bin/sh` or
 `#!sh`; blanks after the `#!` and at the line's end are let be. Any
-other script is read in Meridian's dialect.
+other script is read in Meridian's dialect, unless the shell was started
+with `--sh` before its other words, as the command `sh` starts it: `sh`
+alone reads lines typed at the console in sh until `exit`, with `$ ` as
+its prompt and `> ` while what was typed wants more lines, and `sh -c
+TEXT` and `sh PATH` run a script in sh.
 
 The sh dialect reads scripts as POSIX sh does, and reports its errors in
 the same form. A quote, a `${`, a `$(`, a `$((` or a backquote that the

@@ -183,7 +183,7 @@ Loader and UEFI:
   - [x] `command` and `command -v`
   - [x] `wait`, with nothing to wait for while `&` runs a list to its end
   - [ ] `&` starting jobs, with `$!`, and `exec`
-  - [ ] The `sh` command and an interactive sh session
+  - [x] The `sh` command, and lines typed in sh until `exit`
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`
 - [ ] More command-line tools

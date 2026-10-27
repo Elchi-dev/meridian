@@ -167,7 +167,7 @@ enum Command<'a> {
 
 /// What `help` says: the commands on its first line.
 const HELP: &str = "help, echo, printf, test or [, true, false, cd or chdir, pwd, ls or dir, cat or type, cp or copy, \
-                    mv or move, mkdir or md, rm or del, rmdir or rd, clear or cls, services, \
+                    mv or move, mkdir or md, rm or del, rmdir or rd, clear or cls, services, sh, \
                     exit, or a program\n\
                     let, if, for, while and fn as blocks in braces; > PATH or >> PATH after a \
                     command sends what it writes into a file\n";
@@ -361,7 +361,8 @@ fn completed(line: &str, directory: &str, tree: &mut impl Tree) -> Option<String
 /// The line to init the shell started with, 0 when init did not start it.
 static LINE: AtomicU64 = AtomicU64::new(0);
 
-/// What the shell was started to do, by the words it was handed.
+/// What the shell was started to do, by the words it was handed after a
+/// `--sh`, which asks for the sh dialect.
 #[derive(Debug, PartialEq, Eq)]
 enum Asked<'a> {
     /// Run the lines typed at the console.
@@ -374,7 +375,15 @@ enum Asked<'a> {
     Unknown,
 }
 
-fn asked(arguments: &[String]) -> Asked<'_> {
+/// What the shell was started to do, and whether in the sh dialect.
+fn asked(arguments: &[String]) -> (Asked<'_>, bool) {
+    match arguments.split_first() {
+        Some((flag, rest)) if flag == "--sh" => (what(rest), true),
+        _ => (what(arguments), false),
+    }
+}
+
+fn what(arguments: &[String]) -> Asked<'_> {
     match arguments {
         [] => Asked::Typed,
         [flag, text] if flag == "-c" => Asked::Text(text),
@@ -387,11 +396,17 @@ fn asked(arguments: &[String]) -> Asked<'_> {
 fn shell(_: Handle) -> u64 {
     let line = program::start::given().line;
     LINE.store(line.map_or(0, |h| h.0), SeqCst);
-    let status = match asked(program::arguments()) {
-        Asked::Typed => typed(),
-        Asked::Text(text) => script(text, "shell"),
+    let (asked, sh) = asked(program::arguments());
+    let status = match asked {
+        Asked::Typed if sh => typed(&mut ShTyped(sh::run::Session::new(
+            "sh".into(),
+            0,
+            Vec::new(),
+        ))),
+        Asked::Typed => typed(&mut OwnTyped(Session::new())),
+        Asked::Text(text) => script(text, "shell", sh),
         Asked::File(path) => match text_of(path) {
-            Ok(text) => script(&text, path),
+            Ok(text) => script(&text, path, sh),
             Err(e) => {
                 let _ = program::write_error(&trouble(path, e));
                 2
@@ -399,7 +414,7 @@ fn shell(_: Handle) -> u64 {
         },
         Asked::Unknown => {
             let _ = program::write_error(
-                "shell: start it with no words, -c SCRIPT, or a script's path\n",
+                "shell: start it with no words, -c SCRIPT, or a script's path, after --sh for sh\n",
             );
             2
         }
@@ -417,12 +432,12 @@ fn is_sh(text: &str) -> bool {
         .is_some_and(|rest| matches!(rest.trim(), "/bin/sh" | "sh"))
 }
 
-/// Runs `text` as a script called `zero`, in the dialect its first line
-/// asks for, saying what does not read or run, and answers the status it
-/// ended with: 2 when something did not.
+/// Runs `text` as a script called `zero`, in the sh dialect when `sh` or
+/// its first line asks for it, saying what does not read or run, and
+/// answers the status it ended with: 2 when something did not.
 #[cfg_attr(test, allow(dead_code))]
-fn script(text: &str, zero: &str) -> u8 {
-    if is_sh(text) {
+fn script(text: &str, zero: &str, sh: bool) -> u8 {
+    if sh || is_sh(text) {
         return sh_script(text, zero);
     }
     let mut session = Session::new();
@@ -479,16 +494,100 @@ fn text_of(path: &str) -> Result<String, Error> {
     read.map(|()| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Runs the lines typed at the console until `exit`, and answers the
-/// status it gave.
+/// A dialect lines typed at the console run in.
+trait Typing {
+    /// What the shell says as it starts, its prompt last.
+    fn greeting(&self) -> &'static str;
+
+    /// Runs the lines `typed` so far, once they read, and takes them;
+    /// answers the prompt for the next line, or the status the shell ends
+    /// with.
+    fn lines(&mut self, typed: &mut String) -> Result<&'static str, u8>;
+}
+
+/// Meridian's own language, typed.
+struct OwnTyped(Session);
+
+impl Typing for OwnTyped {
+    fn greeting(&self) -> &'static str {
+        "Meridian shell. Type help to see what it knows.\n> "
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn lines(&mut self, typed: &mut String) -> Result<&'static str, u8> {
+        match lines(typed) {
+            Lines::Open => Ok("... "),
+            Lines::Script(script) => {
+                typed.clear();
+                match self.0.run(&script, &mut System::default()) {
+                    Ok(Flow::Exit) => return Err(self.0.status()),
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = program::write_error(&format!("{e}\n"));
+                    }
+                }
+                Ok("> ")
+            }
+            Lines::Wrong(e) => {
+                typed.clear();
+                let _ = program::write_error(&format!("{e}\n"));
+                Ok("> ")
+            }
+        }
+    }
+}
+
+/// The sh dialect, typed, as `sh` starts it: `$ ` the prompt, and `> `
+/// while what was typed wants more lines. What goes wrong ends no more
+/// than the lines it is in, but `exit` ends the shell.
+struct ShTyped(sh::run::Session);
+
+impl Typing for ShTyped {
+    fn greeting(&self) -> &'static str {
+        "$ "
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn lines(&mut self, typed: &mut String) -> Result<&'static str, u8> {
+        if sh::parse::wants_more(typed) {
+            return Ok("> ");
+        }
+        let read = sh::parse::script(typed);
+        typed.clear();
+        let items = match read {
+            Ok(items) => items,
+            Err(e) => {
+                let _ = program::write_error(&format!("{e}\n"));
+                return Ok("$ ");
+            }
+        };
+        let mut system = System::default();
+        match self.0.run(&items, &mut system) {
+            Err(Stop::Exit(status)) => {
+                return Err(match self.0.finish(Err(Stop::Exit(status)), &mut system) {
+                    Err(Stop::Exit(status) | Stop::Said(status)) => status,
+                    Err(Stop::Error(_)) => 2,
+                    Ok(_) => status,
+                });
+            }
+            Err(Stop::Error(e)) => {
+                let _ = program::write_error(&format!("{e}\n"));
+            }
+            Err(Stop::Said(_)) | Ok(_) => {}
+        }
+        Ok("$ ")
+    }
+}
+
+/// Runs the lines typed at the console in `dialect` until `exit`, and
+/// answers the status it gave.
 #[cfg_attr(test, allow(dead_code))]
-fn typed() -> u8 {
+fn typed(dialect: &mut impl Typing) -> u8 {
     if program::directory() == "/" {
         let _ = program::change_directory(HOME);
     }
-    let _ = program::write("Meridian shell. Type help to see what it knows.\n> ");
+    let _ = program::write(dialect.greeting());
     let mut editor = Editor::default();
-    let mut session = Session::new();
     let mut typed = String::new();
     loop {
         let Some(key) = program::key() else {
@@ -515,26 +614,10 @@ fn typed() -> u8 {
                 let _ = program::write("\n");
                 typed.push_str(&line);
                 typed.push('\n');
-                let prompt = match lines(&typed) {
-                    Lines::Open => "... ",
-                    Lines::Script(script) => {
-                        typed.clear();
-                        match session.run(&script, &mut System::default()) {
-                            Ok(Flow::Exit) => return session.status(),
-                            Ok(_) => {}
-                            Err(e) => {
-                                let _ = program::write_error(&format!("{e}\n"));
-                            }
-                        }
-                        "> "
-                    }
-                    Lines::Wrong(e) => {
-                        typed.clear();
-                        let _ = program::write_error(&format!("{e}\n"));
-                        "> "
-                    }
-                };
-                program::write(prompt)
+                match dialect.lines(&mut typed) {
+                    Ok(prompt) => program::write(prompt),
+                    Err(status) => return status,
+                }
             }
             Edit::Nothing => Ok(()),
         };
@@ -816,6 +899,7 @@ impl Machine for System {
         let words = [String::from(name)];
         match command(&words) {
             Command::Program(word, _) => {
+                let word = if word == "sh" { "shell" } else { word };
                 let path = program_name(word, self);
                 (path.starts_with('/') && self.has(&path)).then_some(path)
             }
@@ -1763,7 +1847,14 @@ fn ask(line: Handle, place: u8) -> Option<Vec<u8>> {
 /// stream 2.
 #[cfg_attr(test, allow(dead_code))]
 fn start(word: &str, arguments: &[String], streams: Streams) -> Going {
-    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let mut arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    // sh is the shell itself, in its sh dialect (decision record 0016).
+    let program = if word == "sh" {
+        arguments.insert(0, "--sh");
+        "shell"
+    } else {
+        word
+    };
     let Streams {
         input,
         out,
@@ -1776,7 +1867,7 @@ fn start(word: &str, arguments: &[String], streams: Streams) -> Going {
         ..program::start::Given::default()
     };
     let going = match program::spawn_handing(
-        &program_name(word, &mut System::default()),
+        &program_name(program, &mut System::default()),
         &arguments,
         given,
     ) {
@@ -2268,16 +2359,32 @@ mod tests {
 
     #[test]
     fn its_words_say_what_the_shell_runs() {
-        assert_eq!(asked(&[]), Asked::Typed);
+        assert_eq!(what(&[]), Asked::Typed);
         let text = words("-c echo");
-        assert_eq!(asked(&text[..1]), Asked::Unknown, "-c needs its script");
-        assert_eq!(asked(&text), Asked::Text("echo"));
+        assert_eq!(what(&text[..1]), Asked::Unknown, "-c needs its script");
+        assert_eq!(what(&text), Asked::Text("echo"));
         let script = [String::from("-c"), String::from("echo a; echo b")];
-        assert_eq!(asked(&script), Asked::Text("echo a; echo b"));
-        assert_eq!(asked(&words("/System/a.sh")), Asked::File("/System/a.sh"));
-        assert_eq!(asked(&words("/System/a.sh x")), Asked::Unknown);
-        assert_eq!(asked(&words("-c a b")), Asked::Unknown);
-        assert_eq!(asked(&words("-x a")), Asked::Unknown);
+        assert_eq!(what(&script), Asked::Text("echo a; echo b"));
+        assert_eq!(what(&words("/System/a.sh")), Asked::File("/System/a.sh"));
+        assert_eq!(what(&words("/System/a.sh x")), Asked::Unknown);
+        assert_eq!(what(&words("-c a b")), Asked::Unknown);
+        assert_eq!(what(&words("-x a")), Asked::Unknown);
+    }
+
+    #[test]
+    fn a_first_sh_flag_asks_for_the_sh_dialect() {
+        assert_eq!(asked(&words("--sh")), (Asked::Typed, true));
+        assert_eq!(asked(&words("--sh -c x")), (Asked::Text("x"), true));
+        assert_eq!(asked(&words("--sh /a.sh")), (Asked::File("/a.sh"), true));
+        assert_eq!(asked(&words("-c x")), (Asked::Text("x"), false));
+        assert_eq!(asked(&[]), (Asked::Typed, false));
+        assert_eq!(
+            asked(&words("--sh --sh")),
+            (Asked::File("--sh"), true),
+            "only the first"
+        );
+        assert_eq!(asked(&words("-c --sh")), (Asked::Text("--sh"), false));
+        assert_eq!(asked(&words("--sh -c")), (Asked::Unknown, true));
     }
 
     #[test]
@@ -2722,7 +2829,7 @@ mod tests {
         let known = [
             "help", "echo", "printf", "test", "true", "false", "cd", "chdir", "pwd", "ls", "dir",
             "cat", "type", "cp", "copy", "mv", "move", "mkdir", "md", "rm", "del", "rmdir", "rd",
-            "clear", "cls", "services", "exit",
+            "clear", "cls", "services", "sh", "exit",
         ];
         let (first, second) = HELP.split_once('\n').unwrap();
         let named: Vec<&str> = first
@@ -2731,8 +2838,11 @@ mod tests {
             .collect();
         for word in known {
             assert!(named.contains(&word), "help leaves out {word}");
+            // exit is the language's, and sh starts the shell again.
             assert!(
-                word == "exit" || !matches!(command(&words(word)), Command::Program(..)),
+                word == "exit"
+                    || word == "sh"
+                    || !matches!(command(&words(word)), Command::Program(..)),
                 "{word} is no command"
             );
         }

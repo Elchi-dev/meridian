@@ -1826,6 +1826,7 @@ fn shell_checks<W: Write>(
     let ran = waited_for("exitwith ended with 2989");
     let (block, wrong, recalled, completed) =
         shell_language_checks(&mut typed, &waited_for, &rows, patience);
+    let sh = sh_typed_checks(&mut typed, &waited_for);
     typed(&["e", "x", "i", "t", "spc", "7", "ret"]);
     let ended = started.is_ok_and(|slot| {
         let start = x86::raw::tsc();
@@ -1851,6 +1852,63 @@ fn shell_checks<W: Write>(
             && ended,
         "the shell should greet, start in /System, see the console as a terminal, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, finish a path with tab, and end at exit with its status",
     );
+    report.check(
+        "kernel.shell.sh",
+        sh,
+        "sh typed at the shell should run lines and a block over three lines in the sh dialect, and exit back with its status",
+    );
+}
+
+/// The sh dialect typed at the console: `sh` starts it, a line runs with
+/// `$ ` before it, a block goes on over the lines typed with `> ` before
+/// them, and `exit 3` comes back to Meridian's shell, which says how sh
+/// ended.
+fn sh_typed_checks(typed: &mut dyn FnMut(&[&str]), waited_for: &dyn Fn(&str) -> bool) -> bool {
+    typed(&["s", "h", "ret"]);
+    typed(&[
+        "x",
+        "equal",
+        "4",
+        "semicolon",
+        "spc",
+        "e",
+        "c",
+        "h",
+        "o",
+        "spc",
+        "shift-4",
+        "shift-9",
+        "shift-9",
+        "x",
+        "shift-equal",
+        "1",
+        "shift-0",
+        "shift-0",
+        "ret",
+    ]);
+    let ran = waited_for("$ x=4; echo $((x+1))") && waited_for("5");
+    typed(&[
+        "i",
+        "f",
+        "spc",
+        "t",
+        "r",
+        "u",
+        "e",
+        "semicolon",
+        "spc",
+        "t",
+        "h",
+        "e",
+        "n",
+        "ret",
+    ]);
+    typed(&["e", "c", "h", "o", "spc", "i", "n", "n", "e", "r", "ret"]);
+    typed(&["f", "i", "ret"]);
+    let block = waited_for("> echo inner") && waited_for("> fi") && waited_for("inner");
+    typed(&["e", "x", "i", "t", "spc", "3", "ret"]);
+    let back = waited_for("sh ended with 3");
+    ran && block && back
 }
 
 /// init, handed a channel end: of the services the test image lists, it

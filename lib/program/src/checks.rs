@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 104] = [
+const CHECKS: [(&str, Check); 105] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -127,6 +127,7 @@ const CHECKS: [(&str, Check); 104] = [
     ("shell.sh.dot", sh_dot),
     ("shell.sh.cd", sh_cd),
     ("shell.sh.command", sh_command),
+    ("shell.sh.started", sh_started),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -2562,7 +2563,7 @@ fn tools_given_nothing() -> Outcome {
         "nothing read should give nothing written, and grep's 1",
     )?;
     expect(
-        shell_on("help | head -n 0 | wc; help | head -n 1 | wc")? == ran(0, b"0 0 0\n1 41 190\n"),
+        shell_on("help | head -n 0 | wc; help | head -n 1 | wc")? == ran(0, b"0 0 0\n1 42 194\n"),
         "head should take no line when told none, and one when told one",
     )
 }
@@ -3314,6 +3315,19 @@ fn sh_command() -> Outcome {
     )
 }
 
+/// `sh` in Meridian's dialect starts the shell in the sh dialect: with
+/// `-c` on a script that names no dialect, and Meridian's shell says how
+/// it ended.
+fn sh_started() -> Outcome {
+    let checked = same(
+        &shell_on("sh -c 'x=1; echo $((x + 1)) $0'")?,
+        &ran(0, b"2 shell\n"),
+    );
+    expect(checked, "sh -c should run its script in the sh dialect")?;
+    let checked = same(&shell_on("sh -c 'exit 4'")?, &ran(4, b"sh ended with 4\n"));
+    expect(checked, "the shell should say how sh ended")
+}
+
 /// in each of several files by its name.
 fn a_move_to_other_capitals() -> Outcome {
     if !booted_from_disk() {
@@ -3377,8 +3391,8 @@ fn tools_refuse_what_is_no_text() -> Outcome {
 }
 
 /// What `help` shows, counted as wc counts.
-const HELP_WORDS: usize = 66;
-const HELP_BYTES: usize = 305;
+const HELP_WORDS: usize = 67;
+const HELP_BYTES: usize = 309;
 
 fn writes_on_the_console() -> Outcome {
     // The first piece would end inside the last character. Spaces, since

@@ -4,6 +4,7 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 use super::lex::{self, HereDoc, Op, Part, Token, Word};
 use crate::parse::is_name;
@@ -187,6 +188,43 @@ pub fn script(script: &str) -> Result<Vec<Item>, Error> {
     match parser.peek()? {
         None => Ok(list),
         Some(&(_, at)) => error(at, Code::Unexpected),
+    }
+}
+
+/// Whether `script` does not read because it ends too soon: a quote, a
+/// here-document or a compound command left open, or a `|`, `&&` or `||`
+/// with its command still to come, which more lines can finish, as a shell
+/// reading typed lines asks before it runs them.
+#[must_use]
+pub fn wants_more(script: &str) -> bool {
+    let tokens = match lex::tokens(script) {
+        Ok(tokens) => tokens,
+        Err(e) => return e.code == Code::Unclosed,
+    };
+    let ended = Cell::new(false);
+    let mut parser = Parser::new(Ending {
+        tokens: tokens.into_iter(),
+        ended: &ended,
+    });
+    let read = parser.list().is_ok() && matches!(parser.peek(), Ok(None));
+    !read && ended.get()
+}
+
+/// Tokens that keep whether the parser took them all and asked for more.
+struct Ending<'e, I> {
+    tokens: I,
+    ended: &'e Cell<bool>,
+}
+
+impl<I: Iterator<Item = (Token, Pos)>> Iterator for Ending<'_, I> {
+    type Item = (Token, Pos);
+
+    fn next(&mut self) -> Option<(Token, Pos)> {
+        let next = self.tokens.next();
+        if next.is_none() {
+            self.ended.set(true);
+        }
+        next
     }
 }
 
@@ -1630,5 +1668,49 @@ END
              && echo counted || echo failed 1>&2; \
              cat 0<<END:[run at ]\"$c{date}[\n] 1>>log; date"
         );
+    }
+
+    #[test]
+    fn a_script_left_open_at_its_end_wants_more() {
+        for open in [
+            "echo 'a",
+            "echo \"a",
+            "echo a |\n",
+            "true &&",
+            "false ||\n",
+            "if true; then\n",
+            "if true; then echo a\n",
+            "if true; then echo a; else\n",
+            "while true\n",
+            "for i in a b; do\n",
+            "case a in\n",
+            "case a in a) echo\n",
+            "{ echo a\n",
+            "( echo a\n",
+            "f() {\n",
+            "f()\n",
+            "cat <<EOF\nline\n",
+            "echo $(echo a\n",
+            "echo ${a\n",
+        ] {
+            assert!(wants_more(open), "{open:?}");
+        }
+    }
+
+    #[test]
+    fn a_script_that_reads_or_is_wrong_before_its_end_wants_none() {
+        for done in [
+            "",
+            "echo a\n",
+            "if true; then echo a; fi\n",
+            "fi\n",
+            "echo a; fi; if true; then\n",
+            "| echo a\n",
+            "echo a )\n",
+            ";; echo\n",
+            "done\n",
+        ] {
+            assert!(!wants_more(done), "{done:?}");
+        }
     }
 }

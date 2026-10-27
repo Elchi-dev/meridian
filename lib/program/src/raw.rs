@@ -291,3 +291,34 @@ macro_rules! main {
         );
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    #[test]
+    fn one_thread_at_a_time_holds_the_directory() {
+        let directory = Directory {
+            held: AtomicBool::new(false),
+            path: UnsafeCell::new(String::new()),
+        };
+        let inside = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                directory.with(|path| {
+                    inside.store(true, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(100));
+                    path.push_str("/first");
+                });
+            });
+            while !inside.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            let seen = directory.with(|path| path.clone());
+            assert_eq!(seen, "/first", "the second waits until the first lets go");
+        });
+        assert!(!directory.held.load(Ordering::SeqCst), "and both let go");
+    }
+}

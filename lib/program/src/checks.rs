@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 76] = [
+const CHECKS: [(&str, Check); 77] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -90,6 +90,7 @@ const CHECKS: [(&str, Check); 76] = [
     ("tools.empty", tools_given_nothing),
     ("tools.tail", tail_and_uniq),
     ("tools.tail.files", tail_and_uniq_on_files),
+    ("tools.big", uniq_on_a_big_file),
     ("tools.chain", the_tools_one_after_another),
     ("tools.input.more", tail_and_uniq_read_the_shells_input),
     ("tools.named", files_named_past_one_not_there),
@@ -2262,6 +2263,11 @@ fn tools_on_files() -> Outcome {
                 2,
                 b"/System/t1:0\ngrep: /nope: no such file\ngrep ended with 2\n",
             )
+        && shell_on("grep -c x /nope /System/t1")?
+            == ran(
+                2,
+                b"grep: /nope: no such file\n/System/t1:0\ngrep ended with 2\n",
+            )
         && shell_on("head /nope; sort /System/t1 /nope")?
             == ran(
                 2,
@@ -2272,6 +2278,45 @@ fn tools_on_files() -> Outcome {
     expect(
         checked && removed,
         "head, grep and sort should read several files, name them, take one given with <, and say which is not there",
+    )
+}
+
+/// uniq on a file of 4900 bytes, more than one read of the file and more
+/// than one message of a pipe bring: every line comes, however it is
+/// given.
+fn uniq_on_a_big_file() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    // Tried once first, so that where /System only reads, a hundred
+    // writes do not each take their time to be refused. The line comes
+    // again first thing in the loop, and uniq takes it once.
+    let x = "x".repeat(40);
+    let (ended, said) = shell_on(&alloc::format!("echo line 00 {x} > /System/big"))?;
+    if said.starts_with(b"/System/big: on a volume that is only read\n") {
+        return expect(
+            ended == Ok(Ended::Exited(1)),
+            "on /System read only no file should be made",
+        );
+    }
+    let made = same(&(ended, said), &ran(0, b""));
+    let filled = shell_on(&alloc::format!(
+        "for a in 0 1 2 3 4 5 6 7 8 9 {{\nfor b in 0 1 2 3 4 5 6 7 8 9 {{\n\
+         echo line $a$b {x} >> /System/big\n}}\n}}"
+    ))?;
+    let all = b"100 300 4900\n";
+    let checked = made
+        && same(&filled, &ran(0, b""))
+        && same(
+            &shell_on(
+                "uniq /System/big | wc; cat /System/big | uniq | wc; uniq < /System/big | wc",
+            )?,
+            &ran(0, &[&all[..], all, all].concat()),
+        );
+    let removed = shell_on("rm /System/big")? == ran(0, b"");
+    expect(
+        checked && removed,
+        "uniq should take every line of a file longer than one read, from the file, a pipe and <",
     )
 }
 

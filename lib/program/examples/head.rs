@@ -58,20 +58,15 @@ impl text::Reader for First {
             out.push(b'\n');
             *left -= 1;
             *left > 0
-        }) && *left > 0
+        })
     }
 
     /// What was taken, the last line without its end with it when the
-    /// count reaches it.
+    /// count reaches it. Once the count is reached the lines hold nothing
+    /// back, as they stop where they were told.
     fn finish(self) -> Vec<u8> {
-        let First {
-            left,
-            mut out,
-            lines,
-        } = self;
-        if left > 0 {
-            lines.finish(|line| out.extend_from_slice(line));
-        }
+        let First { mut out, lines, .. } = self;
+        lines.finish(|line| out.extend_from_slice(line));
         out
     }
 }

@@ -521,7 +521,7 @@ impl<S: Source> Parser<S> {
             },
             None => return Ok(None),
         };
-        if self.depth == lex::DEEPEST {
+        if self.depth >= lex::DEEPEST {
             return error(at, Code::TooNested);
         }
         self.depth += 1;

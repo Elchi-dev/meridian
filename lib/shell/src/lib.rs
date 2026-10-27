@@ -68,8 +68,8 @@ pub enum Code {
     /// In the sh dialect, a quote, an expansion or a backquote the script
     /// leaves open.
     Unclosed,
-    /// In the sh dialect, compound commands or expansions inside each other
-    /// deeper than 16.
+    /// In the sh dialect, compound commands, expansions, or parentheses and
+    /// signs in arithmetic inside each other deeper than 16.
     TooNested,
     /// In the sh dialect, a reserved word or an operator where no command
     /// can start.
@@ -97,6 +97,12 @@ pub enum Code {
     ExpectedCloseBrace,
     /// In the sh dialect, `name()` without a compound command after it.
     ExpectedBody,
+    /// In the sh dialect, what stands in `$((...))` that is not C's arithmetic.
+    BadArithmetic,
+    /// In the sh dialect, `/` or `%` by 0 in arithmetic.
+    DivisionByZero,
+    /// In the sh dialect, a variable in arithmetic whose value is no integer.
+    NotANumber,
 }
 
 impl Code {
@@ -137,6 +143,9 @@ impl Code {
             Code::ExpectedCloseParen => "expected-close-paren",
             Code::ExpectedCloseBrace => "expected-close-brace",
             Code::ExpectedBody => "expected-body",
+            Code::BadArithmetic => "bad-arithmetic",
+            Code::DivisionByZero => "division-by-zero",
+            Code::NotANumber => "not-a-number",
         }
     }
 
@@ -166,9 +175,7 @@ impl Code {
             Code::BadStatus => "return a number from 0 to 255",
             Code::TooDeep => "a function calls itself, or others call each other, too deep",
             Code::Unclosed => "close what starts here before the script ends",
-            Code::TooNested => {
-                "this goes past 16 commands or expansions inside each other; move some out"
-            }
+            Code::TooNested => "this nests past 16 levels; move the inner part out",
             Code::Unexpected => "this does not belong here; quote it to mean the word itself",
             Code::MissingDelimiter => "put the word whose line ends the here-document after <<",
             Code::ExpectedThen => "write then after the condition",
@@ -181,6 +188,9 @@ impl Code {
             Code::ExpectedCloseParen => "put a ) here to close what is open",
             Code::ExpectedCloseBrace => "close the { with }",
             Code::ExpectedBody => "give the function a body, such as { commands; }",
+            Code::BadArithmetic => "write the arithmetic with numbers, names and C's operators",
+            Code::DivisionByZero => "divide by something other than 0",
+            Code::NotANumber => "give the variable a whole number before counting with it",
         }
     }
 }
@@ -209,7 +219,7 @@ impl fmt::Display for Error {
 mod tests {
     use super::*;
 
-    const CODES: [Code; 33] = [
+    const CODES: [Code; 36] = [
         Code::LoneCarriageReturn,
         Code::UnterminatedQuote,
         Code::BadVariable,
@@ -243,6 +253,9 @@ mod tests {
         Code::ExpectedCloseParen,
         Code::ExpectedCloseBrace,
         Code::ExpectedBody,
+        Code::BadArithmetic,
+        Code::DivisionByZero,
+        Code::NotANumber,
     ];
 
     #[test]
@@ -327,7 +340,7 @@ mod tests {
                 "18:35: bad-status: return a number from 0 to 255",
                 "19:37: too-deep: a function calls itself, or others call each other, too deep",
                 "20:39: unclosed: close what starts here before the script ends",
-                "21:41: too-nested: this goes past 16 commands or expansions inside each other; move some out",
+                "21:41: too-nested: this nests past 16 levels; move the inner part out",
                 "22:43: unexpected: this does not belong here; quote it to mean the word itself",
                 "23:45: missing-delimiter: put the word whose line ends the here-document after <<",
                 "24:47: expected-then: write then after the condition",
@@ -340,6 +353,9 @@ mod tests {
                 "31:61: expected-close-paren: put a ) here to close what is open",
                 "32:63: expected-close-brace: close the { with }",
                 "33:65: expected-body: give the function a body, such as { commands; }",
+                "34:67: bad-arithmetic: write the arithmetic with numbers, names and C's operators",
+                "35:69: division-by-zero: divide by something other than 0",
+                "36:71: not-a-number: give the variable a whole number before counting with it",
             ]
         );
     }

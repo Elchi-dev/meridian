@@ -706,7 +706,7 @@ fn dollar(chars: &mut Chars) -> Result<Option<Expansion>, Error> {
     while chars.joins() {}
     let expansion = match chars.peek() {
         Some('{' | '(') => {
-            if chars.depth == DEEPEST {
+            if chars.depth >= DEEPEST {
                 return Err(Error {
                     at: open,
                     code: Code::TooNested,

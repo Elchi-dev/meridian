@@ -3,6 +3,7 @@
 //! into the commands they stand for ([`parse`]), and the patterns words are
 //! matched against ([`pattern`]).
 
+pub mod arith;
 pub mod lex;
 pub mod parse;
 pub mod pattern;

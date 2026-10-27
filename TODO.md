@@ -165,6 +165,7 @@ Loader and UEFI:
   - [x] Its grammar: simple and compound commands, functions, pipelines and lists, each error at its place
   - [x] The end of a `$(...)` found by its grammar, which a `case` inside needs, as its patterns end in `)`
   - [x] Its pattern matching notation: `*`, `?` and brackets with classes, for `case`, `${x%pattern}` and names of files
+  - [x] Its arithmetic: C's operators on 64-bit integers that wrap, variables read and set, `&&`, `||` and `?:` working out only the side they take
   - [ ] Expansions, running, and choosing the dialect
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

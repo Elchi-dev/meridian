@@ -212,13 +212,20 @@ function's `name(` without `)` (`expected-close-paren`), and `{` without
 `}` (`expected-close-brace`). `name()` without a compound command after
 it is an error too (`expected-body`).
 
+Arithmetic in `$((...))` is worked out when it runs, with 64-bit
+integers that wrap as other shells' do. What is not C's arithmetic there
+is an error (`bad-arithmetic`), and so are dividing by 0
+(`division-by-zero`) and a variable whose value is no whole number
+(`not-a-number`), each reported at the word the arithmetic stands in.
+
 The commands inside a `$(...)` are read as the script's own are, so a
 `case` inside one ends where it should, and what is wrong in them is
 reported as the script is read.
 
 Compound commands and expansions may stand inside each other 16 deep in
-all: `$(a "$(b)")` is 2 deep, and so is `if a; then echo $(b); fi`. One
-deeper is an error
+all: `$(a "$(b)")` is 2 deep, and so is `if a; then echo $(b); fi`.
+Parentheses and signs in arithmetic may stand 16 deep as well, as in
+`$((-(1)))`, which is 2 deep. One deeper is an error
 (`too-nested`), reported where it opens: reading each one takes some of
 the shell's stack, and a script that needs more can move the inner ones
 into a function or set a variable to them first.

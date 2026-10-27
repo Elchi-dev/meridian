@@ -143,6 +143,7 @@ Loader and UEFI:
 - [x] VFS: listing directories (LIST), and the partition the loader came from at /System/Boot (`lib/bootinfo` version 4)
 - [x] VFS: writing: `/System` on the system partition, OPEN with Windows' ways of making and emptying files, WRITE_FILE, REMOVE and MAKE_DIRECTORY, on virtio disks only until Strata (9.6)
 - [x] VFS: RENAME within a volume, for files and directories
+- [x] VFS: the root and the directories above the volumes, listing where they hang
 - [x] No writes to partitions Meridian did not create: every write goes through `raw::disk`, which lets through only what `made.meri` and `unlocked.meri` on the system partition name (ADR 0015)
 
 ## M5: Userland

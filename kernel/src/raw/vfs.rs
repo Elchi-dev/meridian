@@ -30,13 +30,26 @@ static MOUNTED: Spin<[Option<Volume<Reader, Writes>>; VOLUMES]> =
     Spin::new([const { None }; VOLUMES]);
 static MOUNTS: Spin<Mounts<VOLUMES>> = Spin::new(Mounts::new());
 
-/// An open file: the volume it is on, what was opened there, and how
-/// many handles stand for it.
+/// An open file: what it is, and how many handles stand for it.
 #[derive(Clone, Copy)]
 struct Open {
-    volume: usize,
-    opened: Opened,
+    of: Of,
     holders: u32,
+}
+
+/// What is open: a file or directory on the volume numbered `volume`, or a
+/// directory of the tree itself, above the volumes, at the path of the
+/// first `len` bytes of `path`.
+#[derive(Clone, Copy)]
+enum Of {
+    Volume {
+        volume: usize,
+        opened: Opened,
+    },
+    Tree {
+        path: [u8; vfs::MOUNT_BYTES],
+        len: usize,
+    },
 }
 
 static OPEN: Spin<[Option<Open>; FILES]> = Spin::new([None; FILES]);
@@ -103,17 +116,43 @@ fn open_in(slot: usize) -> Result<Open, Error> {
 ///
 /// When the path is none, the volume says no, or every slot is taken.
 pub fn open(path: &str, token: &Token, wanted: u32, how: u64) -> Result<usize, Error> {
-    let (volume, opened) = on_path(path, |v, names, volume| {
-        v.open(names, token, wanted, how).map(|o| (volume, o))
-    })?;
+    let of = match tree(path) {
+        Some(tree) => {
+            kernel::volume::open_tree(token, wanted, how)?;
+            tree
+        }
+        None => on_path(path, |v, names, volume| {
+            v.open(names, token, wanted, how)
+                .map(|opened| Of::Volume { volume, opened })
+        })?,
+    };
     let mut open = OPEN.lock();
     let slot = open.iter().position(Option::is_none).ok_or(Error::NoRoom)?;
-    open[slot] = Some(Open {
-        volume,
-        opened,
-        holders: 1,
-    });
+    open[slot] = Some(Open { of, holders: 1 });
     Ok(slot)
+}
+
+/// The directory of the tree itself at `path`, when it is one: the root
+/// or a directory above the places volumes hang, which no volume holds.
+fn tree(path: &str) -> Option<Of> {
+    let path = Path::parse(path)?;
+    MOUNTS.lock().above(&path)?;
+    let mut text = [0u8; vfs::MOUNT_BYTES];
+    let mut len = 0;
+    // Names the tree takes as the same may differ in length, so one may
+    // not fit where the place of a volume did.
+    for name in path.names() {
+        let room = text.get_mut(len..len + 1 + name.len())?;
+        room[0] = b'/';
+        room[1..].copy_from_slice(name.as_bytes());
+        len += room.len();
+    }
+    // The root alone is the one with no names.
+    if len == 0 {
+        text[0] = b'/';
+        len = 1;
+    }
+    Some(Of::Tree { path: text, len })
 }
 
 /// Reads the open file in `slot` from its byte `offset` on into `into`,
@@ -124,10 +163,23 @@ pub fn open(path: &str, token: &Token, wanted: u32, how: u64) -> Result<usize, E
 /// When no file is open there, it is a directory, or its volume cannot be
 /// read.
 pub fn read(slot: usize, offset: u64, into: &mut [u8]) -> Result<usize, Error> {
-    let file = open_in(slot)?;
+    let (volume, opened) = on_volume(slot)?;
     let mut mounted = MOUNTED.lock();
-    let v = mounted[file.volume].as_mut().ok_or(Error::NotFound)?;
-    v.read(&file.opened, offset, into)
+    let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
+    v.read(&opened, offset, into)
+}
+
+/// The volume the file open in `slot` is on, and what was opened there.
+///
+/// # Errors
+///
+/// When nothing is open there, or a directory of the tree itself is,
+/// which has no bytes.
+fn on_volume(slot: usize) -> Result<(usize, Opened), Error> {
+    match open_in(slot)?.of {
+        Of::Volume { volume, opened } => Ok((volume, opened)),
+        Of::Tree { .. } => Err(Error::NotAFile),
+    }
 }
 
 /// Writes `from` into the open file in `slot` from its byte `offset` on,
@@ -139,15 +191,33 @@ pub fn read(slot: usize, offset: u64, into: &mut [u8]) -> Result<usize, Error> {
 /// When no file is open there, or the volume says no.
 pub fn write(slot: usize, offset: u64, from: &[u8]) -> Result<usize, Error> {
     let mut mounted = MOUNTED.lock();
-    let file = open_in(slot)?;
-    let v = mounted[file.volume].as_mut().ok_or(Error::NotFound)?;
-    let entry = v.write(&file.opened, offset, from)?;
+    let (volume, written) = on_volume(slot)?;
+    let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
+    let entry = v.write(&written, offset, from)?;
     for open in OPEN.lock().iter_mut().flatten() {
-        if open.volume == file.volume && open.opened.place == file.opened.place {
-            open.opened.entry = entry;
+        if let Of::Volume {
+            volume: on,
+            ref mut opened,
+        } = open.of
+            && on == volume
+            && opened.place == written.place
+        {
+            opened.entry = entry;
         }
     }
     Ok(from.len())
+}
+
+/// Where each file open on the volume numbered `volume` lies on it.
+fn open_on(volume: usize) -> Vec<fat::Place> {
+    OPEN.lock()
+        .iter()
+        .flatten()
+        .filter_map(|o| match o.of {
+            Of::Volume { volume: on, opened } if on == volume => opened.place,
+            _ => None,
+        })
+        .collect()
 }
 
 /// Removes the file or the empty directory at `path`, as `token` may,
@@ -160,13 +230,7 @@ pub fn remove(path: &str, token: &Token) -> Result<(), Error> {
     on_path(path, |v, names, volume| {
         // Nothing opens on the volume while it is held, so what is open now
         // stays all that is.
-        let open: Vec<_> = OPEN
-            .lock()
-            .iter()
-            .flatten()
-            .filter(|o| o.volume == volume)
-            .filter_map(|o| o.opened.place)
-            .collect();
+        let open = open_on(volume);
         v.remove(names, token, |place| open.contains(&place))
     })
 }
@@ -189,13 +253,7 @@ pub fn rename(from: &str, to: &str, token: &Token) -> Result<(), Error> {
         if volume != target {
             return Err(Error::NotSameVolume);
         }
-        let open: Vec<_> = OPEN
-            .lock()
-            .iter()
-            .flatten()
-            .filter(|o| o.volume == volume)
-            .filter_map(|o| o.opened.place)
-            .collect();
+        let open = open_on(volume);
         v.rename(names, to_names, token, |place| open.contains(&place))
     })
 }
@@ -217,16 +275,39 @@ pub fn make_directory(path: &str, token: &Token) -> Result<(), Error> {
 ///
 /// When nothing is open there, or the volume says no.
 pub fn list(slot: usize, index: u64, into: &mut [u8]) -> Result<(usize, bool), Error> {
-    let file = open_in(slot)?;
+    let (volume, opened) = match open_in(slot)?.of {
+        Of::Volume { volume, opened } => (volume, opened),
+        Of::Tree { path, len } => return listed(&path[..len], index, into),
+    };
     let mut mounted = MOUNTED.lock();
-    let v = mounted[file.volume].as_mut().ok_or(Error::NotFound)?;
-    v.list(&file.opened, index, into)
+    let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
+    v.list(&opened, index, into)
+}
+
+/// Writes name `index` of the directory of the tree itself at `path` into
+/// `into`, as [`list`] does: the place of a volume or a directory above
+/// some, either way a directory.
+fn listed(path: &[u8], index: u64, into: &mut [u8]) -> Result<(usize, bool), Error> {
+    let path = core::str::from_utf8(path).ok().and_then(Path::parse);
+    let mounts = MOUNTS.lock();
+    let names = path
+        .and_then(|path| mounts.above(&path))
+        .ok_or(Error::NotFound)?;
+    let name = usize::try_from(index)
+        .ok()
+        .and_then(|i| names.get(i))
+        .ok_or(Error::NotFound)?;
+    let room = into.get_mut(..name.len()).ok_or(Error::TooSmall)?;
+    room.copy_from_slice(name.as_bytes());
+    Ok((name.len(), true))
 }
 
 /// How big the open file in `slot` is, and whether it is a directory.
 pub fn info(slot: usize) -> Option<(u64, bool)> {
-    let entry = open_in(slot).ok()?.opened.entry;
-    Some((u64::from(entry.size), entry.directory))
+    match open_in(slot).ok()?.of {
+        Of::Volume { opened, .. } => Some((u64::from(opened.entry.size), opened.entry.directory)),
+        Of::Tree { .. } => Some((0, true)),
+    }
 }
 
 /// One more handle stands for the open file in `slot`. False when none

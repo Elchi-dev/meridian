@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 97] = [
+const CHECKS: [(&str, Check); 98] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -83,6 +83,7 @@ const CHECKS: [(&str, Check); 97] = [
     ("shell.bytes", bytes_go_through_as_they_are),
     ("shell.carry", files_copied_and_moved),
     ("shell.directory", the_working_directory),
+    ("shell.root", the_root_is_a_directory),
     ("shell.errors", errors_go_where_2_sends_them),
     ("shell.errors.output", errors_go_with_the_output),
     ("tools", head_grep_and_sort),
@@ -2169,6 +2170,16 @@ fn the_working_directory() -> Outcome {
             ),
         "patterns not from the root should match in the working directory",
     )
+}
+
+/// The root of the tree is a directory, on a CD too, where nothing hangs
+/// in it.
+fn the_root_is_a_directory() -> Outcome {
+    let checked = same(
+        &shell_on("test -d /; echo $?; test -f /; echo $?; cd /; pwd")?,
+        &ran(0, b"0\n1\n/\n"),
+    );
+    expect(checked, "test should find the root a directory")
 }
 
 /// What a command says went wrong goes to the shell's standard error,

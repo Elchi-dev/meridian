@@ -3,6 +3,8 @@
 //! Windows compares them, and who may open what on volumes that keep no
 //! security of their own (QUESTIONS.md 9.1, 9.4 and 9.6).
 
+use alloc::vec::Vec;
+
 use abi::file;
 use security::{Descriptor, Entry, Integrity, Token, access, known, rights as standard};
 
@@ -176,6 +178,28 @@ impl<const N: usize> Mounts<N> {
             })
             .max_by_key(|&(depth, _)| depth)?;
         Some((volume, &path.names()[depth..]))
+    }
+
+    /// The names in the directory of the tree itself at `path`, which
+    /// lies on no volume: the next name of each place a volume hangs below
+    /// it, each once, in the order they were mounted. None when `path`
+    /// lies on a volume, or is neither the root nor above a place.
+    #[must_use]
+    pub fn above<'s>(&'s self, path: &Path<'_>) -> Option<Vec<&'s str>> {
+        if self.find(path).is_some() {
+            return None;
+        }
+        let mut names: Vec<&'s str> = Vec::new();
+        for mount in self.mounts.iter().flatten() {
+            let at = mount.path();
+            if at.len > path.len && starts(&at, path) {
+                let name = at.names[path.len];
+                if !names.iter().any(|n| same_name(n, name)) {
+                    names.push(name);
+                }
+            }
+        }
+        (path.len == 0 || !names.is_empty()).then_some(names)
     }
 }
 
@@ -397,6 +421,47 @@ mod tests {
         assert_eq!(m.find(&above), Some((0, &["Volumes"][..])));
         let none = Mounts::<1>::new();
         assert_eq!(none.find(&path), None);
+    }
+
+    #[test]
+    fn the_tree_above_its_volumes_holds_their_places() {
+        let mut m = Mounts::<4>::new();
+        let above = |m: &Mounts<4>, text: &str| {
+            m.above(&Path::parse(text).unwrap())
+                .map(|names| names.join(" "))
+        };
+        assert_eq!(
+            above(&m, "/"),
+            Some(String::new()),
+            "the root, with nothing in it"
+        );
+        assert_eq!(above(&m, "/System"), None);
+        assert_eq!(m.mount("/System", 0), Ok(()));
+        assert_eq!(m.mount("/Volumes/USB", 1), Ok(()));
+        assert_eq!(m.mount("/volumes/CARD", 2), Ok(()));
+        assert_eq!(m.mount("/System/Boot", 3), Ok(()));
+        assert_eq!(
+            above(&m, "/"),
+            Some(String::from("System Volumes")),
+            "Volumes once"
+        );
+        assert_eq!(above(&m, "/VOLUMES/"), Some(String::from("USB CARD")));
+        assert_eq!(
+            above(&m, "/Volumes/USB"),
+            None,
+            "a volume's own root is on it"
+        );
+        assert_eq!(above(&m, "/System"), None);
+        assert_eq!(above(&m, "/System/Boot/x"), None);
+        assert_eq!(above(&m, "/Volumes/Other"), None, "nothing hangs there");
+        assert_eq!(above(&m, "/Elsewhere"), None);
+        let mut whole = Mounts::<1>::new();
+        assert_eq!(whole.mount("/", 0), Ok(()));
+        assert_eq!(
+            whole.above(&Path::parse("/").unwrap()),
+            None,
+            "a volume at the root"
+        );
     }
 
     #[test]

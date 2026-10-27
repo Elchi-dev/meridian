@@ -140,16 +140,14 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Volume<R, W
             Err(Error::NotFound) => None,
             Err(e) => return Err(e),
         };
-        let disposition = vfs::disposition(how, found.is_some()).map_err(|e| match e {
-            NoDisposition::Unknown => Error::BadDisposition,
-            NoDisposition::Missing => Error::NotFound,
-            NoDisposition::Exists => Error::Exists,
-        })?;
-        let rights = match disposition {
-            Disposition::Open => wanted,
-            Disposition::Create | Disposition::Empty => wanted | file::WRITE,
-        };
-        vfs::may_open(token, &vfs::plain(), rights, self.read_only).map_err(Error::Refused)?;
+        let disposition = disposed(how, found.is_some())?;
+        vfs::may_open(
+            token,
+            &vfs::plain(),
+            rights(disposition, wanted),
+            self.read_only,
+        )
+        .map_err(Error::Refused)?;
         let (entry, place) = match (disposition, found) {
             (Disposition::Open, Some(found)) => found,
             (Disposition::Empty, Some((mut entry, Some(place)))) if !entry.directory => {
@@ -317,6 +315,36 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Volume<R, W
     }
 }
 
+/// What to do with a file by whether it `exists`, as `how` says.
+fn disposed(how: u64, exists: bool) -> Result<Disposition, Error> {
+    vfs::disposition(how, exists).map_err(|e| match e {
+        NoDisposition::Unknown => Error::BadDisposition,
+        NoDisposition::Missing => Error::NotFound,
+        NoDisposition::Exists => Error::Exists,
+    })
+}
+
+/// The rights opening a file as `disposition` says takes, besides those
+/// `wanted`: making or emptying it writes it.
+fn rights(disposition: Disposition, wanted: u32) -> u32 {
+    match disposition {
+        Disposition::Open => wanted,
+        Disposition::Create | Disposition::Empty => wanted | file::WRITE,
+    }
+}
+
+/// Whether `token` may open a directory of the tree itself for `wanted`,
+/// as `how` says: as one on a volume mounted read only, since the tree
+/// above the volumes lies on none of them and nothing writes it.
+///
+/// # Errors
+///
+/// As [`Volume::open`] answers for a directory on a volume read only.
+pub fn open_tree(token: &Token, wanted: u32, how: u64) -> Result<(), Error> {
+    let disposition = disposed(how, true)?;
+    vfs::may_open(token, &vfs::plain(), rights(disposition, wanted), true).map_err(Error::Refused)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
@@ -390,6 +418,42 @@ mod tests {
             done += v.read(opened, done as u64, &mut bytes[done..]).unwrap();
         }
         bytes
+    }
+
+    #[test]
+    fn the_tree_opens_as_a_directory_read_only_does() {
+        let image = image();
+        let mut v = volume(&image, true);
+        let me = security::Sid::new(5, &[21, 1, 2, 3, 1001]).unwrap();
+        let groups = [
+            security::Group::of(security::known::EVERYONE),
+            security::Group::of(security::known::USERS),
+        ];
+        let user = Token::new(me, &groups, Privileges::NONE, Integrity::Medium).unwrap();
+        for token in [system(), user] {
+            for wanted in [0, READ, WRITE, READ | WRITE, file::RUN, file::APPEND] {
+                for how in [
+                    0,
+                    OPEN_EXISTING,
+                    OPEN_ALWAYS,
+                    CREATE_NEW,
+                    CREATE_ALWAYS,
+                    TRUNCATE_EXISTING,
+                    99,
+                ] {
+                    assert_eq!(
+                        open_tree(&token, wanted, how),
+                        v.open(&["Dir"], &token, wanted, how).map(|_| ()),
+                        "{wanted:#x} {how}"
+                    );
+                }
+            }
+        }
+        assert_eq!(open_tree(&system(), READ, OPEN_EXISTING), Ok(()));
+        assert_eq!(
+            open_tree(&system(), WRITE, OPEN_EXISTING),
+            Err(Error::Refused(Refusal::ReadOnly))
+        );
     }
 
     #[test]

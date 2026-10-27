@@ -1104,6 +1104,7 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
             vfs::open(settings, &system, READ, 0) == Err(Error::NotFound),
             "booted from a CD, nothing should hang at /System/Boot",
         );
+        tree_checks(report, &[], &[]);
         return;
     }
     report.check(
@@ -1164,6 +1165,11 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
     }
     mount_checks(report);
     list_checks(report);
+    tree_checks(
+        report,
+        &["System", "Volumes"],
+        &["Again", "Third", "Fourth"],
+    );
     report.check(
         "kernel.vfs.slots",
         opened_low
@@ -1399,6 +1405,54 @@ fn mount_checks<W: Write>(report: &mut Report<'_, W>) {
         "kernel.vfs.mount",
         mounted,
         "a place should take one volume, a disk without FAT32 none, and five volumes all there is room for",
+    );
+}
+
+/// The tree above the volumes is made of directories of its own, which
+/// hold the places volumes hang: the root, which lists `top`, and on a
+/// disk /Volumes, where the mount checks hung `volumes`. They take no
+/// bytes and are never written, and above no volume is nothing.
+fn tree_checks<W: Write>(report: &mut Report<'_, W>, top: &[&str], volumes: &[&str]) {
+    use abi::file::{CREATE_NEW, READ, WRITE};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use kernel::vfs::Refusal;
+    use raw::vfs::{self, Error};
+    let system = security::Token::system();
+    let listed = |path: &str| {
+        let slot = vfs::open(path, &system, READ, 0).ok()?;
+        let mut room = [0u8; 64];
+        let mut names = Vec::new();
+        while let Ok((len, directory)) = vfs::list(slot, names.len() as u64, &mut room) {
+            names.push((
+                String::from_utf8_lossy(&room[..len]).into_owned(),
+                directory,
+            ));
+        }
+        let small = if names.is_empty() {
+            Error::NotFound
+        } else {
+            Error::TooSmall
+        };
+        let plain = vfs::info(slot) == Some((0, true))
+            && vfs::read(slot, 0, &mut room) == Err(Error::NotAFile)
+            && vfs::list(slot, 0, &mut []) == Err(small);
+        vfs::close(slot);
+        plain.then_some(names)
+    };
+    let directories = |names: &[&str]| -> Vec<(String, bool)> {
+        names.iter().map(|n| (String::from(*n), true)).collect()
+    };
+    let root = listed("/") == Some(directories(top));
+    let below = volumes.is_empty() || listed("/volumes") == Some(directories(volumes));
+    let refused = vfs::open("/", &system, READ | WRITE, 0)
+        == Err(Error::Refused(Refusal::ReadOnly))
+        && vfs::open("/", &system, READ, CREATE_NEW) == Err(Error::Exists)
+        && vfs::open("/Nowhere", &system, READ, 0) == Err(Error::NotFound);
+    report.check(
+        "kernel.vfs.tree",
+        root && below && refused,
+        "the tree above the volumes should be directories that hold their places, take no bytes and are never written",
     );
 }
 

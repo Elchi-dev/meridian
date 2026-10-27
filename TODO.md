@@ -174,7 +174,8 @@ Loader and UEFI:
   - [x] Its expansions but names of files: parameters in every `${...}` form, `$(...)`, arithmetic, `~`, fields split by `IFS`
   - [x] Running a script: variables, functions, compound commands, pipelines, blocks' redirections, here-documents, subshells, `set -e`, `-u` and `-C`, the builtins POSIX calls special
   - [x] Choosing the dialect by a script's first line
-  - [ ] Names of files matched by patterns, `read`, `&` with `$!` and `wait`, `.`, `exec`, `trap` for `EXIT`, `getopts`
+  - [x] Names of files matched by patterns, capitals as other letters (ADR 0021)
+  - [ ] `read`, `&` with `$!` and `wait`, `.`, `exec`, `trap` for `EXIT`, `getopts`
   - [ ] The `sh` command and an interactive sh session
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

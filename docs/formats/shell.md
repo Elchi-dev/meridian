@@ -252,6 +252,17 @@ the command does not run and its status is 1. `$$` is 0, as Meridian
 gives a process no number it can know itself by yet. A here-document's
 text is expanded as inside double quotes, unless its word is quoted.
 
+A word of a command, or of a `for` loop's list, that holds an unquoted
+`*`, `?` or bracket expression once expanded stands for the paths of the
+files it matches, in the order of their bytes. The patterns take capitals
+as other letters, as POSIX's do, although Meridian finds a file whatever
+the capitals of its name: `*.TXT` matches no `a.txt`, while a part
+without a pattern character, such as `SYSTEM` in `/SYSTEM/x*`, is looked
+for as it is written. A name that starts with a `.` is matched only by a
+part that starts with one, and `.` and `..` by none. A pattern that
+matches nothing stays as it is written, and `set -f` stops patterns from
+being matched.
+
 A pipeline whose commands are all programs or the shell's own commands
 runs them side by side, as Meridian's dialect does. One with a
 function, a builtin POSIX calls special or a compound command in it runs

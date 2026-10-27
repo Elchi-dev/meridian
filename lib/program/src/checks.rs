@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 98] = [
+const CHECKS: [(&str, Check); 99] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -121,6 +121,7 @@ const CHECKS: [(&str, Check); 98] = [
     ("shell.sh.functions", sh_function_streams),
     ("shell.sh.parameters", sh_parameters),
     ("shell.sh.file", sh_script_files),
+    ("shell.sh.names", sh_names_of_files),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3116,6 +3117,43 @@ fn sh_script_files() -> Outcome {
                 &ran(0, b"/System/script-sh.sh a\n/System/script-sh.sh b\n"),
             ),
         "the shell should run a sh script in a file, its path as $0",
+    )
+}
+
+/// In sh, a word that is a pattern stands for the names of the files it
+/// matches, in the order of their bytes, capitals as other letters, and
+/// stays as it is when it matches none or `set -f` is on.
+fn sh_names_of_files() -> Outcome {
+    let root = if booted_from_disk() { "/System" } else { "/S*" };
+    let checked = same(
+        &shell_on("#!/bin/sh\necho /S*")?,
+        &ran(0, alloc::format!("{root}\n").as_bytes()),
+    );
+    expect(checked, "a pattern should match the places in the root")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             cd /System/Boot/meridian/programs\n\
+             echo w*\n\
+             echo /System/Boot/meridian/programs/s?ell.mexec\n\
+             for f in [hi]*_again.mexec; do echo \"$f\"; done\n\
+             echo W* .x*\n\
+             set -f; echo w*",
+        )?,
+        &ran(
+            0,
+            b"wc.mexec wc_again.mexec whoami.mexec whoami_again.mexec\n\
+              /System/Boot/meridian/programs/shell.mexec\n\
+              head_again.mexec\nhello_again.mexec\ninit_again.mexec\n\
+              W* .x*\nw*\n",
+        ),
+    );
+    expect(
+        checked,
+        "a pattern should stand for the names of the files it matches",
     )
 }
 

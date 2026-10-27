@@ -476,7 +476,7 @@ impl Session {
 }
 
 /// `chars` as a pattern, its quoted characters standing for themselves.
-fn as_pattern(chars: &[Char]) -> Pattern {
+pub(super) fn as_pattern(chars: &[Char]) -> Pattern {
     let written: Vec<(char, bool)> = chars
         .iter()
         .map(|c| (c.c, c.kind == Kind::Quoted))

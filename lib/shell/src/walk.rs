@@ -87,6 +87,7 @@ pub(crate) mod tests {
     /// was asked to list or to find. It lists names the other way round
     /// from any order a test wants, so nothing leans on how a disk happens
     /// to keep them.
+    #[derive(Debug)]
     pub(crate) struct Host {
         root: PathBuf,
         pub listed: Vec<String>,
@@ -116,11 +117,22 @@ pub(crate) mod tests {
             }
         }
 
-        /// Where `path` is on the host, each name found in capitals; none
-        /// when nothing is there or the path does not start at the root.
+        /// Where `path` is on the host, each name found in capitals, `.`
+        /// staying and `..` going up as Meridian's paths do; none when
+        /// nothing is there or the path does not start at the root.
         fn find(&self, path: &str) -> Option<PathBuf> {
+            let mut names = Vec::new();
+            for name in path.strip_prefix('/')?.split('/') {
+                match name {
+                    "" | "." => {}
+                    ".." => {
+                        names.pop()?;
+                    }
+                    name => names.push(name),
+                }
+            }
             let mut at = self.root.clone();
-            for name in path.strip_prefix('/')?.split('/').filter(|n| !n.is_empty()) {
+            for name in names {
                 let entry = std::fs::read_dir(&at).ok()?.find(|e| {
                     e.as_ref().is_ok_and(|e| {
                         e.file_name().to_string_lossy().to_uppercase() == name.to_uppercase()

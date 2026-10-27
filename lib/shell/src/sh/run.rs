@@ -2,12 +2,13 @@
 //! machine, and their variables, functions, parameters and the builtins
 //! POSIX calls special in a session.
 
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::expand::{Char, failed};
+use super::expand::{Char, as_pattern, failed};
 use super::lex::Word;
 use super::parse::{
     self, AndOr, Command, Compound, Function, How, Item, Join, Pipeline, Redirection as Written,
@@ -15,6 +16,7 @@ use super::parse::{
 };
 use crate::parse::is_name;
 use crate::run::{Machine, Ready, Redirection, Target};
+use crate::walk::{Part, walk};
 use crate::{Code, Error, Pos};
 
 /// How a list ended: on to what follows, or out of `n` loops, or on with
@@ -380,13 +382,53 @@ impl Session {
         Ok(made)
     }
 
-    /// `words` expanded into the fields they make, as a command's words.
+    /// `words` expanded into the fields they make, and those that are
+    /// patterns into the names of the files they match, as a command's
+    /// words.
     fn words(&mut self, words: &[Word], machine: &mut impl Machine) -> Result<Vec<String>, Stop> {
         let mut out = Vec::new();
         for word in words {
-            out.extend(self.fields(word, machine)?.iter().map(|f| text(f)));
+            for field in self.fields(word, machine)? {
+                out.extend(self.names(&field, machine));
+            }
         }
         Ok(out)
+    }
+
+    /// The paths of the files `field` matches as a pattern, in the order
+    /// of their bytes; the field itself, its quotes gone, when it is no
+    /// pattern, `set -f` is on, or it matches none. `.` and `..` match no
+    /// pattern, and a name that starts with a `.` only a part that starts
+    /// with one too.
+    fn names(&self, field: &[Char], machine: &mut impl Machine) -> Vec<String> {
+        let whole = text(field);
+        if self.flag('f') {
+            return Vec::from([whole]);
+        }
+        let mut parts = Vec::new();
+        let mut tests = false;
+        for part in field.split(|c| c.c == '/').filter(|part| !part.is_empty()) {
+            let pattern = as_pattern(part);
+            if pattern.is_plain() {
+                parts.push(Part::Name(text(part)));
+            } else {
+                tests = true;
+                parts.push(Part::Test(Box::new(move |name: &str| {
+                    name != "." && name != ".." && pattern.matches_name(name)
+                })));
+            }
+        }
+        if !tests {
+            return Vec::from([whole]);
+        }
+        let absolute = field.first().is_some_and(|c| c.c == '/');
+        let directory = machine.directory();
+        let mut found = walk(&directory, absolute, &parts, str::cmp, machine);
+        if found.is_empty() {
+            return Vec::from([whole]);
+        }
+        found.sort();
+        found
     }
 
     /// A simple command with its words, redirections and assignments
@@ -1025,7 +1067,7 @@ struct Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sh::desk::{out, ran, said, stopped};
+    use crate::sh::desk::{Desk, among, out, ran, said, stopped};
     use alloc::vec;
 
     fn words(words: &[&str]) -> Vec<String> {
@@ -2134,5 +2176,87 @@ mod tests {
         );
         assert_eq!(ran("while exit 5; do :; done", &[]).0, Err(Stop::Exit(5)));
         assert_eq!(ran("false || exit 6", &[]).0, Err(Stop::Exit(6)));
+    }
+
+    /// The files the pattern tests below match among.
+    const FILES: [&str; 8] = ["b", "a", "C", ".hidden", "x y", "d/x", "d/.y", "e/"];
+
+    #[test]
+    fn a_pattern_stands_for_the_names_it_matches_in_byte_order() {
+        assert_eq!(among("order", &FILES, "echo *"), "C a b d e x y\n");
+        assert_eq!(among("order2", &FILES, "echo ?"), "C a b d e\n");
+        assert_eq!(among("order3", &FILES, "echo [ab] [!ab]"), "a b C d e\n");
+        assert_eq!(
+            among("fields", &FILES, "for f in x*; do echo \"[$f]\"; done"),
+            "[x y]\n",
+            "a name is one field, its blanks too"
+        );
+    }
+
+    #[test]
+    fn a_pattern_goes_part_by_part() {
+        assert_eq!(
+            among("parts", &FILES, "echo d/* /d/* */x"),
+            "d/x /d/x d/x\n"
+        );
+        assert_eq!(among("parts2", &FILES, "echo /*/x"), "/d/x\n");
+        assert_eq!(
+            among("parts3", &FILES, "cd /d; echo *; echo ../?"),
+            "x\n../C ../a ../b ../d ../e\n"
+        );
+        assert_eq!(
+            among("parts4", &FILES, "echo D/*"),
+            "D/x\n",
+            "a part as written is found in capitals"
+        );
+    }
+
+    #[test]
+    fn a_name_starting_with_a_dot_takes_a_dot_written() {
+        assert_eq!(among("dots", &FILES, "echo .* d/.*"), ".hidden d/.y\n");
+        assert_eq!(among("dots2", &FILES, "echo d/?y"), "d/?y\n");
+    }
+
+    #[test]
+    fn a_pattern_that_matches_nothing_stays_as_it_is() {
+        assert_eq!(
+            among("none", &FILES, "echo z* d/q? A* '[ab]'x"),
+            "z* d/q? A* [ab]x\n"
+        );
+        assert_eq!(among("none2", &FILES, "echo /nope/*"), "/nope/*\n");
+    }
+
+    #[test]
+    fn a_quoted_pattern_character_matches_itself() {
+        assert_eq!(
+            among("quoted", &FILES, "echo \"*\" \\? '[ab]'"),
+            "* ? [ab]\n"
+        );
+        assert_eq!(
+            among("quoted2", &FILES, "p='*'; echo $p; echo \"$p\""),
+            "C a b d e x y\n*\n"
+        );
+        assert_eq!(among("quoted3", &FILES, "echo \"d\"/*"), "d/x\n");
+    }
+
+    #[test]
+    fn set_f_turns_patterns_off() {
+        assert_eq!(
+            among("noglob", &FILES, "set -f; echo *; set +f; echo ?"),
+            "*\nC a b d e\n"
+        );
+    }
+
+    #[test]
+    fn only_a_command_s_words_are_patterns() {
+        assert_eq!(among("words", &FILES, "v=*; echo \"$v\""), "*\n");
+        assert_eq!(
+            among("words2", &FILES, "case a in [ab]) echo yes;; esac"),
+            "yes\n"
+        );
+        let mut session = Session::new(String::from("s"), 1, Vec::new());
+        let mut desk = Desk::with_files("redirect", &FILES);
+        let _ = session.run(&parse::script(": > a*").unwrap(), &mut desk);
+        assert_eq!(desk.err, b"a*: no file here to write\n");
     }
 }

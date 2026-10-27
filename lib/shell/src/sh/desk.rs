@@ -1,7 +1,8 @@
-//! A machine for the sh dialect's tests to run scripts on: it has no files
-//! and no programs, only lib/shell's shared commands and a `cd` and `pwd`
-//! of its own, and it keeps what is written, the texts commands were given
-//! to read, and the commands it ran.
+//! A machine for the sh dialect's tests to run scripts on: it has no
+//! programs, only lib/shell's shared commands and a `cd` and `pwd` of its
+//! own, and no files but those of a host tree it may be given for patterns
+//! to match, and it keeps what is written, the texts commands were given to
+//! read, and the commands it ran.
 
 use alloc::format;
 use alloc::string::String;
@@ -12,6 +13,7 @@ use crate::run::{Machine, Ready, Redirection, Target};
 use crate::sh::parse;
 use crate::sh::run::{Flow, Session, Stop};
 use crate::walk::Tree;
+use crate::walk::tests::Host;
 
 /// Where one of the desk's streams goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +43,8 @@ pub struct Desk {
     /// How many commands each pipeline it was asked to run had.
     pub pipelines: Vec<usize>,
     pub directory: String,
+    /// The tree patterns match names in, none for one with no files.
+    pub files: Option<Host>,
 }
 
 impl Default for Desk {
@@ -55,11 +59,21 @@ impl Default for Desk {
             ran: Vec::new(),
             pipelines: Vec::new(),
             directory: String::from("/"),
+            files: None,
         }
     }
 }
 
 impl Desk {
+    /// A desk whose files are `paths`, those that end in `/` directories,
+    /// in a host tree called `name`.
+    pub fn with_files(name: &str, paths: &[&str]) -> Desk {
+        Desk {
+            files: Some(Host::new(name, paths)),
+            ..Desk::default()
+        }
+    }
+
     /// Where streams 1 and 2 go now.
     fn streams(&self) -> [Place; 2] {
         self.levels
@@ -173,14 +187,16 @@ impl Streams for On<'_> {
     }
 }
 
-/// It has no files: no directory holds a name, and nothing is there.
+/// Its files are those of its host tree, none without one.
 impl Tree for Desk {
-    fn names(&mut self, _: &str) -> Vec<String> {
-        Vec::new()
+    fn names(&mut self, path: &str) -> Vec<String> {
+        self.files
+            .as_mut()
+            .map_or_else(Vec::new, |files| files.names(path))
     }
 
-    fn has(&mut self, _: &str) -> bool {
-        false
+    fn has(&mut self, path: &str) -> bool {
+        self.files.as_mut().is_some_and(|files| files.has(path))
     }
 }
 
@@ -291,4 +307,14 @@ pub fn stopped(script: &str) -> (usize, usize, crate::Code) {
         Err(Stop::Error(e)) => (e.at.line, e.at.column, e.code),
         other => panic!("{script} ended {other:?}"),
     }
+}
+
+/// What `script` writes, run on a desk whose files are `paths`, those that
+/// end in `/` directories, in a host tree called `name`.
+pub fn among(name: &str, paths: &[&str], script: &str) -> String {
+    let mut session = Session::new(String::from("script"), 42, Vec::new());
+    let mut desk = Desk::with_files(name, paths);
+    let items = parse::script(script).unwrap();
+    let _ = session.run(&items, &mut desk);
+    String::from_utf8(desk.out).unwrap()
 }

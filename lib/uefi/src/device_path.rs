@@ -94,10 +94,23 @@ pub fn file(path: &[u8]) -> Option<impl Iterator<Item = char> + '_> {
 /// or an MBR disk's four byte signature followed by zeros.
 #[must_use]
 pub fn partition(path: &[u8]) -> Option<[u8; 16]> {
+    hard_drive(path)?.get(20..36)?.try_into().ok()
+}
+
+/// The number of the partition `path` lies on, counted from 1 as the
+/// partition table counts its entries.
+#[must_use]
+pub fn partition_number(path: &[u8]) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        hard_drive(path)?.get(..4)?.try_into().ok()?,
+    ))
+}
+
+/// What the hard drive node of `path` holds after its header.
+fn hard_drive(path: &[u8]) -> Option<&[u8]> {
     walk(path)?
         .find(|n| n.kind == MEDIA && n.subtype == HARD_DRIVE)
-        .and_then(|n| n.data.get(20..36))
-        .and_then(|s| s.try_into().ok())
+        .map(|n| n.data)
 }
 
 /// `path` from its hard drive node on, end node included: the short form
@@ -381,6 +394,28 @@ mod tests {
             "another media node before the hard drive node is skipped"
         );
         assert_eq!(partition(&END), None);
+    }
+
+    #[test]
+    fn the_partition_number_leads_its_node() {
+        assert_eq!(partition_number(&sample_partition()), Some(0x5a5a_5a5a));
+        let mut second = vec![MEDIA, HARD_DRIVE, 0x2a, 0x00];
+        let mut data = vec![0xee; 0x2a - 4];
+        data[..4].copy_from_slice(&2u32.to_le_bytes());
+        second.extend(data);
+        second.extend(END);
+        assert_eq!(partition_number(&second), Some(2));
+        let mut pci_first = vec![0x01, 0x01, 0x06, 0x00, 0x00, 0x1f];
+        pci_first.extend(&second);
+        assert_eq!(partition_number(&pci_first), Some(2));
+        let mut short = vec![MEDIA, HARD_DRIVE, 0x07, 0x00, 1, 0, 0];
+        short.extend(END);
+        assert_eq!(
+            partition_number(&short),
+            None,
+            "a node too short to hold one"
+        );
+        assert_eq!(partition_number(&END), None);
     }
 
     #[test]

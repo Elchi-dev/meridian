@@ -113,6 +113,7 @@ Loader and UEFI:
 - [ ] The access check for named objects
 - [x] One lock for the serial port, so lines from threads on different cores or a preempted thread cannot run into each other
 - [x] `.mexec` loader: ELF files carrying Meridian's version note, named in their name note ([format](docs/formats/mexec.md)); `main!` writes both
+- [x] A program asks for more stack, up to 1 MiB, in a note of its file (ADR 0022)
 - [x] Channels between programs: make, send, receive, close, freed once both ends are closed (`lib/channel`)
 - [x] Channels that carry handles: a handle handed over leaves its sender, needs the right to, and one nobody takes is closed with its channel
 - [x] KASLR: the kernel at a random 2 MiB boundary of the top 2 GiB, from RDRAND

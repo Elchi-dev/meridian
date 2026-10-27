@@ -201,18 +201,20 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 	}
 	r = runIn(realRoot(t), "build")
 	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
-	if r.code != ExitOK || len(lines) != 11 ||
-		!strings.HasSuffix(lines[0], filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi")) ||
-		!strings.HasSuffix(lines[1], filepath.Join("x86_64-unknown-none", "debug", "kernel")) ||
-		!strings.HasSuffix(lines[2], filepath.Join("x86_64-unknown-none", "debug", "examples", "grep")) ||
-		!strings.HasSuffix(lines[3], filepath.Join("x86_64-unknown-none", "debug", "examples", "head")) ||
-		!strings.HasSuffix(lines[4], filepath.Join("x86_64-unknown-none", "debug", "examples", "hello")) ||
-		!strings.HasSuffix(lines[5], filepath.Join("x86_64-unknown-none", "debug", "examples", "init")) ||
-		!strings.HasSuffix(lines[6], filepath.Join("x86_64-unknown-none", "debug", "examples", "shell")) ||
-		!strings.HasSuffix(lines[7], filepath.Join("x86_64-unknown-none", "debug", "examples", "sort")) ||
-		!strings.HasSuffix(lines[8], filepath.Join("x86_64-unknown-none", "debug", "examples", "tail")) ||
-		!strings.HasSuffix(lines[9], filepath.Join("x86_64-unknown-none", "debug", "examples", "uniq")) ||
-		!strings.HasSuffix(lines[10], filepath.Join("x86_64-unknown-none", "debug", "examples", "wc")) {
+	// The loader, the kernel, and the programs of a plain image in the
+	// order of their names.
+	want := []string{
+		filepath.Join("x86_64-unknown-uefi", "debug", "meridian.efi"),
+		filepath.Join("x86_64-unknown-none", "debug", "kernel"),
+	}
+	for _, name := range []string{"basename", "cut", "dirname", "grep", "head", "hello", "init", "sed", "shell", "sort", "tail", "tee", "tr", "uniq", "wc"} {
+		want = append(want, filepath.Join("x86_64-unknown-none", "debug", "examples", name))
+	}
+	built := r.code == ExitOK && len(lines) == len(want)
+	for i := 0; built && i < len(want); i++ {
+		built = strings.HasSuffix(lines[i], want[i])
+	}
+	if !built {
 		t.Fatalf("exit %d, stdout %q", r.code, r.stdout)
 	}
 	if loader, err := os.ReadFile(lines[0]); err != nil || bytes.Contains(loader, []byte("TESTS DONE")) {

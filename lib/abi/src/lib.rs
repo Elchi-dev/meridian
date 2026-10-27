@@ -91,6 +91,9 @@ pub const MAKE_DIRECTORY: u64 = 25;
 /// Answers a second handle to what the handle in rdi stands for, with
 /// the same rights (decision record 0019).
 pub const DUPLICATE: u64 = 26;
+/// Moves the file or directory at the path of the rdi bytes at rsi to the
+/// path of the rdx bytes at r10, on the same volume.
+pub const RENAME: u64 = 27;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -170,9 +173,11 @@ pub enum Error {
     InUse,
     /// A directory would move into itself, or into a directory inside it.
     Inside,
+    /// The two paths of a move are on different volumes.
+    NotSameVolume,
 }
 
-const ERRORS: [Error; 25] = [
+const ERRORS: [Error; 26] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -198,6 +203,7 @@ const ERRORS: [Error; 25] = [
     Error::Unwritable,
     Error::InUse,
     Error::Inside,
+    Error::NotSameVolume,
 ];
 
 impl Error {
@@ -245,6 +251,7 @@ pub const NOT_EMPTY: u64 = Error::NotEmpty.code();
 pub const UNWRITABLE: u64 = Error::Unwritable.code();
 pub const IN_USE: u64 = Error::InUse.code();
 pub const INSIDE: u64 = Error::Inside.code();
+pub const NOT_SAME_VOLUME: u64 = Error::NotSameVolume.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -357,6 +364,12 @@ pub enum Call {
         at: u64,
     },
     Duplicate(u64),
+    Rename {
+        from_len: u64,
+        from_at: u64,
+        to_len: u64,
+        to_at: u64,
+    },
     Unknown(u64),
 }
 
@@ -428,6 +441,12 @@ impl Call {
             Call::Remove { len, at } => (REMOVE, [len, at, 0, 0]),
             Call::MakeDirectory { len, at } => (MAKE_DIRECTORY, [len, at, 0, 0]),
             Call::Duplicate(handle) => (DUPLICATE, [handle, 0, 0, 0]),
+            Call::Rename {
+                from_len,
+                from_at,
+                to_len,
+                to_at,
+            } => (RENAME, [from_len, from_at, to_len, to_at]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -524,6 +543,12 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             at: second,
         },
         DUPLICATE => Call::Duplicate(first),
+        RENAME => Call::Rename {
+            from_len: first,
+            from_at: second,
+            to_len: third,
+            to_at: fourth,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -572,6 +597,15 @@ mod tests {
         );
         assert_eq!(decode(CLOSE, [7, 2, 3, 0]), Call::Close(7));
         assert_eq!(decode(DUPLICATE, [9, 2, 3, 4]), Call::Duplicate(9));
+        assert_eq!(
+            decode(RENAME, [5, 0x40_1000, 6, 0x40_2000]),
+            Call::Rename {
+                from_len: 5,
+                from_at: 0x40_1000,
+                to_len: 6,
+                to_at: 0x40_2000
+            }
+        );
         assert_eq!(decode(MAP, [16, 2, 3, 0]), Call::Map(16));
         assert_eq!(
             decode(UNMAP, [0x10_0000_0000, 4, 3, 0]),
@@ -597,7 +631,7 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(27, [1, 2, 3, 0]), Call::Unknown(27));
+        assert_eq!(decode(28, [1, 2, 3, 0]), Call::Unknown(28));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
@@ -647,11 +681,12 @@ mod tests {
                 WRITE_FILE,
                 REMOVE,
                 MAKE_DIRECTORY,
-                DUPLICATE
+                DUPLICATE,
+                RENAME
             ],
             [
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26
+                23, 24, 25, 26, 27
             ]
         );
     }
@@ -788,7 +823,8 @@ mod tests {
         assert_eq!(UNWRITABLE, u64::MAX - 22);
         assert_eq!(IN_USE, u64::MAX - 23);
         assert_eq!(INSIDE, u64::MAX - 24);
-        assert_eq!(ERRORS.last(), Some(&Error::Inside));
+        assert_eq!(NOT_SAME_VOLUME, u64::MAX - 25);
+        assert_eq!(ERRORS.last(), Some(&Error::NotSameVolume));
     }
 
     #[test]
@@ -837,6 +873,7 @@ mod tests {
             UNWRITABLE,
             IN_USE,
             INSIDE,
+            NOT_SAME_VOLUME,
         ];
         assert_eq!(errors.len(), ERRORS.len());
         for (i, &e) in errors.iter().enumerate() {
@@ -848,6 +885,18 @@ mod tests {
             assert!(
                 e > USER_END,
                 "no address, length or handle is mistaken for an error"
+            );
+        }
+    }
+
+    /// Says each of `calls` reads back from its registers as it was.
+    fn reads_back(calls: &[Call]) {
+        for &call in calls {
+            let (number, args) = call.encode();
+            assert_eq!(
+                decode(number, args),
+                call,
+                "{call:?} as {number}, {args:x?}"
             );
         }
     }
@@ -892,6 +941,13 @@ mod tests {
                 room: 64,
                 at: 0x7f_e000,
             },
+        ];
+        reads_back(&calls);
+    }
+
+    #[test]
+    fn every_call_for_files_reads_back_as_it_was_written() {
+        let calls = [
             Call::Open {
                 len: 9,
                 at: 0x40_4000,
@@ -941,16 +997,16 @@ mod tests {
                 at: 0x40_8000,
             },
             Call::Duplicate(0x1_0003),
-            Call::Unknown(27),
+            Call::Rename {
+                from_len: 9,
+                from_at: 0x40_9000,
+                to_len: 10,
+                to_at: 0x40_a000,
+            },
+            Call::Unknown(28),
         ];
-        for call in calls {
-            let (number, args) = call.encode();
-            assert_eq!(
-                decode(number, args),
-                call,
-                "{call:?} as {number}, {args:x?}"
-            );
-        }
+
+        reads_back(&calls);
     }
 
     #[test]
@@ -983,6 +1039,7 @@ mod tests {
             (REMOVE, 2),
             (MAKE_DIRECTORY, 2),
             (DUPLICATE, 1),
+            (RENAME, 4),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -1005,7 +1062,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > DUPLICATE,
+                number > RENAME,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -1091,7 +1148,12 @@ mod tests {
         assert_eq!(answer(UNWRITABLE), Err(Error::Unwritable));
         assert_eq!(answer(IN_USE), Err(Error::InUse));
         assert_eq!(answer(INSIDE), Err(Error::Inside));
-        assert_eq!(answer(INSIDE - 1), Ok(INSIDE - 1), "just below them");
+        assert_eq!(answer(NOT_SAME_VOLUME), Err(Error::NotSameVolume));
+        assert_eq!(
+            answer(NOT_SAME_VOLUME - 1),
+            Ok(NOT_SAME_VOLUME - 1),
+            "just below them"
+        );
         assert_eq!(answer(0), Ok(0));
         assert_eq!(answer(0x4_0003), Ok(0x4_0003), "a handle");
         assert_eq!(answer(USER_END), Ok(USER_END));
@@ -1135,6 +1197,7 @@ mod tests {
             (Error::Unwritable, UNWRITABLE),
             (Error::InUse, IN_USE),
             (Error::Inside, INSIDE),
+            (Error::NotSameVolume, NOT_SAME_VOLUME),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

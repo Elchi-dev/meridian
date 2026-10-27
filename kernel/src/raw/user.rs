@@ -446,7 +446,8 @@ pub fn system_call(frame: &mut Frame) {
         | Call::Info(_)
         | Call::WriteFile { .. }
         | Call::Remove { .. }
-        | Call::MakeDirectory { .. }) => file_call(call, frame),
+        | Call::MakeDirectory { .. }
+        | Call::Rename { .. }) => file_call(call, frame),
         Call::Unknown(_) => syscall::NO_SUCH_CALL,
     };
 }
@@ -468,6 +469,12 @@ fn file_call(call: Call, frame: &mut Frame) -> u64 {
         } => write_file(handle, at, len, offset).unwrap_or_else(|e| e),
         Call::Remove { len, at } => remove(len, at).map_or_else(|e| e, |()| 0),
         Call::MakeDirectory { len, at } => make_directory(len, at).map_or_else(|e| e, |()| 0),
+        Call::Rename {
+            from_len,
+            from_at,
+            to_len,
+            to_at,
+        } => rename(from_len, from_at, to_len, to_at).map_or_else(|e| e, |()| 0),
         Call::Read {
             handle,
             at,
@@ -866,6 +873,7 @@ fn file_answer(e: super::vfs::Error) -> u64 {
         Error::InUse => syscall::IN_USE,
         Error::Unwritable => syscall::UNWRITABLE,
         Error::Inside => syscall::INSIDE,
+        Error::NotSameVolume => syscall::NOT_SAME_VOLUME,
     }
 }
 
@@ -953,6 +961,18 @@ fn make_directory(len: u64, at: u64) -> Result<(), u64> {
     let path = path_in(len, at, &mut bytes)?;
     let token = with_process(|p| Ok(p.token))?;
     super::vfs::make_directory(path, &token).map_err(file_answer)
+}
+
+/// Moves the file or directory at the path of the `from_len` bytes at
+/// `from_at` to the path of the `to_len` bytes at `to_at`, as the running
+/// program's token may.
+fn rename(from_len: u64, from_at: u64, to_len: u64, to_at: u64) -> Result<(), u64> {
+    let mut from = [0u8; syscall::PATH_BYTES];
+    let mut to = [0u8; syscall::PATH_BYTES];
+    let from = path_in(from_len, from_at, &mut from)?;
+    let to = path_in(to_len, to_at, &mut to)?;
+    let token = with_process(|p| Ok(p.token))?;
+    super::vfs::rename(from, to, &token).map_err(file_answer)
 }
 
 /// Writes the `len` bytes at `at`, which have to be UTF-8, to the console.

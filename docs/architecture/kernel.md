@@ -403,7 +403,9 @@ when there, open or make it, or empty it only when there; making or
 emptying a file takes the right to write it. WRITE_FILE writes up to a
 page from any byte on, past the end too, which leaves zeros between;
 REMOVE removes a file or an empty directory, but not one that is open;
-MAKE_DIRECTORY makes one. `kernel::volume` holds all of this on a
+MAKE_DIRECTORY makes one; RENAME moves a file or a directory within its
+volume, its clusters staying where they are, but never a directory into
+itself. `kernel::volume` holds all of this on a
 FAT32 volume and is tested on the build machine with real volumes in
 memory. The test image wants `/System` writable on its first machine,
 whose virtio disk writes to a copy, and read only on the second, writes

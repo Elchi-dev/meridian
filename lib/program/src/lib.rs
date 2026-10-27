@@ -515,6 +515,29 @@ pub fn make_directory(path: &str) -> Result<(), Error> {
     answer(raw::call(path_call(path, abi::MAKE_DIRECTORY)).0).map(|_| ())
 }
 
+/// Moves the file or directory at `from` to `to`, which may differ from it
+/// only in capitals.
+///
+/// # Errors
+///
+/// When a path is none or too long, the two are on different volumes,
+/// nothing is at `from`, the directory `to` would be in is not there,
+/// something else is at `to`, the program's token may not, the volume is
+/// mounted read only, it is open, a directory would go inside itself, or
+/// the disk is full.
+pub fn rename(from: &str, to: &str) -> Result<(), Error> {
+    answer(raw::call(rename_call(from, to)).0).map(|_| ())
+}
+
+fn rename_call(from: &str, to: &str) -> Call {
+    Call::Rename {
+        from_len: from.len() as u64,
+        from_at: from.as_ptr() as u64,
+        to_len: to.len() as u64,
+        to_at: to.as_ptr() as u64,
+    }
+}
+
 fn write_file_call(file: Handle, offset: u64, bytes: &[u8]) -> Call {
     Call::WriteFile {
         handle: file.0,
@@ -972,6 +995,16 @@ mod tests {
                 at: path.as_ptr() as u64,
                 wanted: abi::file::WRITE.into(),
                 how: abi::file::CREATE_NEW
+            }
+        );
+        let (from, to) = ("/System/a", "/System/Dir/b.txt");
+        assert_eq!(
+            rename_call(from, to),
+            Call::Rename {
+                from_len: 9,
+                from_at: from.as_ptr() as u64,
+                to_len: 17,
+                to_at: to.as_ptr() as u64
             }
         );
         let Call::WriteFile { handle, len, .. } = write_file_call(Handle(1), 0, &[]) else {

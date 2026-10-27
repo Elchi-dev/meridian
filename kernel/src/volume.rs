@@ -42,6 +42,8 @@ pub enum Error {
     Unwritable,
     /// A directory would move into itself, or into a directory inside it.
     Inside,
+    /// The two paths of a move are on different volumes.
+    NotSameVolume,
 }
 
 impl From<fat::Error> for Error {
@@ -267,6 +269,36 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Volume<R, W
             return Err(Error::InUse);
         }
         Ok(self.fs.remove(directory, name)?)
+    }
+
+    /// Moves the file or directory `from` leads to where `to` leads on the
+    /// volume, as `token` may, unless `open` says it is open, by where its
+    /// entry lies.
+    ///
+    /// # Errors
+    ///
+    /// When either leads to the root, nothing is at `from`, the directory
+    /// `to` would be in is not there, something else is at `to`, the token
+    /// may not remove what is at `from`, the volume is mounted read only, it
+    /// is open, a directory would go inside itself, no room is left, or the
+    /// volume cannot be read or written.
+    pub fn rename(
+        &mut self,
+        from: &[&str],
+        to: &[&str],
+        token: &Token,
+        open: impl Fn(Place) -> bool,
+    ) -> Result<(), Error> {
+        vfs::may_open(token, &vfs::plain(), rights::DELETE, self.read_only)
+            .map_err(Error::Refused)?;
+        let (source, name) = self.parent(from)?;
+        let (target, new) = self.parent(to)?;
+        let (_, place) = self.walk(from)?;
+        if place.is_some_and(open) {
+            return Err(Error::InUse);
+        }
+        self.fs.rename(source, name, target, new)?;
+        Ok(())
     }
 
     /// Makes a directory where `names` lead, as `token` may.
@@ -571,6 +603,10 @@ mod tests {
         );
         assert_eq!(v.make_directory(&["New"], &system()), read_only);
         assert_eq!(v.remove(&["a.txt"], &system(), |_| false), read_only);
+        assert_eq!(
+            v.rename(&["a.txt"], &["b.txt"], &system(), |_| false),
+            read_only
+        );
         assert!(v.open(&["a.txt"], &system(), READ, 0).is_ok());
         assert!(*image.borrow() == before, "not a byte changed");
     }
@@ -593,6 +629,7 @@ mod tests {
         ));
         assert!(denied(v.make_directory(&["New"], &low)));
         assert!(denied(v.remove(&["a.txt"], &low, |_| false)));
+        assert!(denied(v.rename(&["a.txt"], &["b.txt"], &low, |_| false)));
         assert!(v.open(&["a.txt"], &low, READ, 0).is_ok(), "it still reads");
         assert_eq!(
             v.open(&["new.txt"], &system(), READ, 0),
@@ -669,6 +706,74 @@ mod tests {
             v.remove(&[], &system(), |_| false),
             Err(Error::BadPath),
             "the root stays"
+        );
+    }
+
+    #[test]
+    fn a_file_moves_and_takes_its_bytes_along() {
+        let image = image();
+        let mut v = volume(&image, false);
+        assert_eq!(
+            v.rename(&["a.txt"], &["Dir", "moved.txt"], &system(), |_| false),
+            Ok(())
+        );
+        assert_eq!(v.open(&["a.txt"], &system(), READ, 0), Err(Error::NotFound));
+        let moved = v.open(&["dir", "MOVED.TXT"], &system(), READ, 0).unwrap();
+        assert_eq!(whole(&mut v, &moved), b"0123456789");
+        assert_eq!(
+            v.rename(&["Dir"], &["Folder"], &system(), |_| false),
+            Ok(()),
+            "a directory too"
+        );
+        let again = v
+            .open(&["Folder", "moved.txt"], &system(), READ, 0)
+            .unwrap();
+        assert_eq!(whole(&mut v, &again), b"0123456789");
+        assert_eq!(
+            v.rename(&["Folder"], &["Folder", "Inner"], &system(), |_| false),
+            Err(Error::Inside)
+        );
+    }
+
+    #[test]
+    fn a_rename_refuses_what_it_cannot_do() {
+        let image = image();
+        let mut v = volume(&image, false);
+        v.make_directory(&["Other"], &system()).unwrap();
+        let none = |_| false;
+        assert_eq!(
+            v.rename(&["a.txt"], &["Other"], &system(), none),
+            Err(Error::Exists)
+        );
+        assert_eq!(
+            v.rename(&["nope"], &["b"], &system(), none),
+            Err(Error::NotFound)
+        );
+        assert_eq!(
+            v.rename(&["a.txt"], &["No", "b"], &system(), none),
+            Err(Error::NotFound),
+            "into a directory that is not there"
+        );
+        assert_eq!(
+            v.rename(&["a.txt"], &["a.txt", "b"], &system(), none),
+            Err(Error::NotFound),
+            "nor into a file"
+        );
+        assert_eq!(v.rename(&[], &["b"], &system(), none), Err(Error::BadPath));
+        assert_eq!(
+            v.rename(&["a.txt"], &[], &system(), none),
+            Err(Error::BadPath),
+            "the root is no name"
+        );
+        let a = v.open(&["a.txt"], &system(), READ, 0).unwrap();
+        let place = a.place.unwrap();
+        assert_eq!(
+            v.rename(&["a.txt"], &["b.txt"], &system(), |p| p == place),
+            Err(Error::InUse)
+        );
+        assert_eq!(
+            v.rename(&["a.txt"], &["b.txt"], &system(), |p| p != place),
+            Ok(())
         );
     }
 

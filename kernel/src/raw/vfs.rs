@@ -171,6 +171,31 @@ pub fn remove(path: &str, token: &Token) -> Result<(), Error> {
     })
 }
 
+/// Moves the file or directory at `from` to `to`, as `token` may, unless
+/// it is open.
+///
+/// # Errors
+///
+/// When either path is none, the two are on different volumes, or the
+/// volume says no.
+pub fn rename(from: &str, to: &str, token: &Token) -> Result<(), Error> {
+    let to = Path::parse(to).ok_or(Error::BadPath)?;
+    let (target, to_names) = MOUNTS.lock().find(&to).ok_or(Error::NotFound)?;
+    on_path(from, |v, names, volume| {
+        if volume != target {
+            return Err(Error::NotSameVolume);
+        }
+        let open: Vec<_> = OPEN
+            .lock()
+            .iter()
+            .flatten()
+            .filter(|o| o.volume == volume)
+            .filter_map(|o| o.opened.place)
+            .collect();
+        v.rename(names, to_names, token, |place| open.contains(&place))
+    })
+}
+
 /// Makes a directory at `path`, as `token` may.
 ///
 /// # Errors

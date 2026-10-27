@@ -13,7 +13,7 @@ use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
     Ended, Error, Handle, Info, channel, close, duplicate, info, key, list, log, make_directory,
-    map, open, open_with, raw, read, receive, remove, send, sleep, spawn, spawn_handing,
+    map, open, open_with, raw, read, receive, remove, rename, send, sleep, spawn, spawn_handing,
     spawn_restricted, spawn_with, start, stream, terminate, token, unmap, wait, write, write_file,
 };
 
@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 54] = [
+const CHECKS: [(&str, Check); 55] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -53,6 +53,7 @@ const CHECKS: [(&str, Check); 54] = [
     ("file.list", directories_list_their_entries),
     ("file.write", files_written),
     ("file.write_refused", writes_refused),
+    ("file.rename", files_renamed),
     ("spawn.file", child_from_its_file),
     ("handle.duplicate", duplicates_stand_for_the_same_object),
     ("spawn.arguments", arguments_arrive),
@@ -1114,6 +1115,69 @@ fn duplicates_stand_for_the_same_object() -> Outcome {
             && close(again) == Ok(())
             && info(again) == Err(Error::BadHandle),
         "an open file should read through its duplicate after the first handle closed",
+    )
+}
+
+/// A file or a directory moves within its volume, and keeps what it holds;
+/// what cannot move says why.
+fn files_renamed() -> Outcome {
+    use abi::file::{CREATE_NEW, READ, WRITE};
+    let long = alloc::format!("/{}", "a".repeat(abi::PATH_BYTES));
+    expect(
+        rename(&long, "/System/x") == Err(Error::TooLong)
+            && rename("/System/x", &long) == Err(Error::TooLong)
+            && rename("System/x", "/System/y") == Err(Error::BadArgument),
+        "paths past PATH_BYTES or not from the root should move nothing",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    expect(
+        rename("/System/Boot/meridian/boot.meri", "/System/boot.meri") == Err(Error::NotSameVolume)
+            && rename("/System/Boot/meridian/boot.meri", "/System/Boot/b.meri")
+                == Err(Error::ReadOnly),
+        "a file should move neither to another volume nor on one only read",
+    )?;
+    let file = match open_with("/System/r.txt", READ | WRITE, CREATE_NEW) {
+        Err(Error::ReadOnly) => {
+            return expect(
+                rename("/System/made.meri", "/System/m.meri") == Err(Error::ReadOnly),
+                "on /System read only nothing should move",
+            );
+        }
+        other => other.map_err(|_| "a file should be made to move")?,
+    };
+    let written = write_file(file, 0, b"moved");
+    expect(
+        written == Ok(()) && rename("/System/r.txt", "/System/r2.txt") == Err(Error::InUse),
+        "an open file should stay where it is",
+    )?;
+    let _ = close(file);
+    expect(
+        make_directory("/System/RDir") == Ok(())
+            && rename("/System/r.txt", "/System/RDir/r2.txt") == Ok(())
+            && open("/System/r.txt", READ) == Err(Error::NotFound),
+        "a closed file should move into a directory",
+    )?;
+    let moved = open("/System/rdir/R2.TXT", READ).map_err(|_| "the moved file should open")?;
+    let mut room = [0u8; 8];
+    let len = read(moved, 0, &mut room).unwrap_or(0);
+    let _ = close(moved);
+    expect(
+        room[..len] == *b"moved",
+        "the moved file should hold what it held",
+    )?;
+    expect(
+        rename("/System/RDir", "/System/RDir/Inner") == Err(Error::Inside)
+            && rename("/System/nope", "/System/x") == Err(Error::NotFound)
+            && rename("/System/RDir", "/System/made.meri") == Err(Error::Exists),
+        "a directory should not go inside itself, nor anything onto what is there",
+    )?;
+    expect(
+        rename("/System/RDir", "/System/rdir") == Ok(())
+            && remove("/System/rdir/r2.txt") == Ok(())
+            && remove("/System/rdir") == Ok(()),
+        "a directory should take other capitals, and go once empty",
     )
 }
 

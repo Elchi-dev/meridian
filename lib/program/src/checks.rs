@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 111] = [
+const CHECKS: [(&str, Check); 113] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -135,6 +135,8 @@ const CHECKS: [(&str, Check); 111] = [
     ("shell.sh.exec.files", sh_exec_files),
     ("shell.sh.read.files", sh_read_files),
     ("tools.refused", tools_refuse_what_is_no_text),
+    ("tools.names", basename_dirname_and_tr),
+    ("tools.tr.long", tr_on_a_long_file),
     ("console", writes_on_the_console),
 ];
 
@@ -2578,14 +2580,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"26\n"
+        b"32\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, thirteen twice",
+        "ls should write the programs' names into the pipe, sixteen twice",
     )?;
     expect(
         same(
@@ -3530,6 +3532,78 @@ fn tools_refuse_what_is_no_text() -> Outcome {
                     ],
                 ),
         "grep, sort and head should pass on lines that are no text as they are",
+    )
+}
+
+/// basename and dirname take a path apart, and tr changes, deletes and
+/// squeezes what it reads, as POSIX's do, in a sh script too.
+fn basename_dirname_and_tr() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "basename /a/b/notes.txt .txt; dirname /a/b/notes.txt\n\
+             echo 'Hello,  World' | tr a-z A-Z | tr -s ' '\n\
+             echo education | tr -d aeiou\n\
+             echo one..two | tr -cs a-z '\\n'",
+        )?,
+        &ran(0, b"notes\n/a/b\nHELLO, WORLD\ndctn\none\ntwo\n"),
+    );
+    expect(checked, "basename, dirname and tr should do as POSIX's do")?;
+    let checked = same(
+        &shell_on("#!/bin/sh\nf=/a/b/c.sh; echo \"$(dirname $f) $(basename $f .sh)\"; tr x")?,
+        &ran(
+            2,
+            b"/a/b c\ntr: takes SET1 and SET2, or SET1 alone with -d or -s\ntr ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "the tools should run in sh scripts and say what they need",
+    )?;
+    let checked = same(
+        &shell_on("basename; dirname a b; basename -- -x .x; dirname -- -x/y")?,
+        &ran(
+            0,
+            b"basename: takes a path, and a suffix to take off\nbasename ended with 2\n\
+              dirname: takes one path\ndirname ended with 2\n-x\n-x\n",
+        ),
+    );
+    expect(
+        checked,
+        "basename and dirname should say what they take, and take -- first",
+    )
+}
+
+/// tr changes a file longer than one message through, line by line the
+/// same as it was, and deleting the line ends leaves the bytes but them.
+fn tr_on_a_long_file() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let shim = "/System/Boot/meridian/licences/shim.txt";
+    let (ended, said) = shell_on(&alloc::format!(
+        "wc < {shim}; tr a-z A-Z < {shim} | wc; tr -d '\\n' < {shim} | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let counts: Vec<Vec<u64>> = text
+        .lines()
+        .map(|line| line.split(' ').filter_map(|n| n.parse().ok()).collect())
+        .collect();
+    let same_counts = counts
+        .first()
+        .is_some_and(|whole| counts.get(1) == Some(whole));
+    let without_ends = match (counts.first(), counts.get(2)) {
+        (Some(whole), Some(joined)) => {
+            whole.len() == 3
+                && joined.len() == 3
+                && joined[0] == 0
+                && joined[2] == whole[2] - whole[0]
+                && whole[2] > 4096
+        }
+        _ => false,
+    };
+    expect(
+        ended == Ok(Ended::Exited(0)) && counts.len() == 3 && same_counts && without_ends,
+        "tr should go through a file longer than one message",
     )
 }
 

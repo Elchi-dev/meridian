@@ -43,6 +43,12 @@ var (
 	Tail = Part{Package: "program", Target: "x86_64-unknown-none", File: "tail", Example: "tail"}
 	// Uniq shows each run of the same line once.
 	Uniq = Part{Package: "program", Target: "x86_64-unknown-none", File: "uniq", Example: "uniq"}
+	// Basename shows the last name of a path.
+	Basename = Part{Package: "program", Target: "x86_64-unknown-none", File: "basename", Example: "basename"}
+	// Dirname shows a path without its last name.
+	Dirname = Part{Package: "program", Target: "x86_64-unknown-none", File: "dirname", Example: "dirname"}
+	// Tr changes, deletes or squeezes the characters of its standard input.
+	Tr = Part{Package: "program", Target: "x86_64-unknown-none", File: "tr", Example: "tr"}
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
@@ -56,7 +62,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

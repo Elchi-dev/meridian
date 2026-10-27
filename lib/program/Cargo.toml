@@ -116,6 +116,10 @@ test = true
 name = "paste"
 test = true
 
+[[example]]
+name = "fold"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

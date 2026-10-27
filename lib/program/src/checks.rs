@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 131] = [
+const CHECKS: [(&str, Check); 132] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -148,6 +148,7 @@ const CHECKS: [(&str, Check); 131] = [
     ("tools.cmp", cmp_on_files),
     ("tools.comm", comm_on_files),
     ("tools.paste", paste_joins_lines),
+    ("tools.fold", fold_breaks_lines),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2598,14 +2599,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"48\n"
+        b"50\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-four twice",
+        "ls should write the programs' names into the pipe, twenty-five twice",
     )?;
     expect(
         same(
@@ -4037,6 +4038,58 @@ fn paste_joins_lines() -> Outcome {
             && counts[2].first() == counts[1].first()
             && counts[2].get(1).copied() == counts[1].get(1).map(|words| words * 2),
         "paste should give a file back joined by its line feeds, and two side by side",
+    )
+}
+
+/// fold breaks lines at the width, or after a blank with -s, refuses a
+/// width of none, and folding a file only adds the line feeds it breaks
+/// at.
+fn fold_breaks_lines() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "echo abcdefghij | fold -w 4; echo 'the quick brown fox' | fold -s -w 10; fold -w 0",
+        )?,
+        &ran(
+            1,
+            b"abcd\nefgh\nij\nthe quick \nbrown fox\nfold: 0 is no width\nfold ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "fold should break lines at the width, or after a blank with -s",
+    )?;
+    let checked = same(
+        &shell_on("fold /nope; echo $?; printf 'ab\\tc\\n' | fold -b -w 3 -")?,
+        &ran(
+            0,
+            b"fold: /nope: no such file\nfold ended with 1\n1\nab\t\nc\n",
+        ),
+    );
+    expect(
+        checked,
+        "fold should say which file it cannot read, and take - for its input",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "wc < {boot}; fold -w 1000 {boot} | wc; fold -b -w 5 {boot} | wc"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let counts: Vec<Vec<u64>> = text
+        .lines()
+        .map(|line| line.split(' ').filter_map(|n| n.parse().ok()).collect())
+        .collect();
+    let added = match (counts.first(), counts.get(2)) {
+        (Some(whole), Some(folded)) if whole.len() == 3 && folded.len() == 3 => {
+            folded[0] > whole[0] && folded[2] - whole[2] == folded[0] - whole[0]
+        }
+        _ => false,
+    };
+    expect(
+        ended == Ok(Ended::Exited(0)) && counts.len() == 3 && counts[0] == counts[1] && added,
+        "fold should leave lines narrower than the width, and add only line feeds",
     )
 }
 

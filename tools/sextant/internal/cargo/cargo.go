@@ -65,6 +65,8 @@ var (
 	Comm = Part{Package: "program", Target: "x86_64-unknown-none", File: "comm", Example: "comm"}
 	// Paste joins the lines of its files side by side.
 	Paste = Part{Package: "program", Target: "x86_64-unknown-none", File: "paste", Example: "paste"}
+	// Fold breaks lines wider than a width.
+	Fold = Part{Package: "program", Target: "x86_64-unknown-none", File: "fold", Example: "fold"}
 	// ExitWith exits with the number it is sent, for the test image's
 	// checks of processes.
 	ExitWith = Part{Package: "program", Target: "x86_64-unknown-none", File: "exitwith", Example: "exitwith"}
@@ -78,7 +80,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

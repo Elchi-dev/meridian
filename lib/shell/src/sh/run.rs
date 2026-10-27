@@ -70,7 +70,7 @@ const SPECIAL: [&str; 13] = [
 
 /// The builtins POSIX calls no special ones that the session runs itself,
 /// as they read or set its variables.
-const REGULAR: [&str; 4] = ["cd", "getopts", "local", "read"];
+const REGULAR: [&str; 5] = ["cd", "getopts", "local", "read", "wait"];
 
 /// A sh session: its variables, functions and parameters, its options,
 /// and the status of its last command.
@@ -551,6 +551,7 @@ impl Session {
                     "read" => session.read(words, machine),
                     "cd" => session.cd(words, machine),
                     "local" => session.local(words, machine),
+                    "wait" => session.wait(words, machine),
                     _ => session.getopts(words, machine),
                 })
             });
@@ -942,6 +943,18 @@ impl Session {
         self.status = 0;
         if say && !machine.out(format!("{now}\n").as_bytes()) {
             self.status = 1;
+        }
+        Flow::Next
+    }
+
+    /// `wait`: ends with 0, as every list run with `&` has run to its end
+    /// before the shell went on; a job it is asked for is none there is,
+    /// which ends it with 127.
+    fn wait(&mut self, words: &[String], machine: &mut impl Machine) -> Flow {
+        self.status = 0;
+        for word in words {
+            let _ = machine.err(format!("wait: {word}: no such job\n").as_bytes());
+            self.status = 127;
         }
         Flow::Next
     }
@@ -3204,5 +3217,23 @@ mod tests {
                 "{script}"
             );
         }
+    }
+
+    #[test]
+    fn wait_has_nothing_to_wait_for() {
+        assert_eq!(out("echo a & wait; echo $?"), "a\n0\n");
+        assert_eq!(out("false; wait; echo $?"), "0\n");
+        assert_eq!(
+            said("wait 12 x; echo $?", &[]),
+            (
+                "127\n".into(),
+                "wait: 12: no such job\nwait: x: no such job\n".into()
+            )
+        );
+        assert_eq!(
+            out("false & wait $!; echo $?"),
+            "0\n",
+            "$! names none, so it waits for all"
+        );
     }
 }

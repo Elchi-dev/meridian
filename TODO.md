@@ -180,7 +180,8 @@ Loader and UEFI:
   - [x] `.`, a file's commands run in the session itself
   - [x] `getopts`
   - [x] `local`, as dash and bash have it
-  - [ ] `&` with `$!` and `wait`, `exec`
+  - [x] `wait`, with nothing to wait for while `&` runs a list to its end
+  - [ ] `&` starting jobs, with `$!`, and `exec`
   - [ ] The `sh` command and an interactive sh session
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

@@ -288,6 +288,10 @@ keeps `PWD`, which the shell sets as a script starts, and `OLDPWD`.
 `local`, which POSIX has not but dash and bash have, makes variables a
 function's own, put back as they were once it returns.
 
+A list run with `&` runs to its end in a subshell before the shell goes
+on, as the shell starts no jobs yet: `$!` stays unset, `wait` ends with
+0, and a job `wait` is asked for is none, which ends it with 127.
+
 `getopts` takes options as POSIX's does, saying `getopts: -x: no such
 option` or `getopts: -x: needs an argument` unless its list starts with
 `:`.

@@ -94,6 +94,7 @@ dependencies = [
  "gpt",
  "handles",
  "heap",
+ "meri",
  "nvme",
  "paging",
  "pci",

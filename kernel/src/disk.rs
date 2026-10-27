@@ -6,7 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{self, Display, Write};
 
-use gpt::{Header, Partition};
+use gpt::{Guid, Header, Partition};
 
 /// The storage controllers the kernel drives, as the walk over PCI meets
 /// them: the first AHCI controller and the first NVM Express one, each
@@ -119,6 +119,147 @@ impl Table {
     pub fn partitions(&self) -> impl Iterator<Item = (usize, Partition)> + '_ {
         self.header.partitions(&self.entries).into_iter().flatten()
     }
+
+    /// The Meridian system partition of the install the loader came from,
+    /// where its lists of what it may write are: the first one on this
+    /// disk when the partition the loader names, `boot`, is on it too.
+    /// None when the loader names none.
+    #[must_use]
+    pub fn system(&self, boot: [u8; 16]) -> Option<Partition> {
+        if boot == [0; 16] || !self.partitions().any(|(_, p)| p.unique.0 == boot) {
+            return None;
+        }
+        self.first_of(gpt::MERIDIAN_SYSTEM)
+    }
+}
+
+/// The partitions `list` names, as `made.meri` and `unlocked.meri` do
+/// (decision record 0015): one for each `partition` block at its root,
+/// labelled with the partition's unique GUID. A label that is no GUID
+/// names none.
+///
+/// # Errors
+///
+/// When `list` is no .meri document.
+pub fn listed(list: &[u8]) -> Result<Vec<Guid>, meri::Error> {
+    let mut found = Vec::new();
+    let mut depth = 0usize;
+    for event in meri::Reader::new(list) {
+        match event? {
+            meri::Event::Block { name, label, .. } => {
+                if depth == 0
+                    && name == "partition"
+                    && let Some(guid) = label.and_then(|l| l.as_str()).and_then(Guid::parse)
+                {
+                    found.push(guid);
+                }
+                depth += 1;
+            }
+            meri::Event::End => depth -= 1,
+            _ => {}
+        }
+    }
+    Ok(found)
+}
+
+/// Why a partition may be written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// Meridian made it.
+    Made,
+    /// The person unlocked it.
+    Unlocked,
+}
+
+/// Which sectors of a disk Meridian may write (decision record 0015): all
+/// of them when it made every partition on the disk, otherwise those of
+/// each partition it made or the person unlocked, a write within one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Writable {
+    pub whole: bool,
+    /// The partitions that may be written, each with its number.
+    pub partitions: Vec<(usize, Partition, Why)>,
+}
+
+impl Writable {
+    /// What may be written on the disk whose table is `table`, with the
+    /// partitions Meridian `made` and those `unlocked`. Nothing on a disk
+    /// without a table, which has no unique GUIDs.
+    #[must_use]
+    pub fn of(table: Option<&Table>, made: &[Guid], unlocked: &[Guid]) -> Writable {
+        let Some(table) = table else {
+            return Writable::default();
+        };
+        let mut all_made = true;
+        let mut partitions = Vec::new();
+        for (number, p) in table.partitions() {
+            let why = if made.contains(&p.unique) {
+                Why::Made
+            } else if unlocked.contains(&p.unique) {
+                Why::Unlocked
+            } else {
+                all_made = false;
+                continue;
+            };
+            all_made &= why == Why::Made;
+            partitions.push((number, p, why));
+        }
+        Writable {
+            whole: all_made && !partitions.is_empty(),
+            partitions,
+        }
+    }
+
+    /// Whether the `count` sectors from `lba` on may be written: none
+    /// always, others when the whole disk may be or all of them lie in
+    /// one partition that may be.
+    #[must_use]
+    pub fn allows(&self, lba: u64, count: u64) -> bool {
+        let Some(more) = count.checked_sub(1) else {
+            return true;
+        };
+        let Some(last) = lba.checked_add(more) else {
+            return false;
+        };
+        self.whole
+            || self
+                .partitions
+                .iter()
+                .any(|(_, p, _)| p.first <= lba && last <= p.last)
+    }
+}
+
+/// Writes the lines the kernel logs about what it may write on the disk
+/// `disk`.
+///
+/// # Errors
+///
+/// When `out` fails.
+pub fn writable_lines(
+    out: &mut impl Write,
+    disk: &dyn Display,
+    writable: &Writable,
+) -> fmt::Result {
+    if writable.whole {
+        return writeln!(
+            out,
+            "kernel: {disk} may be written whole, Meridian made every partition on it"
+        );
+    }
+    if writable.partitions.is_empty() {
+        return writeln!(out, "kernel: {disk} is only read");
+    }
+    for (number, _, why) in &writable.partitions {
+        let why = match why {
+            Why::Made => "Meridian made it",
+            Why::Unlocked => "it was unlocked",
+        };
+        writeln!(
+            out,
+            "kernel: {disk}, partition {number} may be written, {why}"
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -235,6 +376,21 @@ mod tests {
         assert_eq!(table.first_of(gpt::Guid([0x11; 16])), None);
     }
 
+    /// Gives the entries in `slots` of the table `disk` wrote into `image`
+    /// the unique GUIDs that go with them, all of whose bytes are the one
+    /// given, and makes the header's CRCs right again.
+    fn uniquely(image: &mut [u8], slots: &[(usize, u8)]) {
+        for &(slot, id) in slots {
+            let at = 1024 + slot * 128 + 16;
+            image[at..at + 16].fill(id);
+        }
+        let crc = gpt::crc32(&image[1024..1024 + 128 * 128]);
+        image[512 + 88..512 + 92].copy_from_slice(&crc.to_le_bytes());
+        image[512 + 16..512 + 20].fill(0);
+        let crc = gpt::crc32(&image[512..604]);
+        image[528..532].copy_from_slice(&crc.to_le_bytes());
+    }
+
     #[test]
     fn the_boot_volume_is_the_one_the_loader_names() {
         let mut image = disk(
@@ -244,18 +400,7 @@ mod tests {
                 (1, gpt::EFI_SYSTEM.0, 3072, 4095),
             ],
         );
-        let unique = |slot: usize, id: u8| {
-            let at = 1024 + slot * 128 + 16;
-            (at, [id; 16])
-        };
-        for (at, id) in [unique(0, 0xa1), unique(1, 0xb2)] {
-            image[at..at + 16].copy_from_slice(&id);
-        }
-        let crc = gpt::crc32(&image[1024..1024 + 128 * 128]);
-        image[512 + 88..512 + 92].copy_from_slice(&crc.to_le_bytes());
-        image[512 + 16..512 + 20].fill(0);
-        let crc = gpt::crc32(&image[512..604]);
-        image[528..532].copy_from_slice(&crc.to_le_bytes());
+        uniquely(&mut image, &[(0, 0xa1), (1, 0xb2)]);
         let table = Table::read(&mut reader(&image)).unwrap();
         assert_eq!(
             table.boot_volume([0xb2; 16]).map(|p| p.first),
@@ -269,6 +414,166 @@ mod tests {
             "no word: the first"
         );
         assert_eq!(table.boot_volume([0xc3; 16]), None, "one on another disk");
+    }
+
+    /// A disk with an EFI system partition from sector 2048 to 3071, a
+    /// Meridian system partition up to 4095 and partition 4 up to 5119, of
+    /// unique GUIDs all of whose bytes are 0xa1, 0xb2 and 0xc3.
+    fn three() -> Table {
+        let mut image = disk(
+            8192,
+            &[
+                (0, gpt::EFI_SYSTEM.0, 2048, 3071),
+                (1, gpt::MERIDIAN_SYSTEM.0, 3072, 4095),
+                (3, [0x11; 16], 4096, 5119),
+            ],
+        );
+        uniquely(&mut image, &[(0, 0xa1), (1, 0xb2), (3, 0xc3)]);
+        Table::read(&mut reader(&image)).unwrap()
+    }
+
+    const A: Guid = Guid([0xa1; 16]);
+    const B: Guid = Guid([0xb2; 16]);
+    const C: Guid = Guid([0xc3; 16]);
+
+    #[test]
+    fn the_system_partition_is_the_one_on_the_disk_the_loader_came_from() {
+        let table = three();
+        assert_eq!(table.system([0xa1; 16]).map(|p| p.first), Some(3072));
+        assert_eq!(
+            table.system([0xc3; 16]).map(|p| p.first),
+            Some(3072),
+            "whichever partition on it the loader came from"
+        );
+        assert_eq!(table.system([0xd4; 16]), None, "the loader's is elsewhere");
+        assert_eq!(table.system([0; 16]), None, "the loader names none");
+        let zeros = disk(4096, &[(0, gpt::MERIDIAN_SYSTEM.0, 2048, 3071)]);
+        let zeros = Table::read(&mut reader(&zeros)).unwrap();
+        assert_eq!(
+            zeros.system([0; 16]),
+            None,
+            "not even where unique GUIDs are zeros"
+        );
+        let mut esp_only = disk(4096, &[(0, gpt::EFI_SYSTEM.0, 2048, 3071)]);
+        uniquely(&mut esp_only, &[(0, 0xa1)]);
+        let esp_only = Table::read(&mut reader(&esp_only)).unwrap();
+        assert_eq!(esp_only.system([0xa1; 16]), None, "a disk without one");
+    }
+
+    #[test]
+    fn the_lists_name_partitions_by_their_unique_guids() {
+        let list = br#"# What Meridian made.
+partition "A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1" { name = "EFI system partition" }
+partition "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2" {
+    name = "Meridian system"
+    size = 34MiB
+}
+partition "not a GUID" {}
+partition {}
+disk "C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3" {
+    partition "C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3" {}
+}
+unique = "C3C3C3C3-C3C3-C3C3-C3C3-C3C3C3C3C3C3"
+"#;
+        assert_eq!(listed(list).unwrap(), [A, B]);
+        assert_eq!(listed(b"").unwrap(), []);
+        let broken = b"partition \"A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1\" {}\n}\n";
+        assert!(
+            listed(broken).is_err(),
+            "not the partitions before the error"
+        );
+        assert!(listed(b"partition \"A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1\" {").is_err());
+    }
+
+    #[test]
+    fn what_may_be_written_follows_the_lists() {
+        let table = three();
+        let w = Writable::of(Some(&table), &[A], &[C]);
+        assert!(!w.whole);
+        let seen: Vec<_> = w
+            .partitions
+            .iter()
+            .map(|&(n, p, why)| (n, p.first, why))
+            .collect();
+        assert_eq!(seen, [(1, 2048, Why::Made), (4, 4096, Why::Unlocked)]);
+        let both = Writable::of(Some(&table), &[B], &[B]);
+        assert_eq!(both.partitions.len(), 1);
+        assert_eq!((both.partitions[0].0, both.partitions[0].2), (2, Why::Made));
+        assert!(Writable::of(Some(&table), &[C, B, A], &[]).whole);
+        assert!(
+            Writable::of(Some(&table), &[A, B, C, Guid([0xd4; 16])], &[]).whole,
+            "whatever else the list names"
+        );
+        assert!(
+            !Writable::of(Some(&table), &[A, B], &[C]).whole,
+            "one unlocked"
+        );
+        assert!(
+            !Writable::of(Some(&table), &[A, B], &[]).whole,
+            "one not listed"
+        );
+        assert!(
+            !Writable::of(Some(&table), &[B, C], &[]).whole,
+            "the first not listed"
+        );
+        assert_eq!(Writable::of(Some(&table), &[], &[]), Writable::default());
+        assert_eq!(Writable::of(None, &[A, B, C], &[A]), Writable::default());
+        let empty = Table::read(&mut reader(&disk(4096, &[]))).unwrap();
+        assert_eq!(
+            Writable::of(Some(&empty), &[A], &[]),
+            Writable::default(),
+            "a table without partitions is not Meridian's"
+        );
+    }
+
+    #[test]
+    fn writes_stay_inside_what_may_be_written() {
+        let w = Writable::of(Some(&three()), &[A], &[C]);
+        assert!(w.allows(2048, 1) && w.allows(3071, 1) && w.allows(2048, 1024));
+        assert!(
+            w.allows(4096, 1024) && w.allows(5119, 1),
+            "the unlocked one too"
+        );
+        assert!(!w.allows(2047, 1) && !w.allows(2047, 2), "before the first");
+        assert!(!w.allows(3071, 2) && !w.allows(2048, 1025), "past the last");
+        assert!(!w.allows(3072, 1) && !w.allows(4095, 1), "one not listed");
+        assert!(!w.allows(3071, 1026), "through one not listed into another");
+        assert!(
+            !w.allows(0, 1) && !w.allows(1, 33) && !w.allows(8191, 1),
+            "the tables"
+        );
+        assert!(
+            w.allows(0, 0) && w.allows(3072, 0) && w.allows(u64::MAX, 0),
+            "nothing"
+        );
+        assert!(!w.allows(u64::MAX, 2) && !w.allows(u64::MAX - 1, u64::MAX));
+        let whole = Writable::of(Some(&three()), &[A, B, C], &[]);
+        assert!(whole.allows(0, 34) && whole.allows(3000, 2000) && whole.allows(8191, 1));
+        assert!(
+            !whole.allows(u64::MAX, 2),
+            "not past the last sector there can be"
+        );
+        assert!(!Writable::default().allows(2048, 1));
+    }
+
+    #[test]
+    fn what_may_be_written_is_logged() {
+        let table = three();
+        let lines = |w: &Writable| {
+            let mut out = String::new();
+            writable_lines(&mut out, &"NVMe", w).unwrap();
+            out
+        };
+        assert_eq!(
+            lines(&Writable::of(Some(&table), &[A], &[C])),
+            "kernel: NVMe, partition 1 may be written, Meridian made it\n\
+             kernel: NVMe, partition 4 may be written, it was unlocked\n"
+        );
+        assert_eq!(
+            lines(&Writable::of(Some(&table), &[A, B, C], &[])),
+            "kernel: NVMe may be written whole, Meridian made every partition on it\n"
+        );
+        assert_eq!(lines(&Writable::default()), "kernel: NVMe is only read\n");
     }
 
     #[test]

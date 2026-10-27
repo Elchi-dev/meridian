@@ -77,7 +77,8 @@ joins the next line to this one.
 
 A command is one or more words, the first of which names it: a builtin
 of the shell, a program by its name in `/System/Boot/meridian/programs`,
-or a program by its path. The other words are its arguments.
+or where a CD holds no such directory, among the programs the loader
+brought, or a program by its path. The other words are its arguments.
 
 Redirections may stand anywhere among a command's words:
 

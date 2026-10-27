@@ -111,13 +111,19 @@ fn command(words: &[String]) -> Command<'_> {
     }
 }
 
-/// The file the program `word` names: the path itself, or for a name the
-/// program of that name in [`PROGRAMS`].
-fn program_path(word: &str) -> String {
+/// What SPAWN is asked for to start the program `word` names: the path
+/// itself, or for a name the program of that name in [`PROGRAMS`], and
+/// where `tree` has no such file, as on a CD, the program of that name the
+/// loader brought.
+fn program_name(word: &str, tree: &mut impl Tree) -> String {
     if word.starts_with('/') {
-        word.into()
+        return word.into();
+    }
+    let path = format!("{PROGRAMS}/{word}.mexec");
+    if tree.has(&path) {
+        path
     } else {
-        format!("{PROGRAMS}/{word}.mexec")
+        format!("{word}.mexec")
     }
 }
 
@@ -589,7 +595,7 @@ fn start(word: &str, arguments: &[String], out: &mut Out) -> u8 {
         output,
         ..program::start::Given::default()
     };
-    let child = match program::spawn_handing(&program_path(word), &arguments, given) {
+    let child = match program::spawn_handing(&program_name(word, &mut System), &arguments, given) {
         Ok((child, start)) => {
             let _ = program::close(start);
             child
@@ -1135,14 +1141,35 @@ mod tests {
 
     #[test]
     fn a_program_is_found_by_its_name_or_its_path() {
+        let mut tree = Host::new(
+            "programs",
+            &[
+                "System/Boot/meridian/programs/hello.mexec",
+                "System/Boot/meridian/programs/a/b.mexec",
+            ],
+        );
         assert_eq!(
-            program_path("hello"),
+            program_name("hello", &mut tree),
             "/System/Boot/meridian/programs/hello.mexec"
         );
-        assert_eq!(program_path("/a/b.mexec"), "/a/b.mexec");
         assert_eq!(
-            program_path("a/b"),
+            program_name("a/b", &mut tree),
             "/System/Boot/meridian/programs/a/b.mexec"
+        );
+        assert_eq!(
+            program_name("wc", &mut tree),
+            "wc.mexec",
+            "the loader's, without the file"
+        );
+        assert_eq!(program_name("/a/b.mexec", &mut tree), "/a/b.mexec");
+        assert_eq!(
+            tree.asked,
+            [
+                "/System/Boot/meridian/programs/hello.mexec",
+                "/System/Boot/meridian/programs/a/b.mexec",
+                "/System/Boot/meridian/programs/wc.mexec"
+            ],
+            "a path is taken as it is"
         );
         assert_eq!(PROGRAMS, "/System/Boot/meridian/programs");
     }

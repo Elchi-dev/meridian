@@ -477,7 +477,8 @@ functions for every line. Its own commands are `help`, `echo`, `ls` or
 `dir`, `cat` or `type`, `mkdir` or `md`, `rm` or `del`, `clear` or `cls`
 and `services`, reading the tree of files, where patterns match too. Any
 other word is a program: by its name in
-`/System/Boot/meridian/programs`, or by its path, started with SPAWN,
+`/System/Boot/meridian/programs`, or on a CD, which holds none there,
+among the programs the loader brought, or by its path, started with SPAWN,
 handed the words after it and waited for, and the shell says how it ended
 unless it exited with 0. A program writes where the shell writes, through
 a duplicate of its standard output, and `>` and `>>` send what a command

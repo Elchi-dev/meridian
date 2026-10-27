@@ -1302,14 +1302,9 @@ fn shell_ends_with_the_status() -> Outcome {
 }
 
 fn shell_starts_programs() -> Outcome {
-    let want: &[u8] = if booted_from_disk() {
-        b"exitwith ended with 2989\n255\n"
-    } else {
-        b"exitwith: no such command\n127\n"
-    };
     expect(
-        shell_on("exitwith; echo $?")? == ran(0, want),
-        "the shell should start a program by its name and keep how it ended in $?",
+        shell_on("exitwith; echo $?")? == ran(0, b"exitwith ended with 2989\n255\n"),
+        "the shell should start a program by its name, from the loader's on a CD, and keep how it ended in $?",
     )?;
     expect(
         shell_on("nope")? == ran(127, b"nope: no such command\n"),

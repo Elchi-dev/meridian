@@ -1741,11 +1741,8 @@ fn shell_checks<W: Write>(
     let alone = waited_for("services: init did not start this shell");
     // exitwith, given no channel, ends with 0xbad.
     typed(&["e", "x", "i", "t", "w", "i", "t", "h", "ret"]);
-    let ran = if disk {
-        waited_for("exitwith ended with 2989")
-    } else {
-        waited_for("exitwith: no such command")
-    };
+    // From its file, or on a CD from what the loader brought.
+    let ran = waited_for("exitwith ended with 2989");
     // A block goes on over the lines typed until its brace closes.
     typed(&[
         "i",

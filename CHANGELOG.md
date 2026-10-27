@@ -88,6 +88,7 @@ at 0.x until the native API is stable.
   - `lib/abi`: the system calls programs and the kernel agree on; `lib/program`: what a program in Rust is built on, the calls as functions, `main!`, a heap and `log!`; `lib/security`: SIDs, tokens and the access check, in the shape [MS-DTYP] gives them.
   - `lib/pci`, `lib/ahci`, `lib/nvme`, `lib/virtio` and `lib/ps2`: the parts of each driver that need no hardware, from the specifications.
   - `lib/gpt`: partition tables read and written, with their copies and the protective MBR; `lib/fat`: FAT32 read, a run of sectors at a time, and written, long names with their short ones, and volumes made as fatgen103 lays them out.
+  - `lib/shell`: Meridian's shell language (decision record 0016) read into its words, quotes and variables, and into the commands, pipelines, lists and blocks they stand for, with every error at its line and column.
 
 ### Fixed
 

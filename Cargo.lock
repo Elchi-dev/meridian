@@ -158,6 +158,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell"
+version = "0.0.0"
+
+[[package]]
 name = "uefi"
 version = "0.0.0"
 

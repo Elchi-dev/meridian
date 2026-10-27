@@ -30,7 +30,8 @@ document gives, with its error code.
 
 A script is UTF-8. Lines end with a line feed, or a carriage return
 followed by a line feed. Positions are a line and a column from 1, the
-column counting Unicode scalar values, as in `.meri`.
+column counting Unicode scalar values, as in `.meri`. A carriage return
+without a line feed after it is an error (`lone-carriage-return`).
 
 Whitespace is the space and the tab. A `#` outside quotes, at the start
 of a word, starts a comment to the end of the line; inside a word it is
@@ -39,7 +40,8 @@ an ordinary character, so `a#b` is one word.
 ## 2. Words
 
 A word is a run of characters up to whitespace, a line's end or one of
-the operators `|`, `;`, `>`, `<`, `{` and `}`. These make up a word:
+the operators `|`, `||`, `&&`, `;`, `>`, `<`, `{` and `}`. A single `&`
+is an ordinary character. These make up a word:
 
 - Plain characters stand for themselves.
 - `'...'` holds characters as they are, `$` and `\` included, up to the
@@ -50,6 +52,9 @@ the operators `|`, `;`, `>`, `<`, `{` and `}`. These make up a word:
   tab.
 - `$name` and `${name}` outside quotes are replaced by the variable's
   value. A name is a letter or `_` and then letters, digits and `_`.
+  `$?`, `$#` and `$1`, `$2` and on are the special ones of section 5 and
+  6. `${` that does not hold a name and then `}` is an error
+  (`bad-variable`); a `$` that starts no variable is a `$`.
 - `\` outside quotes takes the next character as it is.
 
 Parts follow each other without space to make one word: `"$dir"/file`
@@ -85,24 +90,32 @@ Redirections may stand anywhere among a command's words:
 The path is the next word. A redirection without one is an error
 (`missing-path`).
 
+A `{` where no block starts is an error (`unexpected-open`); quoted, it
+is part of a word.
+
 Commands are joined into a pipeline with `|`: what each one writes, the
 next one reads. A pipeline's exit status is that of its last command. A
 `|` with no command on either side is an error (`missing-command`).
 
 ## 4. Lists
 
-Pipelines run one after another, separated by `;` or a line's end.
+Pipelines run one after another, separated by `;` or a line's end. A
+statement ends there or at the `}` of its block; anything else after it
+on its line is an error (`expected-end`).
 `and` between two pipelines runs the second only when the first ended
-with 0; `or` runs it only when the first did not. `not` before a pipeline
+with 0; `or` runs it only when the first did not. `&&` and `||` are
+`and` and `or` as sh writes them. `not` before a pipeline
 turns 0 into 1 and anything else into 0. `and` and `or` bind equally and
-from the left, so `a or b and c` runs `c` once `a or b` succeeded. These
-three words only have this meaning where a command could start or right
-after a complete pipeline; quoted, they are ordinary words.
+from the left, so `a or b and c` runs `c` once `a or b` succeeded. `not`
+has this meaning where a pipeline starts, and `and` and `or` right after
+a command's first word or any later one, so `echo and` waits for a
+command; anywhere else, and quoted, the three are ordinary words.
 
 ## 5. Variables
 
 `let name = value` sets a variable; the value is one word. `let` without
-`=` or without a value is an error (`expected-equals`, `expected-value`).
+a name, without `=` or without a value is an error (`expected-name`,
+`expected-equals`, `expected-value`).
 A variable lives until the script or session ends, or until the block it
 was set in ends when it was not set before that block.
 
@@ -111,8 +124,10 @@ was set in ends when it was not set before that block.
 ## 6. Blocks
 
 `if`, `else`, `for`, `while` and `fn` take a block: `{`, lists, `}`. The
-`{` is on the same line as its keyword. A block may stay on one line:
-`if ls /x { echo yes }`.
+`{` is on the same line as its keyword, or it is an error
+(`expected-brace`). A block may stay on one line: `if ls /x { echo yes }`.
+`for` and `fn` without a name are an error (`expected-name`), and `for
+NAME` without `in` after it is one too (`expected-in`).
 
 - `if LIST { ... }` runs the block when the list ended with 0. An `else
   { ... }` or `else if ...` may follow right after its `}`.

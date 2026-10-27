@@ -119,7 +119,10 @@ a name, without `=` or without a value is an error (`expected-name`,
 A variable lives until the script or session ends, or until the block it
 was set in ends when it was not set before that block.
 
-`$?` is the exit status of the last pipeline.
+`$?` is the exit status of the last pipeline. A `for` loop's variable
+belongs to its block, as if set there, and so does one set by `let`
+inside a block that was not set outside it; setting one that was set
+outside changes that one.
 
 ## 6. Blocks
 
@@ -137,8 +140,16 @@ NAME` without `in` after it is one too (`expected-in`).
 - `fn name { ... }` makes a command of its own. Its arguments are `$1`,
   `$2` and so on, and `$#` says how many there are.
 
-`break` and `continue` work in `for` and `while`; `return` ends a
-function, with the status it is given or 0.
+`break` and `continue` work in `for` and `while`, the innermost one;
+anywhere else they end the script. `return` ends a function, with the
+status it is given, a number from 0 to 255, or with 0; any other word is
+an error (`bad-status`). Outside a function it ends the script the same
+way.
+
+`true` ends with 0 and `false` with 1, without running anything. A name a
+function was made with is a command from then on, before any program of
+that name. Functions may call each other 64 deep; one more is an error
+(`too-deep`).
 
 A `}` without a block is an error (`unexpected-close`); a block still
 open at the end of a script is an error (`unclosed-block`), reported at

@@ -12,6 +12,7 @@ use core::fmt;
 pub mod expand;
 pub mod lex;
 pub mod parse;
+pub mod run;
 
 /// A place in a script: its line and its column, both counted from 1, the
 /// column in Unicode scalar values.
@@ -59,6 +60,10 @@ pub enum Code {
     UnsetVariable,
     /// A pattern that matches no file, found while running.
     NoMatch,
+    /// `return` with a word that is no number from 0 to 255.
+    BadStatus,
+    /// Functions that call each other too deep.
+    TooDeep,
 }
 
 impl Code {
@@ -83,6 +88,8 @@ impl Code {
             Code::ExpectedEnd => "expected-end",
             Code::UnsetVariable => "unset-variable",
             Code::NoMatch => "no-match",
+            Code::BadStatus => "bad-status",
+            Code::TooDeep => "too-deep",
         }
     }
 
@@ -109,6 +116,8 @@ impl Code {
             Code::ExpectedEnd => "end the statement here, with ; or a new line",
             Code::UnsetVariable => "set the variable with let before this",
             Code::NoMatch => "no file matches the pattern; quote it to mean the word itself",
+            Code::BadStatus => "return a number from 0 to 255",
+            Code::TooDeep => "a function calls itself, or others call each other, too deep",
         }
     }
 }
@@ -137,7 +146,7 @@ impl fmt::Display for Error {
 mod tests {
     use super::*;
 
-    const CODES: [Code; 17] = [
+    const CODES: [Code; 19] = [
         Code::LoneCarriageReturn,
         Code::UnterminatedQuote,
         Code::BadVariable,
@@ -155,6 +164,8 @@ mod tests {
         Code::ExpectedEnd,
         Code::UnsetVariable,
         Code::NoMatch,
+        Code::BadStatus,
+        Code::TooDeep,
     ];
 
     #[test]
@@ -236,6 +247,8 @@ mod tests {
                 "15:29: expected-end: end the statement here, with ; or a new line",
                 "16:31: unset-variable: set the variable with let before this",
                 "17:33: no-match: no file matches the pattern; quote it to mean the word itself",
+                "18:35: bad-status: return a number from 0 to 255",
+                "19:37: too-deep: a function calls itself, or others call each other, too deep",
             ]
         );
     }

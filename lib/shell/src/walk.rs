@@ -41,7 +41,6 @@ pub fn walk(
     let base = if absolute { "/" } else { directory };
     // Each path found so far: as the pattern writes it, and from the root.
     let mut found = Vec::from([(String::new(), String::from(base))]);
-    let mut listed_last = true;
     for part in parts {
         let mut next = Vec::new();
         for (shown, real) in &found {
@@ -64,9 +63,10 @@ pub fn walk(
                 next.push((shown, format!("{real}{slash}{name}")));
             }
         }
-        listed_last = matches!(part, Part::Test(_));
         found = next;
     }
+    // What a listing found is there; a last name as written is looked for.
+    let listed_last = !matches!(parts.last(), Some(Part::Name(_)));
     found
         .into_iter()
         .filter(|(_, real)| listed_last || tree.has(real))
@@ -256,6 +256,14 @@ pub(crate) mod tests {
             Vec::<String>::new(),
             "what a listing found is there"
         );
+    }
+
+    #[test]
+    fn no_parts_lead_to_where_the_walk_starts() {
+        let mut tree = Host::new("nowhere", &["a"]);
+        assert_eq!(walk("/a", false, &[], str::cmp, &mut tree), [""]);
+        assert_eq!(walk("/a", true, &[], str::cmp, &mut tree), [""]);
+        assert_eq!(tree.asked, Vec::<String>::new(), "nothing is looked for");
     }
 
     #[test]

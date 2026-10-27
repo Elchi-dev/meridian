@@ -1627,7 +1627,7 @@ fn pipes_that_go_wrong() -> Outcome {
         "a path that is no program should end a pipeline with 126",
     )?;
     expect(
-        shell_on("exitwith | wc")? == ran(0, b"exitwith ended with 2989\n0 0 0\n"),
+        shell_on("exitwith | wc")? == ran(0, b"0 0 0\nexitwith ended with 2989\n"),
         "a program that ends without writing should close its end of the pipe",
     )
 }

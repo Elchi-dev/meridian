@@ -407,9 +407,19 @@ impl Machine for System {
             .into_iter()
             .map(|(words, input, out)| begin(words, input, out, alone))
             .collect();
-        // Each one has to be waited for; the last one's status is the
-        // pipeline's.
-        going.into_iter().fold(0, |_, command| command.finish())
+        // Each one has to be waited for, and the last one's status is the
+        // pipeline's. How they ended is said once all did, after all they
+        // wrote.
+        let mut said = String::new();
+        let status = going.into_iter().fold(0, |_, command| {
+            let (status, line) = command.finish();
+            said.extend(line);
+            status
+        });
+        if !said.is_empty() {
+            let _ = program::write(&said);
+        }
+        status
     }
 
     fn matching(&mut self, directory: &str, pattern: &[Piece]) -> Vec<String> {
@@ -687,25 +697,18 @@ enum Going {
 }
 
 impl Going {
-    /// Waits until the command ended, and answers its status.
+    /// Waits until the command ended, and answers its status and what the
+    /// shell says about how it ended.
     #[cfg_attr(test, allow(dead_code))]
-    fn finish(self) -> u8 {
+    fn finish(self) -> (u8, Option<String>) {
         match self {
-            Going::Done(status) => status,
+            Going::Done(status) => (status, None),
             Going::Program(word, child) => {
                 let ended = program::wait(child);
                 let _ = program::close(child);
                 match ended {
-                    Ok(ended) => {
-                        if let Some(line) = ending(&word, ended) {
-                            let _ = program::write(&line);
-                        }
-                        status(ended)
-                    }
-                    Err(e) => {
-                        let _ = program::write(&trouble(&word, e));
-                        1
-                    }
+                    Ok(ended) => (status(ended), ending(&word, ended)),
+                    Err(e) => (1, Some(trouble(&word, e))),
                 }
             }
             Going::Thread(end) => {
@@ -718,7 +721,7 @@ impl Going {
                     }
                 };
                 let _ = program::close(end);
-                status
+                (status, None)
             }
         }
     }
@@ -772,7 +775,11 @@ fn run(command: Command<'_>, input: &mut In, out: &mut Out) -> u8 {
         Command::Program(word, arguments) => {
             let input = core::mem::replace(input, In::Mine);
             let out = core::mem::replace(out, Out::Mine);
-            return start(word, arguments, input, out).finish();
+            let (status, line) = start(word, arguments, input, out).finish();
+            if let Some(line) = line {
+                let _ = program::write(&line);
+            }
+            return status;
         }
         Command::Status(status) => return status,
         Command::Help => out.say(HELP).is_ok(),

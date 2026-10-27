@@ -303,3 +303,10 @@ allow {
     mutation = "false to true"
     reason = "it only spares the work of splitting a part that holds no subexpression; split anyway, such a part puts nothing in the spans"
 }
+
+allow {
+    file = "lib/sed/src/run.rs"
+    line = "substituted: false,"
+    mutation = "false to true"
+    reason = "a run reads a line before it runs a command, and reading one sets substituted to false, so its first value is never seen"
+}

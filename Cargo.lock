@@ -157,6 +157,13 @@ name = "security"
 version = "0.0.0"
 
 [[package]]
+name = "sed"
+version = "0.0.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "services"
 version = "0.0.0"
 dependencies = [

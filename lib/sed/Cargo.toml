@@ -1,0 +1,15 @@
+[package]
+name = "sed"
+description = "sed's scripts as POSIX has them, read into their commands and run on lines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex = { path = "../regex" }
+
+[lints]
+workspace = true

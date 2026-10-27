@@ -1,9 +1,10 @@
 //! Channels: two ends, and a queue of messages going each way. A message
 //! is up to [`MESSAGE`] bytes, and each queue holds up to [`QUEUED`] of
 //! them in the order they were sent. A message can carry one object along,
-//! such as a handle being handed over. Once one end is closed, the other
-//! can still read what was sent before, and then learns the channel is
-//! closed. Nothing is allocated.
+//! such as a handle being handed over. Each end counts the handles that
+//! stand for it, and closes with the last. Once one end is closed, the
+//! other can still read what was sent before, and then learns the channel
+//! is closed. Nothing is allocated.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -107,11 +108,13 @@ impl Queue {
     }
 }
 
-/// A channel: what each end sent the other, and which ends are closed.
+/// A channel: what each end sent the other, and how many handles stand
+/// for each end, those that messages carry included. An end that none
+/// stands for is closed.
 pub struct Channel {
     /// The messages waiting for each end.
     waiting: [Queue; 2],
-    closed: [bool; 2],
+    holders: [u32; 2],
 }
 
 impl Default for Channel {
@@ -121,13 +124,33 @@ impl Default for Channel {
 }
 
 impl Channel {
-    /// A channel with both ends open and nothing sent.
+    /// A channel with both ends open, one handle for each, and nothing
+    /// sent.
     #[must_use]
     pub const fn new() -> Channel {
         Channel {
             waiting: [Queue::EMPTY; 2],
-            closed: [false; 2],
+            holders: [1; 2],
         }
+    }
+
+    fn closed(&self, end: End) -> bool {
+        self.holders[end.index()] == 0
+    }
+
+    /// One more handle stands for `end`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Closed`] when `end` is closed, since no handle stands for
+    /// it to be one more of.
+    pub fn hold(&mut self, end: End) -> Result<(), Error> {
+        if self.closed(end) {
+            return Err(Error::Closed);
+        }
+        let held = &mut self.holders[end.index()];
+        *held = held.saturating_add(1);
+        Ok(())
     }
 
     /// Sends `message` from `end` to the other end.
@@ -153,7 +176,7 @@ impl Channel {
         message: &[u8],
         attached: Option<Attachment>,
     ) -> Result<(), Error> {
-        if self.closed != [false, false] {
+        if self.closed(end) || self.closed(end.other()) {
             return Err(Error::Closed);
         }
         self.waiting[end.other().index()].push(message, attached)
@@ -172,11 +195,11 @@ impl Channel {
         end: End,
         into: &mut [u8],
     ) -> Result<(usize, Option<Attachment>), Error> {
-        if self.closed[end.index()] {
+        if self.closed(end) {
             return Err(Error::Closed);
         }
         match self.waiting[end.index()].pop(into) {
-            Err(Error::Empty) if self.closed[end.other().index()] => Err(Error::Closed),
+            Err(Error::Empty) if self.closed(end.other()) => Err(Error::Closed),
             other => other,
         }
     }
@@ -187,10 +210,15 @@ impl Channel {
         self.waiting[end.index()].len
     }
 
-    /// Closes `end`. What waits for it is dropped, and each object the
-    /// dropped messages carried goes to `dropped`, once.
+    /// Takes away a handle that stood for `end`, and with the last closes
+    /// it: what waits for it is dropped, and each object the dropped
+    /// messages carried goes to `dropped`, once.
     pub fn close(&mut self, end: End, mut dropped: impl FnMut(Attachment)) {
-        self.closed[end.index()] = true;
+        let held = &mut self.holders[end.index()];
+        *held = held.saturating_sub(1);
+        if *held > 0 {
+            return;
+        }
         let queue = &mut self.waiting[end.index()];
         queue
             .attached
@@ -203,7 +231,7 @@ impl Channel {
     /// Whether both ends are closed, so the channel can go.
     #[must_use]
     pub fn finished(&self) -> bool {
-        self.closed == [true, true]
+        self.holders == [0, 0]
     }
 }
 
@@ -303,6 +331,33 @@ mod tests {
         c.close(End::B, none);
         assert!(c.finished());
         assert_eq!((End::A.other(), End::B.other()), (End::B, End::A));
+    }
+
+    #[test]
+    fn an_end_closes_with_the_last_handle_that_stands_for_it() {
+        let mut c = Channel::new();
+        assert_eq!(c.hold(End::A), Ok(()));
+        assert_eq!(c.hold(End::A), Ok(()));
+        c.send(End::B, b"for A").unwrap();
+        c.close(End::A, none);
+        c.close(End::A, none);
+        assert_eq!(
+            (c.waiting(End::A), c.send(End::B, b"more")),
+            (1, Ok(())),
+            "one handle is left, so nothing went"
+        );
+        assert_eq!(read(&mut c, End::A), Ok(b"for A".to_vec()));
+        assert_eq!(c.send(End::A, b"back"), Ok(()));
+        c.close(End::A, none);
+        assert_eq!(c.waiting(End::A), 0, "the last one closed it");
+        assert_eq!(c.send(End::B, b"too late"), Err(Error::Closed));
+        assert_eq!(c.hold(End::A), Err(Error::Closed), "nothing to hold");
+        assert_eq!(c.hold(End::B), Ok(()), "the other end is still there");
+        c.close(End::B, none);
+        assert!(!c.finished());
+        assert_eq!(read(&mut c, End::B), Ok(b"back".to_vec()));
+        c.close(End::B, none);
+        assert!(c.finished());
     }
 
     #[test]
@@ -436,7 +491,7 @@ mod tests {
     fn ten_thousand_steps_agree_with_two_queues() {
         let mut c = Channel::new();
         let mut model = [VecDeque::new(), VecDeque::new()];
-        let mut closed = [false, false];
+        let mut holders = [1u32, 1];
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let mut random = |below: u64| {
             state ^= state << 13;
@@ -447,20 +502,32 @@ mod tests {
         for step in 0..10_000u64 {
             let end = if random(2) == 0 { End::A } else { End::B };
             let (mine, theirs) = (end.index(), end.other().index());
+            let closed = holders.map(|h| h == 0);
             match random(40) {
-                0 => {
-                    // Once in a while an end closes, and once both have, the
-                    // next channel starts.
+                0..2 => {
+                    // Once in a while a handle to an end closes, and once
+                    // both ends have, the next channel starts.
                     c.close(end, none);
-                    closed[mine] = true;
-                    model[mine].clear();
-                    if closed == [true, true] {
+                    holders[mine] = holders[mine].saturating_sub(1);
+                    if holders[mine] == 0 {
+                        model[mine].clear();
+                    }
+                    if holders == [0, 0] {
                         assert!(c.finished(), "step {step}");
                         c = Channel::new();
-                        closed = [false, false];
+                        holders = [1, 1];
                     }
                 }
-                1..20 => {
+                2 => {
+                    let want = if closed[mine] {
+                        Err(Error::Closed)
+                    } else {
+                        holders[mine] += 1;
+                        Ok(())
+                    };
+                    assert_eq!(c.hold(end), want, "step {step}");
+                }
+                3..20 => {
                     let len = usize::try_from(random(MESSAGE as u64 + 2)).unwrap();
                     let message = vec![u8::try_from(step % 251).unwrap(); len];
                     let want = if closed != [false, false] {
@@ -491,7 +558,7 @@ mod tests {
             }
             assert_eq!(c.waiting(End::A), model[0].len(), "step {step}");
             assert_eq!(c.waiting(End::B), model[1].len(), "step {step}");
-            assert_eq!(c.finished(), closed == [true, true], "step {step}");
+            assert_eq!(c.finished(), holders == [0, 0], "step {step}");
         }
     }
 }

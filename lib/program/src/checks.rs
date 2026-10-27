@@ -1135,6 +1135,14 @@ fn arguments_arrive() -> Outcome {
     )
 }
 
+/// What a child is given with `sink` as its standard output.
+fn output(sink: start::Sink) -> start::Given {
+    start::Given {
+        output: Some(sink),
+        ..start::Given::default()
+    }
+}
+
 /// Takes every message waiting at `end` once the child that sent them
 /// ended, and answers their bytes.
 fn drained(end: Handle) -> Vec<u8> {
@@ -1155,7 +1163,7 @@ fn output_goes_where_it_is_handed() -> Outcome {
     let (child, back) = spawn_handing(
         "arguments.mexec",
         &words,
-        Some(start::Sink::Channel(theirs)),
+        output(start::Sink::Channel(theirs)),
     )
     .map_err(|_| "arguments should start with an output")?;
     let ended = wait(child);
@@ -1177,7 +1185,7 @@ fn output_goes_where_it_is_handed() -> Outcome {
         other => other.map_err(|_| "a file should be made for the output")?,
     };
     write_file(file, 0, b"before\n").map_err(|_| "the file should take a line")?;
-    let (child, back) = spawn_handing("arguments.mexec", &words, Some(start::Sink::File(file)))
+    let (child, back) = spawn_handing("arguments.mexec", &words, output(start::Sink::File(file)))
         .map_err(|_| "arguments should start with a file")?;
     let ended = wait(child);
     let _ = drained(back);
@@ -1202,7 +1210,7 @@ type Ran = (Result<Ended, Error>, Vec<u8>);
 /// messages a channel holds, since nothing takes them until it ended.
 fn shell_with(words: &[&str]) -> Result<Ran, &'static str> {
     let (mine, theirs) = pair()?;
-    let (child, back) = spawn_handing("shell.mexec", words, Some(start::Sink::Channel(theirs)))
+    let (child, back) = spawn_handing("shell.mexec", words, output(start::Sink::Channel(theirs)))
         .map_err(|_| "the shell should start")?;
     let ended = wait(child);
     let said = drained(mine);

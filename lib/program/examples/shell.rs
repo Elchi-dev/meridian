@@ -560,7 +560,11 @@ fn start(word: &str, arguments: &[String], out: &mut Out) -> u8 {
         Out::File { handle, .. } => Some(Sink::File(handle)),
         Out::Mine => inherited(),
     };
-    let child = match program::spawn_handing(&program_path(word), &arguments, output) {
+    let given = program::start::Given {
+        output,
+        ..program::start::Given::default()
+    };
+    let child = match program::spawn_handing(&program_path(word), &arguments, given) {
         Ok((child, start)) => {
             let _ = program::close(start);
             child

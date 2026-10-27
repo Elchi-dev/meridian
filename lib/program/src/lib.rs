@@ -218,12 +218,13 @@ pub fn spawn(name: &str, carry: Option<Handle>) -> Result<Handle, Error> {
 /// As for [`spawn`], and when no channel is left or the messages cannot
 /// be sent.
 pub fn spawn_with(name: &str, arguments: &[&str]) -> Result<(Handle, Handle), Error> {
-    spawn_handing(name, arguments, None)
+    spawn_handing(name, arguments, start::Given::default())
 }
 
-/// Starts the program `name` as [`spawn_with`] does, handing it `output`
-/// as its standard output too, when that is some. The handle goes with
-/// the program, and is closed when the program does not start.
+/// Starts the program `name` as [`spawn_with`] does, handing it what
+/// `given` holds too: its standard input, output and error, and init's
+/// line. The handles go with the program, and are closed when it does not
+/// start.
 ///
 /// # Errors
 ///
@@ -231,7 +232,7 @@ pub fn spawn_with(name: &str, arguments: &[&str]) -> Result<(Handle, Handle), Er
 pub fn spawn_handing(
     name: &str,
     arguments: &[&str],
-    output: Option<start::Sink>,
+    given: start::Given,
 ) -> Result<(Handle, Handle), Error> {
     let (mine, theirs) = channel()?;
     let child = match spawn(name, Some(theirs)) {
@@ -239,18 +240,15 @@ pub fn spawn_handing(
         Err(e) => {
             let _ = close(mine);
             let _ = close(theirs);
-            if let Some(start::Sink::Channel(h) | start::Sink::File(h)) = output {
-                let _ = close(h);
+            for (_, handle) in given.messages() {
+                let _ = close(handle);
             }
             return Err(e);
         }
     };
-    if let Some(output) = output {
-        let (kind, handle) = match output {
-            start::Sink::Channel(h) => (start::Kind::Output, h),
-            start::Sink::File(h) => (start::Kind::OutputFile, h),
-        };
-        send(mine, &[kind.byte()], Some(handle))?;
+    // At most four, so they fit before the program took any.
+    for (kind, handle) in given.messages() {
+        send(mine, &[kind], Some(handle))?;
     }
     let end = alloc::vec::Vec::from([start::Kind::End.byte()]);
     for message in arguments

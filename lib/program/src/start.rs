@@ -206,6 +206,29 @@ impl Given {
     }
 }
 
+impl Given {
+    /// The start messages that hand this over, each a kind byte and the
+    /// handle it brings, in the order of the kinds.
+    #[must_use]
+    pub fn messages(self) -> Vec<(u8, Handle)> {
+        let sink = |sink: Option<Sink>, channel: Kind, file: Kind| {
+            sink.map(|s| match s {
+                Sink::Channel(h) => (channel.byte(), h),
+                Sink::File(h) => (file.byte(), h),
+            })
+        };
+        [
+            self.input.map(|h| (Kind::Input.byte(), h)),
+            sink(self.output, Kind::Output, Kind::OutputFile),
+            sink(self.error, Kind::Error, Kind::ErrorFile),
+            self.line.map(|h| (Kind::Line.byte(), h)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
 /// Puts `value` in `slot` when that is empty, and says more are to come.
 fn fill<T>(slot: &mut Option<T>, value: T) -> Result<bool, Refused> {
     if slot.is_some() {
@@ -534,6 +557,45 @@ mod tests {
         for (given, words) in parts {
             assert_eq!(given.words(), words, "{given:?}");
             assert_eq!(Given::from_words(words), given);
+        }
+    }
+
+    #[test]
+    fn what_was_given_goes_over_as_the_messages_that_take_it_in() {
+        let all = Given {
+            input: Some(Handle(1)),
+            output: Some(Sink::File(Handle(2))),
+            error: Some(Sink::Channel(Handle(3))),
+            line: Some(Handle(4)),
+        };
+        assert_eq!(
+            all.messages(),
+            [
+                (Kind::Input.byte(), Handle(1)),
+                (Kind::OutputFile.byte(), Handle(2)),
+                (Kind::Error.byte(), Handle(3)),
+                (Kind::Line.byte(), Handle(4))
+            ]
+        );
+        let other = Given {
+            output: Some(Sink::Channel(Handle(5))),
+            error: Some(Sink::File(Handle(6))),
+            ..Given::default()
+        };
+        assert_eq!(
+            other.messages(),
+            [
+                (Kind::Output.byte(), Handle(5)),
+                (Kind::ErrorFile.byte(), Handle(6))
+            ]
+        );
+        assert_eq!(Given::default().messages(), []);
+        for given in [all, other, Given::default()] {
+            let mut back = Given::default();
+            for (kind, handle) in given.messages() {
+                assert_eq!(back.take(&[kind], Some(handle), START), Ok(true));
+            }
+            assert_eq!(back, given, "taken in, they give it back");
         }
     }
 

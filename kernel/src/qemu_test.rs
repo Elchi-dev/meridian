@@ -1906,9 +1906,7 @@ fn init_services_checks<W: Write>(
         return;
     }
     let patience = tsc_hz.unwrap_or(1_000_000_000) * 5;
-    for key in ["s", "e", "r", "v", "i", "c", "e", "s", "ret"] {
-        let _ = writeln!(report.out, "PRESS {key}");
-    }
+    type_line(report, "services");
     let shown = |line: &str| {
         let start = x86::raw::tsc();
         while x86::raw::tsc() - start < patience {
@@ -1930,6 +1928,70 @@ fn init_services_checks<W: Write>(
         listed,
         "the shell init started should list init's services with the services command",
     );
+    if disk {
+        shell_file_checks(report, &shown);
+    }
+}
+
+/// Files and directories made, written, shown and removed by what is typed
+/// at the shell, `shown` waiting for each line it should show.
+fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -> bool) {
+    // The machine that types has a virtio disk that writes to a copy, so
+    // /System takes files there.
+    type_line(report, "md /System/New");
+    type_line(report, "ls /System");
+    let made = shown("New/");
+    type_line(report, "echo hi > /System/New/a");
+    type_line(report, "echo more >> /System/New/a");
+    type_line(report, "cat /System/New/a");
+    let mut held = [0u8; 16];
+    let written = shown("more")
+        && raw::vfs::open(
+            "/System/New/a",
+            &security::Token::system(),
+            abi::file::READ,
+            0,
+        )
+        .is_ok_and(|slot| {
+            let read = raw::vfs::read(slot, 0, &mut held);
+            raw::vfs::close(slot);
+            read.is_ok_and(|n| held[..n] == *b"hi\nmore\n")
+        });
+    type_line(report, "rm /System/New");
+    let stays = shown("/System/New: a directory that holds something");
+    type_line(report, "rm /System/New/a");
+    type_line(report, "rm /System/New");
+    type_line(report, "cat /System/New/a");
+    let gone = shown("/System/New/a: no such file")
+        && raw::vfs::open(
+            "/System/New",
+            &security::Token::system(),
+            abi::file::READ,
+            0,
+        ) == Err(raw::vfs::Error::NotFound);
+    report.check(
+        "kernel.shell.files",
+        made && written && stays && gone,
+        "typed at the shell, md should make a directory ls shows, echo should write a file and add to it, cat show it, and rm keep a directory that holds something and remove the file and then the directory",
+    );
+}
+
+/// Asks sextant to type `line` and press return, a key for each
+/// character as QEMU names keys on a US keyboard.
+fn type_line<W: Write>(report: &mut Report<'_, W>, line: &str) {
+    for c in line.chars().chain(['\n']) {
+        let _ = match c {
+            ' ' => writeln!(report.out, "PRESS spc"),
+            '/' => writeln!(report.out, "PRESS slash"),
+            '.' => writeln!(report.out, "PRESS dot"),
+            '>' => writeln!(report.out, "PRESS shift-dot"),
+            '\n' => writeln!(report.out, "PRESS ret"),
+            c if c.is_ascii_uppercase() => {
+                writeln!(report.out, "PRESS shift-{}", c.to_ascii_lowercase())
+            }
+            c => writeln!(report.out, "PRESS {c}"),
+        };
+    }
 }
 
 /// The AHCI port of the disk and the EFI system partition on it.

@@ -69,8 +69,13 @@ impl Editor {
 enum Command<'a> {
     Help,
     Echo(&'a str),
+    /// `echo` into a file: its text, the file's path, and whether it goes
+    /// after what the file holds rather than in its place.
+    EchoInto(&'a str, &'a str, bool),
     List(&'a str),
     Show(&'a str),
+    MakeDirectory(&'a str),
+    Remove(&'a str),
     Clear,
     Services,
     Exit,
@@ -81,8 +86,8 @@ enum Command<'a> {
 }
 
 /// What `help` says.
-const HELP: &str =
-    "help, echo TEXT, ls [PATH], cat PATH, clear or cls, services, exit, or a program\n";
+const HELP: &str = "help, echo TEXT [> PATH], ls [PATH], cat PATH, mkdir or md PATH, \
+                    rm or del PATH, clear or cls, services, exit, or a program\n";
 
 /// Where `ls` looks without a path.
 const HOME: &str = "/System/Boot";
@@ -97,16 +102,35 @@ fn parse(line: &str) -> Command<'_> {
     match word {
         "" => Command::Empty,
         "help" => Command::Help,
-        "echo" => Command::Echo(rest),
+        "echo" => echo(rest),
         "ls" if rest.is_empty() => Command::List(HOME),
         "ls" => Command::List(rest),
-        "cat" if rest.is_empty() => Command::Missing("cat"),
+        "cat" | "mkdir" | "md" | "rm" | "del" if rest.is_empty() => Command::Missing(word),
         "cat" => Command::Show(rest),
+        "mkdir" | "md" => Command::MakeDirectory(rest),
+        "rm" | "del" => Command::Remove(rest),
         "clear" | "cls" => Command::Clear,
         "services" => Command::Services,
         "exit" => Command::Exit,
         other => Command::Program(other),
     }
+}
+
+/// `echo` with `rest` after it: the text alone, or with `> PATH` the text
+/// into the file at PATH, made new or emptied, and with `>> PATH` after
+/// what the file holds, as in sh.
+fn echo(rest: &str) -> Command<'_> {
+    let Some((text, into)) = rest.split_once('>') else {
+        return Command::Echo(rest);
+    };
+    let (path, append) = match into.strip_prefix('>') {
+        Some(path) => (path.trim(), true),
+        None => (into.trim(), false),
+    };
+    if path.is_empty() {
+        return Command::Missing("echo >");
+    }
+    Command::EchoInto(text.trim(), path, append)
 }
 
 /// The file the program `word` names: the path itself, or for a name the
@@ -139,6 +163,12 @@ fn trouble(path: &str, e: Error) -> String {
         Error::BadArgument => "not a path from the root",
         Error::TooLong => "too long a path",
         Error::NotAProgram => "not a program",
+        Error::ReadOnly => "on a volume that is only read",
+        Error::Exists => "there already",
+        Error::NotEmpty => "a directory that holds something",
+        Error::InUse => "open, so it stays",
+        Error::DiskFull => "no room left on its disk",
+        Error::Unwritable => "could not be written",
         _ => "could not be read",
     };
     format!("{path}: {why}\n")
@@ -188,8 +218,17 @@ fn run(line: &str) -> bool {
     let _ = match parse(line) {
         Command::Help => program::write(HELP),
         Command::Echo(text) => program::write(&format!("{text}\n")),
+        Command::EchoInto(text, path, append) => {
+            echo_into(text, path, append).or_else(|e| program::write(&trouble(path, e)))
+        }
         Command::List(path) => list(path),
         Command::Show(path) => show(path),
+        Command::MakeDirectory(path) => {
+            program::make_directory(path).or_else(|e| program::write(&trouble(path, e)))
+        }
+        Command::Remove(path) => {
+            program::remove(path).or_else(|e| program::write(&trouble(path, e)))
+        }
         Command::Clear => program::write("\u{c}"),
         Command::Services => services(),
         Command::Exit => return false,
@@ -289,6 +328,26 @@ fn list(path: &str) -> Result<(), Error> {
         }
     }
     program::close(directory)
+}
+
+/// Writes `text` and a line's end into the file at `path`, after what it
+/// holds when `append`, and in its place otherwise.
+#[cfg_attr(test, allow(dead_code))]
+fn echo_into(text: &str, path: &str, append: bool) -> Result<(), Error> {
+    let how = if append {
+        file::OPEN_ALWAYS
+    } else {
+        file::CREATE_ALWAYS
+    };
+    let handle = program::open_with(path, file::WRITE, how)?;
+    let end = if append {
+        program::info(handle)?.size
+    } else {
+        0
+    };
+    let written = program::write_file(handle, end, format!("{text}\n").as_bytes());
+    program::close(handle)?;
+    written
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -427,6 +486,25 @@ mod tests {
         assert_eq!(parse("help"), Command::Help);
         assert_eq!(parse("  echo  hello there  "), Command::Echo("hello there"));
         assert_eq!(parse("echo"), Command::Echo(""));
+        assert_eq!(
+            parse("echo hello there > /System/a.txt"),
+            Command::EchoInto("hello there", "/System/a.txt", false)
+        );
+        assert_eq!(
+            parse("echo more >>/System/a.txt "),
+            Command::EchoInto("more", "/System/a.txt", true)
+        );
+        assert_eq!(
+            parse("echo >/System/empty"),
+            Command::EchoInto("", "/System/empty", false)
+        );
+        assert_eq!(
+            parse("echo a > b > c"),
+            Command::EchoInto("a", "b > c", false),
+            "only the first > leads into a file"
+        );
+        assert_eq!(parse("echo hi >"), Command::Missing("echo >"));
+        assert_eq!(parse("echo hi >>  "), Command::Missing("echo >"));
         assert_eq!(parse("ls"), Command::List("/System/Boot"));
         assert_eq!(
             parse("ls /System/Boot/meridian"),
@@ -438,6 +516,19 @@ mod tests {
         );
         assert_eq!(parse("cat"), Command::Missing("cat"));
         assert_eq!(
+            parse("mkdir /System/New"),
+            Command::MakeDirectory("/System/New")
+        );
+        assert_eq!(
+            parse("md  /System/A b "),
+            Command::MakeDirectory("/System/A b")
+        );
+        assert_eq!(parse("rm /System/x.txt"), Command::Remove("/System/x.txt"));
+        assert_eq!(parse("del /System/x.txt"), Command::Remove("/System/x.txt"));
+        for word in ["mkdir", "md", "rm", "del"] {
+            assert_eq!(parse(word), Command::Missing(word));
+        }
+        assert_eq!(
             (parse("clear"), parse("exit"), parse("   ")),
             (Command::Clear, Command::Exit, Command::Empty)
         );
@@ -448,7 +539,12 @@ mod tests {
             Command::Services,
             "it takes no words"
         );
-        assert_eq!(parse("rm -rf /"), Command::Program("rm"));
+        assert_eq!(parse("dir C:"), Command::Program("dir"));
+        assert_eq!(
+            parse("rm -rf /"),
+            Command::Remove("-rf /"),
+            "no flags: a path that is none, which the kernel refuses"
+        );
         assert_eq!(
             parse("Help"),
             Command::Program("Help"),
@@ -587,7 +683,8 @@ mod tests {
     #[test]
     fn help_names_every_command_the_shell_knows() {
         let known = [
-            "help", "echo", "ls", "cat", "clear", "cls", "services", "exit",
+            "help", "echo", "ls", "cat", "mkdir", "md", "rm", "del", "clear", "cls", "services",
+            "exit",
         ];
         for word in known {
             let named = HELP
@@ -630,5 +727,16 @@ mod tests {
         assert_eq!(trouble("/a", Error::TooLong), "/a: too long a path\n");
         assert_eq!(trouble("/a", Error::NotAProgram), "/a: not a program\n");
         assert_eq!(trouble("/a", Error::Unreadable), "/a: could not be read\n");
+        let writes = [
+            (Error::ReadOnly, "/a: on a volume that is only read\n"),
+            (Error::Exists, "/a: there already\n"),
+            (Error::NotEmpty, "/a: a directory that holds something\n"),
+            (Error::InUse, "/a: open, so it stays\n"),
+            (Error::DiskFull, "/a: no room left on its disk\n"),
+            (Error::Unwritable, "/a: could not be written\n"),
+        ];
+        for (e, said) in writes {
+            assert_eq!(trouble("/a", e), said);
+        }
     }
 }

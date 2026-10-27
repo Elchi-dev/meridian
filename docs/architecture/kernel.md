@@ -404,7 +404,8 @@ memory. The test image wants `/System` writable on its first machine,
 whose virtio disk writes to a copy, and read only on the second, writes
 a file across clusters and past its end there, finds it on the virtio
 disk's copy and not on the AHCI disk, and makes, lists and removes
-directories, from inside the kernel and from hello.
+directories, from inside the kernel, from hello, and with `md`, `echo`
+into a file, `cat` and `rm` typed at the shell.
 
 ## init (M5)
 

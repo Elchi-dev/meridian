@@ -163,7 +163,7 @@ Loader and UEFI:
   - [x] Its tokens: operators, the three quotes and `$'...'`, comments, joined lines, IO numbers, and where each expansion ends
   - [x] Here-documents
   - [x] Its grammar: simple and compound commands, functions, pipelines and lists, each error at its place
-  - [ ] The end of a `$(...)` found by its grammar, which a `case` inside needs, as its patterns end in `)`
+  - [x] The end of a `$(...)` found by its grammar, which a `case` inside needs, as its patterns end in `)`
   - [ ] Expansions, running, and choosing the dialect
 - [x] `wc`, the first command-line tool
 - [x] `head`, `tail`, `grep` for a text as it is, `sort` and `uniq`

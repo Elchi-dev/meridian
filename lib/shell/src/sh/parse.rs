@@ -146,17 +146,33 @@ pub struct Item {
 
 /// Where a parser takes its tokens from.
 pub trait Source {
-    /// The next token and where it starts; none at the end.
+    /// The next token and where it starts; none at the end. `depth` is how
+    /// many compound commands and expansions the token stands inside, for
+    /// a source that reads expansions in it.
     ///
     /// # Errors
     ///
     /// What reading the script found wrong.
-    fn token(&mut self) -> Result<Option<(Token, Pos)>, Error>;
+    fn token(&mut self, depth: usize) -> Result<Option<(Token, Pos)>, Error>;
 }
 
 impl<I: Iterator<Item = (Token, Pos)>> Source for I {
-    fn token(&mut self) -> Result<Option<(Token, Pos)>, Error> {
+    fn token(&mut self, _: usize) -> Result<Option<(Token, Pos)>, Error> {
         Ok(self.next())
+    }
+}
+
+/// Reads the commands of the `$(` at `at`, which stands inside `depth`
+/// compound commands and expansions, up to the `)` that closes it, and
+/// takes that `)`.
+pub(super) fn substitution(source: impl Source, depth: usize, at: Pos) -> Result<(), Error> {
+    let mut parser = Parser::new(source);
+    parser.depth = depth;
+    parser.list()?;
+    match parser.take()? {
+        Some((Token::Op(Op::Close), _)) => Ok(()),
+        Some((_, here)) => error(here, Code::Unexpected),
+        None => error(at, Code::Unclosed),
     }
 }
 
@@ -255,7 +271,7 @@ impl<S: Source> Parser<S> {
 
     fn peek(&mut self) -> Result<Option<&(Token, Pos)>, Error> {
         if self.peeked.is_none() {
-            self.peeked = self.source.token()?;
+            self.peeked = self.source.token(self.depth)?;
         }
         Ok(self.peeked.as_ref())
     }
@@ -263,7 +279,7 @@ impl<S: Source> Parser<S> {
     fn take(&mut self) -> Result<Option<(Token, Pos)>, Error> {
         let token = match self.peeked.take() {
             Some(token) => Some(token),
-            None => self.source.token()?,
+            None => self.source.token(self.depth)?,
         };
         if let Some((token, at)) = &token
             && *token != Token::Newline

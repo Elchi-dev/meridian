@@ -7,6 +7,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use super::parse;
 use crate::{Code, Error, Pos};
 
 /// What a `$` or a backquote brings into a word, as written.
@@ -772,24 +773,28 @@ fn inside(chars: &mut Chars, open: Pos) -> Result<Expansion, Error> {
     Ok(Expansion::Command(chars.text(from, chars.at - 1)))
 }
 
-/// Takes the commands up to the `)` that closes the `$(` at `at`, read as
-/// tokens so that quotes, comments and expansions in them are taken
-/// whole, and the `)`.
+/// The script's characters, read into tokens for the grammar as it asks
+/// for them.
+struct Live<'a>(&'a mut Chars);
+
+impl parse::Source for Live<'_> {
+    fn token(&mut self, depth: usize) -> Result<Option<(Token, Pos)>, Error> {
+        self.0.depth = depth;
+        token(self.0)
+    }
+}
+
+/// Takes the commands up to the `)` that closes the `$(` at `at`, read by
+/// the grammar, as only it knows which `)` closes the commands: one may end
+/// a `case` pattern, and quotes, comments and expansions are taken whole.
 fn command(chars: &mut Chars, at: Pos) -> Result<(), Error> {
     // Here-documents opened outside start after a line's end outside, and
-    // those opened inside belong to the tokens inside.
+    // those opened inside belong to the commands inside.
     let pending = core::mem::take(&mut chars.pending);
     let bodies = core::mem::take(&mut chars.bodies);
-    let mut opens = Vec::new();
-    let read = loop {
-        match token(chars) {
-            Err(e) => break Err(e),
-            Ok(None) => break Err(unclosed(opens.last().copied().unwrap_or(at))),
-            Ok(Some((Token::Op(Op::Open), here))) => opens.push(here),
-            Ok(Some((Token::Op(Op::Close), _))) if opens.pop().is_none() => break Ok(()),
-            Ok(Some(_)) => {}
-        }
-    };
+    let depth = chars.depth;
+    let read = parse::substitution(Live(chars), depth, at);
+    chars.depth = depth;
     let inside = core::mem::replace(&mut chars.pending, pending);
     chars.bodies = bodies;
     match inside.first() {
@@ -1131,7 +1136,12 @@ pub(super) mod tests {
     #[test]
     fn arithmetic_needs_both_closing_parentheses_together() {
         assert_eq!(short("$(( (1) ))"), ["$a{ (1) }"]);
-        assert_eq!(short("$((a)b)"), ["$c{(a)b}"]);
+        assert_eq!(short("$((a) | b)"), ["$c{(a) | b}"]);
+        assert_eq!(
+            error("$((a)b)"),
+            (1, 6, Code::Unexpected),
+            "as sh, a word after ( )"
+        );
         assert_eq!(short("$((1)\n)"), ["$c{(1)\n}"]);
         assert_eq!(short("$(($(echo 1)+1))"), ["$a{$(echo 1)+1}"]);
     }
@@ -1273,14 +1283,18 @@ pub(super) mod tests {
                             }
                         }
                     }
-                    Err(e) => {
-                        assert_eq!(e.code, Code::Unclosed, "{script:?}");
+                    Err(e) if e.code == Code::Unclosed || e.code == Code::TooNested => {
                         let opens = at(&script, e.at);
                         assert!(
                             matches!(opens, Some('\'' | '"' | '`' | '$' | '(' | '{' | '<')),
                             "{script:?} at {:?}",
                             e.at
                         );
+                    }
+                    Err(e) => {
+                        // The grammar's, for the commands inside a $(.
+                        assert!(script.contains("$("), "{script:?}: {e:?}");
+                        assert!(at(&script, e.at).is_some(), "{script:?} at {:?}", e.at);
                     }
                 }
             }
@@ -1389,7 +1403,6 @@ pub(super) mod tests {
             ("\"$((a", (1, 2)),
             ("$((a", (1, 1)),
             ("a$(b $(c", (1, 6)),
-            ("$(a (b", (1, 5)),
             ("${a {b", (1, 5)),
             ("$(a) $(b", (1, 6)),
             ("'a' \"b", (1, 5)),
@@ -1440,11 +1453,12 @@ pub(super) mod tests {
     fn arithmetic_that_turns_out_a_command_gives_back_the_depth_it_took() {
         // As arithmetic the # is a character and the ${ is left open; as a
         // command the # starts a comment, so it reads.
-        let turns = "$(( #${\n) )";
-        assert_eq!(short(turns), ["$c{( #${\n) }"]);
+        let turns = "$(( #${\nx) )";
+        assert_eq!(short(turns), ["$c{( #${\nx) }"]);
         assert!(tokens(&format!("{turns} {}", nest("$(", ")", 16))).is_ok());
         assert!(tokens(&format!("{turns}{turns}{}", nest("$(", ")", 16))).is_ok());
-        let deep = format!("{}{turns}{}", "$(".repeat(15), ")".repeat(15));
+        // 14 here, the $( it turns out to be and the subshell in it: 16.
+        let deep = format!("{}{turns}{}", "$(".repeat(14), ")".repeat(14));
         assert!(tokens(&deep).is_ok());
     }
 
@@ -1638,6 +1652,61 @@ pub(super) mod tests {
             short("cat <<\"$x\"\n$y\n$x\n"),
             ["cat", "<<", "<\"$p{x}>[$y\n]", "NL"],
             "quoted, so its lines stay as they are"
+        );
+    }
+
+    #[test]
+    fn the_grammar_finds_the_end_of_a_command_substitution() {
+        assert_eq!(
+            short("$(case x in a) b;; esac)"),
+            ["$c{case x in a) b;; esac}"]
+        );
+        assert_eq!(
+            short("$(case x in (a) b;; esac)"),
+            ["$c{case x in (a) b;; esac}"]
+        );
+        assert_eq!(
+            short("x=$(case $1 in\n  -h) echo help;;\n  *) echo run;;\nesac) y"),
+            [
+                "x=$c{case $1 in\n  -h) echo help;;\n  *) echo run;;\nesac}",
+                "y"
+            ]
+        );
+        assert_eq!(short("$()"), ["$c{}"]);
+        assert_eq!(short("$( (a) )"), ["$c{ (a) }"]);
+        assert_eq!(
+            short("\"$(case x in a) echo \")\";; esac)\""),
+            ["\"$c{case x in a) echo \")\";; esac}"]
+        );
+    }
+
+    #[test]
+    fn the_commands_of_a_substitution_are_checked_as_they_are_read() {
+        for (script, at, code) in [
+            ("$(if a; then b)", (1, 15), Code::ExpectedFi),
+            ("$(a ;; b)", (1, 5), Code::Unexpected),
+            ("$(;)", (1, 3), Code::MissingCommand),
+            ("$(a (b", (1, 6), Code::ExpectedCloseParen),
+            ("$(a; (b", (1, 6), Code::ExpectedCloseParen),
+            ("$(case x in a) b)", (1, 17), Code::ExpectedEsac),
+            ("echo \"$(a |)\"", (1, 12), Code::MissingCommand),
+            ("$(a\n", (1, 1), Code::Unclosed),
+        ] {
+            assert_eq!(error(script), (at.0, at.1, code), "{script}");
+        }
+    }
+
+    #[test]
+    fn compound_commands_and_expansions_share_the_sixteen_levels() {
+        let braces = |n: usize| format!("$({}a{})", "{ ".repeat(n), "; }".repeat(n));
+        assert!(tokens(&braces(15)).is_ok());
+        assert_eq!(error(&braces(16)), (1, 33, Code::TooNested));
+        let inner = |n: usize| format!("$({}$(x){})", "{ ".repeat(n), "; }".repeat(n));
+        assert!(tokens(&inner(14)).is_ok());
+        assert_eq!(error(&inner(15)), (1, 33, Code::TooNested));
+        assert!(
+            tokens(&format!("{} {}", braces(15), inner(14))).is_ok(),
+            "one after another"
         );
     }
 

@@ -296,7 +296,9 @@ func (w *scriptWatcher) keep(name string) error {
 		if err := w.command("screendump " + ppm); err != nil {
 			return err
 		}
-		img, err := waitForPPM(ppm, 10*time.Second)
+		// CI's runner, busy building mutants, once took longer than ten
+		// seconds to write one.
+		img, err := waitForPPM(ppm, time.Minute)
 		if err != nil {
 			return err
 		}

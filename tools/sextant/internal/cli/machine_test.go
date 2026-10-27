@@ -247,14 +247,18 @@ func TestTheTestImageBootsAgainOnAnOlderMachine(t *testing.T) {
 		t.Fatalf("%d passes, want 2", len(passes))
 	}
 	first, second := passes[0], passes[1]
-	if first.title != "== QEMU test image" || !reflect.DeepEqual(first.machine, m) || first.screens != "/build/screens" {
+	if first.title != "== QEMU test image, writing copies" || first.screens != "/build/screens" {
 		t.Errorf("first pass: %+v", first)
 	}
-	if second.title != "== QEMU test image without x2APIC, XSAVE or PS/2, writing copies, NVMe four pages at a time" || !second.machine.WithoutX2APIC || !second.machine.WithoutXSAVE || !second.machine.WithoutPS2 || second.screens != "" {
+	if second.title != "== QEMU test image without x2APIC, XSAVE or PS/2, reading only, NVMe four pages at a time" || !second.machine.WithoutX2APIC || !second.machine.WithoutXSAVE || !second.machine.WithoutPS2 || second.screens != "" {
 		t.Errorf("the second pass should hide the x2APIC, XSAVE and PS/2 and keep no screens: %+v", second)
 	}
-	if first.machine.WritingCopies || !second.machine.WritingCopies {
-		t.Errorf("only the second pass's other disks should write, to copies: %+v, %+v", first.machine, second.machine)
+	if !first.machine.WritingCopies || second.machine.WritingCopies {
+		t.Errorf("only the first pass's other disks should write, to copies, where it has a keyboard to type at: %+v, %+v", first.machine, second.machine)
+	}
+	first.machine.WritingCopies = false
+	if !reflect.DeepEqual(first.machine, m) {
+		t.Errorf("the first machine should differ in nothing else: %+v", first.machine)
 	}
 	if first.machine.SmallNVMeTransfers || !second.machine.SmallNVMeTransfers {
 		t.Errorf("only the second pass's NVMe controller should take small transfers: %+v, %+v", first.machine, second.machine)
@@ -262,7 +266,6 @@ func TestTheTestImageBootsAgainOnAnOlderMachine(t *testing.T) {
 	second.machine.WithoutX2APIC = false
 	second.machine.WithoutXSAVE = false
 	second.machine.WithoutPS2 = false
-	second.machine.WritingCopies = false
 	second.machine.SmallNVMeTransfers = false
 	if !reflect.DeepEqual(second.machine, m) {
 		t.Errorf("the second machine should differ in nothing else: %+v", second.machine)

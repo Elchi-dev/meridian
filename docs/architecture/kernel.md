@@ -499,8 +499,9 @@ What exists:
   controller says it takes if that is fewer, through a list of PRP
   entries, and each is waited for. `lib/nvme` builds the commands and the
   lists and reads the completions and IDENTIFY's answers. Test machines
-  with a disk see the same disk once more as NVMe, read only, and OVMF
-  boots from that one; the test image reads the same sectors through
+  with a disk see the same disk once more as NVMe, writing to a copy QEMU
+  throws away on the first machine and only reading on the second, and
+  OVMF boots from that one; the test image reads the same sectors through
   both and compares them, a block at a time until the queues have
   wrapped twice, seventeen frames in as few commands as the controller
   takes, and at either end. The second test pass gives the controller a
@@ -513,7 +514,8 @@ What exists:
   to six frames a request, as many as the queue has descriptors for
   beside the header's and the status byte's, polled, waiting up to about
   a second for each answer. Test machines with a disk see it once more as
-  a read only virtio disk; the test image wants it ready as agreed, as
+  a virtio disk, writing to a copy on the first machine and only reading
+  on the second; the test image wants it ready as agreed, as
   large as the AHCI disk and reading the same sectors, seventeen frames
   in as few requests as the queue allows, a request of an unknown type
   refused, and hello through FAT32 on it as the loader read it.

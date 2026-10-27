@@ -541,20 +541,22 @@ type testPass struct {
 }
 
 // testPasses are the boots of the test image on m: first on a machine as
-// QEMU gives it, keeping its screens in screens, then on one without an
-// x2APIC, XSAVE or a PS/2 controller, whose NVMe and virtio disks write to
-// copies where the first's only read, and whose NVMe controller moves four
+// QEMU gives it, keeping its screens in screens, with NVMe and virtio
+// disks that write to copies, so what is typed at its keyboard can write
+// files, then on one without an x2APIC, XSAVE or a PS/2 controller, whose
+// NVMe and virtio disks only read, and whose NVMe controller moves four
 // pages per command where the first's moves 128, so both ways are tried.
 func testPasses(m qemu.Machine, screens string) []testPass {
+	first := m
+	first.WritingCopies = true
 	without := m
 	without.WithoutX2APIC = true
 	without.WithoutXSAVE = true
 	without.WithoutPS2 = true
-	without.WritingCopies = true
 	without.SmallNVMeTransfers = true
 	return []testPass{
-		{title: "== QEMU test image", machine: m, screens: screens},
-		{title: "== QEMU test image without x2APIC, XSAVE or PS/2, writing copies, NVMe four pages at a time", machine: without},
+		{title: "== QEMU test image, writing copies", machine: first, screens: screens},
+		{title: "== QEMU test image without x2APIC, XSAVE or PS/2, reading only, NVMe four pages at a time", machine: without},
 	}
 }
 

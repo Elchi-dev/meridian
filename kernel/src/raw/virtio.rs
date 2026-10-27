@@ -8,6 +8,7 @@ use bootinfo::HHDM_BASE;
 use pci::{Address, Bar, Header};
 use virtio::{Region, block, common, status};
 
+use super::disk::Permit;
 use super::memory::{self, DeviceFrames, Spin};
 
 /// Where the common structure, the device's and the queue's notification
@@ -253,9 +254,7 @@ pub fn read(sector: u64, into: &mut [u8]) -> Result<(), Error> {
 /// # Errors
 ///
 /// As for [`read`], and when the device only reads.
-// Only the test image writes yet, until files can be written.
-#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
-pub fn write(sector: u64, from: &[u8]) -> Result<(), Error> {
+pub fn write(_: Permit, sector: u64, from: &[u8]) -> Result<(), Error> {
     let mut guard = QUEUE.lock();
     let queue = guard.as_mut().ok_or(Error::NoDrive)?;
     if queue.drive.read_only {

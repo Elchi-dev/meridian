@@ -5,6 +5,7 @@
 pub mod ahci;
 pub mod apic;
 pub mod console;
+pub mod disk;
 pub mod fpu;
 pub mod hpet;
 pub mod interrupts;

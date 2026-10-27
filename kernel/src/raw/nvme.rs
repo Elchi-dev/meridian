@@ -8,6 +8,7 @@ use core::sync::atomic::{Ordering, fence};
 use bootinfo::HHDM_BASE;
 use nvme::{Capabilities, Command, Completion, Controller, Namespace, State, register};
 
+use super::disk::Permit;
 use super::memory::{self, DeviceFrames, Spin};
 
 /// How many entries each queue has: a submission queue of them fills
@@ -287,9 +288,7 @@ pub fn read(lba: u64, into: &mut [u8]) -> Result<(), Error> {
 /// # Errors
 ///
 /// As for [`read`].
-// Only the test image writes yet, until files can be written.
-#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
-pub fn write(lba: u64, from: &[u8]) -> Result<(), Error> {
+pub fn write(_: Permit, lba: u64, from: &[u8]) -> Result<(), Error> {
     let mut guard = DRIVE.lock();
     let drive = guard.as_mut().ok_or(Error::NoDrive)?;
     let per_frame = span(drive, lba, from.len())?;

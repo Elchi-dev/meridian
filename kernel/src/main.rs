@@ -20,6 +20,7 @@ use canvas::Scratch;
 use kernel::display::Display;
 use kernel::machine::{self, Machine};
 use kernel::screen::Facts;
+use raw::disk::Driver;
 use raw::serial::Serial;
 
 /// Whole seconds since the machine was switched on, from the time stamp
@@ -92,18 +93,14 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
         if let Some(drive) = raw::nvme::start(address) {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
-            let mut read = |lba, into: &mut [u8]| raw::nvme::read(lba, into).is_ok();
-            let _ = kernel::disk::describe(serial, &"NVMe", &mut read);
-            mount_boot(serial, &"NVMe", boot, read);
+            take_disk(serial, Driver::Nvme, boot);
         }
     }
     if let Some((at, header)) = found.virtio {
         raw::pci::enable(at);
         if let Some(drive) = raw::virtio::start(at, &header) {
             let _ = kernel::virtio_line(serial, drive.sectors, drive.read_only);
-            let mut read = |sector, into: &mut [u8]| raw::virtio::read(sector, into).is_ok();
-            let _ = kernel::disk::describe(serial, &"virtio", &mut read);
-            mount_boot(serial, &"virtio", boot, read);
+            take_disk(serial, Driver::Virtio, boot);
         }
     }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
@@ -112,13 +109,32 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
         for drive in raw::ahci::drives().iter().flatten() {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
-            let port = drive.port;
-            let mut read = move |lba, into: &mut [u8]| raw::ahci::read(port, lba, into).is_ok();
-            let name = format_args!("AHCI port {port}");
-            let _ = kernel::disk::describe(serial, &name, &mut read);
-            mount_boot(serial, &name, boot, read);
+            take_disk(serial, Driver::Ahci(drive.port), boot);
         }
     }
+    match raw::disk::trust(boot) {
+        Some(on) => writeln!(
+            serial,
+            "kernel: what Meridian may write is listed on the Meridian system partition on {on}"
+        ),
+        None => writeln!(
+            serial,
+            "kernel: no Meridian system partition is on the disk the loader came from, so nothing is written"
+        ),
+    }
+    .ok();
+    raw::disk::each(|_, driver, writable| {
+        let _ = kernel::disk::writable_lines(serial, &driver, writable);
+    });
+}
+
+/// Takes the disk behind `driver` in, logs what it holds, and hangs the
+/// partition the loader came from at /System/Boot when it is on it.
+fn take_disk(serial: &mut Serial, driver: Driver, boot: [u8; 16]) {
+    raw::disk::add(driver);
+    let mut read = move |lba, into: &mut [u8]| raw::disk::read_from(driver, lba, into);
+    let _ = kernel::disk::describe(serial, &driver, &mut read);
+    mount_boot(serial, &driver, boot, read);
 }
 
 /// Sets the PS/2 keyboard up and has the I/O APIC send its interrupt to

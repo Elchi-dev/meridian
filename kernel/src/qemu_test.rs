@@ -15,6 +15,7 @@ use kernel::panic::Details;
 use kernel::{bytes_of, covered, is_tidy};
 use x86::raw::Com1;
 
+use crate::raw::disk::CHECKS;
 use crate::raw::interrupts::expected::{self, Caught};
 use crate::raw::serial::Serial;
 use crate::raw::{self, mapped, physical};
@@ -282,6 +283,7 @@ fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions:
     virtio_checks(report);
     virtio_file_checks(report, info, regions);
     write_checks(report);
+    guard_checks(report, info.boot_partition);
     fat_checks(report, info, regions);
     vfs_checks(report, info.boot_partition);
 }
@@ -739,7 +741,7 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
         .map(|i: usize| salt[i % 8] ^ (i / 8).to_le_bytes()[0])
         .collect();
     let at = unlocked.first + 3;
-    let wrote = raw::ahci::write(port, at, &written).is_ok();
+    let wrote = raw::ahci::write(CHECKS, port, at, &written).is_ok();
     let back = |read: &dyn Fn(u64, &mut [u8]) -> bool| {
         let mut bytes = alloc::vec![0u8; written.len()];
         read(at, &mut bytes) && bytes == written
@@ -748,9 +750,10 @@ fn write_checks<W: Write>(report: &mut Report<'_, W>) {
     let through_nvme = back(&|lba, into| raw::nvme::read(lba, into).is_ok());
     let through_virtio = back(&|lba, into| raw::virtio::read(lba, into).is_ok());
     let sectors = disk.identity.map_or(0, |i| i.sectors);
-    let refused = raw::ahci::write(port, sectors, &written[..512])
+    let refused = raw::ahci::write(CHECKS, port, sectors, &written[..512])
         == Err(raw::ahci::Error::OutOfRange)
-        && raw::ahci::write_sectors(port, at, &written[..100]) == Err(raw::ahci::Error::OutOfRange);
+        && raw::ahci::write_sectors(CHECKS, port, at, &written[..100])
+            == Err(raw::ahci::Error::OutOfRange);
     report.check(
         "kernel.disk.write",
         wrote && through_ahci && through_nvme && through_virtio && refused,
@@ -781,12 +784,12 @@ fn write_place_checks<W: Write>(
     let mut after = written.to_vec();
     after[5 * 512..6 * 512].copy_from_slice(&one);
     let mut read_back = alloc::vec![0u8; written.len()];
-    let alone = write_sectors(port, at + 5, &one).is_ok()
+    let alone = write_sectors(CHECKS, port, at + 5, &one).is_ok()
         && read(port, at, &mut read_back).is_ok()
         && read_back == after;
     let last = unlocked.first + unlocked.sectors() - 1;
     let mut end = [0u8; 512];
-    let edge = write(port, last, &[0xa5; 512]).is_ok()
+    let edge = write(CHECKS, port, last, &[0xa5; 512]).is_ok()
         && raw::virtio::read(last, &mut end).is_ok()
         && end == [0xa5; 512];
     // Seventeen frames: sixteen in one command and one more in a second.
@@ -794,7 +797,7 @@ fn write_place_checks<W: Write>(
         .map(|i: usize| i.to_le_bytes()[1] ^ i.to_le_bytes()[2] ^ 0x3c)
         .collect();
     let mut by_virtio = alloc::vec![0u8; large.len()];
-    let many = write(port, at, &large).is_ok()
+    let many = write(CHECKS, port, at, &large).is_ok()
         && raw::virtio::read(at, &mut by_virtio).is_ok()
         && by_virtio == large;
     report.check(
@@ -805,7 +808,7 @@ fn write_place_checks<W: Write>(
     // The W bit of the command header: set where data goes to the disk.
     let towards =
         |write: bool| raw::ahci::last_header(port).is_some_and(|h| h[0] & 0x40 != 0) == write;
-    let out = write_sectors(port, at + 5, &one).is_ok() && towards(true);
+    let out = write_sectors(CHECKS, port, at + 5, &one).is_ok() && towards(true);
     let back = read_sectors(port, at + 5, &mut sector).is_ok() && towards(false) && sector == one;
     report.check(
         "kernel.disk.write_direction",
@@ -845,9 +848,9 @@ fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, unlocked
     let sector = [0u8; 512];
     if virtio::read_only(offered) {
         let refused = matches!(
-            raw::nvme::write(unlocked.first, &sector),
+            raw::nvme::write(CHECKS, unlocked.first, &sector),
             Err(raw::nvme::Error::Failed(_))
-        ) && raw::virtio::write(unlocked.first, &sector)
+        ) && raw::virtio::write(CHECKS, unlocked.first, &sector)
             == Err(raw::virtio::Error::ReadOnly);
         report.check(
             "kernel.disk.copies",
@@ -870,10 +873,10 @@ fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, unlocked
     };
     let (nvme_before, virtio_before) = (before(nvme_at), before(virtio_at));
     let mut back = alloc::vec![0u8; 16 * 4096];
-    let nvme = raw::nvme::write(nvme_at, &large(0x11)).is_ok()
+    let nvme = raw::nvme::write(CHECKS, nvme_at, &large(0x11)).is_ok()
         && raw::nvme::read(nvme_at, &mut back).is_ok()
         && back == large(0x11);
-    let by_virtio = raw::virtio::write(virtio_at, &large(0x22)).is_ok()
+    let by_virtio = raw::virtio::write(CHECKS, virtio_at, &large(0x22)).is_ok()
         && raw::virtio::read(virtio_at, &mut back).is_ok()
         && back == large(0x22);
     let apart = nvme_before.is_some()
@@ -887,21 +890,163 @@ fn copy_write_checks<W: Write>(report: &mut Report<'_, W>, port: usize, unlocked
     );
 }
 
+/// What the disk layer lets through (decision record 0015) on the test
+/// disk, whose lists say that Meridian made its EFI system partition and
+/// its own and that the third is unlocked: those, each write within one.
+/// The fourth, of Meridian's own type but not listed, the partition table
+/// and whatever is past the end are refused, and nothing refused lands.
+/// With no partition `boot` named, nothing may be written anywhere.
+fn guard_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
+    use kernel::disk::Why;
+    use raw::disk::{Driver, find, write};
+    let drives = raw::ahci::drives();
+    let Some(drive) = drives
+        .iter()
+        .flatten()
+        .find(|d| d.attached == ahci::Attached::Disk)
+    else {
+        return;
+    };
+    let ahci = Driver::Ahci(drive.port);
+    let unnamed = raw::disk::trust([0; 16]).is_none();
+    let mut nothing = true;
+    raw::disk::each(|_, _, writable| nothing &= *writable == kernel::disk::Writable::default());
+    report.check(
+        "kernel.disk.trust",
+        unnamed && nothing && raw::disk::trust(boot) == Some(Driver::Nvme),
+        "with no partition named by the loader nothing should be written, and the lists should come from the disk it came from, which the test machine has as NVMe first",
+    );
+    let mut listed = alloc::vec::Vec::new();
+    let mut whole = true;
+    raw::disk::each(|_, driver, writable| {
+        if driver == ahci {
+            listed = writable
+                .partitions
+                .iter()
+                .map(|&(n, _, why)| (n, why))
+                .collect();
+            whole = writable.whole;
+        }
+    });
+    report.check(
+        "kernel.disk.listed",
+        listed == [(1, Why::Made), (2, Why::Made), (3, Why::Unlocked)] && !whole,
+        "the lists on the test disk's system partition should let Meridian write the two partitions it made and the one unlocked, and no more",
+    );
+    let mut read = |lba, into: &mut [u8]| raw::disk::read_from(ahci, lba, into);
+    let table = kernel::disk::Table::read(&mut read);
+    let part = |n: usize| {
+        table
+            .as_ref()
+            .and_then(|t| t.partitions().find(|&(m, _)| m == n))
+            .map(|(_, p)| p)
+    };
+    let (Some(disk), Some(system), Some(unlocked), Some(other)) =
+        (find(ahci), part(2), part(3), part(4))
+    else {
+        report.check(
+            "kernel.disk.guard",
+            false,
+            "the test disk should be taken in with its four partitions",
+        );
+        return;
+    };
+    let bytes = |lba, len: usize| {
+        let mut b = alloc::vec![0u8; len];
+        read(lba, &mut b).then_some(b)
+    };
+    let salt = x86::raw::tsc().to_le_bytes();
+    let mark: alloc::vec::Vec<u8> = (0..1024).map(|i: usize| salt[i % 8] ^ 0x5c).collect();
+    let boot = bytes(system.first, 512);
+    let made = boot
+        .as_ref()
+        .is_some_and(|b| write(disk, system.first, b).is_ok())
+        && bytes(system.first, 512) == boot;
+    let unlocked_ok = write(disk, unlocked.first, &mark[..512]).is_ok()
+        && bytes(unlocked.first, 512).as_deref() == Some(&mark[..512]);
+    report.check(
+        "kernel.disk.guard",
+        made && unlocked_ok,
+        "a partition Meridian made and one unlocked should take writes through the disk layer",
+    );
+    let sectors = drive.identity.map_or(0, |i| i.sectors);
+    guard_refusal_checks(
+        report,
+        drive.port,
+        &mark,
+        [system, unlocked, other],
+        sectors,
+    );
+}
+
+/// What the disk layer refuses on the AHCI disk on port `port`, of
+/// `sectors` sectors, given its system, unlocked and unlisted partitions,
+/// without writing any of it, and how a write it lets through fails.
+fn guard_refusal_checks<W: Write>(
+    report: &mut Report<'_, W>,
+    port: usize,
+    mark: &[u8],
+    [system, unlocked, other]: [gpt::Partition; 3],
+    sectors: u64,
+) {
+    use raw::disk::{Driver, Error, find, write};
+    let Some(disk) = find(Driver::Ahci(port)) else {
+        return;
+    };
+    let bytes = |lba, len: usize| {
+        let mut b = alloc::vec![0u8; len];
+        raw::disk::read_from(Driver::Ahci(port), lba, &mut b).then_some(b)
+    };
+    let refused = |lba: u64, len: usize| {
+        let before = bytes(lba, 512);
+        write(disk, lba, &mark[..len]) == Err(Error::Refused)
+            && before.is_some()
+            && bytes(lba, 512) == before
+    };
+    let others = refused(other.first, 512) && refused(other.last, 512);
+    let tables = refused(0, 512) && refused(1, 512) && refused(sectors - 1, 512);
+    let across = refused(unlocked.last, 1024) && refused(system.first - 1, 1024);
+    let beyond = write(disk, sectors, &mark[..512]) == Err(Error::Refused)
+        && write(disk, u64::MAX, &mark[..1024]) == Err(Error::Refused);
+    report.check(
+        "kernel.disk.guard_refused",
+        others && tables && across && beyond,
+        "the disk layer should refuse a partition neither made nor unlocked, though of Meridian's type, the partition tables, a write across two partitions, made ones too, and the sectors past the end, writing none of them",
+    );
+    let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
+    let others_write = !virtio::read_only(offered);
+    let through = |driver| {
+        find(driver).map(|d| write(d, unlocked.first + 1, &mark[..512]))
+            == Some(if others_write {
+                Ok(())
+            } else {
+                Err(Error::Failed)
+            })
+    };
+    report.check(
+        "kernel.disk.guard_drivers",
+        through(Driver::Nvme)
+            && through(Driver::Virtio)
+            && write(usize::MAX, unlocked.first, &mark[..512]) == Err(Error::NoDisk),
+        "a write the layer lets through should fail where the driver fails, as on a disk that only reads, and none should go to a disk there is not",
+    );
+}
+
 /// What no driver writes: nothing, part of a sector, more than sixteen
 /// frames at once where that is all a command takes, past the disk's end,
 /// or to a port without a disk.
 fn write_refusal_checks<W: Write>(report: &mut Report<'_, W>, port: usize, sectors: u64) {
     use raw::ahci::{Error, write, write_sectors};
     let room = alloc::vec![0u8; 16 * 4096 + 512];
-    let ahci = write_sectors(port, 0, &[]) == Err(Error::OutOfRange)
-        && write_sectors(port, 0, &room[..513]) == Err(Error::OutOfRange)
-        && write_sectors(port, 0, &room) == Err(Error::OutOfRange)
-        && write(port, sectors - 1, &room[..1024]) == Err(Error::OutOfRange)
-        && write(port, u64::MAX, &room[..512]) == Err(Error::OutOfRange)
-        && write(31, 0, &room[..512]) == Err(Error::NoDisk);
-    let nvme = raw::nvme::write(0, &[]) == Err(raw::nvme::Error::OutOfRange)
-        && raw::nvme::write(0, &room[..100]) == Err(raw::nvme::Error::OutOfRange)
-        && raw::nvme::write(sectors, &room[..512]) == Err(raw::nvme::Error::OutOfRange);
+    let ahci = write_sectors(CHECKS, port, 0, &[]) == Err(Error::OutOfRange)
+        && write_sectors(CHECKS, port, 0, &room[..513]) == Err(Error::OutOfRange)
+        && write_sectors(CHECKS, port, 0, &room) == Err(Error::OutOfRange)
+        && write(CHECKS, port, sectors - 1, &room[..1024]) == Err(Error::OutOfRange)
+        && write(CHECKS, port, u64::MAX, &room[..512]) == Err(Error::OutOfRange)
+        && write(CHECKS, 31, 0, &room[..512]) == Err(Error::NoDisk);
+    let nvme = raw::nvme::write(CHECKS, 0, &[]) == Err(raw::nvme::Error::OutOfRange)
+        && raw::nvme::write(CHECKS, 0, &room[..100]) == Err(raw::nvme::Error::OutOfRange)
+        && raw::nvme::write(CHECKS, sectors, &room[..512]) == Err(raw::nvme::Error::OutOfRange);
     report.check(
         "kernel.disk.write_refused",
         ahci && nvme,

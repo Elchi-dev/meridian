@@ -9,6 +9,7 @@ use core::sync::atomic::{Ordering, fence};
 use ahci::{Attached, Identity, ata, hba, port};
 use bootinfo::HHDM_BASE;
 
+use super::disk::Permit;
 use super::memory::{self, DeviceFrames, Spin};
 
 /// Where in a port's frame each part lies.
@@ -344,9 +345,7 @@ pub fn read_sectors(n: usize, lba: u64, into: &mut [u8]) -> Result<(), Error> {
 /// # Errors
 ///
 /// As for [`read_sectors`].
-// Only the test image writes yet, until files can be written.
-#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
-pub fn write_sectors(n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
+pub fn write_sectors(_: Permit, n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
     let (drive, fis) = span(n, ata::WRITE_DMA_EXT, lba, from.len())?;
     let frames = DeviceFrames::take(from.len().div_ceil(4096)).ok_or(Error::NoMemory)?;
     for (frame, part) in frames.frames().iter().zip(from.chunks(4096)) {
@@ -369,12 +368,10 @@ pub fn write_sectors(n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
 /// # Errors
 ///
 /// As for [`read_sectors`].
-// Only the test image writes yet, until files can be written.
-#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
-pub fn write(n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
+pub fn write(permit: Permit, n: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
     let per_command = (MOST / sector_size(n)?.max(1)) as u64;
     for (i, chunk) in (0..).zip(from.chunks(MOST)) {
-        write_sectors(n, lba + i * per_command, chunk)?;
+        write_sectors(permit, n, lba + i * per_command, chunk)?;
     }
     Ok(())
 }

@@ -543,3 +543,17 @@ What exists:
   the test image reads the EFI system partition's settings, the
   firmware's file and hello through them, hello byte for byte as the
   loader read it.
+- **Writing.** Every write to a disk goes through `raw::disk`: the
+  drivers' write functions take a permit only it makes. It takes each
+  disk in with its GPT, reads `made.meri` and `unlocked.meri` from the
+  Meridian system partition on the disk the loader came from (decision
+  record 0015), and lets Meridian write a partition either names by its
+  unique GUID, each write within one partition, and a whole disk only
+  when Meridian made every partition on it. Everything else is refused
+  before a driver sees it: other partitions, whatever their type, the
+  partition tables, and disks without a GPT. The kernel logs what it may
+  write on each disk. The test image wants the test disk's lists read as
+  sextant wrote them, writes to a partition Meridian made and to the
+  unlocked one, and refusals for one of Meridian's type that is not
+  listed, both tables, a write across two partitions, made ones too, and
+  past the end, none of which lands.

@@ -385,6 +385,27 @@ image reads boot.meri through the tree as AHCI and FAT32 read it
 straight, from inside the kernel and from hello, and checks the files
 and paths that must not open.
 
+The Meridian system partition of the install the loader came from hangs
+at `/System`, so `/System/Boot` is a volume inside it. Where one disk is
+reached through several controllers, as in a virtual machine, the
+kernel takes the virtio one. Until Strata is stable, files are written
+only on a virtio disk that writes (9.6), and only when the disk layer
+lets Meridian write the whole partition (decision record 0015); anywhere
+else `/System` hangs read only, and `/System/Boot` always does. OPEN
+takes in r10 what to do by whether the file is there, as Windows'
+CreateFile numbers it: make it new, make it or empty it, open it only
+when there, open or make it, or empty it only when there; making or
+emptying a file takes the right to write it. WRITE_FILE writes up to a
+page from any byte on, past the end too, which leaves zeros between;
+REMOVE removes a file or an empty directory, but not one that is open;
+MAKE_DIRECTORY makes one. `kernel::volume` holds all of this on a
+FAT32 volume and is tested on the build machine with real volumes in
+memory. The test image wants `/System` writable on its first machine,
+whose virtio disk writes to a copy, and read only on the second, writes
+a file across clusters and past its end there, finds it on the virtio
+disk's copy and not on the AHCI disk, and makes, lists and removes
+directories, from inside the kernel and from hello.
+
 ## init (M5)
 
 An image that carries `init.mexec` has the kernel start init and nothing

@@ -289,7 +289,73 @@ pub struct Info {
 /// When the path is none or too long, no file has it, the program's token
 /// may not open it so, or the disk cannot be read.
 pub fn open(path: &str, wanted: u32) -> Result<Handle, Error> {
-    answer(raw::call(open_call(path, wanted)).0).map(Handle)
+    open_with(path, wanted, abi::file::OPEN_EXISTING)
+}
+
+/// Opens the file at `path` as [`open`] does, doing what `how` says by
+/// whether it is there: one of [`abi::file::CREATE_NEW`] and the four
+/// after it. Making or emptying a file takes the right to write it.
+///
+/// # Errors
+///
+/// As for [`open`], and when `how` is none of them or does nothing with
+/// the file as it is, its volume is mounted read only and the file would
+/// be written, or the disk is full or cannot be written.
+pub fn open_with(path: &str, wanted: u32, how: u64) -> Result<Handle, Error> {
+    answer(raw::call(open_call(path, wanted, how)).0).map(Handle)
+}
+
+/// Writes `bytes` into the file `file` from its byte `offset` on, which
+/// may lie past its end, as many calls as it takes.
+///
+/// # Errors
+///
+/// When the handle is not the program's, may not write, or stands for a
+/// directory, or the disk is full or cannot be written. What came before
+/// the call that failed is written.
+pub fn write_file(file: Handle, offset: u64, bytes: &[u8]) -> Result<(), Error> {
+    for (i, piece) in (0u64..).zip(bytes.chunks(abi::WRITE_BYTES)) {
+        let at = offset + i * abi::WRITE_BYTES as u64;
+        answer(raw::call(write_file_call(file, at, piece)).0)?;
+    }
+    Ok(())
+}
+
+/// Removes the file or the empty directory at `path`.
+///
+/// # Errors
+///
+/// When the path is none or too long, no file has it, the program's token
+/// may not remove it, its volume is mounted read only, it is open, or it
+/// is a directory that holds entries.
+pub fn remove(path: &str) -> Result<(), Error> {
+    answer(raw::call(path_call(path, abi::REMOVE)).0).map(|_| ())
+}
+
+/// Makes a directory at `path`.
+///
+/// # Errors
+///
+/// When the path is none or too long, the directory it would be in is not
+/// there, the program's token may not write there, its volume is mounted
+/// read only, something has the path already, or the disk is full.
+pub fn make_directory(path: &str) -> Result<(), Error> {
+    answer(raw::call(path_call(path, abi::MAKE_DIRECTORY)).0).map(|_| ())
+}
+
+fn write_file_call(file: Handle, offset: u64, bytes: &[u8]) -> Call {
+    Call::WriteFile {
+        handle: file.0,
+        at: bytes.as_ptr() as u64,
+        len: bytes.len() as u64,
+        offset,
+    }
+}
+
+/// The call `number`, [`abi::REMOVE`] or [`abi::MAKE_DIRECTORY`], for the
+/// path `path`.
+fn path_call(path: &str, number: u64) -> Call {
+    abi::decode(number, [path.len() as u64, path.as_ptr() as u64, 0, 0])
 }
 
 /// Reads the file `file` from its byte `offset` on into `room`, as much as
@@ -342,11 +408,12 @@ fn listed(rax: u64, rdx: u64) -> Result<(usize, bool), Error> {
     Ok((usize::try_from(len).unwrap_or(usize::MAX), rdx != 0))
 }
 
-fn open_call(path: &str, wanted: u32) -> Call {
+fn open_call(path: &str, wanted: u32, how: u64) -> Call {
     Call::Open {
         len: path.len() as u64,
         at: path.as_ptr() as u64,
         wanted: u64::from(wanted),
+        how,
     }
 }
 
@@ -703,11 +770,16 @@ mod tests {
     fn a_file_is_opened_by_its_path_and_read_where_asked() {
         let path = "/System/Boot/meridian/boot.meri";
         assert_eq!(
-            open_call(path, abi::file::READ | abi::file::RUN),
+            open_call(
+                path,
+                abi::file::READ | abi::file::RUN,
+                abi::file::OPEN_EXISTING
+            ),
             Call::Open {
                 len: 31,
                 at: path.as_ptr() as u64,
-                wanted: 0x21
+                wanted: 0x21,
+                how: 3
             }
         );
         let mut room = [0u8; 100];

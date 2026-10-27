@@ -434,7 +434,39 @@ pub fn system_call(frame: &mut Frame) {
         },
         Call::Unmap { at, pages } => unmap(at, pages).map_or_else(|e| e, |()| 0),
         Call::Token { room, at } => token(room, at).unwrap_or_else(|e| e),
-        Call::Open { len, at, wanted } => open(len, at, wanted).unwrap_or_else(|e| e),
+        Call::Write { len, at } => write(len, at).map_or_else(|e| e, |()| 0),
+        Call::Terminate { handle, code } => terminate(handle, code).map_or_else(|e| e, |()| 0),
+        Call::Key => super::ps2::next().map_or(syscall::EMPTY, |e| {
+            u64::from(e.key.0) | u64::from(e.pressed) << 16
+        }),
+        call @ (Call::Open { .. }
+        | Call::Read { .. }
+        | Call::List { .. }
+        | Call::Info(_)
+        | Call::WriteFile { .. }
+        | Call::Remove { .. }
+        | Call::MakeDirectory { .. }) => file_call(call, frame),
+        Call::Unknown(_) => syscall::NO_SUCH_CALL,
+    };
+}
+
+/// A system call about files, and its answer for rax.
+fn file_call(call: Call, frame: &mut Frame) -> u64 {
+    match call {
+        Call::Open {
+            len,
+            at,
+            wanted,
+            how,
+        } => open(len, at, wanted, how).unwrap_or_else(|e| e),
+        Call::WriteFile {
+            handle,
+            at,
+            len,
+            offset,
+        } => write_file(handle, at, len, offset).unwrap_or_else(|e| e),
+        Call::Remove { len, at } => remove(len, at).map_or_else(|e| e, |()| 0),
+        Call::MakeDirectory { len, at } => make_directory(len, at).map_or_else(|e| e, |()| 0),
         Call::Read {
             handle,
             at,
@@ -453,11 +485,6 @@ pub fn system_call(frame: &mut Frame) {
             }
             Err(e) => e,
         },
-        Call::Write { len, at } => write(len, at).map_or_else(|e| e, |()| 0),
-        Call::Terminate { handle, code } => terminate(handle, code).map_or_else(|e| e, |()| 0),
-        Call::Key => super::ps2::next().map_or(syscall::EMPTY, |e| {
-            u64::from(e.key.0) | u64::from(e.pressed) << 16
-        }),
         Call::Info(handle) => match info(handle) {
             Ok((size, directory)) => {
                 frame.rdx = u64::from(directory);
@@ -465,8 +492,8 @@ pub fn system_call(frame: &mut Frame) {
             }
             Err(e) => e,
         },
-        Call::Unknown(_) => syscall::NO_SUCH_CALL,
-    };
+        _ => syscall::NO_SUCH_CALL,
+    }
 }
 
 /// Asks the process the handle `handle` stands for to end with `code`; a
@@ -600,7 +627,7 @@ fn spawn_program(len: u64, at: u64, carry: u64, restriction: u64) -> Result<u64,
 /// The file at the path `path`, read whole, once `token` may run it.
 fn read_program(path: &[u8], token: &Token) -> Result<Vec<u8>, u64> {
     let path = core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)?;
-    let slot = super::vfs::open(path, token, syscall::file::RUN).map_err(file_answer)?;
+    let slot = super::vfs::open(path, token, syscall::file::RUN, 0).map_err(file_answer)?;
     let read = read_whole(slot);
     super::vfs::close(slot);
     read
@@ -809,31 +836,48 @@ fn token(room: u64, at: u64) -> Result<u64, u64> {
 /// A file error as the answer to a system call.
 fn file_answer(e: super::vfs::Error) -> u64 {
     use super::vfs::Error;
+    use kernel::vfs::Refusal;
     match e {
-        Error::BadPath => syscall::BAD_ARGUMENT,
+        Error::BadPath | Error::BadDisposition => syscall::BAD_ARGUMENT,
         Error::NotFound => syscall::NOT_FOUND,
         Error::NotAFile => syscall::NOT_A_FILE,
         Error::NotADirectory => syscall::NOT_A_DIRECTORY,
         Error::TooSmall => syscall::TOO_SMALL,
-        Error::Refused(_) => syscall::DENIED,
+        Error::Refused(Refusal::ReadOnly) => syscall::READ_ONLY,
+        Error::Refused(Refusal::Denied(_)) => syscall::DENIED,
         Error::NoRoom => syscall::NO_ROOM,
         Error::Read => syscall::UNREADABLE,
+        Error::Exists => syscall::EXISTS,
+        Error::DiskFull => syscall::DISK_FULL,
+        Error::NotEmpty => syscall::NOT_EMPTY,
+        Error::InUse => syscall::IN_USE,
+        Error::Unwritable => syscall::UNWRITABLE,
     }
 }
 
+/// The path of the `len` bytes at `at`, the running program's, copied into
+/// `into`.
+fn path_in(len: u64, at: u64, into: &mut [u8; syscall::PATH_BYTES]) -> Result<&str, u64> {
+    let path = copy_in(at, len, into, syscall::TOO_LONG)?;
+    core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)
+}
+
 /// Opens the file at the path of the `len` bytes at `at` for the rights
-/// `wanted`, as the running program's token may, and answers a handle to
-/// it that may read it when that was asked for, and be handed on.
-fn open(len: u64, at: u64, wanted: u64) -> Result<u64, u64> {
+/// `wanted`, as the running program's token may, doing what `how` says by
+/// whether it is there, and answers a handle to it that may read and
+/// write it when that was asked for, and be handed on.
+fn open(len: u64, at: u64, wanted: u64, how: u64) -> Result<u64, u64> {
     let mut bytes = [0u8; syscall::PATH_BYTES];
-    let path = copy_in(at, len, &mut bytes, syscall::TOO_LONG)?;
-    let path = core::str::from_utf8(path).map_err(|_| syscall::BAD_ARGUMENT)?;
+    let path = path_in(len, at, &mut bytes)?;
     let wanted = u32::try_from(wanted).map_err(|_| syscall::BAD_ARGUMENT)?;
     let token = with_process(|p| Ok(p.token))?;
-    let slot = super::vfs::open(path, &token, wanted).map_err(file_answer)?;
+    let slot = super::vfs::open(path, &token, wanted, how).map_err(file_answer)?;
     let mut rights = Rights::TRANSFER;
     if wanted & syscall::file::READ != 0 {
         rights = Rights(rights.0 | Rights::READ.0);
+    }
+    if wanted & syscall::file::WRITE != 0 {
+        rights = Rights(rights.0 | Rights::WRITE.0);
     }
     with_handles(|t| {
         t.insert(Object::File { slot }.number(), rights)
@@ -863,6 +907,38 @@ fn read(handle: u64, at: u64, room: u64, offset: u64) -> Result<u64, u64> {
         return Err(syscall::BAD_ADDRESS);
     }
     Ok(len as u64)
+}
+
+/// Writes the `len` bytes at `at`, at most [`syscall::WRITE_BYTES`], into
+/// the file `handle` stands for from its byte `offset` on, and answers how
+/// many it wrote.
+fn write_file(handle: u64, at: u64, len: u64, offset: u64) -> Result<u64, u64> {
+    let Some(Object::File { slot }) = Object::from_number(object(handle, Rights::WRITE)?) else {
+        return Err(syscall::DENIED);
+    };
+    let mut bytes = [0u8; syscall::WRITE_BYTES];
+    let from = copy_in(at, len, &mut bytes, syscall::TOO_LONG)?;
+    super::vfs::write(slot, offset, from)
+        .map(|done| done as u64)
+        .map_err(file_answer)
+}
+
+/// Removes the file or the empty directory at the path of the `len` bytes
+/// at `at`, as the running program's token may.
+fn remove(len: u64, at: u64) -> Result<(), u64> {
+    let mut bytes = [0u8; syscall::PATH_BYTES];
+    let path = path_in(len, at, &mut bytes)?;
+    let token = with_process(|p| Ok(p.token))?;
+    super::vfs::remove(path, &token).map_err(file_answer)
+}
+
+/// Makes a directory at the path of the `len` bytes at `at`, as the
+/// running program's token may.
+fn make_directory(len: u64, at: u64) -> Result<(), u64> {
+    let mut bytes = [0u8; syscall::PATH_BYTES];
+    let path = path_in(len, at, &mut bytes)?;
+    let token = with_process(|p| Ok(p.token))?;
+    super::vfs::make_directory(path, &token).map_err(file_answer)
 }
 
 /// Writes the `len` bytes at `at`, which have to be UTF-8, to the console.

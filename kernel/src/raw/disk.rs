@@ -6,6 +6,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
+use gpt::Partition;
 use kernel::disk::{Lists, Table, Writable};
 
 use super::memory::Spin;
@@ -42,6 +43,7 @@ pub const CHECKS: Permit = Permit(());
 
 struct Disk {
     driver: Driver,
+    read_only: bool,
     table: Option<Table>,
     writable: Writable,
 }
@@ -69,15 +71,54 @@ pub fn read_from(driver: Driver, lba: u64, into: &mut [u8]) -> bool {
     }
 }
 
-/// Takes in the disk behind `driver` with its partition table, nothing on
-/// it writable until [`trust`].
-pub fn add(driver: Driver) {
+/// Takes in the disk behind `driver`, which says whether it only reads,
+/// with its partition table, nothing on it writable until [`trust`].
+pub fn add(driver: Driver, read_only: bool) {
     let table = Table::read(&mut |lba, into| read_from(driver, lba, into));
     DISKS.lock().push(Disk {
         driver,
+        read_only,
         table,
         writable: Writable::default(),
     });
+}
+
+/// The disk the install the loader came from is on, as [`home`] finds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Home {
+    pub disk: usize,
+    pub driver: Driver,
+    /// Whether the disk says it only reads.
+    pub read_only: bool,
+    pub system: Partition,
+    /// Whether Meridian may write the whole system partition.
+    pub writable: bool,
+}
+
+/// The disk the install the loader came from is on, with its Meridian
+/// system partition: of the disks that hold the partition `boot` names, a
+/// virtio one first, as only those take files for now (QUESTIONS.md 9.6),
+/// which matters where one disk is reached through several controllers,
+/// as in a virtual machine.
+pub fn home(boot: [u8; 16]) -> Option<Home> {
+    let disks = DISKS.lock();
+    let mut found = disks.iter().enumerate().filter_map(|(disk, d)| {
+        let system = d.table.as_ref()?.system(boot)?;
+        Some(Home {
+            disk,
+            driver: d.driver,
+            read_only: d.read_only,
+            system,
+            writable: d.writable.allows(system.first, system.sectors()),
+        })
+    });
+    let first = found.next()?;
+    Some(
+        found
+            .chain(core::iter::once(first))
+            .find(|h| h.driver == Driver::Virtio)
+            .unwrap_or(first),
+    )
 }
 
 /// The number of the disk behind `driver`.
@@ -88,19 +129,17 @@ pub fn find(driver: Driver) -> Option<usize> {
 
 /// Lets each disk be written as the lists on the system partition of the
 /// install the loader came from, `boot`, say, and returns the driver of
-/// the disk they are on. Nothing may be written when there is none.
+/// the disk they are on, its [`home`]. Nothing may be written when there
+/// is none.
 pub fn trust(boot: [u8; 16]) -> Option<Driver> {
-    let found = DISKS
-        .lock()
-        .iter()
-        .find_map(|d| Some((d.driver, d.table.as_ref()?.system(boot)?)));
-    let lists = found.map_or_else(Lists::default, |(driver, system)| {
-        Lists::read(|lba, into| read_from(driver, system.first + lba, into))
+    let found = home(boot);
+    let lists = found.map_or_else(Lists::default, |h| {
+        Lists::read(|lba, into| read_from(h.driver, h.system.first + lba, into))
     });
     for disk in DISKS.lock().iter_mut() {
         disk.writable = Writable::of(disk.table.as_ref(), &lists.made, &lists.unlocked);
     }
-    found.map(|(driver, _)| driver)
+    found.map(|h| h.driver)
 }
 
 /// Each disk's number, driver, and what may be written on it.
@@ -117,8 +156,6 @@ pub fn each(mut f: impl FnMut(usize, Driver, &Writable)) {
 ///
 /// When no disk has the number, Meridian may not write there, or the
 /// driver could not.
-// Only the test image writes yet, until files can be written.
-#[cfg_attr(not(feature = "qemu-test"), allow(dead_code))]
 pub fn write(disk: usize, lba: u64, from: &[u8]) -> Result<(), Error> {
     let driver = {
         let disks = DISKS.lock();

@@ -12,15 +12,16 @@ use abi::{LOG_BYTES, MESSAGE_BYTES};
 use security::{Integrity, Privileges, Restriction, Token};
 
 use crate::{
-    Ended, Error, Handle, Info, channel, close, info, key, list, log, map, open, raw, read,
-    receive, send, sleep, spawn, spawn_restricted, terminate, token, unmap, wait, write,
+    Ended, Error, Handle, Info, channel, close, info, key, list, log, make_directory, map, open,
+    open_with, raw, read, receive, remove, send, sleep, spawn, spawn_restricted, terminate, token,
+    unmap, wait, write, write_file,
 };
 
 type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 31] = [
+const CHECKS: [(&str, Check); 33] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -50,6 +51,8 @@ const CHECKS: [(&str, Check); 31] = [
     ("file", settings_read_back),
     ("file.refused", files_that_do_not_open),
     ("file.list", directories_list_their_entries),
+    ("file.write", files_written),
+    ("file.write_refused", writes_refused),
     ("spawn.file", child_from_its_file),
     ("console", writes_on_the_console),
 ];
@@ -816,6 +819,7 @@ fn files_that_do_not_open() -> Outcome {
         len: long.len() as u64,
         at: long.as_ptr() as u64,
         wanted: u64::from(abi::file::READ),
+        how: 0,
     };
     expect(
         abi::answer(raw::call(too_long).0) == Err(Error::TooLong),
@@ -827,6 +831,7 @@ fn files_that_do_not_open() -> Outcome {
         len: longest.len() as u64,
         at: longest.as_ptr() as u64,
         wanted: u64::from(abi::file::READ),
+        how: 0,
     };
     expect(
         abi::answer(raw::call(just).0) == Err(Error::NotFound),
@@ -844,8 +849,8 @@ fn files_that_do_not_open() -> Outcome {
         return Ok(());
     }
     expect(
-        open("/System/Boot/meridian/boot.meri", abi::file::WRITE) == Err(Error::Denied),
-        "nothing writes to a volume mounted read only",
+        open("/System/Boot/meridian/boot.meri", abi::file::WRITE) == Err(Error::ReadOnly),
+        "nothing writes to a volume mounted read only, and it says so",
     )?;
     let directory =
         open("/System/Boot/meridian", abi::file::READ).map_err(|_| "a directory should open")?;
@@ -905,6 +910,99 @@ fn directories_list_their_entries() -> Outcome {
     expect(
         close(meridian) == Ok(()) && close(settings) == Ok(()) && close(blind) == Ok(()),
         "the handles should close",
+    )
+}
+
+/// On /System: a file made, written in more pieces than one call takes,
+/// read back, and removed once closed; a directory made and removed.
+/// Where /System hangs read only, as on a disk that only reads, nothing is
+/// made or removed there.
+fn files_written() -> Outcome {
+    use abi::file::{CREATE_NEW, READ, WRITE};
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/ring3.txt";
+    let file = match open_with(path, READ | WRITE, CREATE_NEW) {
+        Err(Error::ReadOnly) => {
+            return expect(
+                make_directory("/System/Ring3") == Err(Error::ReadOnly)
+                    && remove("/System/made.meri") == Err(Error::ReadOnly),
+                "on /System read only nothing should be made or removed",
+            );
+        }
+        other => other.map_err(|_| "a file should be made on /System")?,
+    };
+    let bytes: Vec<u8> = (0..abi::WRITE_BYTES + 100)
+        .map(|i| b'a' + (i % 26).to_le_bytes()[0])
+        .collect();
+    expect(
+        write_file(file, 0, &bytes) == Ok(()),
+        "a file should take more than one call writes",
+    )?;
+    let mut back = alloc::vec![0u8; bytes.len()];
+    let mut done = 0;
+    while let Ok(n @ 1..) = read(file, done as u64, &mut back[done..]) {
+        done += n;
+    }
+    expect(
+        back == bytes && info(file).map(|i| i.size) == Ok(bytes.len() as u64),
+        "the file should read back as written",
+    )?;
+    let too_long = abi::Call::WriteFile {
+        handle: file.0,
+        at: bytes.as_ptr() as u64,
+        len: (abi::WRITE_BYTES + 1) as u64,
+        offset: 0,
+    };
+    expect(
+        abi::answer(raw::call(too_long).0) == Err(Error::TooLong),
+        "one call should take at most WRITE_BYTES",
+    )?;
+    let reader = open(path, READ).map_err(|_| "the file should open again")?;
+    expect(
+        write_file(reader, 0, b"x") == Err(Error::Denied) && remove(path) == Err(Error::InUse),
+        "a handle that may only read should not write, and an open file should stay",
+    )?;
+    expect(
+        close(reader) == Ok(()) && close(file) == Ok(()),
+        "the handles should close",
+    )?;
+    expect(
+        remove(path) == Ok(()) && open(path, READ) == Err(Error::NotFound),
+        "a closed file should go",
+    )?;
+    expect(
+        make_directory("/System/Ring3") == Ok(())
+            && make_directory("/System/Ring3") == Err(Error::Exists)
+            && remove("/System/Ring3") == Ok(()),
+        "a directory should be made once and removed",
+    )
+}
+
+/// What takes no writes wherever the program runs: /System/Boot, a way of
+/// opening that is none, a handle that is not the program's, and a path
+/// longer than a call takes.
+fn writes_refused() -> Outcome {
+    use abi::file::{CREATE_NEW, READ, WRITE};
+    if booted_from_disk() {
+        expect(
+            open_with("/System/Boot/new.txt", READ | WRITE, CREATE_NEW) == Err(Error::ReadOnly)
+                && remove("/System/Boot/meridian/boot.meri") == Err(Error::ReadOnly)
+                && make_directory("/System/Boot/New") == Err(Error::ReadOnly),
+            "/System/Boot should take no writes",
+        )?;
+        expect(
+            open_with("/System/Boot/meridian/boot.meri", READ, 6) == Err(Error::BadArgument),
+            "there is no sixth way to open a file",
+        )?;
+    }
+    let long = alloc::format!("/{}", "a".repeat(abi::PATH_BYTES));
+    expect(
+        write_file(Handle(0x7777_0042), 0, b"x") == Err(Error::BadHandle)
+            && remove(&long) == Err(Error::TooLong)
+            && make_directory(&long) == Err(Error::TooLong),
+        "a stranger's handle should not write, nor a path past PATH_BYTES name anything",
     )
 }
 

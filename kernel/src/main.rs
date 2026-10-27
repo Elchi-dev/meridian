@@ -93,14 +93,14 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
         if let Some(drive) = raw::nvme::start(address) {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::nvme_line(serial, &drive.controller, &drive.namespace);
-            take_disk(serial, Driver::Nvme, boot);
+            take_disk(serial, Driver::Nvme, false, boot);
         }
     }
     if let Some((at, header)) = found.virtio {
         raw::pci::enable(at);
         if let Some(drive) = raw::virtio::start(at, &header) {
             let _ = kernel::virtio_line(serial, drive.sectors, drive.read_only);
-            take_disk(serial, Driver::Virtio, boot);
+            take_disk(serial, Driver::Virtio, drive.read_only, boot);
         }
     }
     if let Some((at, pci::Bar::Memory { address, .. })) = found.ahci {
@@ -109,7 +109,7 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
         for drive in raw::ahci::drives().iter().flatten() {
             let _ = serial.write_str("kernel: ");
             let _ = kernel::drive_line(serial, drive.port, drive.attached, drive.identity.as_ref());
-            take_disk(serial, Driver::Ahci(drive.port), boot);
+            take_disk(serial, Driver::Ahci(drive.port), false, boot);
         }
     }
     match raw::disk::trust(boot) {
@@ -126,12 +126,14 @@ fn start_storage(ecam: Option<acpi::Ecam>, boot: [u8; 16], serial: &mut Serial) 
     raw::disk::each(|_, driver, writable| {
         let _ = kernel::disk::writable_lines(serial, &driver, writable);
     });
+    mount_system(serial, boot);
 }
 
-/// Takes the disk behind `driver` in, logs what it holds, and hangs the
-/// partition the loader came from at /System/Boot when it is on it.
-fn take_disk(serial: &mut Serial, driver: Driver, boot: [u8; 16]) {
-    raw::disk::add(driver);
+/// Takes the disk behind `driver` in, which says whether it only reads,
+/// logs what it holds, and hangs the partition the loader came from at
+/// /System/Boot when it is on it.
+fn take_disk(serial: &mut Serial, driver: Driver, read_only: bool, boot: [u8; 16]) {
+    raw::disk::add(driver, read_only);
     let mut read = move |lba, into: &mut [u8]| raw::disk::read_from(driver, lba, into);
     let _ = kernel::disk::describe(serial, &driver, &mut read);
     mount_boot(serial, &driver, boot, read);
@@ -185,10 +187,35 @@ fn mount_boot(
     };
     let first = esp.first;
     let volume = Box::new(move |lba, into: &mut [u8]| read(first + lba, into));
-    if raw::vfs::mount("/System/Boot", volume).is_ok() {
+    if raw::vfs::mount("/System/Boot", volume, None).is_ok() {
         let _ = writeln!(
             serial,
             "kernel: the partition the loader came from, on {disk}, hangs at /System/Boot, read only"
+        );
+    }
+}
+
+/// Hangs the Meridian system partition of the install the loader came
+/// from at /System. Files are written there only on a virtio disk that
+/// writes, until Strata is stable (QUESTIONS.md 9.6), and only where the
+/// disk layer lets Meridian write the whole partition; anywhere else it
+/// hangs read only.
+fn mount_system(serial: &mut Serial, boot: [u8; 16]) {
+    let Some(home) = raw::disk::home(boot) else {
+        return;
+    };
+    let (disk, driver, first) = (home.disk, home.driver, home.system.first);
+    let read =
+        Box::new(move |lba, into: &mut [u8]| raw::disk::read_from(driver, first + lba, into));
+    let writes = driver == Driver::Virtio && !home.read_only && home.writable;
+    let write = writes.then(|| -> raw::vfs::Writes {
+        Box::new(move |lba, from: &[u8]| raw::disk::write(disk, first + lba, from).is_ok())
+    });
+    if raw::vfs::mount("/System", read, write).is_ok() {
+        let how = if writes { "" } else { ", read only" };
+        let _ = writeln!(
+            serial,
+            "kernel: the Meridian system partition, on {driver}, hangs at /System{how}"
         );
     }
 }

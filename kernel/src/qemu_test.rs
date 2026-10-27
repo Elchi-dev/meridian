@@ -286,6 +286,7 @@ fn device_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions:
     guard_checks(report, info.boot_partition);
     fat_checks(report, info, regions);
     vfs_checks(report, info.boot_partition);
+    vfs_write_checks(report);
 }
 
 /// PCI through the MCFG's ECAM region: q35's host bridge at 00:00.0 and its
@@ -913,8 +914,8 @@ fn guard_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
     raw::disk::each(|_, _, writable| nothing &= *writable == kernel::disk::Writable::default());
     report.check(
         "kernel.disk.trust",
-        unnamed && nothing && raw::disk::trust(boot) == Some(Driver::Nvme),
-        "with no partition named by the loader nothing should be written, and the lists should come from the disk it came from, which the test machine has as NVMe first",
+        unnamed && nothing && raw::disk::trust(boot) == Some(Driver::Virtio),
+        "with no partition named by the loader nothing should be written, and the lists should come from the disk it came from, through virtio where several controllers reach it",
     );
     let mut listed = alloc::vec::Vec::new();
     let mut whole = true;
@@ -1100,7 +1101,7 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
     if !disk {
         report.check(
             "kernel.vfs.read",
-            vfs::open(settings, &system, READ) == Err(Error::NotFound),
+            vfs::open(settings, &system, READ, 0) == Err(Error::NotFound),
             "booted from a CD, nothing should hang at /System/Boot",
         );
         return;
@@ -1111,7 +1112,7 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
         "the loader should name the partition it came from, the EFI system partition sextant wrote",
     );
     let mut by_tree = [0u8; 128];
-    let read = vfs::open(settings, &system, READ).ok().and_then(|slot| {
+    let read = vfs::open(settings, &system, READ, 0).ok().and_then(|slot| {
         let len = vfs::read(slot, 0, &mut by_tree).ok();
         let size = vfs::info(slot);
         vfs::close(slot);
@@ -1142,22 +1143,22 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
         integrity: Integrity::Low,
         keep: Privileges::NONE,
     });
-    let opened_low = vfs::open(settings, &low, READ)
+    let opened_low = vfs::open(settings, &low, READ, 0)
         .inspect(|&slot| vfs::close(slot))
         .is_ok();
     let again = (0..100).all(|_| {
-        vfs::open(settings, &system, READ)
+        vfs::open(settings, &system, READ, 0)
             .inspect(|&slot| vfs::close(slot))
             .is_ok()
     });
     let mut held = alloc::vec::Vec::new();
-    while let Ok(slot) = vfs::open(settings, &system, READ) {
+    while let Ok(slot) = vfs::open(settings, &system, READ, 0) {
         held.push(slot);
         if held.len() > 64 {
             break;
         }
     }
-    let full = held.len() == 64 && vfs::open(settings, &system, READ) == Err(Error::NoRoom);
+    let full = held.len() == 64 && vfs::open(settings, &system, READ, 0) == Err(Error::NoRoom);
     for slot in held {
         vfs::close(slot);
     }
@@ -1168,17 +1169,209 @@ fn vfs_checks<W: Write>(report: &mut Report<'_, W>, boot: [u8; 16]) {
         opened_low
             && again
             && full
-            && vfs::open(settings, &system, READ)
+            && vfs::open(settings, &system, READ, 0)
                 .inspect(|&slot| vfs::close(slot))
                 .is_ok(),
         "a closed file's slot should be free again, and the 65th file open at once find none",
     );
 }
 
+/// Writing files on /System, the test disk's system partition through
+/// virtio, which takes them only where the machine lets virtio write to a
+/// copy and hangs read only elsewhere, while /System/Boot always does.
+fn vfs_write_checks<W: Write>(report: &mut Report<'_, W>) {
+    use abi::file::{CREATE_NEW, READ, WRITE};
+    use kernel::vfs::Refusal::ReadOnly;
+    use raw::vfs::{self, Error};
+    if esp_of_disk().is_none() {
+        return;
+    }
+    let system = security::Token::system();
+    let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
+    let made = vfs::open("/System/made.meri", &system, READ, 0).ok();
+    let mut text = [0u8; 64];
+    let lists = made.is_some_and(|slot| {
+        let read = vfs::read(slot, 0, &mut text);
+        vfs::close(slot);
+        read.is_ok_and(|n| text[..n].starts_with(b"# The partitions Meridian made"))
+    });
+    let boot = vfs::open("/System/Boot/new.txt", &system, READ | WRITE, CREATE_NEW)
+        == Err(Error::Refused(ReadOnly))
+        && vfs::make_directory("/System/Boot/New", &system) == Err(Error::Refused(ReadOnly));
+    report.check(
+        "kernel.vfs.system",
+        lists && boot,
+        "the system partition should hang at /System with made.meri on it, and /System/Boot should take no writes",
+    );
+    if virtio::read_only(offered) {
+        let refused = vfs::open("/System/new.txt", &system, READ | WRITE, CREATE_NEW)
+            == Err(Error::Refused(ReadOnly))
+            && vfs::open("/System/made.meri", &system, READ | WRITE, 0)
+                == Err(Error::Refused(ReadOnly))
+            && vfs::make_directory("/System/New", &system) == Err(Error::Refused(ReadOnly))
+            && vfs::remove("/System/made.meri", &system) == Err(Error::Refused(ReadOnly));
+        report.check(
+            "kernel.vfs.write",
+            refused,
+            "/System on a virtio disk that only reads should hang read only and take no writes",
+        );
+        return;
+    }
+    file_write_checks(report);
+    directory_write_checks(report);
+}
+
+/// A file made, written across clusters and past its end, read back, on
+/// the disk as written and only on the virtio disk's copy, emptied, and
+/// removed once it is closed.
+fn file_write_checks<W: Write>(report: &mut Report<'_, W>) {
+    use abi::file::{CREATE_ALWAYS, CREATE_NEW, OPEN_ALWAYS, READ, TRUNCATE_EXISTING, WRITE};
+    use raw::vfs::{self, Error};
+    let system = security::Token::system();
+    let path = "/System/Written.txt";
+    let bytes: alloc::vec::Vec<u8> = (0..10_000)
+        .map(|i: usize| (i % 251).to_le_bytes()[0])
+        .collect();
+    let Ok(slot) = vfs::open(path, &system, READ | WRITE, CREATE_NEW) else {
+        report.check(
+            "kernel.vfs.write",
+            false,
+            "a new file should be made on /System",
+        );
+        return;
+    };
+    let wrote = vfs::write(slot, 0, &bytes) == Ok(bytes.len())
+        && vfs::write(slot, 12_000, b"end") == Ok(3)
+        && vfs::info(slot) == Some((12_003, false));
+    let mut back = alloc::vec![0xffu8; 12_003];
+    let mut done = 0;
+    while let Ok(n @ 1..) = vfs::read(slot, done as u64, &mut back[done..]) {
+        done += n;
+    }
+    let read_back = done == back.len()
+        && back[..10_000] == bytes[..]
+        && back[10_000..12_000].iter().all(|&b| b == 0)
+        && back[12_000..] == *b"end";
+    let mut on_disk = alloc::vec![0u8; 12_003];
+    let virtio_has = on_volume(raw::disk::Driver::Virtio, "/Written.txt", &mut on_disk)
+        == Some(12_003)
+        && on_disk == back;
+    let ahci = raw::ahci::drives().iter().flatten().map(|d| d.port).next();
+    let ahci_has_not = ahci.is_some_and(|port| {
+        on_volume(raw::disk::Driver::Ahci(port), "/Written.txt", &mut on_disk).is_none()
+    });
+    report.check(
+        "kernel.vfs.write",
+        wrote && read_back && virtio_has && ahci_has_not,
+        "a file made on /System should take ten thousand bytes and three more past its end, read back so with zeros between, and be so on the virtio disk's copy alone",
+    );
+    let reader = vfs::open(path, &system, READ, 0);
+    let refusals = vfs::open(path, &system, READ | WRITE, CREATE_NEW) == Err(Error::Exists)
+        && reader.is_ok_and(|r| vfs::write(r, 0, b"x").is_err())
+        && vfs::remove(path, &system) == Err(Error::InUse);
+    reader.into_iter().chain([slot]).for_each(vfs::close);
+    let emptied = vfs::open(path, &system, READ | WRITE, CREATE_ALWAYS)
+        .inspect(|&s| vfs::close(s))
+        .is_ok_and(|_| file_size(path) == Some(0));
+    let gone = vfs::remove(path, &system).is_ok()
+        && vfs::open(path, &system, READ, 0) == Err(Error::NotFound)
+        && vfs::open(path, &system, READ | WRITE, TRUNCATE_EXISTING) == Err(Error::NotFound)
+        && vfs::remove(path, &system) == Err(Error::NotFound);
+    let again = vfs::open(path, &system, READ | WRITE, OPEN_ALWAYS)
+        .inspect(|&s| vfs::close(s))
+        .is_ok()
+        && file_size(path) == Some(0)
+        && vfs::remove(path, &system).is_ok();
+    report.check(
+        "kernel.vfs.write_ways",
+        refusals && emptied && gone && again,
+        "a file there already should not be made new, one opened to read should take no writes, an open one should stay, CREATE_ALWAYS should empty it, and once removed it should be gone until OPEN_ALWAYS makes it again",
+    );
+}
+
+/// The size of the file at `path`, opened to read for a moment.
+fn file_size(path: &str) -> Option<u64> {
+    use raw::vfs;
+    let slot = vfs::open(path, &security::Token::system(), abi::file::READ, 0).ok()?;
+    let size = vfs::info(slot).map(|(size, _)| size);
+    vfs::close(slot);
+    size
+}
+
+/// Reads the file at `path` on the system partition behind `driver`
+/// through a FAT32 reader of its own into `into`, and returns its size.
+fn on_volume(driver: raw::disk::Driver, path: &str, into: &mut [u8]) -> Option<u32> {
+    let mut read = |lba, into: &mut [u8]| raw::disk::read_from(driver, lba, into);
+    let system = kernel::disk::Table::read(&mut read)?.first_of(gpt::MERIDIAN_SYSTEM)?;
+    let mut fat = fat::Fat::open(|lba, into: &mut [u8]| {
+        raw::disk::read_from(driver, system.first + lba, into)
+    })
+    .ok()?;
+    let entry = fat.find(path).ok()?;
+    fat.read_file(&entry, into).ok()?;
+    Some(entry.size)
+}
+
+/// Directories made, one in another, a file in it, removed only once
+/// they are empty; one cannot be made twice, nor where there is no
+/// directory to hold it, nor written to; and a token at the low level may
+/// make none.
+fn directory_write_checks<W: Write>(report: &mut Report<'_, W>) {
+    use abi::file::{CREATE_NEW, READ, WRITE};
+    use raw::vfs::{self, Error};
+    use security::{Integrity, Privileges, Restriction};
+    let system = security::Token::system();
+    let made = vfs::make_directory("/System/Folder", &system).is_ok()
+        && vfs::make_directory("/System/Folder/Inner", &system).is_ok()
+        && vfs::open(
+            "/System/Folder/Inner/a.txt",
+            &system,
+            READ | WRITE,
+            CREATE_NEW,
+        )
+        .inspect(|&s| vfs::close(s))
+        .is_ok();
+    let listed = vfs::open("/System/Folder", &system, READ, 0).is_ok_and(|slot| {
+        let mut room = [0u8; 16];
+        let found = vfs::list(slot, 0, &mut room) == Ok((5, true)) && &room[..5] == b"Inner";
+        vfs::close(slot);
+        found
+    });
+    let refused = vfs::make_directory("/System/Folder", &system) == Err(Error::Exists)
+        && vfs::make_directory("/System/Nowhere/Inner", &system) == Err(Error::NotFound)
+        && vfs::make_directory("/System", &system) == Err(Error::BadPath)
+        && vfs::open("/System/Folder", &system, READ | WRITE, 0).is_ok_and(|slot| {
+            let no = vfs::write(slot, 0, b"x") == Err(Error::NotAFile);
+            vfs::close(slot);
+            no
+        })
+        && vfs::remove("/System/Folder/Inner", &system) == Err(Error::NotEmpty);
+    let low = system.restricted(Restriction {
+        integrity: Integrity::Low,
+        keep: Privileges::NONE,
+    });
+    let low_refused = matches!(
+        vfs::make_directory("/System/Low", &low),
+        Err(Error::Refused(kernel::vfs::Refusal::Denied(_)))
+    ) && matches!(
+        vfs::open("/System/Low.txt", &low, READ | WRITE, CREATE_NEW),
+        Err(Error::Refused(kernel::vfs::Refusal::Denied(_)))
+    );
+    let removed = vfs::remove("/System/Folder/Inner/a.txt", &system).is_ok()
+        && vfs::remove("/System/Folder/Inner", &system).is_ok()
+        && vfs::remove("/System/Folder", &system).is_ok()
+        && vfs::open("/System/Folder", &system, READ, 0) == Err(Error::NotFound);
+    report.check(
+        "kernel.vfs.directories",
+        made && listed && refused && low_refused && removed,
+        "directories should be made inside each other and listed, not twice, nowhere and not over the root, take no bytes, stay while they hold something, be refused to a low token, and go once empty",
+    );
+}
+
 /// Mounting more: a place that is taken, in other capitals, takes no
 /// second volume; a disk without FAT32 none; the boot volume read through
-/// a second place reads the same files; and four volumes are all there is
-/// room for.
+/// a second place reads the same files; and five volumes, /System and
+/// /System/Boot among them, are all there is room for.
 fn mount_checks<W: Write>(report: &mut Report<'_, W>) {
     use abi::file::READ;
     use raw::vfs;
@@ -1191,21 +1384,21 @@ fn mount_checks<W: Write>(report: &mut Report<'_, W>) {
     let mounted = esp_of_disk().is_some_and(|(port, esp)| {
         use kernel::vfs::MountError::Taken;
         use raw::vfs::MountError::{Full, NotFat, Place};
-        let taken = vfs::mount("/system/boot", reader(port, esp.first)) == Err(Place(Taken));
-        let blank = vfs::mount("/Volumes/Blank", reader(port, 0)) == Err(NotFat);
-        let again = vfs::mount("/Volumes/Again", reader(port, esp.first)).is_ok();
-        let through = vfs::open("/Volumes/Again/meridian/boot.meri", &system, READ)
+        let taken = vfs::mount("/system/boot", reader(port, esp.first), None) == Err(Place(Taken));
+        let blank = vfs::mount("/Volumes/Blank", reader(port, 0), None) == Err(NotFat);
+        let again = vfs::mount("/Volumes/Again", reader(port, esp.first), None).is_ok();
+        let through = vfs::open("/Volumes/Again/meridian/boot.meri", &system, READ, 0)
             .inspect(|&slot| vfs::close(slot))
             .is_ok();
-        let filled = vfs::mount("/Volumes/Third", reader(port, esp.first)).is_ok()
-            && vfs::mount("/Volumes/Fourth", reader(port, esp.first)).is_ok();
-        let full = vfs::mount("/Volumes/Fifth", reader(port, esp.first)) == Err(Full);
+        let filled = vfs::mount("/Volumes/Third", reader(port, esp.first), None).is_ok()
+            && vfs::mount("/Volumes/Fourth", reader(port, esp.first), None).is_ok();
+        let full = vfs::mount("/Volumes/Fifth", reader(port, esp.first), None) == Err(Full);
         taken && blank && again && through && filled && full
     });
     report.check(
         "kernel.vfs.mount",
         mounted,
-        "a place should take one volume, a disk without FAT32 none, and four volumes all there is room for",
+        "a place should take one volume, a disk without FAT32 none, and five volumes all there is room for",
     );
 }
 
@@ -1215,7 +1408,12 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::vfs;
     let system = security::Token::system();
     let mut listed = alloc::vec::Vec::new();
-    if let Ok(slot) = vfs::open("/System/Boot/meridian/programs", &system, abi::file::READ) {
+    if let Ok(slot) = vfs::open(
+        "/System/Boot/meridian/programs",
+        &system,
+        abi::file::READ,
+        0,
+    ) {
         let mut room = [0u8; 64];
         while let Ok((len, directory)) = vfs::list(slot, listed.len() as u64, &mut room) {
             listed.push((

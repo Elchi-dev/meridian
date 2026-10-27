@@ -47,7 +47,9 @@ pub const WAIT: u64 = 12;
 /// into the rdi bytes at rsi, and answers how many bytes it took.
 pub const TOKEN: u64 = 13;
 /// Opens the file at the path of the rdi bytes at rsi for the rights rdx,
-/// those of [`file`], and answers a handle to it.
+/// those of [`file`], and answers a handle to it. r10 says what to do by
+/// whether it is there, one of [`file::CREATE_NEW`] and the four after
+/// it; 0 opens it only when it is there, as [`file::OPEN_EXISTING`] does.
 pub const OPEN: u64 = 14;
 /// Reads at most rdx bytes of the file of handle rdi, from its byte r10
 /// on, into the room at rsi, and answers how many it read: 0 at its end.
@@ -77,6 +79,15 @@ pub const THREAD: u64 = 21;
 /// Ends the calling thread. Should it be its program's last, the program
 /// exits with the code rdi; [`EXIT`] ends every thread of it at once.
 pub const END_THREAD: u64 = 22;
+/// Writes the rdx bytes at rsi, at most [`WRITE_BYTES`], into the file of
+/// handle rdi from its byte r10 on, which may lie past its end, and
+/// answers how many it wrote: all of them. The file grows to hold them.
+pub const WRITE_FILE: u64 = 23;
+/// Removes the file or the empty directory at the path of the rdi bytes
+/// at rsi.
+pub const REMOVE: u64 = 24;
+/// Makes a directory at the path of the rdi bytes at rsi.
+pub const MAKE_DIRECTORY: u64 = 25;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -142,9 +153,21 @@ pub enum Error {
     Unreadable,
     /// The handle stands for a file, which has no entries to list.
     NotADirectory,
+    /// A file or directory has the path already.
+    Exists,
+    /// The volume the path is on is mounted read only.
+    ReadOnly,
+    /// No room is left on the volume.
+    DiskFull,
+    /// The directory holds entries, so it stays.
+    NotEmpty,
+    /// The disk a file is on could not be written.
+    Unwritable,
+    /// The file is open, so it stays.
+    InUse,
 }
 
-const ERRORS: [Error; 18] = [
+const ERRORS: [Error; 24] = [
     Error::NoSuchCall,
     Error::BadAddress,
     Error::TooLong,
@@ -163,6 +186,12 @@ const ERRORS: [Error; 18] = [
     Error::NotAFile,
     Error::Unreadable,
     Error::NotADirectory,
+    Error::Exists,
+    Error::ReadOnly,
+    Error::DiskFull,
+    Error::NotEmpty,
+    Error::Unwritable,
+    Error::InUse,
 ];
 
 impl Error {
@@ -203,6 +232,12 @@ pub const NOT_FOUND: u64 = Error::NotFound.code();
 pub const NOT_A_FILE: u64 = Error::NotAFile.code();
 pub const UNREADABLE: u64 = Error::Unreadable.code();
 pub const NOT_A_DIRECTORY: u64 = Error::NotADirectory.code();
+pub const EXISTS: u64 = Error::Exists.code();
+pub const READ_ONLY: u64 = Error::ReadOnly.code();
+pub const DISK_FULL: u64 = Error::DiskFull.code();
+pub const NOT_EMPTY: u64 = Error::NotEmpty.code();
+pub const UNWRITABLE: u64 = Error::Unwritable.code();
+pub const IN_USE: u64 = Error::InUse.code();
 
 /// What makes an ELF file a Meridian program, a `.mexec` file: a note
 /// whose owner is [`NOTE_OWNER`], of the kind [`NOTE_VERSION`], whose four
@@ -270,6 +305,7 @@ pub enum Call {
         len: u64,
         at: u64,
         wanted: u64,
+        how: u64,
     },
     Read {
         handle: u64,
@@ -299,6 +335,20 @@ pub enum Call {
         argument: u64,
     },
     EndThread(u64),
+    WriteFile {
+        handle: u64,
+        at: u64,
+        len: u64,
+        offset: u64,
+    },
+    Remove {
+        len: u64,
+        at: u64,
+    },
+    MakeDirectory {
+        len: u64,
+        at: u64,
+    },
     Unknown(u64),
 }
 
@@ -333,7 +383,12 @@ impl Call {
             } => (SPAWN, [len, at, carry, restriction]),
             Call::Wait(handle) => (WAIT, [handle, 0, 0, 0]),
             Call::Token { room, at } => (TOKEN, [room, at, 0, 0]),
-            Call::Open { len, at, wanted } => (OPEN, [len, at, wanted, 0]),
+            Call::Open {
+                len,
+                at,
+                wanted,
+                how,
+            } => (OPEN, [len, at, wanted, how]),
             Call::Read {
                 handle,
                 at,
@@ -356,6 +411,14 @@ impl Call {
                 argument,
             } => (THREAD, [entry, stack, argument, 0]),
             Call::EndThread(code) => (END_THREAD, [code, 0, 0, 0]),
+            Call::WriteFile {
+                handle,
+                at,
+                len,
+                offset,
+            } => (WRITE_FILE, [handle, at, len, offset]),
+            Call::Remove { len, at } => (REMOVE, [len, at, 0, 0]),
+            Call::MakeDirectory { len, at } => (MAKE_DIRECTORY, [len, at, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -407,6 +470,7 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             len: first,
             at: second,
             wanted: third,
+            how: fourth,
         },
         READ => Call::Read {
             handle: first,
@@ -436,6 +500,20 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             argument: third,
         },
         END_THREAD => Call::EndThread(first),
+        WRITE_FILE => Call::WriteFile {
+            handle: first,
+            at: second,
+            len: third,
+            offset: fourth,
+        },
+        REMOVE => Call::Remove {
+            len: first,
+            at: second,
+        },
+        MAKE_DIRECTORY => Call::MakeDirectory {
+            len: first,
+            at: second,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -508,17 +586,8 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(23, [1, 2, 3, 0]), Call::Unknown(23));
+        assert_eq!(decode(26, [1, 2, 3, 0]), Call::Unknown(26));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
-        assert_eq!(
-            [
-                EXIT, LOG, YIELD, SLEEP, TICKS, CHANNEL, SEND, RECEIVE, CLOSE, MAP, UNMAP, SPAWN,
-                WAIT, TOKEN, OPEN, READ, INFO, LIST, WRITE, KEY, TERMINATE, THREAD, END_THREAD
-            ],
-            [
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
-            ]
-        );
         assert_eq!(
             decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
             Call::Thread {
@@ -538,13 +607,75 @@ mod tests {
     }
 
     #[test]
+    fn each_call_has_its_number() {
+        assert_eq!(
+            [
+                EXIT,
+                LOG,
+                YIELD,
+                SLEEP,
+                TICKS,
+                CHANNEL,
+                SEND,
+                RECEIVE,
+                CLOSE,
+                MAP,
+                UNMAP,
+                SPAWN,
+                WAIT,
+                TOKEN,
+                OPEN,
+                READ,
+                INFO,
+                LIST,
+                WRITE,
+                KEY,
+                TERMINATE,
+                THREAD,
+                END_THREAD,
+                WRITE_FILE,
+                REMOVE,
+                MAKE_DIRECTORY
+            ],
+            [
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23, 24, 25
+            ]
+        );
+    }
+
+    #[test]
     fn calls_for_files_and_the_console_come_from_their_registers() {
         assert_eq!(
             decode(OPEN, [30, 0x7f_e000, 1, 4]),
             Call::Open {
                 len: 30,
                 at: 0x7f_e000,
-                wanted: 1
+                wanted: 1,
+                how: 4
+            }
+        );
+        assert_eq!(
+            decode(WRITE_FILE, [0x3_0001, 0x7f_d000, 4096, 1 << 33]),
+            Call::WriteFile {
+                handle: 0x3_0001,
+                at: 0x7f_d000,
+                len: 4096,
+                offset: 1 << 33
+            }
+        );
+        assert_eq!(
+            decode(REMOVE, [9, 0x7f_c000, 3, 4]),
+            Call::Remove {
+                len: 9,
+                at: 0x7f_c000
+            }
+        );
+        assert_eq!(
+            decode(MAKE_DIRECTORY, [10, 0x7f_b000, 3, 4]),
+            Call::MakeDirectory {
+                len: 10,
+                at: 0x7f_b000
             }
         );
         assert_eq!(
@@ -641,7 +772,10 @@ mod tests {
         assert_eq!(NOT_A_FILE, u64::MAX - 15);
         assert_eq!(UNREADABLE, u64::MAX - 16);
         assert_eq!(NOT_A_DIRECTORY, u64::MAX - 17);
-        assert_eq!(ERRORS.last(), Some(&Error::NotADirectory));
+        assert_eq!(EXISTS, u64::MAX - 18);
+        assert_eq!(UNWRITABLE, u64::MAX - 22);
+        assert_eq!(IN_USE, u64::MAX - 23);
+        assert_eq!(ERRORS.last(), Some(&Error::InUse));
     }
 
     #[test]
@@ -683,7 +817,14 @@ mod tests {
             NOT_A_FILE,
             UNREADABLE,
             NOT_A_DIRECTORY,
+            EXISTS,
+            READ_ONLY,
+            DISK_FULL,
+            NOT_EMPTY,
+            UNWRITABLE,
+            IN_USE,
         ];
+        assert_eq!(errors.len(), ERRORS.len());
         for (i, &e) in errors.iter().enumerate() {
             assert_eq!(
                 e,
@@ -741,6 +882,7 @@ mod tests {
                 len: 9,
                 at: 0x40_4000,
                 wanted: 0x21,
+                how: file::OPEN_ALWAYS,
             },
             Call::Read {
                 handle: 0x3_0004,
@@ -770,7 +912,21 @@ mod tests {
                 argument: u64::MAX,
             },
             Call::EndThread(1 << 63),
-            Call::Unknown(23),
+            Call::WriteFile {
+                handle: 0x3_0006,
+                at: 0x7f_a000,
+                len: 100,
+                offset: u64::MAX,
+            },
+            Call::Remove {
+                len: 7,
+                at: 0x40_7000,
+            },
+            Call::MakeDirectory {
+                len: 8,
+                at: 0x40_8000,
+            },
+            Call::Unknown(26),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -799,7 +955,7 @@ mod tests {
             (SPAWN, 4),
             (WAIT, 1),
             (TOKEN, 2),
-            (OPEN, 3),
+            (OPEN, 4),
             (READ, 4),
             (INFO, 1),
             (LIST, 4),
@@ -808,6 +964,9 @@ mod tests {
             (TERMINATE, 2),
             (THREAD, 3),
             (END_THREAD, 1),
+            (WRITE_FILE, 4),
+            (REMOVE, 2),
+            (MAKE_DIRECTORY, 2),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -830,7 +989,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > END_THREAD,
+                number > MAKE_DIRECTORY,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -874,6 +1033,7 @@ mod tests {
             len: 14,
             at: 15,
             wanted: 16,
+            how: 0,
         };
         assert_eq!(open.encode(), (OPEN, [14, 15, 16, 0]));
         assert_eq!(Call::Info(17).encode(), (INFO, [17, 0, 0, 0]));
@@ -892,6 +1052,10 @@ mod tests {
         };
         assert_eq!(thread.encode(), (THREAD, [22, 23, 24, 0]));
         assert_eq!(Call::EndThread(25).encode(), (END_THREAD, [25, 0, 0, 0]));
+        let remove = Call::Remove { len: 26, at: 27 };
+        assert_eq!(remove.encode(), (REMOVE, [26, 27, 0, 0]));
+        let directory = Call::MakeDirectory { len: 28, at: 29 };
+        assert_eq!(directory.encode(), (MAKE_DIRECTORY, [28, 29, 0, 0]));
         assert_eq!(Call::Unknown(40).encode(), (40, [0; 4]));
     }
 
@@ -907,11 +1071,9 @@ mod tests {
         assert_eq!(answer(NOT_A_FILE), Err(Error::NotAFile));
         assert_eq!(answer(UNREADABLE), Err(Error::Unreadable));
         assert_eq!(answer(NOT_A_DIRECTORY), Err(Error::NotADirectory));
-        assert_eq!(
-            answer(NOT_A_DIRECTORY - 1),
-            Ok(NOT_A_DIRECTORY - 1),
-            "just below them"
-        );
+        assert_eq!(answer(UNWRITABLE), Err(Error::Unwritable));
+        assert_eq!(answer(IN_USE), Err(Error::InUse));
+        assert_eq!(answer(IN_USE - 1), Ok(IN_USE - 1), "just below them");
         assert_eq!(answer(0), Ok(0));
         assert_eq!(answer(0x4_0003), Ok(0x4_0003), "a handle");
         assert_eq!(answer(USER_END), Ok(USER_END));
@@ -948,6 +1110,12 @@ mod tests {
             (Error::NotAFile, NOT_A_FILE),
             (Error::Unreadable, UNREADABLE),
             (Error::NotADirectory, NOT_A_DIRECTORY),
+            (Error::Exists, EXISTS),
+            (Error::ReadOnly, READ_ONLY),
+            (Error::DiskFull, DISK_FULL),
+            (Error::NotEmpty, NOT_EMPTY),
+            (Error::Unwritable, UNWRITABLE),
+            (Error::InUse, IN_USE),
         ];
         for (error, code) in codes {
             assert_eq!(error.code(), code, "{error:?}");

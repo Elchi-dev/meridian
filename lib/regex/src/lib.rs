@@ -1,6 +1,7 @@
 //! POSIX's regular expressions, basic and extended, as decision record
 //! 0023 describes: an expression read into a tree ([`parse`]), its
-//! bracket expressions ([`set`]).
+//! bracket expressions ([`set`]), and the Pike VM that finds where it
+//! matches ([`vm`]).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -8,6 +9,7 @@ extern crate alloc;
 
 pub mod parse;
 pub mod set;
+pub mod vm;
 
 /// Which of POSIX's two syntaxes an expression is written in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

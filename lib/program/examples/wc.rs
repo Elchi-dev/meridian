@@ -190,4 +190,24 @@ mod tests {
             "a total adds each"
         );
     }
+
+    #[test]
+    fn only_the_c_locale_s_white_space_parts_words() {
+        assert_eq!(
+            fed(&["a\u{a0}b c\n"]),
+            counts(1, 2, 7),
+            "a no-break space is part of a word"
+        );
+        assert_eq!(fed(&["a\u{2003}b"]), counts(0, 1, 5));
+        assert_eq!(
+            fed(&["a\0b \0"]),
+            counts(0, 2, 5),
+            "a zero byte is no space"
+        );
+        assert_eq!(
+            fed(&["\u{85}"]),
+            counts(0, 1, 2),
+            "nor is the next line control past ASCII"
+        );
+    }
 }

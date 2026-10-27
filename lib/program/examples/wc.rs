@@ -1,6 +1,7 @@
 //! wc: counts the lines, words and bytes of each file it is given, or of
 //! its standard input without one, and writes them on a line with the
 //! file's path, as POSIX's wc does, and a total after more than one file.
+//! What it could not count it says on its standard error.
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -104,17 +105,17 @@ fn wc(_: Handle) -> u64 {
     let mut total = Counts::default();
     let mut failed = false;
     for path in paths {
-        let said = match counted(path) {
+        let written = match counted(path) {
             Ok(counts) => {
                 total = total + counts;
-                line(counts, Some(path))
+                program::write(&line(counts, Some(path)))
             }
             Err(e) => {
                 failed = true;
-                trouble(path, e)
+                program::write_error(&trouble(path, e))
             }
         };
-        failed |= program::write(&said).is_err();
+        failed |= written.is_err();
     }
     if paths.len() > 1 {
         failed |= program::write(&line(total, Some("total"))).is_err();

@@ -442,7 +442,7 @@ starts with, each as it is (decision record 0018), which
 `program::arguments` answers, and its standard output: a channel, which
 gets the text in messages, or a file, which gets it at its end.
 `program::write` writes there, and to the console when the parent handed
-neither. `program::input` reads the standard input a parent hands over, a
+neither; `program::write_error` does the same with the standard error. `program::input` reads the standard input a parent hands over, a
 channel that ends with an empty message or once nothing can write to it,
 or else the keys typed at the keyboard, shown as they are typed, until
 control and D. The runtime keeps the program's working directory

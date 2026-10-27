@@ -377,7 +377,22 @@ pub struct KeyEvent {
 ///
 /// When the kernel refuses a piece.
 pub fn write(text: &str) -> Result<(), Error> {
-    match start::given().output {
+    write_to(start::given().output, text)
+}
+
+/// Writes `text` to the program's standard error, as [`write`] does to
+/// its standard output.
+///
+/// # Errors
+///
+/// When the kernel refuses a piece.
+pub fn write_error(text: &str) -> Result<(), Error> {
+    write_to(start::given().error, text)
+}
+
+/// Writes `text` where `sink` leads, and to the console without one.
+fn write_to(sink: Option<start::Sink>, text: &str) -> Result<(), Error> {
+    match sink {
         Some(start::Sink::Channel(end)) => {
             start::pieces(text.as_bytes()).try_for_each(|piece| send_waiting(end, piece))
         }

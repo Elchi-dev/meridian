@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 58] = [
+const CHECKS: [(&str, Check); 59] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -60,6 +60,7 @@ const CHECKS: [(&str, Check); 58] = [
     ("spawn.arguments", arguments_arrive),
     ("spawn.output", output_goes_where_it_is_handed),
     ("spawn.input", input_is_read_to_its_end),
+    ("spawn.error", errors_go_apart),
     ("stream", streams_end_and_close_what_they_bring),
     ("shell.script", shell_runs_a_script),
     ("shell.builtins", the_shells_own_commands),
@@ -1423,6 +1424,29 @@ fn input_is_read_to_its_end() -> Outcome {
         let _ = (close(child), close(back), close(mine));
     }
     Ok(())
+}
+
+/// What a child says went wrong goes to the standard error it was handed,
+/// apart from what it writes.
+fn errors_go_apart() -> Outcome {
+    let (out, theirs) = pair()?;
+    let (errors, error_end) = pair()?;
+    let given = start::Given {
+        output: Some(start::Sink::Channel(theirs)),
+        error: Some(start::Sink::Channel(error_end)),
+        ..start::Given::default()
+    };
+    let (child, back) = spawn_handing("wc.mexec", &["/nope", "/nope/either"], given)
+        .map_err(|_| "wc should start")?;
+    let ended = wait(child);
+    let (said, complained) = (drained(out), drained(errors));
+    let _ = (close(child), close(back), close(out), close(errors));
+    expect(
+        ended == Ok(Ended::Exited(1))
+            && said == b"0 0 0 total\n"
+            && complained == b"wc: /nope: no such file\nwc: /nope/either: no such file\n",
+        "a child should write its total to its output and what went wrong to its error",
+    )
 }
 
 /// A stream's pieces come as sent, an empty one ends it as the other end

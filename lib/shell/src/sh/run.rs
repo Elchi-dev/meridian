@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::expand::{Char, as_pattern, failed};
+use super::expand::{Char, Kind, as_pattern, failed, read_values};
 use super::lex::Word;
 use super::parse::{
     self, AndOr, Command, Compound, Function, How, Item, Join, Pipeline, Redirection as Written,
@@ -472,7 +472,9 @@ impl Session {
     /// session: not a function, nor one of the session's builtins.
     fn machines(&self, prepared: &Prepared) -> bool {
         prepared.ready.words.first().is_some_and(|name| {
-            !SPECIAL.contains(&name.as_str()) && !self.functions.contains_key(name)
+            !SPECIAL.contains(&name.as_str())
+                && name != "read"
+                && !self.functions.contains_key(name)
         })
     }
 
@@ -511,6 +513,20 @@ impl Session {
         }
         if let Some(function) = self.functions.get(&name).cloned() {
             return self.call(&function, &ready, assigned, at, machine);
+        }
+        if name == "read" {
+            // The variables assigned before it hold while it reads, as
+            // `IFS=: read a b` asks.
+            let mut kept = Vec::new();
+            for (name, value) in assigned {
+                kept.push((name.clone(), self.variables.get(&name).cloned()));
+                let _ = self.assign(&name, value);
+            }
+            let flow = self.around(&ready.redirections, machine, |session, machine| {
+                Ok(session.read(&ready.words[1..], machine))
+            });
+            self.restore(kept);
+            return flow;
         }
         // Meridian's programs get no environment yet, so the variables
         // assigned before one reach none of them.
@@ -818,6 +834,39 @@ impl Session {
         Err(Stop::Said(1))
     }
 
+    /// Says `said` went wrong, as the builtin `name` says it, and ends it
+    /// with 2, as an error of a builtin POSIX calls no special one does.
+    fn complained(&mut self, name: &str, said: &str, machine: &mut impl Machine) -> Flow {
+        let _ = machine.err(format!("{name}: {said}\n").as_bytes());
+        self.status = 2;
+        Flow::Next
+    }
+
+    /// `read`: a line from the stream 0 in force, split by `IFS` into the
+    /// variables `words` name after `-r`, the last of them taking all that
+    /// is left; ends with 1 when the stream ended before a line end.
+    fn read(&mut self, words: &[String], machine: &mut impl Machine) -> Flow {
+        let (raw, names) = match words.split_first() {
+            Some((r, names)) if r == "-r" => (true, names),
+            _ => (false, words),
+        };
+        if names.is_empty() {
+            return self.complained("read", "needs a variable to set", machine);
+        }
+        if let Some(bad) = names.iter().find(|name| !is_name(name)) {
+            return self.complained("read", &format!("{bad}: not a name"), machine);
+        }
+        let (line, ended) = read_line(raw, machine);
+        let values = read_values(&line, &self.ifs(), names.len());
+        for (name, value) in names.iter().zip(values) {
+            if self.assign(name, value).is_err() {
+                return self.complained("read", &format!("{name}: read only"), machine);
+            }
+        }
+        self.status = u8::from(!ended);
+        Flow::Next
+    }
+
     /// Runs the special builtin `words` names.
     fn special(
         &mut self,
@@ -1016,6 +1065,44 @@ impl Session {
     }
 }
 
+/// The characters of the line `read` takes from the stream 0 in force,
+/// those a backslash escapes quoted unless `raw`, a backslash at a line's
+/// end joining the next line on; and whether a line end ended it.
+fn read_line(raw: bool, machine: &mut impl Machine) -> (Vec<Char>, bool) {
+    let mut chars = Vec::new();
+    loop {
+        let Some(line) = machine.line() else {
+            return (chars, false);
+        };
+        let line = String::from_utf8_lossy(&line);
+        let (body, ended) = match line.strip_suffix('\n') {
+            Some(body) => (body, true),
+            None => (&*line, false),
+        };
+        let mut joined = false;
+        let mut body = body.chars();
+        while let Some(c) = body.next() {
+            if c != '\\' || raw {
+                chars.push(Char {
+                    c,
+                    kind: Kind::Brought,
+                });
+                continue;
+            }
+            match body.next() {
+                Some(c) => chars.push(Char {
+                    c,
+                    kind: Kind::Quoted,
+                }),
+                None => joined = ended,
+            }
+        }
+        if !joined {
+            return (chars, ended);
+        }
+    }
+}
+
 /// `stop` with the error in it, if any, said at `at`: commands run from a
 /// text, which has no place in the script, are said at the word or the
 /// command that ran them.
@@ -1067,7 +1154,7 @@ struct Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sh::desk::{Desk, among, out, ran, said, stopped};
+    use crate::sh::desk::{Desk, among, out, ran, reading, said, stopped};
     use alloc::vec;
 
     fn words(words: &[&str]) -> Vec<String> {
@@ -2258,5 +2345,157 @@ mod tests {
         let mut desk = Desk::with_files("redirect", &FILES);
         let _ = session.run(&parse::script(": > a*").unwrap(), &mut desk);
         assert_eq!(desk.err, b"a*: no file here to write\n");
+    }
+
+    fn read_out(script: &str, input: &str) -> String {
+        reading(script, input).0
+    }
+
+    #[test]
+    fn read_takes_a_line_into_its_variables() {
+        assert_eq!(
+            read_out("read a b; echo \"[$a|$b]\"", "one two three\n"),
+            "[one|two three]\n"
+        );
+        assert_eq!(
+            read_out("read a; echo \"[$a]\"", "  one  two  \n"),
+            "[one  two]\n"
+        );
+        assert_eq!(
+            read_out("read a b c; echo \"[$a|$b|$c]\"", "x\n"),
+            "[x||]\n"
+        );
+        assert_eq!(
+            read_out("read a b; echo \"[$a|$b]\"", "  x   y  \n"),
+            "[x|y]\n"
+        );
+        assert_eq!(read_out("read a; read b; echo $b$a", "1\n2\n"), "21\n");
+    }
+
+    #[test]
+    fn read_ends_with_1_at_the_end_of_its_stream() {
+        assert_eq!(read_out("read a; echo $? \"[$a]\"", "last"), "1 [last]\n");
+        assert_eq!(read_out("read a; echo $? \"[$a]\"", ""), "1 []\n");
+        assert_eq!(
+            read_out("read a; echo $?; read a; echo $? \"[$a]\"", "x\n"),
+            "0\n1 []\n"
+        );
+        assert_eq!(
+            read_out(
+                "while read l; do echo \"<$l>\"; done; echo end",
+                "a\nb c\nd"
+            ),
+            "<a>\n<b c>\nend\n",
+            "a last line without its end is read, but ends the loop"
+        );
+    }
+
+    #[test]
+    fn read_splits_by_ifs_as_it_is_while_it_reads() {
+        assert_eq!(
+            read_out("IFS=: read a b; echo \"[$a|$b]\"", "x:y:z\n"),
+            "[x|y:z]\n"
+        );
+        assert_eq!(
+            read_out("IFS=: read a b; echo \"[$a|$b]\"", ":y\n"),
+            "[|y]\n"
+        );
+        assert_eq!(
+            read_out("IFS=: read a b c; echo \"[$a|$b|$c]\"", "x::z\n"),
+            "[x||z]\n"
+        );
+        assert_eq!(
+            read_out("IFS=' :' read a b; echo \"[$a|$b]\"", " x : y \n"),
+            "[x|y]\n"
+        );
+        assert_eq!(
+            read_out("IFS= read a; echo \"[$a]\"", "  x  \n"),
+            "[  x  ]\n"
+        );
+        assert_eq!(
+            read_out("IFS=: read a b; printf '[%s]' \"$IFS\"", "x\n"),
+            "[ \t\n]",
+            "IFS is as it was after"
+        );
+    }
+
+    #[test]
+    fn a_backslash_escapes_unless_r() {
+        assert_eq!(
+            read_out("read a b; echo \"[$a|$b]\"", "x\\ y z\n"),
+            "[x y|z]\n"
+        );
+        assert_eq!(
+            read_out("read -r a b; echo \"[$a|$b]\"", "x\\ y z\n"),
+            "[x\\|y z]\n"
+        );
+        assert_eq!(
+            read_out("read a; echo \"[$a]\"", "one\\\ntwo\n"),
+            "[onetwo]\n"
+        );
+        assert_eq!(
+            read_out("read -r a; echo \"[$a]\"", "one\\\ntwo\n"),
+            "[one\\]\n"
+        );
+        assert_eq!(
+            read_out("IFS=: read a b; echo \"[$a|$b]\"", "x\\:y:z\n"),
+            "[x:y|z]\n"
+        );
+        assert_eq!(read_out("read a; echo $? \"[$a]\"", "end\\"), "1 [end]\n");
+    }
+
+    #[test]
+    fn read_reads_what_a_redirection_gives_it() {
+        assert_eq!(
+            out("while read a b; do echo \"$b,$a\"; done <<EOF\n1 x\n2 y\nEOF\n"),
+            "x,1\ny,2\n"
+        );
+        assert_eq!(
+            out("{ read a; read b; echo $b$a; } <<EOF\n1\n2\n3\nEOF\n"),
+            "21\n"
+        );
+        assert_eq!(
+            read_out("read a <<EOF\ninner\nEOF\nread b; echo $a $b", "outer\n"),
+            "inner outer\n",
+            "the shell's own input is where it was"
+        );
+        assert_eq!(read_out("read a <&-; echo $? \"[$a]\"", "x\n"), "1 []\n");
+        assert_eq!(
+            out("printf 'p q\\n' | { read a b; echo \"$b $a\"; }"),
+            "q p\n"
+        );
+        assert_eq!(
+            out("echo x | read a; echo \"[$a]\""),
+            "[]\n",
+            "a stage keeps what it sets"
+        );
+        assert_eq!(
+            out("x=$(read a <<EOF\nsub\nEOF\necho $a); echo $x"),
+            "sub\n"
+        );
+    }
+
+    #[test]
+    fn read_says_what_is_wrong_with_its_words() {
+        for (script, said_) in [
+            ("read; echo $?", "read: needs a variable to set\n"),
+            ("read -r; echo $?", "read: needs a variable to set\n"),
+            ("read 1a; echo $?", "read: 1a: not a name\n"),
+            ("readonly r; read r; echo $?", "read: r: read only\n"),
+        ] {
+            assert_eq!(
+                reading(script, "x\n"),
+                (String::from("2\n"), String::from(said_)),
+                "{script}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_is_a_function_s_name_first() {
+        assert_eq!(
+            read_out("read() { echo mine; }; read a; echo \"[$a]\"", "x\n"),
+            "mine\n[]\n"
+        );
     }
 }

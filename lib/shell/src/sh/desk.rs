@@ -36,6 +36,12 @@ pub struct Desk {
     /// Where streams 1 and 2 go, a level for each capture and each set of
     /// redirections begun, innermost last.
     levels: Vec<[Place; 2]>,
+    /// What stream 0 reads at each level, with how far it was read; none
+    /// for a level that left it as it was.
+    reading: Vec<Option<(Vec<u8>, usize)>>,
+    /// The desk's own input, and how far it was read.
+    pub input: Vec<u8>,
+    taken: usize,
     /// The texts commands were given to read, in the order given.
     pub fed: Vec<Vec<u8>>,
     /// The words of each command it ran.
@@ -55,6 +61,9 @@ impl Default for Desk {
             captures: Vec::new(),
             pipe: Vec::new(),
             levels: Vec::new(),
+            reading: Vec::new(),
+            input: Vec::new(),
+            taken: 0,
             fed: Vec::new(),
             ran: Vec::new(),
             pipelines: Vec::new(),
@@ -107,7 +116,7 @@ impl Desk {
             let one = stream.wrapping_sub(1) as usize;
             match (&redirection.target, stream) {
                 (Target::Text(text), 0) => fed = Some(text.clone()),
-                (Target::Close, 0) => fed = None,
+                (Target::Close, 0) => fed = Some(Vec::new()),
                 (Target::Copy(0), 0) => {}
                 (Target::Copy(other @ 1..=2), 1..=2) => streams[one] = streams[*other as usize - 1],
                 (Target::Close, 1..=2) => streams[one] = Place::Closed,
@@ -239,11 +248,13 @@ impl Machine for Desk {
         let errors = self.streams()[1];
         self.levels
             .push([Place::Capture(self.captures.len()), errors]);
+        self.reading.push(None);
         self.captures.push(Vec::new());
     }
 
     fn end_capture(&mut self) -> Vec<u8> {
         self.levels.pop();
+        self.reading.pop();
         self.captures.pop().unwrap_or_default()
     }
 
@@ -251,15 +262,17 @@ impl Machine for Desk {
         let Some((streams, fed)) = self.made(self.streams(), redirections) else {
             return false;
         };
-        if let Some(text) = fed {
-            self.fed.push(text);
+        if let Some(text) = &fed {
+            self.fed.push(text.clone());
         }
         self.levels.push(streams);
+        self.reading.push(fed.map(|text| (text, 0)));
         true
     }
 
     fn end_redirections(&mut self) {
         self.levels.pop();
+        self.reading.pop();
     }
 
     fn directory(&mut self) -> String {
@@ -268,6 +281,21 @@ impl Machine for Desk {
 
     fn set_directory(&mut self, path: &str) {
         self.directory = path.into();
+    }
+
+    fn line(&mut self) -> Option<Vec<u8>> {
+        let (text, at) = match self.reading.iter_mut().rev().flatten().next() {
+            Some((text, at)) => (&*text, at),
+            None => (&self.input, &mut self.taken),
+        };
+        let rest = text.get(*at..).filter(|rest| !rest.is_empty())?;
+        let len = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(rest.len(), |end| end + 1);
+        let line = rest[..len].to_vec();
+        *at += len;
+        Some(line)
     }
 }
 
@@ -317,4 +345,20 @@ pub fn among(name: &str, paths: &[&str], script: &str) -> String {
     let items = parse::script(script).unwrap();
     let _ = session.run(&items, &mut desk);
     String::from_utf8(desk.out).unwrap()
+}
+
+/// What `script` writes, and what it says went wrong, run on a desk whose
+/// own input is `input`.
+pub fn reading(script: &str, input: &str) -> (String, String) {
+    let mut session = Session::new(String::from("script"), 42, Vec::new());
+    let mut desk = Desk {
+        input: input.as_bytes().to_vec(),
+        ..Desk::default()
+    };
+    let items = parse::script(script).unwrap();
+    let _ = session.run(&items, &mut desk);
+    (
+        String::from_utf8(desk.out).unwrap(),
+        String::from_utf8(desk.err).unwrap(),
+    )
 }

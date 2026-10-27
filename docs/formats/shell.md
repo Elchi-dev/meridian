@@ -263,6 +263,12 @@ part that starts with one, and `.` and `..` by none. A pattern that
 matches nothing stays as it is written, and `set -f` stops patterns from
 being matched.
 
+`read` takes a line from the stream 0 in force, as POSIX's does, and
+what reads that stream after it starts past the line: a program reading
+a file or a here-document gets the rest of it. A channel, such as a pipe
+or the shell's own input, comes in pieces, so what `read` took past its
+line stays for the next `read` and no program sees it.
+
 A pipeline whose commands are all programs or the shell's own commands
 runs them side by side, as Meridian's dialect does. One with a
 function, a builtin POSIX calls special or a compound command in it runs

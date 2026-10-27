@@ -484,6 +484,43 @@ pub(super) fn as_pattern(chars: &[Char]) -> Pattern {
     Pattern::new(&written)
 }
 
+/// What `read` gives `count` names from `line`: its fields split at the
+/// characters of `ifs` as [`split`] splits them, and for the last name all
+/// that is left of the line but the white space of `ifs` at its ends;
+/// names past the fields get nothing.
+pub(super) fn read_values(line: &[Char], ifs: &str, count: usize) -> Vec<String> {
+    let breaks = |c: &Char| c.kind == Kind::Brought && ifs.contains(c.c);
+    let white = |c: &Char| breaks(c) && matches!(c.c, ' ' | '\t' | '\n');
+    let skip_white = |mut i: usize| {
+        while line.get(i).is_some_and(white) {
+            i += 1;
+        }
+        i
+    };
+    let mut values = Vec::new();
+    let mut i = skip_white(0);
+    while values.len() + 1 < count && i < line.len() {
+        let start = i;
+        while line.get(i).is_some_and(|c| !breaks(c)) {
+            i += 1;
+        }
+        values.push(line[start..i].iter().map(|c| c.c).collect());
+        // A break is white space, at most one other character of `ifs`,
+        // and white space again.
+        i = skip_white(i);
+        if line.get(i).is_some_and(|c| breaks(c) && !white(c)) {
+            i = skip_white(i + 1);
+        }
+    }
+    let mut end = line.len();
+    while end > i && white(&line[end - 1]) {
+        end -= 1;
+    }
+    values.push(line[i.min(end)..end].iter().map(|c| c.c).collect());
+    values.resize(count, String::new());
+    values
+}
+
 /// `field` split at the characters of `ifs` an expansion brought
 /// unquoted, as POSIX splits: a run of white space in `ifs` is one break
 /// and none at the ends, and each other character of `ifs` breaks once,

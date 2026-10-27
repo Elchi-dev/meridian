@@ -543,6 +543,8 @@ fn typed() -> u8 {
 #[derive(Default)]
 struct System {
     levels: Vec<Level>,
+    /// What the shell's own input brought past the line `read` took last.
+    left: Vec<u8>,
 }
 
 /// One of the shell's levels of streams: a capture, none for one no
@@ -560,6 +562,8 @@ struct Frame {
     input: Option<In>,
     out: Option<Out>,
     errors: Option<Out>,
+    /// What its input brought past the line `read` took last.
+    left: Vec<u8>,
 }
 
 impl Frame {
@@ -782,6 +786,7 @@ impl Machine for System {
             input: files.from.take(),
             out,
             errors,
+            left: Vec::new(),
         }));
         true
     }
@@ -798,6 +803,20 @@ impl Machine for System {
 
     fn set_directory(&mut self, path: &str) {
         let _ = program::change_directory(path);
+    }
+
+    fn line(&mut self) -> Option<Vec<u8>> {
+        for level in self.levels.iter_mut().rev() {
+            if let Level::Frame(Frame {
+                input: Some(input),
+                left,
+                ..
+            }) = level
+            {
+                return input.line(left);
+            }
+        }
+        In::Mine.line(&mut self.left)
     }
 }
 
@@ -908,6 +927,33 @@ impl In {
         if let In::File { handle, .. } | In::Pipe(handle) = self {
             let _ = program::close(handle);
         }
+    }
+
+    /// A line read from here, with its end when it has one: from `left`,
+    /// what a read before brought past its line, and on. What is left of a
+    /// file or a text after the line is read again from there, so what
+    /// reads it next starts after the line; none once it ended.
+    #[cfg_attr(test, allow(dead_code))]
+    fn line(&mut self, left: &mut Vec<u8>) -> Option<Vec<u8>> {
+        let mut room = [0u8; MESSAGE_BYTES];
+        let end = loop {
+            if let Some(end) = left.iter().position(|&b| b == b'\n') {
+                break end + 1;
+            }
+            match self.take(&mut room) {
+                Ok(len @ 1..) => left.extend_from_slice(&room[..len]),
+                _ if left.is_empty() => return None,
+                _ => break left.len(),
+            }
+        };
+        let line = left.drain(..end).collect();
+        match self {
+            In::File { at, .. } => *at -= left.len() as u64,
+            In::Text { at, .. } => *at -= left.len(),
+            _ => return Some(line),
+        }
+        left.clear();
+        Some(line)
     }
 
     /// A second one reading the same, from where this one is.

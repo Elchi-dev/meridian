@@ -106,6 +106,11 @@ pub trait Machine: Tree {
     /// Makes `path` the working directory again, as a subshell's end does
     /// for one its `cd` left.
     fn set_directory(&mut self, path: &str);
+
+    /// Reads a line from the stream 0 in force, with its line end when it
+    /// has one, and moves that stream past it, so what reads it after
+    /// starts there; none once it ended.
+    fn line(&mut self) -> Option<Vec<u8>>;
 }
 
 /// How statements ended: on to the next, out of a loop, a function or
@@ -520,6 +525,10 @@ mod tests {
         }
 
         fn set_directory(&mut self, _: &str) {}
+
+        fn line(&mut self) -> Option<Vec<u8>> {
+            None
+        }
     }
 
     #[test]
@@ -605,6 +614,10 @@ mod tests {
         }
 
         fn set_directory(&mut self, _: &str) {}
+
+        fn line(&mut self) -> Option<Vec<u8>> {
+            None
+        }
     }
 
     #[test]

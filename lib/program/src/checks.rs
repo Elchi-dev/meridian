@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 99] = [
+const CHECKS: [(&str, Check); 100] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -122,6 +122,7 @@ const CHECKS: [(&str, Check); 99] = [
     ("shell.sh.parameters", sh_parameters),
     ("shell.sh.file", sh_script_files),
     ("shell.sh.names", sh_names_of_files),
+    ("shell.sh.read", sh_read),
     ("tools.refused", tools_refuse_what_is_no_text),
     ("console", writes_on_the_console),
 ];
@@ -3154,6 +3155,62 @@ fn sh_names_of_files() -> Outcome {
     expect(
         checked,
         "a pattern should stand for the names of the files it matches",
+    )
+}
+
+/// In sh, `read` takes a line from the stream 0 in force into its
+/// variables, and what reads that stream after starts past the line: a
+/// here-document, a pipe, the shell's own input, and a file.
+fn sh_read() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "#!/bin/sh\n\
+             while IFS=: read k v; do echo \"$k=$v\"; done <<EOF\n\
+             a:1\n\
+             b:2:3\n\
+             EOF\n\
+             { read a; read b; cat; } <<EOF\n\
+             1\n\
+             2\n\
+             3\n\
+             EOF\n\
+             echo \"$b$a\"\n\
+             printf 'p q\\n' | { read x y; echo \"$y $x\"; }",
+        )?,
+        &ran(0, b"a=1\nb=2:3\n3\n21\nq p\n"),
+    );
+    expect(checked, "read should take lines from what stream 0 reads")?;
+    let checked = same(
+        &shell_reading(
+            &[
+                "-c",
+                "#!/bin/sh\nread a b; echo \"$b $a\"; read c; echo \"[$c]\"",
+            ],
+            Some(b"x y\nz\n"),
+        )?,
+        &ran(0, b"y x\n[z]\n"),
+    );
+    expect(checked, "read should take lines from the shell's own input")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "#!/bin/sh\n\
+         f=/System/Boot/meridian/boot.meri\n\
+         wc < $f; { read first; wc; } < $f",
+    )?;
+    let counts: Vec<u64> = core::str::from_utf8(&said)
+        .unwrap_or("")
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    let fewer = match counts[..] {
+        [lines, _, _, after, _, _] => lines == after + 1,
+        _ => false,
+    };
+    expect(
+        ended == Ok(Ended::Exited(0)) && fewer,
+        "a program reading a file after read should start past the line",
     )
 }
 

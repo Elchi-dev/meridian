@@ -3763,7 +3763,10 @@ fn other_core_checks<W: Write>(report: &mut Report<'_, W>, tsc_hz: u64) {
     RAN.store(0, Ordering::Release);
     let spinner = thread::spawn_on(first, spinning, 0, NORMAL);
     let other = thread::spawn_on(first, noting, 77, NORMAL);
-    thread::sleep(5);
+    // That core's tick comes within 10 ms, but under the Go tests' other
+    // machines a host has kept a core away for more than 50, so the other
+    // thread gets half a second to have its turn.
+    let _ = x86::raw::wait_for(tsc_hz / 2, || NOTED.load(Ordering::Acquire) != 0);
     let (noted, count) = trail();
     STOP.store(true, Ordering::Release);
     thread::sleep(3);

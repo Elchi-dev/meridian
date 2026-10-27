@@ -2348,8 +2348,8 @@ fn a_move_to_other_capitals() -> Outcome {
     )?;
     if said.starts_with(b"/System/qq: on a volume that is only read\n") {
         return expect(
-            ended == Ok(Ended::Exited(1)),
-            "on /System read only nothing should be renamed",
+            ended == Ok(Ended::Exited(2)),
+            "on /System read only nothing should be renamed, and then nothing match",
         );
     }
     expect(

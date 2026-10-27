@@ -70,16 +70,14 @@ pub fn read_from(driver: Driver, lba: u64, into: &mut [u8]) -> bool {
 }
 
 /// Takes in the disk behind `driver` with its partition table, nothing on
-/// it writable until [`trust`], and returns its number.
-pub fn add(driver: Driver) -> usize {
+/// it writable until [`trust`].
+pub fn add(driver: Driver) {
     let table = Table::read(&mut |lba, into| read_from(driver, lba, into));
-    let mut disks = DISKS.lock();
-    disks.push(Disk {
+    DISKS.lock().push(Disk {
         driver,
         table,
         writable: Writable::default(),
     });
-    disks.len() - 1
 }
 
 /// The number of the disk behind `driver`.

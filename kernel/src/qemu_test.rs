@@ -1753,7 +1753,8 @@ fn shell_checks<W: Write>(
     typed(&["e", "x", "i", "t", "w", "i", "t", "h", "ret"]);
     // From its file, or on a CD from what the loader brought.
     let ran = waited_for("exitwith ended with 2989");
-    let (block, wrong, recalled) = shell_language_checks(&mut typed, &waited_for, &rows, patience);
+    let (block, wrong, recalled, completed) =
+        shell_language_checks(&mut typed, &waited_for, &rows, patience);
     typed(&["e", "x", "i", "t", "spc", "7", "ret"]);
     let ended = started.is_ok_and(|slot| {
         let start = x86::raw::tsc();
@@ -1774,8 +1775,9 @@ fn shell_checks<W: Write>(
             && block
             && wrong
             && recalled
+            && completed
             && ended,
-        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, and end at exit with its status",
+        "the shell should greet, echo, list a directory, show a long file to its end, name a command it does not know, say init did not start it when asked for the services, run a program from its file and say how it ended, run a block typed over three lines, say where a line is wrong, run the last line again with up, finish a path with tab, and end at exit with its status",
     );
 }
 
@@ -2023,7 +2025,7 @@ fn shell_language_checks(
     waited_for: &dyn Fn(&str) -> bool,
     rows: &dyn Fn() -> alloc::vec::Vec<alloc::string::String>,
     patience: u64,
-) -> (bool, bool, bool) {
+) -> (bool, bool, bool, bool) {
     // A block goes on over the lines typed until its brace closes.
     typed(&[
         "i",
@@ -2053,7 +2055,19 @@ fn shell_language_checks(
         again = rows().iter().filter(|r| *r == "again").count() >= 2;
         raw::thread::sleep(1);
     }
-    (block, wrong, once && again)
+    // Tab finishes the name a word starts, from the disk where there is one.
+    let mut word = alloc::vec::Vec::from(["e", "c", "h", "o", "spc", "slash", "shift-s", "y", "s"]);
+    word.extend([
+        "t", "e", "m", "slash", "shift-b", "o", "o", "t", "slash", "m", "e", "r", "i",
+    ]);
+    word.extend(["d", "i", "a", "n", "slash", "p", "r", "o", "tab", "ret"]);
+    typed(&word);
+    let completed = if esp_of_disk().is_some() {
+        waited_for("/System/Boot/meridian/programs")
+    } else {
+        waited_for("/System/Boot/meridian/pro")
+    };
+    (block, wrong, once && again, completed)
 }
 
 /// Asks sextant to type `line` and press return, a key for each

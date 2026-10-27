@@ -477,7 +477,8 @@ program may use both until terminals and focus exist. The runtime turns a
 key into a character on a US layout; others come from CLDR with Horizon.
 
 The shell edits a line with either shift and backspace, brings back the
-last hundred lines it ran with up and down, and runs each in
+last hundred lines it ran with up and down, finishes the name a word
+starts with tab, and runs each in
 Meridian's shell language (decision record 0016, `lib/shell`), taking
 more lines while a block is open, with one session's variables and
 functions for every line. It starts in `/System` where there is one,
@@ -511,7 +512,7 @@ sextant presses: it has to greet, echo, list a directory, show the
 shim's licences to their end, name a command it does not know, run
 exitwith from its file and say it ended with 2989, run a block typed over
 three lines, say where a line is wrong, run the last line again with up,
-and end at `exit 7` with 7. hello
+finish a path with tab, and end at `exit 7` with 7. hello
 runs scripts through the shell with a channel as its output, and checks
 what they write and how they end.
 

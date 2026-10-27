@@ -36,8 +36,10 @@ enum Edit {
     /// The line is done.
     Run(String),
     /// The line shown goes, `erase` characters of it, for `with`, a line
-    /// from before or the one that was being typed.
+    /// from before or the one that was being typed, or the line completed.
     Recall { erase: usize, with: String },
+    /// Tab: the shell completes the line's last word, if it can.
+    Complete,
     /// Nothing changes.
     Nothing,
 }
@@ -106,9 +108,18 @@ impl Editor {
         Edit::Recall { erase, with }
     }
 
+    /// Puts `line` in place of the one shown, as Tab completed it.
+    fn replace(&mut self, line: String) -> Edit {
+        let erase = self.line.chars().count();
+        self.line.clone_from(&line);
+        self.shown = None;
+        Edit::Recall { erase, with: line }
+    }
+
     fn edit(&mut self, key: KeyEvent) -> Edit {
         match self.held.feed(key) {
             Typed::Char('\n') => Edit::Run(core::mem::take(&mut self.line)),
+            Typed::Char('\t') => Edit::Complete,
             Typed::Char('\u{8}') => match self.line.pop() {
                 Some(_) => Edit::Erase,
                 None => Edit::Nothing,
@@ -331,6 +342,41 @@ trait Tree {
     fn has(&mut self, path: &str) -> bool;
 }
 
+/// `line` with its last word completed to the name in `tree` it starts, or
+/// as far as the names it starts agree, compared in capitals and written
+/// as the first of them is; the word is a path from `directory` when it
+/// does not start at the root. None when no name starts with it, or none
+/// adds to it.
+fn completed(line: &str, directory: &str, tree: &mut impl Tree) -> Option<String> {
+    let start = line.rfind(' ').map_or(0, |at| at + 1);
+    let word = &line[start..];
+    let (folder, begun) = match word.rfind('/') {
+        Some(at) => (&word[..=at], &word[at + 1..]),
+        None => ("", word),
+    };
+    let listed = if folder.starts_with('/') {
+        String::from(folder)
+    } else {
+        format!("{}/{folder}", directory.trim_end_matches('/'))
+    };
+    let begun_upper = begun.to_uppercase();
+    let mut names = tree.names(&listed);
+    names.retain(|n| n != "." && n != ".." && n.to_uppercase().starts_with(&begun_upper));
+    names.sort_by_cached_key(|name| name.to_uppercase());
+    let first = names.first()?;
+    let agreed = first
+        .char_indices()
+        .map(|(at, c)| at + c.len_utf8())
+        .take_while(|&end| {
+            let head = first[..end].to_uppercase();
+            names.iter().all(|n| n.to_uppercase().starts_with(&head))
+        })
+        .last()
+        .unwrap_or(0);
+    let done = format!("{}{folder}{}", &line[..start], &first[..agreed]);
+    (done.chars().count() > line.chars().count()).then_some(done)
+}
+
 /// The paths `pattern` matches in `tree`, from `directory` when it does
 /// not start at the root. Each part between slashes with `*` or `?` is
 /// matched against the names in the directory it is in, in the order of
@@ -480,6 +526,15 @@ fn typed() -> u8 {
             Edit::Type(c) => program::write(c.encode_utf8(&mut room)),
             Edit::Erase => program::write("\u{8}"),
             Edit::Recall { erase, with } => program::write(&("\u{8}".repeat(erase) + &with)),
+            Edit::Complete => match completed(&editor.line, &program::directory(), &mut System) {
+                Some(line) => match editor.replace(line) {
+                    Edit::Recall { erase, with } => {
+                        program::write(&("\u{8}".repeat(erase) + &with))
+                    }
+                    _ => Ok(()),
+                },
+                None => Ok(()),
+            },
             Edit::Run(line) => {
                 let _ = program::write("\n");
                 typed.push_str(&line);
@@ -1509,6 +1564,66 @@ mod tests {
     }
 
     #[test]
+    fn tab_asks_for_the_line_to_be_completed_which_then_takes_its_place() {
+        let mut e = ran(&[]);
+        e.feed(down(0x06));
+        assert_eq!(e.feed(down(0x2b)), Edit::Complete, "tab types no tab");
+        assert_eq!(e.line, "c");
+        assert_eq!(e.replace("cat ".into()), recalled(1, "cat "));
+        assert_eq!(e.feed(down(0x28)), Edit::Run("cat ".into()));
+    }
+
+    #[test]
+    fn a_word_completes_to_the_name_it_starts_or_as_far_as_they_agree() {
+        let mut tree = Host::new(
+            "complete",
+            &[
+                "System/Boot/readme.txt",
+                "System/Boot/ready.txt",
+                "System/made.meri",
+                "System/x/",
+            ],
+        );
+        let mut done = |line: &str, directory: &str| completed(line, directory, &mut tree);
+        assert_eq!(
+            done("cat /System/ma", "/").as_deref(),
+            Some("cat /System/made.meri")
+        );
+        assert_eq!(
+            done("cat /system/MA", "/").as_deref(),
+            Some("cat /system/made.meri")
+        );
+        assert_eq!(
+            done("cat Boot/rea", "/System").as_deref(),
+            Some("cat Boot/read"),
+            "as far as they agree"
+        );
+        assert_eq!(done("cat Boot/read", "/System"), None, "nothing to add");
+        assert_eq!(
+            done("cat Boot/readm", "/System/").as_deref(),
+            Some("cat Boot/readme.txt")
+        );
+        assert_eq!(done("cat /System/zz", "/"), None);
+        assert_eq!(done("ls /Sys", "/").as_deref(), Some("ls /System"));
+        let mut cases = Host::new("spelled", &["Rea_b", "rea_a"]);
+        assert_eq!(
+            completed("re", "/", &mut cases).as_deref(),
+            Some("rea_"),
+            "spelled as the first of them in capitals"
+        );
+        assert_eq!(
+            done("x", "/System").as_deref(),
+            None,
+            "the one name it starts, and no more"
+        );
+        assert_eq!(
+            done("echo /System/", "/"),
+            None,
+            "names that agree on nothing add nothing"
+        );
+    }
+
+    #[test]
     fn keys_that_type_nothing_change_nothing() {
         assert_eq!(
             edits(&[down(0x52), down(0x29), down(0x3a), up(0x04)]),
@@ -1798,7 +1913,9 @@ mod tests {
     /// among its temporary files, for patterns to match against; gone once
     /// dropped. Paths go from the tree's root and are found in capitals,
     /// as Meridian's tree of files finds them, and it keeps every path it
-    /// was asked to list or to find.
+    /// was asked to list or to find. It lists names the other way round
+    /// from the order the shell wants, so nothing leans on how a disk
+    /// happens to keep them.
     struct Host {
         root: std::path::PathBuf,
         listed: Vec<String>,
@@ -1858,13 +1975,16 @@ mod tests {
     impl Tree for Host {
         fn names(&mut self, path: &str) -> Vec<String> {
             self.listed.push(path.into());
-            self.find(path)
+            let mut names: Vec<String> = self
+                .find(path)
                 .and_then(|at| std::fs::read_dir(at).ok())
                 .map(|dir| {
                     dir.map(|e| e.unwrap().file_name().into_string().unwrap())
                         .collect()
                 })
-                .unwrap_or_default()
+                .unwrap_or_default();
+            names.sort_by_cached_key(|n| std::cmp::Reverse(n.to_uppercase()));
+            names
         }
 
         fn has(&mut self, path: &str) -> bool {

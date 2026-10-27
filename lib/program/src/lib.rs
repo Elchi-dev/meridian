@@ -24,6 +24,7 @@ pub mod checks;
 pub mod layout;
 #[allow(unsafe_code)]
 mod raw;
+pub mod start;
 
 pub use raw::Allocator;
 

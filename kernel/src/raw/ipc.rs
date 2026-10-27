@@ -1,6 +1,6 @@
 //! Channels as kernel objects, in a table of slots. A handle to a channel
-//! end stands for its [`Object`] number, and a channel goes once both its
-//! ends are closed. An object a message carries is closed along with the
+//! end stands for its [`Object`] number, an end closes with the last
+//! handle to it, and a channel goes once both its ends are closed. An object a message carries is closed along with the
 //! end the message waits for, should nobody take it.
 
 use alloc::boxed::Box;
@@ -63,9 +63,19 @@ pub fn receive(object: u64, into: &mut [u8]) -> Result<(usize, Option<Attachment
     on_end(object, |c, end| c.receive(end, into))
 }
 
-/// Closes the end `object` stands for; once both ends are closed, the
-/// channel goes. The objects of messages that waited for it are closed
-/// too, and theirs in turn.
+/// Has one more handle stand for the end `object` stands for.
+///
+/// # Errors
+///
+/// [`Error::Closed`] when it is no channel end, or closed.
+pub fn hold(object: u64) -> Result<(), Error> {
+    on_end(object, Channel::hold)
+}
+
+/// Takes away a handle that stood for the end `object` stands for, which
+/// closes with its last; once both ends are closed, the channel goes. The
+/// objects of messages that waited for it are closed too, and theirs in
+/// turn.
 pub fn close(object: u64) {
     let mut closing = Vec::from([object]);
     while let Some(object) = closing.pop() {

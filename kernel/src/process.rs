@@ -166,6 +166,16 @@ impl<const N: usize> Table<N> {
             .filter(|e| e.state == State::Running)
     }
 
+    /// One more handle stands for process `slot`. False when there is no
+    /// such process.
+    pub fn hold(&mut self, slot: usize) -> bool {
+        let Some(e) = self.entries.get_mut(slot).and_then(Option::as_mut) else {
+            return false;
+        };
+        e.handles = e.handles.saturating_add(1);
+        true
+    }
+
     /// A handle that stood for process `slot` was closed. Its slot goes
     /// once it ended and no handle stands for it.
     pub fn close(&mut self, slot: usize) {
@@ -228,6 +238,26 @@ mod tests {
             None,
             "and once it closed the handle, it is gone"
         );
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn a_process_that_ended_stays_until_its_last_handle_closed() {
+        let mut t = Table::<4>::new();
+        let slot = t.create().unwrap();
+        assert!(t.hold(slot) && t.hold(slot));
+        t.end(slot, Outcome::Exited(3));
+        t.close(slot);
+        t.close(slot);
+        assert_eq!(
+            t.state(slot),
+            Some(State::Ended(Outcome::Exited(3))),
+            "one handle is left"
+        );
+        t.close(slot);
+        assert_eq!(t.state(slot), None);
+        assert!(!t.hold(slot), "nothing to hold once it went");
+        assert!(!t.hold(9), "nor where no slot is");
         assert!(t.is_empty());
     }
 

@@ -187,8 +187,11 @@ every call checks for, or while it waits for another process, so even
 one that never calls the kernel ends at the next tick. `kernel::process` keeps every
 process a handle can stand for and frees it only once it ended and the
 last handle to it is closed, so its parent can ask for as long as it
-likes. Closing a handle closes whatever kind of object it stands for,
-also when a channel closes the handles that waited in it.
+likes. DUPLICATE answers a second handle to what a handle stands for,
+with its rights (decision record 0019), and every object counts the
+handles that stand for it, those waiting in messages included: a channel
+end, an open file and a process each close with the last one, also when
+a channel closes the handles that waited in it.
 
 **Memory for programs.** MAP gives a program fresh pages, zeroed,
 writable and never executable, from 64 GiB on; UNMAP gives them back, and

@@ -30,11 +30,13 @@ static MOUNTED: Spin<[Option<Volume<Reader, Writes>>; VOLUMES]> =
     Spin::new([const { None }; VOLUMES]);
 static MOUNTS: Spin<Mounts<VOLUMES>> = Spin::new(Mounts::new());
 
-/// An open file: the volume it is on, and what was opened there.
+/// An open file: the volume it is on, what was opened there, and how
+/// many handles stand for it.
 #[derive(Clone, Copy)]
 struct Open {
     volume: usize,
     opened: Opened,
+    holders: u32,
 }
 
 static OPEN: Spin<[Option<Open>; FILES]> = Spin::new([None; FILES]);
@@ -106,7 +108,11 @@ pub fn open(path: &str, token: &Token, wanted: u32, how: u64) -> Result<usize, E
     })?;
     let mut open = OPEN.lock();
     let slot = open.iter().position(Option::is_none).ok_or(Error::NoRoom)?;
-    open[slot] = Some(Open { volume, opened });
+    open[slot] = Some(Open {
+        volume,
+        opened,
+        holders: 1,
+    });
     Ok(slot)
 }
 
@@ -194,9 +200,28 @@ pub fn info(slot: usize) -> Option<(u64, bool)> {
     Some((u64::from(entry.size), entry.directory))
 }
 
-/// Closes the open file in `slot`.
+/// One more handle stands for the open file in `slot`. False when none
+/// is open there.
+pub fn hold(slot: usize) -> bool {
+    let mut open = OPEN.lock();
+    let Some(file) = open.get_mut(slot).and_then(Option::as_mut) else {
+        return false;
+    };
+    file.holders = file.holders.saturating_add(1);
+    true
+}
+
+/// Takes away a handle that stood for the open file in `slot`, and with
+/// the last closes it.
 pub fn close(slot: usize) {
-    if let Some(file) = OPEN.lock().get_mut(slot) {
-        *file = None;
+    let mut open = OPEN.lock();
+    let Some(entry) = open.get_mut(slot) else {
+        return;
+    };
+    if let Some(file) = entry.as_mut() {
+        file.holders = file.holders.saturating_sub(1);
+        if file.holders == 0 {
+            *entry = None;
+        }
     }
 }

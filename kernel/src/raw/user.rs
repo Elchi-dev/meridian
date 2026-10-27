@@ -418,6 +418,7 @@ pub fn system_call(frame: &mut Frame) {
             Err(e) => e,
         },
         Call::Close(handle) => close(handle).map_or_else(|e| e, |()| 0),
+        Call::Duplicate(handle) => duplicate(handle).unwrap_or_else(|e| e),
         Call::Map(pages) => map(pages).unwrap_or_else(|e| e),
         Call::Spawn {
             len,
@@ -546,7 +547,19 @@ fn log_ended(name: &[u8], how: core::fmt::Arguments<'_>) {
     }
 }
 
-/// Closes the object `object` stands for, whatever its kind.
+/// Has one more handle stand for the object `object`, whatever its kind,
+/// and says whether it is there to.
+fn hold_object(object: u64) -> bool {
+    match Object::from_number(object) {
+        Some(Object::ChannelEnd { .. }) => ipc::hold(object).is_ok(),
+        Some(Object::Process { slot }) => OBJECTS.lock().hold(slot),
+        Some(Object::File { slot }) => super::vfs::hold(slot),
+        None => false,
+    }
+}
+
+/// Takes away a handle that stood for the object `object`, whatever its
+/// kind, which closes with its last.
 pub fn close_object(object: u64) {
     match Object::from_number(object) {
         Some(Object::ChannelEnd { .. }) => ipc::close(object),
@@ -996,7 +1009,23 @@ fn info(handle: u64) -> Result<(u64, bool), u64> {
     super::vfs::info(slot).ok_or(syscall::BAD_HANDLE)
 }
 
-/// Closes `handle`, and the channel end it stood for.
+/// Answers a second handle to what `handle` stands for, with its rights.
+fn duplicate(handle: u64) -> Result<u64, u64> {
+    let handle = handle_of(handle)?;
+    let (object, rights) = with_handles(|t| {
+        let rights = t.rights(handle).map_err(|_| syscall::BAD_HANDLE)?;
+        let object = t.get(handle, rights).map_err(|_| syscall::BAD_HANDLE)?;
+        Ok((object, rights))
+    })?;
+    if !hold_object(object) {
+        return Err(syscall::BAD_HANDLE);
+    }
+    with_handles(|t| t.insert(object, rights).map_err(|_| syscall::NO_ROOM))
+        .map(|copy| u64::from(copy.0))
+        .inspect_err(|_| close_object(object))
+}
+
+/// Closes `handle`, and with the last handle to it what it stood for.
 fn close(handle: u64) -> Result<(), u64> {
     let handle = handle_of(handle)?;
     let object = with_handles(|t| t.close(handle).map_err(|_| syscall::BAD_HANDLE))?;

@@ -88,6 +88,9 @@ pub const WRITE_FILE: u64 = 23;
 pub const REMOVE: u64 = 24;
 /// Makes a directory at the path of the rdi bytes at rsi.
 pub const MAKE_DIRECTORY: u64 = 25;
+/// Answers a second handle to what the handle in rdi stands for, with
+/// the same rights (decision record 0019).
+pub const DUPLICATE: u64 = 26;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -349,6 +352,7 @@ pub enum Call {
         len: u64,
         at: u64,
     },
+    Duplicate(u64),
     Unknown(u64),
 }
 
@@ -419,6 +423,7 @@ impl Call {
             } => (WRITE_FILE, [handle, at, len, offset]),
             Call::Remove { len, at } => (REMOVE, [len, at, 0, 0]),
             Call::MakeDirectory { len, at } => (MAKE_DIRECTORY, [len, at, 0, 0]),
+            Call::Duplicate(handle) => (DUPLICATE, [handle, 0, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -514,6 +519,7 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             len: first,
             at: second,
         },
+        DUPLICATE => Call::Duplicate(first),
         other => Call::Unknown(other),
     }
 }
@@ -561,6 +567,7 @@ mod tests {
             }
         );
         assert_eq!(decode(CLOSE, [7, 2, 3, 0]), Call::Close(7));
+        assert_eq!(decode(DUPLICATE, [9, 2, 3, 4]), Call::Duplicate(9));
         assert_eq!(decode(MAP, [16, 2, 3, 0]), Call::Map(16));
         assert_eq!(
             decode(UNMAP, [0x10_0000_0000, 4, 3, 0]),
@@ -586,7 +593,7 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(26, [1, 2, 3, 0]), Call::Unknown(26));
+        assert_eq!(decode(27, [1, 2, 3, 0]), Call::Unknown(27));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
@@ -635,11 +642,12 @@ mod tests {
                 END_THREAD,
                 WRITE_FILE,
                 REMOVE,
-                MAKE_DIRECTORY
+                MAKE_DIRECTORY,
+                DUPLICATE
             ],
             [
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25
+                23, 24, 25, 26
             ]
         );
     }
@@ -926,7 +934,8 @@ mod tests {
                 len: 8,
                 at: 0x40_8000,
             },
-            Call::Unknown(26),
+            Call::Duplicate(0x1_0003),
+            Call::Unknown(27),
         ];
         for call in calls {
             let (number, args) = call.encode();
@@ -967,6 +976,7 @@ mod tests {
             (WRITE_FILE, 4),
             (REMOVE, 2),
             (MAKE_DIRECTORY, 2),
+            (DUPLICATE, 1),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -989,7 +999,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > MAKE_DIRECTORY,
+                number > DUPLICATE,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");
@@ -1014,6 +1024,7 @@ mod tests {
         };
         assert_eq!(receive.encode(), (RECEIVE, [1, 2, 3, 0]));
         assert_eq!(Call::Close(4).encode(), (CLOSE, [4, 0, 0, 0]));
+        assert_eq!(Call::Duplicate(6).encode(), (DUPLICATE, [6, 0, 0, 0]));
         assert_eq!(Call::Map(5).encode(), (MAP, [5, 0, 0, 0]));
         assert_eq!(
             Call::Unmap { at: 6, pages: 7 }.encode(),

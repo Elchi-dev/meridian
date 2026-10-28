@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 170] = [
+const CHECKS: [(&str, Check); 171] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -187,6 +187,7 @@ const CHECKS: [(&str, Check); 170] = [
     ("tools.uudecode", uudecode_makes_files),
     ("tools.bc", bc_works_out_numbers),
     ("tools.compress", compress_squeezes_files),
+    ("tools.file", file_names_kinds),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2664,14 +2665,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"128\n"
+        b"130\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-four twice",
+        "ls should write the programs' names into the pipe, sixty-five twice",
     )?;
     expect(
         same(
@@ -5311,6 +5312,48 @@ fn compress_squeezes_files() -> Outcome {
             ),
         ),
         "compress should put a file into its name with .Z and back, and keep one it cannot make smaller",
+    )
+}
+
+/// file says what words it cannot take, and names text, empty files,
+/// compressed data, directories, the UEFI loader and Meridian's ELF
+/// programs on a disk.
+fn file_names_kinds() -> Outcome {
+    let checked = same(
+        &shell_on("file; file -x; file /nope")?,
+        &ran(
+            1,
+            b"file: names a file at least\nfile ended with 1\n\
+              file: -x is no option\nfile ended with 1\n\
+              file: /nope: no such file\nfile ended with 1\n",
+        ),
+    );
+    expect(checked, "file should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'hello\\n' > /System/ft || exit 9\n\
+         printf '' > /System/fe; echo abc | compress > /System/fz\n\
+         file /System/ft /System/fe /System/fz /System/Boot /System/Boot/EFI/BOOT/BOOTX64.EFI\n\
+         file /System/Boot/meridian/programs/file.mexec; rm /System/ft /System/fe /System/fz",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/ft: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    let wanted: &[u8] = b"/System/ft: ASCII text\n/System/fe: empty\n\
+        /System/fz: data compressed by compress, codes of up to 16 bits\n\
+        /System/Boot: directory\n\
+        /System/Boot/EFI/BOOT/BOOTX64.EFI: PE32+ UEFI application, x86-64\n\
+        /System/Boot/meridian/programs/file.mexec: ELF 64-bit ";
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said.starts_with(wanted)
+            && said.ends_with(b" for x86-64\n"),
+        "file should name text, an empty file, compressed data, a directory, the loader and its own program",
     )
 }
 

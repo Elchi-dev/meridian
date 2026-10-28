@@ -288,3 +288,7 @@ test = true
 [[example]]
 name = "zcat"
 test = true
+
+[[example]]
+name = "file"
+test = true

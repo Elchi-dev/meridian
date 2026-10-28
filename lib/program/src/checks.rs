@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 133] = [
+const CHECKS: [(&str, Check); 134] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -150,6 +150,7 @@ const CHECKS: [(&str, Check); 133] = [
     ("tools.paste", paste_joins_lines),
     ("tools.fold", fold_breaks_lines),
     ("tools.nl", nl_numbers_lines),
+    ("tools.od", od_dumps_bytes),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2600,14 +2601,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"52\n"
+        b"54\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-six twice",
+        "ls should write the programs' names into the pipe, twenty-seven twice",
     )?;
     expect(
         same(
@@ -4165,6 +4166,67 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// od writes two-byte octal words unless told otherwise, lines up the
+/// types it is given, reads on past a file it cannot open, skips and
+/// stops where it is told, and refuses what it cannot do.
+fn od_dumps_bytes() -> Outcome {
+    let checked = same(
+        &shell_on("printf 'abc\\n' | od; printf 'ab\\n' | od -A n -t x1 -c; od -t x3")?,
+        &ran(
+            1,
+            b"0000000 061141 005143\n0000004\n\
+              \x20 61  62  0a\n   a   b  \\n\n\
+              od: numbers are 1, 2, 4 or 8 bytes, not 3\nod ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "od should write octal words, line up two types, and refuse a size no number has",
+    )?;
+    let checked = same(
+        &shell_on("printf 'ab' | od -c /nope -; printf 'ab' | od -j 3; echo $?")?,
+        &ran(
+            0,
+            b"od: /nope: no such file\n0000000   a   b\n0000002\nod ended with 1\n\
+              od: -j skips past the end of the input\nod ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "od should read on past a file it cannot open, and say when it cannot skip so far",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let program = "/System/Boot/meridian/programs/od.mexec";
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "od -c -N 4 {program}; od -A x -t x2 -j 16 -N 4 {program}\n\
+         wc < {boot}; od -A d -c {boot} | tail -n 1"
+    ))?;
+    let text = core::str::from_utf8(&said).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    // wc writes the lines, the words and then the bytes.
+    let bytes = lines
+        .get(4)
+        .and_then(|l| l.split_whitespace().nth(2)?.parse::<u64>().ok());
+    let end = lines.get(5).and_then(|l| l.parse::<u64>().ok());
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && lines.len() == 6
+            && lines[..4]
+                == [
+                    "0000000 177   E   L   F",
+                    "0000004",
+                    "000010 0003 003e",
+                    "000014",
+                ]
+            && bytes.is_some_and(|bytes| bytes > 16)
+            && bytes == end,
+        "od should read a program's first bytes, skip to its type and machine, and end a whole file at its size",
     )
 }
 

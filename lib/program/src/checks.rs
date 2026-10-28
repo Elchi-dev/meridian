@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 166] = [
+const CHECKS: [(&str, Check); 167] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -183,6 +183,7 @@ const CHECKS: [(&str, Check); 166] = [
     ("tools.touch", touch_makes_files),
     ("tools.unlink", unlink_removes_a_file),
     ("tools.ed", ed_edits_files),
+    ("tools.uuencode", uuencode_writes_text),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2660,14 +2661,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"116\n"
+        b"118\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-eight twice",
+        "ls should write the programs' names into the pipe, fifty-nine twice",
     )?;
     expect(
         same(
@@ -5112,6 +5113,35 @@ fn ed_edits_files() -> Outcome {
             &ran(0, b"diff ended with 1\na\nB\nc\nd\n8\n8\nX\nB\nX\nd\n"),
         ),
         "ed should edit a file with diff's script, and write it back changed",
+    )
+}
+
+/// uuencode writes its input as text in both encodings, past a message,
+/// and nothing for a file not there.
+fn uuencode_writes_text() -> Outcome {
+    let checked = same(
+        &shell_on("echo hello | uuencode x; echo hello | uuencode -m - y")?,
+        &ran(
+            0,
+            b"begin 644 x\n&:&5L;&\\*\n`\nend\nbegin-base64 644 y\naGVsbG8K\n====\n",
+        ),
+    );
+    expect(
+        checked,
+        "uuencode should write its input in the historical encoding and in base64",
+    )?;
+    let checked = same(
+        &shell_on("printf '%0200d' 0 | uuencode -m x | tail -n 2; uuencode /nope x; uuencode")?,
+        &ran(
+            1,
+            b"MDAwMDAwMDAwMDAwMDAwMDAwMDA=\n====\n\
+              uuencode: /nope: no such file\nuuencode ended with 1\n\
+              uuencode: wants the name to decode to, after the file if there is one\nuuencode ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "uuencode should read past one message, write nothing for a file not there, and say what it wants",
     )
 }
 

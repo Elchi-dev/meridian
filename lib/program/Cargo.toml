@@ -262,3 +262,7 @@ test = true
 [[example]]
 name = "ed"
 test = true
+
+[[example]]
+name = "uuencode"
+test = true

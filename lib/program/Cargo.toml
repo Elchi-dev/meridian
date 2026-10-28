@@ -195,3 +195,7 @@ test = true
 [[example]]
 name = "find"
 test = true
+
+[[example]]
+name = "csplit"
+test = true

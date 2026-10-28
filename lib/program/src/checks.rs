@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 150] = [
+const CHECKS: [(&str, Check); 151] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -167,6 +167,7 @@ const CHECKS: [(&str, Check); 150] = [
     ("tools.diff", diff_on_files),
     ("tools.patch", patch_puts_diffs_in),
     ("tools.find", find_walks_trees),
+    ("tools.csplit", csplit_cuts_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2644,14 +2645,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"84\n"
+        b"86\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-two twice",
+        "ls should write the programs' names into the pipe, forty-three twice",
     )?;
     expect(
         same(
@@ -4465,6 +4466,58 @@ fn find_walks_trees() -> Outcome {
         ended == Ok(Ended::Exited(0))
             && said == b"/System/W/a\n/System/W/s/b\n/System/W/s\n/System/W\n2 /System/W/a\n2 /System/W/s/b\n",
         "find should walk a tree it is given, its files first with -depth",
+    )
+}
+
+/// csplit says what words it cannot take, cuts a file of more than one
+/// message at a line, before a match and past a skipped part, saying the
+/// size of each file, and removes what it made when a pattern finds no
+/// line.
+fn csplit_cuts_files() -> Outcome {
+    let checked = same(
+        &shell_on("csplit; csplit f; csplit -x f 1")?,
+        &ran(
+            1,
+            b"csplit: cuts a file at the lines it is told\ncsplit ended with 1\n\
+              csplit: cuts a file at the lines it is told\ncsplit ended with 1\n\
+              csplit: -x is no option\ncsplit ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "csplit should say what words it cannot take, and end with 1",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/C || exit 9\n\
+         cd /System/C; printf 'l%s\\n' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 > in\n\
+         csplit in 10 /l25/ %l35%; head -n 1 xx02",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/C: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"27\n60\n24\nl35\n",
+        "csplit should cut a file at a line, before a match and past a skipped part",
+    )?;
+    let checked = same(
+        &shell_on(
+            "cd /System/C; csplit -f e in /nope/; echo $?; test -f e00; echo $?\n\
+             rm in xx00 xx01 xx02; cd /; rd /System/C",
+        )?,
+        &ran(
+            0,
+            b"151\ncsplit: /nope/: no line matches it\ncsplit ended with 1\n1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "csplit should remove what it made when a pattern finds no line",
     )
 }
 

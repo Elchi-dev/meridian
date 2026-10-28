@@ -37,7 +37,6 @@ pub struct Big {
 /// `n`, which is below [`BASE`], as a limb.
 #[allow(clippy::cast_possible_truncation)]
 fn limb(n: u64) -> u32 {
-    debug_assert!(n < WIDE);
     n as u32
 }
 
@@ -78,7 +77,7 @@ impl Big {
     /// The number the decimal `digits`, most significant first, make.
     #[must_use]
     pub fn from_digits(digits: &[u8]) -> Big {
-        let mut limbs = Vec::with_capacity(digits.len() / DIGITS + 1);
+        let mut limbs = Vec::new();
         for chunk in digits.rchunks(DIGITS) {
             let mut l = 0;
             for &d in chunk {
@@ -93,7 +92,7 @@ impl Big {
     /// zero.
     #[must_use]
     pub fn digits(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.limbs.len() * DIGITS);
+        let mut out = Vec::new();
         for (at, &l) in self.limbs.iter().rev().enumerate() {
             let mut held = [0u8; DIGITS];
             let mut l = l;
@@ -124,15 +123,12 @@ impl Big {
 
     #[must_use]
     pub fn add(&self, other: &Big) -> Big {
-        let (long, short) = if self.limbs.len() >= other.limbs.len() {
-            (self, other)
-        } else {
-            (other, self)
-        };
-        let mut limbs = Vec::with_capacity(long.limbs.len() + 1);
+        let at = |big: &Big, at: usize| u64::from(big.limbs.get(at).copied().unwrap_or(0));
+        let len = self.limbs.len().max(other.limbs.len());
+        let mut limbs = Vec::with_capacity(len + 1);
         let mut carry = 0;
-        for (at, &l) in long.limbs.iter().enumerate() {
-            let sum = u64::from(l) + u64::from(short.limbs.get(at).copied().unwrap_or(0)) + carry;
+        for i in 0..len {
+            let sum = at(self, i) + at(other, i) + carry;
             limbs.push(limb(sum % WIDE));
             carry = sum / WIDE;
         }
@@ -162,9 +158,6 @@ impl Big {
 
     #[must_use]
     pub fn mul(&self, other: &Big) -> Big {
-        if self.is_zero() || other.is_zero() {
-            return Big::default();
-        }
         let mut wide = vec![0u64; self.limbs.len() + other.limbs.len()];
         for (i, &a) in self.limbs.iter().enumerate() {
             let mut carry = 0;
@@ -221,25 +214,17 @@ impl Big {
             return (quotient, Big::from_u64(u64::from(rest)));
         }
         // Scaled so the divisor's top limb is at least half the base, a
-        // quotient limb guessed from the top two limbs is at most two too
+        // quotient limb guessed from the top limbs is at most two too
         // great.
         let scale = BASE / (divisor.limbs[width - 1] + 1);
         let mut left = self.mul_small(scale).limbs;
         left.resize(self.limbs.len() + 1, 0);
         let by = divisor.mul_small(scale).limbs;
         let mut quotient = vec![0u32; self.limbs.len() - width + 1];
-        let (top, next) = (u64::from(by[width - 1]), u64::from(by[width - 2]));
+        let top = u64::from(by[width - 1]);
         for place in (0..quotient.len()).rev() {
             let high = u64::from(left[place + width]) * WIDE + u64::from(left[place + width - 1]);
             let mut guess = high / top;
-            let mut over = high % top;
-            while guess >= WIDE || guess * next > over * WIDE + u64::from(left[place + width - 2]) {
-                guess -= 1;
-                over += top;
-                if over >= WIDE {
-                    break;
-                }
-            }
             // Takes guess times the divisor off the limbs from place.
             let mut borrow: i64 = 0;
             let mut carry: u64 = 0;
@@ -250,9 +235,9 @@ impl Big {
                 borrow = i64::from(diff < 0);
                 left[place + i] = limb(diff.rem_euclid(i64::from(BASE)).unsigned_abs());
             }
-            let diff = i64::from(left[place + width]) - borrow - i64::from(limb(carry));
-            if diff < 0 {
-                // One too great: the divisor goes back once.
+            let mut high_limb = i64::from(left[place + width]) - borrow - i64::from(limb(carry));
+            // Taken too often, the divisor goes back until it was not.
+            while high_limb < 0 {
                 guess -= 1;
                 let mut carry = 0;
                 for (i, &b) in by.iter().enumerate() {
@@ -260,10 +245,9 @@ impl Big {
                     left[place + i] = limb(sum % WIDE);
                     carry = sum / WIDE;
                 }
-                left[place + width] = 0;
-            } else {
-                left[place + width] = limb(diff.unsigned_abs());
+                high_limb += i64::from(limb(carry));
             }
+            left[place + width] = limb(high_limb.unsigned_abs());
             quotient[place] = limb(guess);
         }
         left.truncate(width);
@@ -293,12 +277,11 @@ impl Big {
     /// `self` divided by ten to the power `k`, what is left dropped.
     #[must_use]
     pub fn shr10(&self, k: usize) -> Big {
-        let whole = k / DIGITS;
-        if whole >= self.limbs.len() {
+        let Some(rest) = self.limbs.get(k / DIGITS..) else {
             return Big::default();
-        }
+        };
         let shifted = Big {
-            limbs: self.limbs[whole..].to_vec(),
+            limbs: rest.to_vec(),
         };
         shifted.divrem_small(TENS[k % DIGITS]).0
     }
@@ -546,5 +529,37 @@ mod tests {
         }
         let ten_to_the_hundred = Big::pow10(100);
         assert_eq!(ten_to_the_hundred.sqrt(), Big::pow10(50));
+    }
+
+    #[test]
+    fn division_at_the_edges_of_its_limbs_is_as_u128_has_it() {
+        // Limbs at their least, their greatest and half the base, which
+        // make a guessed quotient limb too great and the divisor go back.
+        let edges = [0u128, 1, 499_999_999, 500_000_000, 999_999_998, 999_999_999];
+        let whole = |limbs: &[u128]| {
+            limbs
+                .iter()
+                .rev()
+                .fold(0u128, |n, &l| n * 1_000_000_000 + l)
+        };
+        let mut checked = 0;
+        for &a in &edges {
+            for &b in &edges {
+                for &c in &edges {
+                    for &d in &edges {
+                        for &e in &edges[1..] {
+                            for &f in &edges[2..] {
+                                let n = whole(&[a, b, c, d]);
+                                let m = whole(&[e, f]);
+                                let (q, r) = big(n).divrem(&big(m));
+                                assert_eq!((small(&q), small(&r)), (n / m, n % m), "{n} / {m}");
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 6 * 6 * 6 * 6 * 5 * 4);
     }
 }

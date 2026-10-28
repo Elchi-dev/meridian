@@ -45,7 +45,7 @@ impl Number {
 
     #[must_use]
     pub fn from_i64(n: i64) -> Number {
-        Number::new(n < 0, Big::from_u64(n.unsigned_abs()), 0)
+        Number::new(n.is_negative(), Big::from_u64(n.unsigned_abs()), 0)
     }
 
     #[must_use]
@@ -72,10 +72,9 @@ impl Number {
     /// off, or zeros put on.
     #[must_use]
     pub fn rescaled(&self, scale: usize) -> Number {
-        let magnitude = if scale >= self.scale {
-            self.magnitude.shl10(scale - self.scale)
-        } else {
-            self.magnitude.shr10(self.scale - scale)
+        let magnitude = match scale.checked_sub(self.scale) {
+            Some(more) => self.magnitude.shl10(more),
+            None => self.magnitude.shr10(self.scale - scale),
         };
         Number::new(self.negative, magnitude, scale)
     }
@@ -114,10 +113,10 @@ impl Number {
         if self.negative == other.negative {
             return Number::new(self.negative, a.add(&b), scale);
         }
-        if a >= b {
-            Number::new(self.negative, a.sub(&b), scale)
-        } else {
+        if a.cmp(&b) == Ordering::Less {
             Number::new(other.negative, b.sub(&a), scale)
+        } else {
+            Number::new(self.negative, a.sub(&b), scale)
         }
     }
 
@@ -152,16 +151,12 @@ impl Number {
     fn quotient(&self, other: &Number, scale: usize) -> Number {
         // Both times what makes the quotient a whole number of `scale`
         // digits after the point.
-        let (dividend, divisor) = if other.scale + scale >= self.scale {
-            (
-                self.magnitude.shl10(other.scale + scale - self.scale),
-                other.magnitude.clone(),
-            )
-        } else {
-            (
+        let (dividend, divisor) = match (other.scale + scale).checked_sub(self.scale) {
+            Some(up) => (self.magnitude.shl10(up), other.magnitude.clone()),
+            None => (
                 self.magnitude.clone(),
                 other.magnitude.shl10(self.scale - other.scale - scale),
-            )
+            ),
         };
         let (magnitude, _) = dividend.divrem(&divisor);
         Number::new(self.negative != other.negative, magnitude, scale)
@@ -209,14 +204,15 @@ impl Number {
         let mut power = Big::from_u64(1);
         let mut square = self.magnitude.clone();
         let mut left = times;
-        while left > 0 {
+        loop {
             if left & 1 == 1 {
                 power = power.mul(&square);
             }
             left >>= 1;
-            if left > 0 {
-                square = square.mul(&square);
+            if left == 0 {
+                break;
             }
+            square = square.mul(&square);
         }
         let negative = self.negative && times & 1 == 1;
         let exact = Number::new(negative, power, self.scale * times);
@@ -268,12 +264,8 @@ impl Number {
         if self.is_zero() {
             return String::from("0");
         }
-        let mut digits = self.magnitude.digits();
-        if digits.len() < self.scale {
-            let mut zeros = alloc::vec![0; self.scale - digits.len()];
-            zeros.extend_from_slice(&digits);
-            digits = zeros;
-        }
+        let mut digits = alloc::vec![0; self.scale.saturating_sub(self.magnitude.digit_count())];
+        digits.extend(self.magnitude.digits());
         let point = digits.len() - self.scale;
         let mut text = String::with_capacity(digits.len() + 2);
         if self.negative {
@@ -487,6 +479,16 @@ mod tests {
             num("2").pow(&num("99999999999999999999999"), 0).err(),
             Some(Fault::TooGreat),
             "past a u64"
+        );
+        assert_eq!(
+            shown(num("1").pow(&num("10000000"), 0)),
+            Ok("1".into()),
+            "as many digits as a power may have"
+        );
+        assert_eq!(
+            num("1").pow(&num("10000001"), 0).err(),
+            Some(Fault::TooGreat),
+            "and one more"
         );
         let big = num("3").pow(&num("1000"), 0).unwrap();
         assert_eq!(big.length(), 478, "3^1000 has 478 digits");

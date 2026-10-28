@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      mutate:
+        description: "Files to mutate, from the repository's root, parted by spaces"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -46,9 +51,9 @@ jobs:
 
   mutate:
     name: mutation of what changed
-    # Pushes only: they say which commit came before, so the files they
-    # changed are known.
-    if: github.event_name == 'push'
+    # Pushes, which say which commit came before, so the files they
+    # changed are known; and runs by hand that name the files.
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mutate != '')
     needs: linux
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -73,11 +78,17 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Mutate the files this push changed
+      - name: Mutate the files this push changed, or those asked for
         working-directory: tools/sextant
         env:
           BEFORE: ${{ github.event.before }}
+          FILES: ${{ inputs.mutate }}
         run: |
+          if [ -n "$FILES" ]; then
+            set -f
+            go run ./cmd/sextant mutate --jobs 4 $(printf '../../%s ' $FILES)
+            exit
+          fi
           # A new branch, or a push that rewrote history, has no commit
           # before it here; the parent of the newest one stands in.
           if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then BEFORE=HEAD~1; fi
@@ -85,7 +96,7 @@ jobs:
 
   sextant:
     name: sextant on ${{ matrix.os }}
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mutate == '') || github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:

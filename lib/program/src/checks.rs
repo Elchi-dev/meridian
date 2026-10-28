@@ -4524,10 +4524,11 @@ fn commands_as_programs() -> Outcome {
     let kinds = statuses(&[
         &alloc::format!("{test} -d {p}; echo $?; {test} -f {p}; echo $?; {test} -e /nope; echo $?"),
         &alloc::format!("{test} -t 1; echo $?; {test} -t 2; echo $?"),
+        &alloc::format!("{test} -t 0; echo $?; {test} -t 5; echo $?"),
     ])?;
     expect(
-        kinds == "0 1 1 1 1",
-        "test as a program should know a directory, a file not there, and a pipe that is no terminal",
+        kinds == "0 1 1 1 1 0 1",
+        "test as a program should know a directory, a file not there, a pipe that is no terminal, the console that is one, and no stream past 2",
     )?;
     // What went wrong goes to the program's standard error.
     let checked = same(

@@ -5,6 +5,7 @@ import (
 	pictures "image"
 	"image/png"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -907,5 +908,67 @@ func checkCrashScreen(t *testing.T, path, want string) {
 	text := string(out)
 	if !strings.HasPrefix(text, "Meridian ") || !strings.Contains(text, want) {
 		t.Fatalf("the code on %s says %q", filepath.Base(path), text)
+	}
+}
+
+// bareMachine starts QEMU with nothing but a monitor, on a free local
+// address it listens on by the time this returns, and stops it when the
+// test ends.
+func bareMachine(t *testing.T) (*exec.Cmd, string) {
+	t.Helper()
+	bin, err := exec.LookPath("qemu-system-x86_64")
+	need(t, err == nil, "qemu-system-x86_64")
+	address, err := freeLocalAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "-machine", "q35", "-display", "none", "-nodefaults",
+		"-monitor", "tcp:"+address+",server=on,wait=off,nodelay=on")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	for start := time.Now(); ; time.Sleep(50 * time.Millisecond) {
+		probe, err := net.Dial("tcp", address)
+		if err == nil {
+			probe.Close()
+			return cmd, address
+		}
+		if time.Since(start) > 30*time.Second {
+			t.Fatalf("QEMU never listened on %s: %v", address, err)
+		}
+	}
+}
+
+// Each key waits for the monitor's prompt, so a long run of them all
+// arrives, and a key QEMU does not know stops the run with what QEMU said
+// instead of going missing.
+func TestTheMonitorAnswersEveryKey(t *testing.T) {
+	_, address := bareMachine(t)
+	w := &scriptWatcher{address: address, patience: 30 * time.Second}
+	t.Cleanup(func() {
+		if w.monitor != nil {
+			w.monitor.Close()
+		}
+	})
+	for i := range 500 {
+		key := []string{"a", "shift-s", "ret", "slash"}[i%4]
+		if err := w.press(key); err != nil {
+			t.Fatalf("key %d: %v", i, err)
+		}
+	}
+	err := w.press("nope")
+	if err == nil || !strings.Contains(err.Error(), `with "invalid parameter: nope"`) {
+		t.Fatalf("got %v", err)
+	}
+	if err := w.press("a"); err != nil {
+		t.Fatalf("after a key it did not know: %v", err)
+	}
+	err = w.command("screendump " + filepath.Join(t.TempDir(), "x.ppm"))
+	if err == nil || !strings.Contains(err.Error(), "no console") {
+		t.Fatalf("a machine without a display has no screen: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -108,7 +109,9 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		m.Monitor = "tcp:" + monitorAddr + ",server=on,wait=off"
+		// Without nodelay, QEMU holds back the small pieces it answers in
+		// until the last is acknowledged, and a key took fifty milliseconds.
+		m.Monitor = "tcp:" + monitorAddr + ",server=on,wait=off,nodelay=on"
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
@@ -132,7 +135,7 @@ func runOnce(ctx context.Context, m Machine, opts Options) (Result, error) {
 
 	watcher := &scriptWatcher{
 		steps: opts.Script, address: monitorAddr, stop: cancel, stopAfter: opts.StopAfterScript, answer: opts.AnswerPress,
-		serialIn: stdin, screens: opts.Screens, work: work,
+		serialIn: stdin, screens: opts.Screens, work: work, patience: monitorPatience,
 	}
 	var stalled atomic.Bool
 	if opts.FirmwareStall > 0 {
@@ -215,7 +218,21 @@ type scriptWatcher struct {
 	screens  string
 	work     string
 	saved    []string
+
+	// replies reads what the monitor answers, and patience is how long
+	// one answer may take.
+	replies  *bufio.Reader
+	patience time.Duration
 }
+
+// monitorPrompt is what QEMU's monitor writes once it ran a command and
+// waits for the next.
+const monitorPrompt = "(qemu) "
+
+// monitorPatience is how long a run waits for the monitor to answer one
+// command. QEMU answers a key in well under a second; a minute leaves
+// room for a runner that is busy elsewhere.
+const monitorPatience = time.Minute
 
 func (w *scriptWatcher) read(r io.Reader, live io.Writer) string {
 	var all strings.Builder
@@ -348,9 +365,14 @@ func (w *scriptWatcher) press(key string) error {
 	return nil
 }
 
-// command sends one line to the QEMU monitor, connecting first if needed.
-// QEMU listens on it from its start, long before the machine asks for a
-// key or a screen, so one try connects.
+// command sends one line to the QEMU monitor, connecting first if needed,
+// and waits until the monitor wrote its prompt again: the command ran,
+// and what it answered was read. The monitor writes each line back once
+// for every character it takes, so a run's keys come back as hundreds of
+// kilobytes; nobody reading them, it stopped taking commands once the
+// socket was full, and every key after that was lost. QEMU listens on it
+// from its start, long before the machine asks for a key or a screen, so
+// one try connects.
 func (w *scriptWatcher) command(line string) error {
 	if w.monitor == nil {
 		monitor, err := net.Dial("tcp", w.address)
@@ -358,9 +380,43 @@ func (w *scriptWatcher) command(line string) error {
 			return fmt.Errorf("connect to the QEMU monitor at %s: %w", w.address, err)
 		}
 		w.monitor = monitor
+		w.replies = bufio.NewReader(monitor)
+		// It greets with its version and a first prompt.
+		if _, err := w.reply(); err != nil {
+			return fmt.Errorf("the QEMU monitor at %s did not greet: %w", w.address, err)
+		}
 	}
-	_, err := fmt.Fprintf(w.monitor, "%s\n", line)
-	return err
+	if _, err := fmt.Fprintf(w.monitor, "%s\n", line); err != nil {
+		return err
+	}
+	answer, err := w.reply()
+	if err != nil {
+		return fmt.Errorf("the QEMU monitor did not answer %q: %w", line, err)
+	}
+	// After the line written back, up to its end, comes what QEMU says
+	// about the command, which for the commands sent here means it went
+	// wrong.
+	if _, said, _ := strings.Cut(answer, "\r\n"); strings.TrimSpace(said) != "" {
+		return fmt.Errorf("QEMU answered %q with %q", line, strings.TrimSpace(said))
+	}
+	return nil
+}
+
+// reply reads what the monitor writes up to its next prompt, waiting at
+// most w.patience, and returns what came before the prompt.
+func (w *scriptWatcher) reply() (string, error) {
+	if err := w.monitor.SetReadDeadline(time.Now().Add(w.patience)); err != nil {
+		return "", err
+	}
+	var got []byte
+	for !bytes.HasSuffix(got, []byte(monitorPrompt)) {
+		b, err := w.replies.ReadByte()
+		if err != nil {
+			return string(got), err
+		}
+		got = append(got, b)
+	}
+	return string(got[:len(got)-len(monitorPrompt)]), nil
 }
 
 // freeLocalAddress asks the system for a free TCP port on the loopback

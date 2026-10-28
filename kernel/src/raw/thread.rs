@@ -204,6 +204,22 @@ pub fn living() -> alloc::vec::Vec<thread::Living> {
     living
 }
 
+/// What thread `slot`, one of a program's, asked when it last came into
+/// the kernel, and from where: its call's number and the address after
+/// the instruction that made it. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn entered(slot: usize) -> Option<(u64, u64)> {
+    if !THREADS.lock().has_stack(slot) {
+        return None;
+    }
+    let top = thread::stack_top(slot);
+    // SAFETY: a thread's stack stays mapped once it is, and its top holds
+    // the frame the processor and the common entry pushed when the thread
+    // last came in from its program: rax 64 bytes below, rip 40.
+    let read = |below: u64| unsafe { ((top - below) as *const u64).read_volatile() };
+    Some((read(64), read(40)))
+}
+
 /// The cores other than `except` that run a thread in the address space
 /// at `root`, a bit each.
 pub fn cores_in(root: u64, except: usize) -> u64 {

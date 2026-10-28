@@ -2193,6 +2193,7 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
             raw::vfs::close(slot);
             read.is_ok_and(|n| held[..n] == *b"hi\nmore\n")
         });
+    let (taken, _) = raw::ps2::taken();
     type_line(report, "rm /System/New");
     let stays = shown("/System/New: a directory that holds something");
     type_line(report, "rm /System/New/a");
@@ -2233,7 +2234,15 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
                 "kernel: thread {} on core {}: {:?}, priority {}, space {:#x}",
                 t.slot, t.core, t.state, t.priority, t.root
             );
+            if let Some((call, at)) = raw::thread::entered(t.slot).filter(|_| t.root != 0) {
+                let _ = writeln!(report.out, "kernel: it last called {call} at {at:#x}");
+            }
         }
+        let (now, status) = raw::ps2::taken();
+        let _ = writeln!(
+            report.out,
+            "kernel: the keyboard gave {taken} bytes before rm was typed, {now} by now, and its status is {status:#04x}"
+        );
     }
     report.check(
         "kernel.shell.files",

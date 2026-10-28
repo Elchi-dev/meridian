@@ -9,6 +9,11 @@ use super::memory::Spin;
 static DECODER: Spin<Decoder> = Spin::new(Decoder::new());
 static KEYS: Spin<Keys<64>> = Spin::new(Keys::new());
 
+/// How many bytes were taken from the controller. Only the test image
+/// counts.
+#[cfg(feature = "qemu-test")]
+static TAKEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// How often the status is read while waiting for the controller.
 const PATIENCE: u32 = 100_000;
 
@@ -82,6 +87,8 @@ fn take_waiting() {
     if status() & status::OUTPUT_FULL == 0 {
         return;
     }
+    #[cfg(feature = "qemu-test")]
+    TAKEN.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
     if let Some(event) = decoder.feed(take()) {
         let _ = KEYS.lock().push(event);
     }
@@ -90,6 +97,13 @@ fn take_waiting() {
 /// Takes the byte the keyboard's interrupt says waits.
 pub fn interrupt() {
     take_waiting();
+}
+
+/// How many bytes were taken from the controller, and its status now.
+/// Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn taken() -> (u64, u8) {
+    (TAKEN.load(core::sync::atomic::Ordering::Acquire), status())
 }
 
 /// The controller's configuration byte. Only the test image asks.

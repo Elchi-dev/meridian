@@ -204,3 +204,7 @@ test = true
 [[example]]
 name = "pathchk"
 test = true
+
+[[example]]
+name = "dd"
+test = true

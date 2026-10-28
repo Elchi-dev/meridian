@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 152] = [
+const CHECKS: [(&str, Check); 153] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -169,6 +169,7 @@ const CHECKS: [(&str, Check); 152] = [
     ("tools.find", find_walks_trees),
     ("tools.csplit", csplit_cuts_files),
     ("tools.pathchk", pathchk_checks_names),
+    ("tools.dd", dd_copies_blocks),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2646,14 +2647,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"88\n"
+        b"90\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-four twice",
+        "ls should write the programs' names into the pipe, forty-five twice",
     )?;
     expect(
         same(
@@ -4555,6 +4556,68 @@ fn pathchk_checks_names() -> Outcome {
     expect(
         checked,
         "pathchk should refuse a name beginning with - with -P, and want a pathname",
+    )
+}
+
+/// dd says what operands it cannot take, turns what comes through a
+/// pipe into capitals, copies blocks of a file past those it skips, and
+/// writes into the middle of a file it keeps the rest of, saying the
+/// blocks each time.
+fn dd_copies_blocks() -> Outcome {
+    let checked = same(
+        &shell_on("dd x; dd bs=0; dd conv=xyz")?,
+        &ran(
+            1,
+            b"dd: x is no operand\ndd ended with 1\n\
+              dd: bs= wants a size, not 0\ndd ended with 1\n\
+              dd: conv=xyz is no conversion\ndd ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "dd should say what operands it cannot take, and end with 1",
+    )?;
+    let checked = same(
+        &shell_on("printf 'Hello\\n' | dd conv=ucase; printf 'abcdef' | dd bs=2 skip=1")?,
+        &ran(
+            0,
+            b"HELLO\n0+1 records in\n0+1 records out\ncdef2+0 records in\n2+0 records out\n",
+        ),
+    );
+    expect(
+        checked,
+        "dd should turn what comes through a pipe into capitals, and read past the blocks it skips",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/D || exit 9\n\
+         printf '0123456789abcdefghij' > /System/D/in\n\
+         dd if=/System/D/in of=/System/D/out bs=5 skip=1 count=2; cat /System/D/out; echo\n\
+         printf 'XY' | dd of=/System/D/out bs=2 seek=1 conv=notrunc; cat /System/D/out; echo\n\
+         printf 'XY' | dd of=/System/D/out bs=2 seek=2; cat /System/D/out; echo\n\
+         rm /System/D/in /System/D/out; rd /System/D",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/D: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    let checked = same(
+        &(ended, said),
+        &ran(
+            0,
+            b"2+0 records in\n2+0 records out\n56789abcde\n\
+              1+0 records in\n1+0 records out\n56XY9abcde\n\
+              1+0 records in\n1+0 records out\n56XYXY\n",
+        ),
+    );
+    expect(
+        checked,
+        "dd should copy blocks past those it skips, write into a file it keeps the rest of, \
+         and keep what lies before the blocks it seeks past",
     )
 }
 

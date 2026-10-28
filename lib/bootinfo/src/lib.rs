@@ -68,7 +68,7 @@ pub struct Modules {
 }
 
 impl Modules {
-    pub const MAX: usize = 128;
+    pub const MAX: usize = 256;
     /// How many pages the list of them takes at most.
     pub const PAGES: usize = (Self::MAX * size_of::<Module>()).div_ceil(4096);
 }
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn the_most_modules_fit_on_the_pages_their_list_takes() {
         assert_eq!(size_of::<Module>(), 48);
-        assert_eq!(Modules::PAGES, 2);
+        assert_eq!(Modules::PAGES, 3);
         assert!(Modules::MAX * size_of::<Module>() <= Modules::PAGES * 4096);
         assert!(Modules::MAX * size_of::<Module>() > (Modules::PAGES - 1) * 4096);
     }

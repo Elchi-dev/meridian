@@ -4239,13 +4239,18 @@ fn nl_numbers_lines() -> Outcome {
 /// what it could not read.
 fn cksum_sums() -> Outcome {
     let checked = same(
-        &shell_on("printf 'hello\\n' | cksum; printf '' | cksum; cksum /nope; echo $?")?,
+        &shell_on(
+            "printf 'hello\\n' | cksum; printf '' | cksum; printf '%0200d' 0 | cksum; cksum /nope; echo $?",
+        )?,
         &ran(
             0,
-            b"3015617425 6\n4294967295 0\ncksum: /nope: no such file\ncksum ended with 1\n1\n",
+            b"3015617425 6\n4294967295 0\n2535012215 200\ncksum: /nope: no such file\ncksum ended with 1\n1\n",
         ),
     );
-    expect(checked, "cksum should write POSIX's checksum and the bytes")?;
+    expect(
+        checked,
+        "cksum should write POSIX's checksum and the bytes, every one of them",
+    )?;
     if !booted_from_disk() {
         return Ok(());
     }
@@ -4291,18 +4296,22 @@ fn diff_on_files() -> Outcome {
     let (ended, said) = shell_on(&alloc::format!(
         "diff {boot} {boot}; echo $?\n\
          head -n 2 {boot} | diff -e {boot} -\n\
-         diff /nope {boot}"
+         diff /nope {boot}; wc -l < {boot}"
     ))?;
-    // The script cuts from the third line to the last, however many.
-    let last = said.strip_prefix(b"0\n3,".as_slice()).and_then(|rest| {
-        rest.strip_suffix(
+    // The script cuts from the third line to the last, which wc counts.
+    let cut = said.strip_prefix(b"0\n3,".as_slice()).and_then(|rest| {
+        let (last, lines) = rest.split_at(rest.iter().position(|&b| b == b'd')?);
+        let lines = lines.strip_prefix(
             b"d\ndiff ended with 1\ndiff: /nope: no such file\ndiff ended with 2\n".as_slice(),
-        )
+        )?;
+        Some((last, lines.trim_ascii()))
     });
     expect(
-        ended == Ok(Ended::Exited(2))
-            && last.is_some_and(|last| !last.is_empty() && last.iter().all(u8::is_ascii_digit)),
-        "diff should find a file the same as itself, cut what its input lacks and say what it could not find",
+        ended == Ok(Ended::Exited(0))
+            && cut.is_some_and(|(last, lines)| {
+                !last.is_empty() && last.iter().all(u8::is_ascii_digit) && last == lines
+            }),
+        "diff should find a file the same as itself, cut what its input lacks to the last line and say what it could not find",
     )?;
     let (ended, said) = shell_on(
         "md /System/E || exit 9\n\
@@ -4311,7 +4320,8 @@ fn diff_on_files() -> Outcome {
          printf 'x\\nY\\nz\\n' > /System/F/f\n\
          echo k > /System/E/g\n\
          diff /System/E/f /System/F/f; diff -u /System/E /System/F\n\
-         rm /System/E/f /System/E/g /System/F/f; rd /System/E; rd /System/F",
+         printf '%0200d\\nq\\n' 0 > /System/E/h; printf '%0200d\\nr\\n' 0 | diff /System/E/h -\n\
+         rm /System/E/f /System/E/g /System/E/h /System/F/f; rd /System/E; rd /System/F",
     )?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
@@ -4324,8 +4334,10 @@ fn diff_on_files() -> Outcome {
             && said
                 == b"2c2\n< y\n---\n> Y\ndiff ended with 1\n\
                      diff -u /System/E/f /System/F/f\n--- /System/E/f\n+++ /System/F/f\n\
-                     @@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\nOnly in /System/E: g\ndiff ended with 1\n",
-        "diff should say how two files differ, and two directories in the unified form",
+                     @@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\nOnly in /System/E: g\ndiff ended with 1\n\
+                     2c2\n< q\n---\n> r\ndiff ended with 1\n",
+        "diff should say how two files differ, and two directories in the unified form, \
+         each file read to its end",
     )
 }
 

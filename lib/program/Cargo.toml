@@ -191,3 +191,7 @@ test = true
 [[example]]
 name = "patch"
 test = true
+
+[[example]]
+name = "find"
+test = true

@@ -298,7 +298,9 @@ impl<W: FnMut(&[u8]) -> Result<(), Error>> Out<W> {
         }
     }
 
-    fn flush(&mut self) {
+    /// Writes what is held now, as before another program writes to the
+    /// same output.
+    pub fn flush(&mut self) {
         if !self.held.is_empty() {
             self.failed |= (self.write)(&self.held).is_err();
             self.held.clear();
@@ -555,6 +557,20 @@ mod tests {
             [301],
             "nothing held, nothing more written"
         );
+    }
+
+    #[test]
+    fn flushing_writes_what_is_held_at_once() {
+        let writes = Writes::new(&[]);
+        let mut out = writes.out();
+        out.put(b"ab");
+        out.flush();
+        assert_eq!(writes.lengths(), [2]);
+        out.flush();
+        assert_eq!(writes.lengths(), [2], "nothing held, nothing written");
+        out.put(b"c");
+        assert!(out.finish());
+        assert_eq!(writes.lengths(), [2, 1]);
     }
 
     #[test]

@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 149] = [
+const CHECKS: [(&str, Check); 150] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -166,6 +166,7 @@ const CHECKS: [(&str, Check); 149] = [
     ("tools.tsort", tsort_orders),
     ("tools.diff", diff_on_files),
     ("tools.patch", patch_puts_diffs_in),
+    ("tools.find", find_walks_trees),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2643,14 +2644,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"82\n"
+        b"84\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-one twice",
+        "ls should write the programs' names into the pipe, forty-two twice",
     )?;
     expect(
         same(
@@ -4390,6 +4391,80 @@ fn patch_puts_diffs_in() -> Outcome {
     expect(
         checked,
         "patch should keep a hunk that finds no place in a file of rejects, and end with 1",
+    )
+}
+
+/// find says what words it cannot take, walks the programs' directory
+/// testing names and types, runs a program on what it found with -exec,
+/// keeps out of a directory with -prune, and walks a tree it made with
+/// -depth.
+fn find_walks_trees() -> Outcome {
+    let checked = same(
+        &shell_on("find; find a -foo; find a -mtime 1")?,
+        &ran(
+            1,
+            b"find: finds from a path at least\nfind ended with 1\n\
+              find: -foo is no primary\nfind ended with 1\n\
+              find: -mtime: Meridian's files keep no times\nfind ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "find should say what words it cannot take, and end with 1",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let programs = "/System/Boot/meridian/programs";
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "find {programs} -name 'he*' -type f\n\
+             find {programs} -name 'wc*' -exec echo '{{}}' +\n\
+             find /System/Boot/meridian -prune; find /nope"
+        ))?,
+        &ran(
+            1,
+            alloc::format!(
+                "{programs}/head.mexec\n{programs}/head_again.mexec\n\
+                 {programs}/hello.mexec\n{programs}/hello_again.mexec\n\
+                 {programs}/wc.mexec {programs}/wc_again.mexec\n\
+                 /System/Boot/meridian\nfind: /nope: no such file\nfind ended with 1\n"
+            )
+            .as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "find should test names and types, run a program on what it found, and keep out of a pruned directory",
+    )?;
+    // A directory is no program to start, which find says, ending with 1.
+    let (ended, said) = shell_on(
+        "find /System/Boot/meridian -prune -exec /System/Boot/meridian '{}' ';'; echo $?",
+    )?;
+    let said = String::from_utf8_lossy(&said);
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said.starts_with("find: /System/Boot/meridian: ")
+            && said.ends_with("\nfind ended with 1\n1\n")
+            && said.lines().count() == 3,
+        "find should say a program it could not start, and end with 1",
+    )?;
+    let (ended, said) = shell_on(
+        "md /System/W || exit 9\n\
+         md /System/W/s; echo x > /System/W/a; echo y > /System/W/s/b\n\
+         find /System/W -depth; find /System/W -type f -exec wc -c '{}' ';'\n\
+         rm /System/W/a /System/W/s/b; rd /System/W/s; rd /System/W",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/W: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == b"/System/W/a\n/System/W/s/b\n/System/W/s\n/System/W\n2 /System/W/a\n2 /System/W/s/b\n",
+        "find should walk a tree it is given, its files first with -depth",
     )
 }
 

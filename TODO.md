@@ -191,7 +191,8 @@ Loader and UEFI:
 - [x] Regular expressions in `lib/regex`, and `grep` with them: `-E`, `-F`, `-e`, `-x`, `-l`, `-q` and `-s`
 - [x] `sed`, its scripts read and run in `lib/sed`
 - [x] `expr`, `sleep`, `cmp`, `comm`, `paste`, `fold` and `nl`
-- [x] `od`, `expand`, `unexpand` and `join`
+- [x] `od`, `expand`, `unexpand`, `join` and `split`
+- [ ] The rest of POSIX's options for the first tools: `uniq -d`, `-u`, `-f` and `-s`; `sort -n`, `-k`, `-t`, `-u`, `-m`, `-o` and the rest
 - [x] `wc`'s options: `-c`, `-l`, `-w` and `-m`
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time

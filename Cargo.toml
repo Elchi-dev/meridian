@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boot", "kernel", "lib/abi", "lib/acpi", "lib/ahci", "lib/awk", "lib/bc", "lib/bootinfo", "lib/canvas", "lib/channel", "lib/diff", "lib/ed", "lib/elf", "lib/fat", "lib/font", "lib/frames", "lib/gpt", "lib/handles", "lib/heap", "lib/meri", "lib/nvme", "lib/paging", "lib/pci", "lib/program", "lib/ps2", "lib/qr", "lib/regex", "lib/sched", "lib/security", "lib/sed", "lib/services", "lib/shell", "lib/uefi", "lib/virtio", "lib/x86"]
+members = ["boot", "kernel", "lib/abi", "lib/acpi", "lib/ahci", "lib/awk", "lib/bc", "lib/bootinfo", "lib/canvas", "lib/channel", "lib/diff", "lib/ed", "lib/elf", "lib/fat", "lib/font", "lib/frames", "lib/gpt", "lib/handles", "lib/heap", "lib/lzw", "lib/meri", "lib/nvme", "lib/paging", "lib/pci", "lib/program", "lib/ps2", "lib/qr", "lib/regex", "lib/sched", "lib/security", "lib/sed", "lib/services", "lib/shell", "lib/uefi", "lib/virtio", "lib/x86"]
 
 [workspace.package]
 version = "0.0.0"

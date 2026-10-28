@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 148] = [
+const CHECKS: [(&str, Check); 149] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -165,6 +165,7 @@ const CHECKS: [(&str, Check); 148] = [
     ("tools.cksum", cksum_sums),
     ("tools.tsort", tsort_orders),
     ("tools.diff", diff_on_files),
+    ("tools.patch", patch_puts_diffs_in),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2642,14 +2643,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"80\n"
+        b"82\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty twice",
+        "ls should write the programs' names into the pipe, forty-one twice",
     )?;
     expect(
         same(
@@ -4312,6 +4313,78 @@ fn diff_on_files() -> Outcome {
                      diff -u /System/E/f /System/F/f\n--- /System/E/f\n+++ /System/F/f\n\
                      @@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\nOnly in /System/E: g\ndiff ended with 1\n",
         "diff should say how two files differ, and two directories in the unified form",
+    )
+}
+
+/// patch says what words it cannot take, puts a diff into the file its
+/// header names in the directory -d gives, takes it out again with -R
+/// keeping the file as it was with -b, makes a file a patch makes, and
+/// keeps a hunk that finds no place in a file of rejects. The files take
+/// more than one message to read.
+fn patch_puts_diffs_in() -> Outcome {
+    let checked = same(
+        &shell_on("patch -x; patch -p x; patch a b")?,
+        &ran(
+            2,
+            b"patch: -x is no option\npatch ended with 2\n\
+              patch: -p wants a number, not x\npatch ended with 2\n\
+              patch: patches one file\npatch ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "patch should say what words it cannot take, and end with 2",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/Q || exit 9\n\
+         printf 'l%s\\n' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 > /System/Q/f\n\
+         printf 'l%s\\n' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 B 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 > /System/Q/g\n\
+         cp /System/Q/f /System/Q/o; cd /System/Q; diff -u f g > p.diff; cd /\n\
+         patch -d /System/Q < /System/Q/p.diff; cmp /System/Q/f /System/Q/g && echo same\n\
+         patch -R -b -i /System/Q/p.diff /System/Q/f\n\
+         cmp /System/Q/f /System/Q/o && cmp /System/Q/f.orig /System/Q/g && echo back",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/Q: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"diff ended with 1\nsame\nback\n",
+        "patch should put a diff into the file it names and take it out again with -R, keeping the file with -b",
+    )?;
+    let checked = same(
+        &shell_on(
+            "cd /System/Q; printf '' > e; printf 'n\\n' > n; diff -u e n > c.diff; rm e n\n\
+             patch < c.diff; cat n",
+        )?,
+        &ran(0, b"diff ended with 1\nn\n"),
+    );
+    expect(
+        checked,
+        "patch should make the file a patch makes when neither of its names is there",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf 'x\\ny\\n' > /System/Q/h\n\
+             patch /System/Q/h < /System/Q/p.diff; echo $?\n\
+             cmp /System/Q/h.rej /System/Q/p.diff && echo kept\n\
+             cd /System/Q; rm f g o p.diff f.orig c.diff n h h.rej; cd /; rd /System/Q",
+        )?,
+        &ran(
+            0,
+            b"patch: /System/Q/h: hunk 1 found no place\n\
+              patch: /System/Q/h: 1 of 1 hunks found no place, kept in /System/Q/h.rej\n\
+              patch ended with 1\n1\nkept\n",
+        ),
+    );
+    expect(
+        checked,
+        "patch should keep a hunk that finds no place in a file of rejects, and end with 1",
     )
 }
 

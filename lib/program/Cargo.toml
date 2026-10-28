@@ -187,3 +187,7 @@ workspace = true
 [[example]]
 name = "diff"
 test = true
+
+[[example]]
+name = "patch"
+test = true

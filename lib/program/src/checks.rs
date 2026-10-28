@@ -4973,6 +4973,19 @@ fn strings_finds_text() -> Outcome {
     expect(
         checked,
         "strings should find the runs of printable characters and their places",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf '%0200d\\n' 0 | strings | cksum; printf 'abcd\\n' | strings -; strings /nope",
+        )?,
+        &ran(
+            1,
+            b"2413893277 201\nabcd\nstrings: /nope: no such file\nstrings ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "strings should read a run past one message, take - for its standard input, and say a file not there",
     )
 }
 
@@ -4980,13 +4993,17 @@ fn strings_finds_text() -> Outcome {
 /// each directory after what it holds.
 fn du_counts_blocks() -> Outcome {
     let checked = same(
-        &shell_on("du -x")?,
+        &shell_on("du -x; du /nope")?,
         &ran(
             1,
-            b"du: -x: volumes cannot be told apart yet\ndu ended with 1\n",
+            b"du: -x: volumes cannot be told apart yet\ndu ended with 1\n\
+              du: /nope: no such file\ndu ended with 1\n",
         ),
     );
-    expect(checked, "du should refuse to tell volumes apart")?;
+    expect(
+        checked,
+        "du should refuse to tell volumes apart, and say a path not there",
+    )?;
     if !booted_from_disk() {
         return Ok(());
     }
@@ -5035,7 +5052,7 @@ fn touch_makes_files() -> Outcome {
     let (ended, said) = shell_on(
         "touch /System/tf || exit 9\n\
          cat /System/tf | wc; touch -c /System/tg; cat < /System/tg\n\
-         rm /System/tf",
+         touch /System/Boot/meridian/boot.meri; echo $?; rm /System/tf",
     )?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
@@ -5046,9 +5063,9 @@ fn touch_makes_files() -> Outcome {
     expect(
         same(
             &(ended, said),
-            &ran(0, b"0 0 0\n/System/tg: no such file\n"),
+            &ran(0, b"0 0 0\n/System/tg: no such file\n0\n"),
         ),
-        "touch should make an empty file, and with -c none",
+        "touch should make an empty file, with -c none, and leave a file there on a volume only read",
     )
 }
 

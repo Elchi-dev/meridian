@@ -30,3 +30,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0022](0022-let-a-program-ask-for-a-bigger-stack-in-a-note-of-its-file.md) | Let a program ask for a bigger stack in a note of its file | accepted |
 | [0023](0023-match-posix-regular-expressions-in-lib-regex-with-a-pike-vm.md) | Match POSIX regular expressions in lib/regex with a Pike VM | accepted |
 | [0024](0024-run-the-shell-s-shared-commands-as-programs-of-their-own-too.md) | Run the shell's shared commands as programs of their own too | accepted |
+| [0025](0025-find-differences-in-lib-diff-with-myers-algorithm-in-linear-space.md) | Find differences in lib/diff with Myers' algorithm in linear space | accepted |

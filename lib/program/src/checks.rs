@@ -5063,7 +5063,8 @@ fn ed_edits_files() -> Outcome {
     wanted.extend_from_slice("0".repeat(200).as_bytes());
     wanted.extend_from_slice(b"\n201\n");
     let checked = same(
-        &shell_on("printf 'r !printf %%0200d 0\\nw !cat\\nQ\\n' | ed")?,
+        // ed's % is the file's name, \% the character.
+        &shell_on("printf 'r !printf \\\\%%0200d 0\\nw !cat\\nQ\\n' | ed")?,
         &ran(0, &wanted),
     );
     expect(

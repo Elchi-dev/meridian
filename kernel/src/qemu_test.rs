@@ -2333,7 +2333,8 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
 }
 
 /// xargs -p asks at the console whether to run each command: it runs the
-/// one asked about once y is typed, and not the one n answered.
+/// one asked about once y is typed, and not the one n answered. Where the
+/// disk can be written, rm -i asks the same way before it removes a file.
 fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -> bool) {
     type_line(report, "echo yes | xargs -p echo asked");
     let asked = shown("echo asked yes ?...");
@@ -2353,7 +2354,12 @@ fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -
         asked && ran && asked_again && after && declined,
         "xargs -p should ask at the console, run the command y answers and not the one n answers",
     );
-    // rm as a program, the shell's own rm being a command of its own.
+    // rm as a program, the shell's own rm being a command of its own, on
+    // a disk it can write.
+    let offered = raw::virtio::agreed().map_or(0, |(_, offered, ..)| offered);
+    if virtio::read_only(offered) {
+        return;
+    }
     type_line(report, "echo rm kept me > /System/ri");
     type_line(report, "echo /System/ri | xargs rm -i");
     let asked = shown("rm: remove /System/ri?");

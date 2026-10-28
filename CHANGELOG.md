@@ -96,6 +96,7 @@ at 0.x until the native API is stable.
   - `lib/ed`: ed's buffer of lines, its marks and its undo, edited by the commands POSIX gives ed, read from a world that gives and takes its input, its output, files and commands, its expressions matched by `lib/regex`.
   - `lib/bc`: numbers of any length worked out exactly to the scales POSIX gives (decision record 0027), read and written in any base, and bc's programs read into their items and run as they come, with `-l`'s functions written anew in bc.
   - `lib/lzw`: the LZW coding of compress, both ways a piece at a time, as compress writes it, the old kind without CLEAR read too.
+  - `lib/archive`: the archives pax writes and reads, ustar and cpio's portable kind, both ways a piece at a time, with POSIX's extended headers and GNU's long names read too.
 
 ### Fixed
 
@@ -117,6 +118,7 @@ at 0.x until the native API is stable.
 - **`lib/awk`.** Its functions of a double are within a double of the host's library on hundreds of thousands of random values, out to the doubles' ends, the same double as often as one that rounds nearly every value as near as can be, and `sqrt`, `fmod` and whole powers that fit a double exactly so. Its printf conversions match what Python's printf, which rounds as C's does, writes for the same doubles, and the deepest program it takes runs in the stack a program on Meridian may ask for.
 - **`lib/bc`.** Its arithmetic and its numbers written and read in other bases match GNU bc's on random numbers, over a hundred programs write what GNU bc writes for them, read whole or a line at a time, and `-l`'s functions give the true values cut to their scale on two hundred values worked out with Python's decimal to 160 digits, where GNU's own misses sin(10^30).
 - **`lib/lzw`.** gzip reads what it writes at every number of bits, past full tables started again, and the codes are those an LZW written apart gives.
+- **`lib/archive`.** GNU tar, bsdtar and cpio list and unpack what it writes, it reads what they write in ustar, pax, GNU's and cpio's portable kind, and random members come back through both kinds in pieces of any size.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
   - the FAT size calculation overflowed near 2 TiB

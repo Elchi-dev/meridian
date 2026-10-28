@@ -1,8 +1,10 @@
 //! POSIX's awk (decision record 0026): a program read into its tokens
-//! and its tree, its values and how one becomes another, the input's
-//! records and fields, printf's formats filled with values, numbers and
-//! strings written as C's printf writes them, and the functions of a
-//! double awk has.
+//! ([`lex`]) and its tree ([`parse`]) and run over the records of its
+//! input ([`run`]), with its values and how one becomes another
+//! ([`value`]), the input's records and fields ([`record`]), printf's
+//! formats filled with values ([`printf`]), numbers and strings written
+//! as C's printf writes them ([`format`]), and the functions of a double
+//! awk has ([`math`]).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -14,4 +16,5 @@ pub mod math;
 pub mod parse;
 pub mod printf;
 pub mod record;
+pub mod run;
 pub mod value;

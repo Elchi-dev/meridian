@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 138] = [
+const CHECKS: [(&str, Check); 139] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -155,6 +155,7 @@ const CHECKS: [(&str, Check); 138] = [
     ("tools.expand", expand_and_unexpand),
     ("tools.join", join_pairs_lines),
     ("tools.split", split_cuts_files),
+    ("tools.uniq", uniq_options),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2477,11 +2478,11 @@ fn tail_and_uniq() -> Outcome {
         "uniq should take each run once or count it, and tail the last lines",
     )?;
     expect(
-        shell_on("tail -n x; uniq /a /b; uniq /nope")?
+        shell_on("tail -n x; uniq /a /b /c; uniq /nope")?
             == ran(
                 2,
                 b"tail: x is no count of lines\ntail ended with 2\n\
-                  uniq: reads one file at most\nuniq ended with 2\n\
+                  uniq: takes an input and an output at most\nuniq ended with 2\n\
                   uniq: /nope: no such file\nuniq ended with 2\n",
             ),
         "tail and uniq should say what they cannot take",
@@ -4173,6 +4174,47 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// uniq writes only the runs with -d and only the lines alone with -u,
+/// leaves fields and characters out of the comparison with -f and -s,
+/// reads the standard input for -, and writes into an output file, which
+/// a missing input leaves as it was.
+fn uniq_options() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'a\\na\\nb\\nc\\nc\\n' | uniq -d; printf 'a\\na\\nb\\nc\\nc\\n' | uniq -cu\n\
+             printf '1 x\\n2 x\\n3 y\\n' | uniq -f 1 -; printf 'xa\\nya\\n' | uniq -s 1; uniq -q",
+        )?,
+        &ran(
+            2,
+            b"a\nc\n1 b\n1 x\n3 y\nxa\nuniq: -q is no option\nuniq ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "uniq should write runs or lines alone, and leave fields and characters out",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'keep\\n' > /System/u2 || exit 9\n\
+         printf 'a\\na\\n' | uniq - /System/u1; cat /System/u1\n\
+         uniq /nope /System/u2; cat /System/u2\n\
+         rm /System/u1 /System/u2",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/u2: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == b"a\nuniq: /nope: no such file\nuniq ended with 2\nkeep\n",
+        "uniq should write into an output file, and leave it as it was when its input is not there",
     )
 }
 

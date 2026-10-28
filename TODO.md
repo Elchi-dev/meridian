@@ -203,6 +203,7 @@ Loader and UEFI:
 - [x] `rm`, `mkdir`, `rmdir` and `cat` as programs, with POSIX's options
 - [x] `awk`, as POSIX has it
 - [x] `ls`, `cp` and `mv` as programs, with what Meridian's files can answer
+- [x] `strings` and `du`
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

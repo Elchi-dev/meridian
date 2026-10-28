@@ -266,3 +266,7 @@ test = true
 [[example]]
 name = "uuencode"
 test = true
+
+[[example]]
+name = "uudecode"
+test = true

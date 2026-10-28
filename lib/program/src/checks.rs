@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 167] = [
+const CHECKS: [(&str, Check); 168] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -184,6 +184,7 @@ const CHECKS: [(&str, Check); 167] = [
     ("tools.unlink", unlink_removes_a_file),
     ("tools.ed", ed_edits_files),
     ("tools.uuencode", uuencode_writes_text),
+    ("tools.uudecode", uudecode_makes_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2661,14 +2662,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"118\n"
+        b"120\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-nine twice",
+        "ls should write the programs' names into the pipe, sixty twice",
     )?;
     expect(
         same(
@@ -5142,6 +5143,48 @@ fn uuencode_writes_text() -> Outcome {
     expect(
         checked,
         "uuencode should read past one message, write nothing for a file not there, and say what it wants",
+    )
+}
+
+/// uudecode makes again what uuencode wrote, in both encodings and past
+/// a message, onto the standard output or into files, and says what is
+/// not uuencode's.
+fn uudecode_makes_files() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "echo hello | uuencode x | uudecode -o /dev/stdout\n\
+             printf '%0200d' 0 | uuencode -m y | uudecode -o /dev/stdout | uuencode -m z | tail -n 2\n\
+             echo hi | uudecode; uudecode -x",
+        )?,
+        &ran(
+            1,
+            b"hello\nMDAwMDAwMDAwMDAwMDAwMDAwMDA=\n====\n\
+              uudecode: -: no line begins what uuencode writes\nuudecode ended with 1\n\
+              uudecode: -x is no option\nuudecode ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "uudecode should make again what uuencode wrote, past a message, and say what is not its",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'a\\nb\\n' > /System/ua || exit 9\n\
+         uuencode /System/ua /System/ub | uudecode; cat /System/ub\n\
+         uuencode -m /System/ua x | uudecode -o /System/uc; cat /System/uc\n\
+         rm /System/ua /System/ub /System/uc",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/ua: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        same(&(ended, said), &ran(0, b"a\nb\na\nb\n")),
+        "uudecode should make the file the text names, or the one -o names",
     )
 }
 

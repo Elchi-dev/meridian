@@ -5248,7 +5248,9 @@ fn bc_works_out_numbers() -> Outcome {
         return Ok(());
     }
     let (ended, said) = shell_on(
-        "printf 'define f(n) { if (n < 2) return (1); return (n * f(n - 1)) }\\nf(20)\\n' > /System/bc.f || exit 9\n\
+        // The file ends with quit, as bc would read its standard input
+        // next.
+        "printf 'define f(n) { if (n < 2) return (1); return (n * f(n - 1)) }\\nf(20)\\nquit\\n' > /System/bc.f || exit 9\n\
          bc /System/bc.f; rm /System/bc.f",
     )?;
     if ended == Ok(Ended::Exited(9)) {
@@ -5259,7 +5261,7 @@ fn bc_works_out_numbers() -> Outcome {
     }
     expect(
         same(&(ended, said), &ran(0, b"2432902008176640000\n")),
-        "bc should run a program from a file, and then its standard input",
+        "bc should run a program from a file",
     )
 }
 

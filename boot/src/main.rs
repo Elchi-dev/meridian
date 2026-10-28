@@ -142,7 +142,11 @@ fn run(system: System, serial: &mut Com1) -> Status {
     }
 
     let (system, problem) = match prepare(&system) {
-        Ok(ready) => raw::start(system, ready),
+        Ok(ready) => {
+            #[cfg(feature = "qemu-test")]
+            qemu_test::prepared(&system, &ready, serial);
+            raw::start(system, ready)
+        }
         Err(problem) => (system, problem),
     };
     give_up(&system, &problem, serial)
@@ -686,6 +690,13 @@ fn read_kernel(system: &System) -> Result<(Pages<'_>, usize), Problem> {
     Ok((buf, got))
 }
 
+/// Where in its area the kernel, `span` bytes long, goes this time, picked
+/// at random. Without RDRAND the time stamp counter is the best guess
+/// there is: it varies with how long the firmware took.
+fn kernel_base(span: u64) -> u64 {
+    handover::kernel_base(span, x86::raw::rdrand().unwrap_or_else(x86::raw::tsc))
+}
+
 fn prepare(system: &System) -> Result<Ready, Problem> {
     let (mut buf, got) = read_kernel(system)?;
     // A file cut short fails the ELF checks below, so the count read is
@@ -698,9 +709,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
     if !handover::entry_is_code(segments.as_slice(), entry) {
         return Err(Problem::BadEntry(entry));
     }
-    // Without RDRAND the time stamp counter is the best guess there is: it
-    // varies with how long the firmware took.
-    let base = handover::kernel_base(span, x86::raw::rdrand().unwrap_or_else(x86::raw::tsc));
+    let base = kernel_base(span);
     let mut image = system
         .allocate_pages(KERNEL_TYPE, pages_for(span))
         .map_err(firmware("finding memory for the kernel"))?;

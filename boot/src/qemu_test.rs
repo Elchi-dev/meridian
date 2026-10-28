@@ -79,7 +79,6 @@ pub fn checks(system: &System, serial: &mut impl Write) {
         "sextant should put the programs into meridian/programs",
     );
 
-    prepare(system, &mut report);
     chain(system, &mut report);
 
     let failed = report.failed;
@@ -96,49 +95,38 @@ pub fn kernel_not_started(problem: &Problem, serial: &mut impl Write) -> ! {
     x86::raw::qemu_exit(false)
 }
 
-/// Runs the loader's preparation once on its own and checks what it hands
-/// to the jump. The real start prepares again, so this costs a second copy
-/// of the kernel in memory and nothing else.
-fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
+/// Checks what the loader's preparation hands to the jump, just before the
+/// jump, so the checks see what the kernel gets and keep no copy of it in
+/// memory; a loader that could not prepare says so as `boot.kernel`. Comes
+/// back only when every check passed.
+pub fn prepared(system: &System, ready: &crate::Ready, serial: &mut impl Write) {
     use uefi::qemu_test::Report;
 
-    let ready = match crate::prepare(system) {
-        Ok(ready) => ready,
-        Err(problem) => {
-            let _ = writeln!(report.out, "boot: {problem}");
-            report.check(
-                "boot.prepare",
-                false,
-                "the loader could not prepare the kernel",
-            );
-            return;
-        }
+    let mut report = Serial {
+        out: serial,
+        failed: 0,
     };
     report.check("boot.prepare", true, "");
-    let bases: [Option<u64>; 2] = core::array::from_fn(|_| {
-        crate::prepare(system)
-            .ok()
-            .map(|again| again.info.kernel.virtual_base)
-    });
     let first = ready.info.kernel.virtual_base;
+    let bases = [(); 2].map(|()| crate::kernel_base(ready.info.kernel.size));
     report.check(
         "boot.prepare.random",
-        bases.iter().all(Option::is_some) && bases.iter().any(|&b| b != Some(first)),
-        "of three times the kernel is prepared, at least two should pick another base",
+        bases.iter().any(|&b| b != first),
+        "of three bases picked for the kernel, at least two should differ",
     );
     let info = ready.info;
     let kernel = info.kernel;
     report.check(
         "boot.prepare.root",
-        ready.root != 0 && ready.root % PAGE_SIZE == 0,
+        ready.root != 0 && ready.root.is_multiple_of(PAGE_SIZE),
         "the root page table should be a whole page",
     );
     report.check(
         "boot.prepare.kernel",
         kernel.size > 0
-            && kernel.physical % PAGE_SIZE == 0
-            && kernel.size % PAGE_SIZE == 0
-            && kernel.virtual_base % (2 << 20) == 0
+            && kernel.physical.is_multiple_of(PAGE_SIZE)
+            && kernel.size.is_multiple_of(PAGE_SIZE)
+            && kernel.virtual_base.is_multiple_of(2 << 20)
             && kernel.virtual_base >= boot::handover::KERNEL_AREA
             && kernel.virtual_base + kernel.size
                 <= boot::handover::KERNEL_AREA + boot::handover::KERNEL_AREA_SIZE,
@@ -162,7 +150,7 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
     );
     report.check(
         "boot.prepare.room",
-        ready.page_at % PAGE_SIZE == 0
+        ready.page_at.is_multiple_of(PAGE_SIZE)
             && ready.page.len()
                 >= size_of::<BootInfo>() + crate::REGION_LIMIT * size_of::<MemoryRegion>()
             && ready.map.len() >= system.memory_map_size().unwrap_or(usize::MAX),
@@ -179,7 +167,7 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         info.modules.count >= 2
             && info.modules.count == programs_on_disk(system)
             && info.modules.list >= bootinfo::HHDM_BASE
-            && info.modules.list % PAGE_SIZE == 0,
+            && info.modules.list.is_multiple_of(PAGE_SIZE),
         "every program on test images should be listed for the kernel, hello and its copy among them",
     );
     report.check(
@@ -187,6 +175,7 @@ fn prepare<W: Write>(system: &System, report: &mut Serial<'_, W>) {
         info.check().is_ok() && info.memory.count == 0,
         "the boot information should pass its check and wait for the final map",
     );
+    stop_on_failure(&mut report);
 }
 
 /// How many files in the programs folder the loader should hand over.

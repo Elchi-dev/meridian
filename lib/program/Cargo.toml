@@ -220,3 +220,7 @@ test = true
 [[example]]
 name = "rmdir"
 test = true
+
+[[example]]
+name = "cat"
+test = true

@@ -208,7 +208,7 @@ func TestImageAndBuildOnTheRealRepository(t *testing.T) {
 		filepath.Join("x86_64-unknown-none", "debug", "kernel"),
 	}
 	for _, name := range []string{
-		"basename", "cksum", "cmp", "comm", "csplit", "cut", "dd", "diff", "dirname", "echo", "expand", "expr", "false", "find", "fold", "grep", "head", "hello", "init", "join", "mkdir", "nl", "od", "paste", "patch", "pathchk", "printf", "rm", "rmdir",
+		"basename", "cat", "cksum", "cmp", "comm", "csplit", "cut", "dd", "diff", "dirname", "echo", "expand", "expr", "false", "find", "fold", "grep", "head", "hello", "init", "join", "mkdir", "nl", "od", "paste", "patch", "pathchk", "printf", "rm", "rmdir",
 		"sed", "shell", "sleep", "sort", "split", "tail", "tee", "test", "tr", "true", "tsort", "unexpand", "uniq", "wc", "xargs",
 	} {
 		want = append(want, filepath.Join("x86_64-unknown-none", "debug", "examples", name))

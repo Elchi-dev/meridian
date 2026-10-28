@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 156] = [
+const CHECKS: [(&str, Check); 157] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -173,6 +173,7 @@ const CHECKS: [(&str, Check); 156] = [
     ("tools.rm", rm_removes_files),
     ("tools.mkdir", mkdir_makes_directories),
     ("tools.rmdir", rmdir_removes_directories),
+    ("tools.cat", cat_writes_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2650,14 +2651,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"96\n"
+        b"98\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-eight twice",
+        "ls should write the programs' names into the pipe, forty-nine twice",
     )?;
     expect(
         same(
@@ -4727,6 +4728,40 @@ fn rmdir_removes_directories() -> Outcome {
                 == b"rmdir: /System/E: holds something\nxargs ended with 123\n1\n\
                      rmdir: /System/E/f: no directory\nxargs ended with 123\n",
         "rmdir should go up a path with -p as long as each goes, and keep a file",
+    )
+}
+
+/// cat as a program says what words it cannot take and writes a file
+/// twice when named twice, a piece at a time with -u.
+fn cat_writes_files() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs cat -x; echo /nope | xargs cat")?,
+        &ran(
+            123,
+            b"cat: -x is no option\nxargs ended with 123\ncat: /nope: no such file\nxargs ended with 123\n",
+        ),
+    );
+    expect(
+        checked,
+        "cat should say what words and files it cannot take, and end with 1",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "echo {boot} {boot} | xargs cat -u | wc -l; wc -l < {boot}"
+    ))?;
+    let counts: Vec<u64> = String::from_utf8_lossy(&said)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && counts.len() == 2
+            && counts[0] == 2 * counts[1]
+            && counts[1] > 0,
+        "cat should write a file named twice twice",
     )
 }
 

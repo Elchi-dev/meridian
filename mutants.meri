@@ -380,3 +380,10 @@ allow {
     mutation = "|= to &="
     reason = "the standard output fails to take a line only once what reads it is gone, which a check cannot time"
 }
+
+allow {
+    file = "lib/ed/src/lib.rs"
+    line = "warned: false,"
+    mutation = "false to true"
+    reason = "the flag counts only for a q or e of a changed buffer, and nothing changes the buffer before the first command, which clears it"
+}

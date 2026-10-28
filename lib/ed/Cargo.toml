@@ -1,0 +1,15 @@
+[package]
+name = "ed"
+description = "POSIX's ed: a buffer of lines edited by commands, as the editor ed has them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex = { path = "../regex" }
+
+[lints]
+workspace = true

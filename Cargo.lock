@@ -58,6 +58,13 @@ name = "diff"
 version = "0.0.0"
 
 [[package]]
+name = "ed"
+version = "0.0.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "elf"
 version = "0.0.0"
 

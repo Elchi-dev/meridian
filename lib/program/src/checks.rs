@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 163] = [
+const CHECKS: [(&str, Check); 164] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -180,6 +180,7 @@ const CHECKS: [(&str, Check); 163] = [
     ("tools.mv", mv_moves_files),
     ("tools.strings", strings_finds_text),
     ("tools.du", du_counts_blocks),
+    ("tools.touch", touch_makes_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2657,14 +2658,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"110\n"
+        b"112\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-five twice",
+        "ls should write the programs' names into the pipe, fifty-six twice",
     )?;
     expect(
         same(
@@ -4978,6 +4979,42 @@ fn du_counts_blocks() -> Outcome {
             ),
         ),
         "du should count the blocks of a tree, each directory after what it holds",
+    )
+}
+
+/// touch refuses times, makes a file not there, and with -c none.
+fn touch_makes_files() -> Outcome {
+    let checked = same(
+        &shell_on("touch -t 1 f")?,
+        &ran(
+            1,
+            b"touch: -t: Meridian's files have no times yet\ntouch ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "touch should refuse the times Meridian's files do not have",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "touch /System/tf || exit 9\n\
+         cat /System/tf | wc; touch -c /System/tg; cat < /System/tg\n\
+         rm /System/tf",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"touch: /System/tf: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(0, b"0 0 0\n/System/tg: no such file\n"),
+        ),
+        "touch should make an empty file, and with -c none",
     )
 }
 

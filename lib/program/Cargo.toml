@@ -249,3 +249,7 @@ test = true
 [[example]]
 name = "du"
 test = true
+
+[[example]]
+name = "touch"
+test = true

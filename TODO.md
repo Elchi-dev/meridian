@@ -196,6 +196,7 @@ Loader and UEFI:
 - [x] `cksum` and `tsort`
 - [x] The rest of POSIX's options for `uniq` and `sort`
 - [x] `wc`'s options: `-c`, `-l`, `-w` and `-m`
+- [x] `diff`, in its own form, with context, unified and as ed scripts, for files and directories
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

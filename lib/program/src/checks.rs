@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 139] = [
+const CHECKS: [(&str, Check); 140] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -156,6 +156,7 @@ const CHECKS: [(&str, Check); 139] = [
     ("tools.join", join_pairs_lines),
     ("tools.split", split_cuts_files),
     ("tools.uniq", uniq_options),
+    ("tools.sort", sort_options),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -4174,6 +4175,45 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// sort orders by the keys -k names, keeps the first of lines alike with
+/// -u, says where its input is out of order with -c, writes into one of
+/// its inputs with -o, and merges with -m.
+fn sort_options() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'b 2\\na 10\\nc 1\\n' | sort -k 2n; printf 'a\\nB\\nb\\nA\\n' | sort -fu\n\
+             printf 'b\\na\\n' | sort -c; sort -k 0",
+        )?,
+        &ran(
+            2,
+            b"c 1\nb 2\na 10\na\nB\nsort: -:2: disorder: a\nsort ended with 1\n\
+              sort: 0 is no key\nsort ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "sort should order by keys, keep the first of lines alike, and say where its input is out of order",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'b\\na\\n' > /System/s1 || exit 9\n\
+         sort -o /System/s1 /System/s1; cat /System/s1\n\
+         printf 'x\\n' | sort -m - /System/s1; rm /System/s1",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/s1: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"a\nb\na\nb\nx\n",
+        "sort should write into the file it read, and merge its input with a file",
     )
 }
 

@@ -3896,8 +3896,9 @@ fn sleep_waits() -> Outcome {
 }
 
 /// cmp finds a file the same as itself, says which of two ended first,
-/// with - for the standard input, keeps quiet with -s, and says where two
-/// files differ first or, with -l, each byte that differs.
+/// with - for the standard input, keeps quiet with -s, says what it could
+/// not read, and says where two files differ first or, with -l, each byte
+/// that differs.
 fn cmp_on_files() -> Outcome {
     let checked = same(
         &shell_on("cmp /a; cmp -x /a /b")?,
@@ -3929,6 +3930,20 @@ fn cmp_on_files() -> Outcome {
     expect(
         checked,
         "cmp should find a file the same as itself and say which of two ended first",
+    )?;
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "cmp /System/Boot {boot}; cmp -s /System/Boot {boot}; echo $?"
+        ))?,
+        &ran(
+            0,
+            b"cmp: /System/Boot: a directory, not a file\ncmp ended with 2\n\
+              cmp ended with 2\n2\n",
+        ),
+    );
+    expect(
+        checked,
+        "cmp should say what it could not read, but not with -s, and end with 2",
     )?;
     let (ended, said) = shell_on(
         "printf 'abc\\n' > /System/c1 || exit 9\n\

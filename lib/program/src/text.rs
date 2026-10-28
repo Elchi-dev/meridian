@@ -406,6 +406,12 @@ mod tests {
         assert_eq!(sources(&[]), [None]);
         let files = [String::from("/a"), String::from("b")];
         assert_eq!(sources(&files), [Some("/a"), Some("b")]);
+        let dash = [String::from("-")];
+        assert_eq!(
+            sources(&dash),
+            [Some("-")],
+            "a dash is the tool's to read as its input, as each_piece does"
+        );
     }
 
     #[test]

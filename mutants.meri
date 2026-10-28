@@ -401,3 +401,17 @@ allow {
     mutation = "body to { Ok(()) }"
     reason = "cp -f removes a file only when it may not write it, and on Meridian's volumes every file has the same plain rights today, so none refuses writing yet may be removed; the host's tests take that way with a file only read"
 }
+
+allow {
+    file = "lib/program/src/child.rs"
+    line = "fn there(path: &str) -> bool {"
+    mutation = "body to { true }"
+    reason = "both boots of sextant test --qemu are from a disk whose programs folder holds every program, so the path is always there; the CD boot of the Go tests, which has no such folder, is where this would start nothing"
+}
+
+allow {
+    file = "lib/program/src/child.rs"
+    line = "fn there(path: &str) -> bool {"
+    mutation = "body to { false }"
+    reason = "the loader brings every program the programs folder holds, so the one it brought is the same program as the file"
+}

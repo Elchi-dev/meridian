@@ -359,3 +359,10 @@ allow {
     mutation = "|= to &="
     reason = "a file w opened for writing fails to take a line only when its disk is full or fails, which the test machines cannot be made to do"
 }
+
+allow {
+    file = "lib/diff/src/compare.rs"
+    line = "let most = (long + wide + 1) / 2;"
+    mutation = "/ to *"
+    reason = "the ways from both ends meet by the true bound, so a larger one only makes the lists longer"
+}

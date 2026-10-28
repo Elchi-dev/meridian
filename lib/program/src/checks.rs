@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 161] = [
+const CHECKS: [(&str, Check); 162] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -178,6 +178,7 @@ const CHECKS: [(&str, Check); 161] = [
     ("tools.ls", ls_lists_directories),
     ("tools.cp", cp_copies_files),
     ("tools.mv", mv_moves_files),
+    ("tools.strings", strings_finds_text),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2655,14 +2656,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"106\n"
+        b"108\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-three twice",
+        "ls should write the programs' names into the pipe, fifty-four twice",
     )?;
     expect(
         same(
@@ -4918,6 +4919,24 @@ fn mv_moves_files() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, b"x\n")),
         "mv should move a file to another name, into a directory, and the directory with it",
+    )
+}
+
+/// strings finds the runs of printable characters among bytes that are
+/// none, with their places, and says what words it cannot take.
+fn strings_finds_text() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'ab\\001hello\\000xyzw\\n' | strings; printf 'xx\\000abcdef' | strings -t d -n 5; strings -x",
+        )?,
+        &ran(
+            1,
+            b"hello\nxyzw\n3 abcdef\nstrings: -x is no option\nstrings ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "strings should find the runs of printable characters and their places",
     )
 }
 

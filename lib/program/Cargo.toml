@@ -241,3 +241,7 @@ test = true
 [[example]]
 name = "mv"
 test = true
+
+[[example]]
+name = "strings"
+test = true

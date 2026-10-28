@@ -310,3 +310,10 @@ allow {
     mutation = "false to true"
     reason = "a run reads a line before it runs a command, and reading one sets substituted to false, so its first value is never seen"
 }
+
+allow {
+    file = "lib/program/examples/shell.rs"
+    line = "let alone = stages.len() == 1 && !background;"
+    mutation = "! to nothing"
+    reason = "a lone command of the shell's own runs in the shell's thread only to save a thread and a channel; with the change a foreground one runs in a thread the shell waits for at once, and a background one, its input closed, runs to its end before the next command instead of beside it, and either way it writes and ends the same"
+}

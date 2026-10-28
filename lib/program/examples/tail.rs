@@ -177,4 +177,29 @@ mod tests {
         keep(&mut none, 0, b"x", true);
         assert!(none.is_empty());
     }
+
+    #[test]
+    fn random_texts_keep_their_last_lines_whatever_the_pieces() {
+        let mut seed = 0x3c6e_f372_fe94_f82b_u64;
+        for _ in 0..300 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let lines: Vec<String> = (0..seed % 20)
+                .map(|n| "x".repeat(usize::try_from(n % 4).unwrap()))
+                .collect();
+            let text = lines.iter().fold(String::new(), |all, l| all + l + "\n");
+            let count = usize::try_from(seed % 7).unwrap();
+            let want = lines[lines.len().saturating_sub(count)..]
+                .iter()
+                .fold(String::new(), |all, l| all + l + "\n");
+            let size = 1 + usize::try_from(seed % 5).unwrap();
+            let pieces: Vec<&str> = text
+                .as_bytes()
+                .chunks(size)
+                .map(|c| core::str::from_utf8(c).unwrap())
+                .collect();
+            assert_eq!(last(count, &pieces), want, "{count} of {text:?}");
+        }
+    }
 }

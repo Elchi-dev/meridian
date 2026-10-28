@@ -702,4 +702,91 @@ mod tests {
         assert!(!takes("-F longer_than_it", b"short"));
         assert!(takes("-F same", b"same"));
     }
+
+    /// The next of a run of numbers that look random, always the same.
+    fn shuffled(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+
+    /// Random lines of a few letters, and the text they make.
+    fn random_lines(seed: &mut u64) -> (Vec<String>, String) {
+        let lines: Vec<String> = (0..shuffled(seed) % 12)
+            .map(|_| {
+                (0..shuffled(seed) % 6)
+                    .map(|_| {
+                        ['a', 'b', 'A', '.', ' '][usize::try_from(shuffled(seed) % 5).unwrap()]
+                    })
+                    .collect()
+            })
+            .collect();
+        let text = lines.iter().fold(String::new(), |all, l| all + l + "\n");
+        (lines, text)
+    }
+
+    #[test]
+    fn a_text_as_it_is_finds_the_lines_that_hold_it() {
+        let mut seed = 0x0bad_cafe_dead_beef_u64;
+        for _ in 0..300 {
+            let (lines, text) = random_lines(&mut seed);
+            let needle =
+                ["a", "ab", ".", "A", "b a"][usize::try_from(shuffled(&mut seed) % 5).unwrap()];
+            let piece = 1 + usize::try_from(shuffled(&mut seed) % 7).unwrap();
+            let pieces: Vec<&str> = text
+                .as_bytes()
+                .chunks(piece)
+                .map(|c| core::str::from_utf8(c).unwrap())
+                .collect();
+            let holding: Vec<&String> = lines.iter().filter(|l| l.contains(needle)).collect();
+            let without: Vec<&String> = lines.iter().filter(|l| !l.contains(needle)).collect();
+            let found_words = |options: &str| {
+                let mut given = words(options);
+                given.extend(["-e".into(), needle.into()]);
+                let pieces: Vec<&[u8]> = pieces.iter().map(|p| p.as_bytes()).collect();
+                let (out, count, trouble) = found_in(&given, None, false, &pieces);
+                assert_eq!(trouble, None);
+                (String::from_utf8(out).unwrap(), count)
+            };
+            let joined =
+                |picked: &[&String]| picked.iter().fold(String::new(), |all, l| all + l + "\n");
+            assert_eq!(
+                found_words("-F").0,
+                joined(&holding),
+                "{needle:?} in {text:?}"
+            );
+            assert_eq!(found_words("-F -v").0, joined(&without));
+            assert_eq!(
+                found_words("-F -c").0,
+                alloc::format!("{}\n", holding.len())
+            );
+            let whole: Vec<&String> = lines.iter().filter(|l| l.as_str() == needle).collect();
+            assert_eq!(found_words("-F -x").0, joined(&whole));
+            let either: Vec<&String> = lines
+                .iter()
+                .filter(|l| {
+                    l.to_ascii_lowercase()
+                        .contains(&needle.to_ascii_lowercase())
+                })
+                .collect();
+            assert_eq!(found_words("-F -i").0, joined(&either));
+        }
+    }
+
+    #[test]
+    fn numbered_lines_say_where_they_are() {
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..200 {
+            let (lines, text) = random_lines(&mut seed);
+            let want = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.contains('a'))
+                .fold(String::new(), |all, (n, l)| {
+                    all + &(n + 1).to_string() + ":" + l + "\n"
+                });
+            assert_eq!(found("-n -F a", None, &[&text]).0, want);
+        }
+    }
 }

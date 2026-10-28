@@ -582,4 +582,87 @@ mod tests {
             Err(String::from("cuts by one of -b, -c and -f"))
         );
     }
+
+    /// The next of a run of numbers that look random, always the same.
+    fn shuffled(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
+    }
+
+    #[test]
+    fn random_lines_keep_the_fields_a_list_names_in_their_order() {
+        let mut seed = 0x6a09_e667_f3bc_c908_u64;
+        for _ in 0..300 {
+            let lines: Vec<String> = (0..shuffled(&mut seed) % 8)
+                .map(|_| {
+                    (0..shuffled(&mut seed) % 5)
+                        .map(|f| alloc::format!("f{f}"))
+                        .collect::<Vec<_>>()
+                        .join(":")
+                })
+                .collect();
+            let text = lines.iter().fold(String::new(), |all, l| all + l + "\n");
+            let first = 1 + usize::try_from(shuffled(&mut seed) % 4).unwrap();
+            let last = first + usize::try_from(shuffled(&mut seed) % 3).unwrap();
+            let want = lines.iter().fold(String::new(), |all, line| {
+                if !line.contains(':') {
+                    return all + line + "\n";
+                }
+                let kept: Vec<&str> = line
+                    .split(':')
+                    .enumerate()
+                    .filter(|(at, _)| (first..=last).contains(&(at + 1)))
+                    .map(|(_, f)| f)
+                    .collect();
+                all + &kept.join(":") + "\n"
+            });
+            assert_eq!(
+                run(&alloc::format!("-d : -f {first}-{last}"), &text),
+                want,
+                "{text:?}"
+            );
+            let delimited =
+                lines
+                    .iter()
+                    .filter(|l| l.contains(':'))
+                    .fold(String::new(), |all, l| {
+                        let kept: Vec<&str> = l
+                            .split(':')
+                            .skip(first - 1)
+                            .take(last - first + 1)
+                            .collect();
+                        all + &kept.join(":") + "\n"
+                    });
+            assert_eq!(
+                run(&alloc::format!("-s -d : -f {first}-{last}"), &text),
+                delimited
+            );
+        }
+    }
+
+    #[test]
+    fn random_lines_keep_the_bytes_a_list_names() {
+        let mut seed = 0xbb67_ae85_84ca_a73b_u64;
+        for _ in 0..300 {
+            let lines: Vec<String> = (0..shuffled(&mut seed) % 8)
+                .map(|_| {
+                    (0..shuffled(&mut seed) % 9)
+                        .map(|n| char::from(b'a' + u8::try_from(n).unwrap()))
+                        .collect()
+                })
+                .collect();
+            let text = lines.iter().fold(String::new(), |all, l| all + l + "\n");
+            let from = 1 + usize::try_from(shuffled(&mut seed) % 5).unwrap();
+            let want = lines.iter().fold(String::new(), |all, l| {
+                all + l.get(from - 1..).unwrap_or("") + "\n"
+            });
+            assert_eq!(run(&alloc::format!("-b {from}-"), &text), want);
+            let first = lines.iter().fold(String::new(), |all, l| {
+                all + l.get(..1).unwrap_or("") + "\n"
+            });
+            assert_eq!(run("-c 1", &text), first);
+        }
+    }
 }

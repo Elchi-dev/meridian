@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 141] = [
+const CHECKS: [(&str, Check); 142] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -158,6 +158,7 @@ const CHECKS: [(&str, Check); 141] = [
     ("tools.split", split_cuts_files),
     ("tools.uniq", uniq_options),
     ("tools.sort", sort_options),
+    ("tools.commands", commands_as_programs),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2635,14 +2636,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"62\n"
+        b"72\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, thirty-one twice",
+        "ls should write the programs' names into the pipe, thirty-six twice",
     )?;
     expect(
         same(
@@ -4203,6 +4204,111 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// echo, printf, test, true and false run as programs of their own,
+/// started by their files rather than as the shell's own commands.
+fn commands_as_programs() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let p = "/System/Boot/meridian/programs";
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "{p}/echo.mexec a b; {p}/echo.mexec\n\
+             {p}/printf.mexec '%s-%s\\n' x y; {p}/test.mexec -d /System; echo $?\n\
+             {p}/true.mexec; {p}/false.mexec; echo $?"
+        ))?,
+        &ran(
+            0,
+            alloc::format!("a b\n\nx-y\n0\n{p}/false.mexec ended with 1\n1\n").as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "echo, printf, test, true and false should run as programs of their own",
+    )?;
+    // What test as a program learns of files: a program's file may run,
+    // other files not; the loader's volume is only read; a directory is
+    // one; nothing is not there; and a pipe is no terminal.
+    let test = alloc::format!("{p}/test.mexec");
+    // The statuses echo writes, among what the shell says of programs
+    // ending with something else than 0. A script of three keeps what
+    // it says within the eight messages a check's shell may say.
+    let statuses = |scripts: &[&str]| -> Result<String, &'static str> {
+        let mut all = Vec::new();
+        for script in scripts {
+            let (ended, said) = shell_on(script)?;
+            let said = String::from_utf8(said).map_err(|_| "the statuses should be text")?;
+            if ended != Ok(Ended::Exited(0)) {
+                let _ = crate::log!("the shell ended {:?} after {:?}", ended, said);
+                return Err("the shell should end with 0");
+            }
+            all.extend(
+                said.lines()
+                    .filter(|line| line.parse::<u8>().is_ok())
+                    .map(String::from),
+            );
+        }
+        Ok(all.join(" "))
+    };
+    let rights = statuses(&[
+        &alloc::format!(
+            "{test} -x {p}/echo.mexec; echo $?; {test} -x /System/Boot/meridian/boot.meri; echo $?\n\
+             {test} -r {p}/echo.mexec; echo $?"
+        ),
+        &alloc::format!(
+            "{test} -w {p}/echo.mexec; echo $?; {test} -x {p}; echo $?; {test} -x /nope; echo $?"
+        ),
+    ])?;
+    expect(
+        rights == "0 1 0 1 0 1",
+        "test as a program should find a program and a directory runnable, another file and nothing not, and the loader's volume only read",
+    )?;
+    let kinds = statuses(&[
+        &alloc::format!("{test} -d {p}; echo $?; {test} -f {p}; echo $?; {test} -e /nope; echo $?"),
+        &alloc::format!("{test} -t 1; echo $?; {test} -t 2; echo $?"),
+    ])?;
+    expect(
+        kinds == "0 1 1 1 1",
+        "test as a program should know a directory, a file not there, and a pipe that is no terminal",
+    )?;
+    // What went wrong goes to the program's standard error.
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "{test} x -eq 1; echo $?; {p}/printf.mexec; echo $?"
+        ))?,
+        &ran(
+            0,
+            alloc::format!(
+                "test: x: not a whole number\n{test} ended with 2\n2\n\
+                 printf: needs a format\n{p}/printf.mexec ended with 1\n1\n"
+            )
+            .as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "test and printf as programs should say what went wrong on their standard error",
+    )?;
+    // A file made where /System is written may be written, holds
+    // something, and once removed is not there.
+    let (ended, said) = shell_on(&alloc::format!(
+        "printf x > /System/w.txt || exit 9\n\
+         {test} -w /System/w.txt; echo $?; {test} -s /System/w.txt; echo $?\n\
+         rm /System/w.txt; {test} -e /System/w.txt; echo $?"
+    ))?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/w.txt: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == alloc::format!("0\n0\n{test} ended with 1\n1\n").as_bytes(),
+        "test as a program should find a new file writable and not empty, and gone once removed",
     )
 }
 

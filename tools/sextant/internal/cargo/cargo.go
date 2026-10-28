@@ -75,6 +75,16 @@ var (
 	Join = Part{Package: "program", Target: "x86_64-unknown-none", File: "join", Example: "join"}
 	// Split cuts a file into files.
 	Split = Part{Package: "program", Target: "x86_64-unknown-none", File: "split", Example: "split"}
+	// Echo is the shell's echo as a program (decision record 0024).
+	Echo = Part{Package: "program", Target: "x86_64-unknown-none", File: "echo", Example: "echo"}
+	// Printf is the shell's printf as a program (decision record 0024).
+	Printf = Part{Package: "program", Target: "x86_64-unknown-none", File: "printf", Example: "printf"}
+	// Test is the shell's test as a program (decision record 0024).
+	Test = Part{Package: "program", Target: "x86_64-unknown-none", File: "test", Example: "test"}
+	// True is the shell's true as a program (decision record 0024).
+	True = Part{Package: "program", Target: "x86_64-unknown-none", File: "true", Example: "true"}
+	// False is the shell's false as a program (decision record 0024).
+	False = Part{Package: "program", Target: "x86_64-unknown-none", File: "false", Example: "false"}
 	// Expand turns tabs into spaces.
 	Expand = Part{Package: "program", Target: "x86_64-unknown-none", File: "expand", Example: "expand"}
 	// Unexpand turns spaces into tabs.
@@ -92,7 +102,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

@@ -1727,14 +1727,6 @@ fn written(out: &mut Out, bytes: &[u8]) -> bool {
         .is_ok()
 }
 
-/// Whether the file at `path` opens with the right `wanted`.
-fn may(path: &str, wanted: u32) -> bool {
-    program::open(path, wanted).is_ok_and(|handle| {
-        let _ = program::close(handle);
-        true
-    })
-}
-
 impl ::shell::commands::Streams for Reach<'_> {
     fn out(&mut self, bytes: &[u8]) -> bool {
         written(self.out, bytes)
@@ -1744,31 +1736,9 @@ impl ::shell::commands::Streams for Reach<'_> {
         written(self.errors, bytes)
     }
 
-    /// What is at `path`: a directory may always be gone into, and a file
-    /// run when it is a program's image and the right to run it is there.
+    /// What is at `path`, as a program running the command would see it.
     fn file(&mut self, path: &str) -> Option<::shell::commands::File> {
-        use ::shell::commands::{Allowed, File, Kind};
-        let handle = program::open(path, 0).ok()?;
-        let info = program::info(handle);
-        let _ = program::close(handle);
-        let info = info.ok()?;
-        Some(File {
-            kind: if info.directory {
-                Kind::Directory
-            } else {
-                Kind::File
-            },
-            size: info.size,
-            allowed: Allowed {
-                read: may(path, file::READ),
-                write: may(path, file::WRITE),
-                run: info.directory
-                    || path
-                        .rsplit_once('.')
-                        .is_some_and(|(_, end)| end.eq_ignore_ascii_case("mexec"))
-                        && may(path, file::RUN),
-            },
-        })
+        program::commands::file(path)
     }
 
     /// A stream is a terminal where the command has the shell's own and

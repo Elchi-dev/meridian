@@ -144,6 +144,26 @@ test = true
 name = "split"
 test = true
 
+[[example]]
+name = "echo"
+test = true
+
+[[example]]
+name = "printf"
+test = true
+
+[[example]]
+name = "test"
+test = true
+
+[[example]]
+name = "true"
+test = true
+
+[[example]]
+name = "false"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

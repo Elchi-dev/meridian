@@ -23,6 +23,7 @@ use security::{Restriction, Token};
 
 #[cfg(feature = "qemu-test")]
 pub mod checks;
+pub mod commands;
 pub mod layout;
 #[allow(unsafe_code)]
 mod raw;

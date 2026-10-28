@@ -2233,6 +2233,29 @@ fn init_services_checks<W: Write>(
         shell_file_checks(report, &shown);
         shell_ask_checks(report, &shown);
     }
+    shell_ed_checks(report, &shown);
+}
+
+/// ed typed at the console goes on after a mistake, where a script it
+/// reads stops at one.
+fn shell_ed_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -> bool) {
+    type_line(report, "clear");
+    type_line(report, "ed");
+    type_line(report, "1p");
+    let mistake = shown("?");
+    type_line(report, "a");
+    type_line(report, "hi");
+    type_line(report, ".");
+    type_line(report, "s/h/j/p");
+    let changed = shown("ji");
+    type_line(report, "Q");
+    type_line(report, "echo after");
+    let after = shown("after");
+    report.check(
+        "kernel.shell.ed",
+        mistake && changed && after,
+        "ed typed at the console should say ? at a mistake and go on to take text and change it",
+    );
 }
 
 /// Files and directories made, written, shown and removed by what is typed

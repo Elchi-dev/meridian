@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 162] = [
+const CHECKS: [(&str, Check); 163] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -179,6 +179,7 @@ const CHECKS: [(&str, Check); 162] = [
     ("tools.cp", cp_copies_files),
     ("tools.mv", mv_moves_files),
     ("tools.strings", strings_finds_text),
+    ("tools.du", du_counts_blocks),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2656,14 +2657,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"108\n"
+        b"110\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-four twice",
+        "ls should write the programs' names into the pipe, fifty-five twice",
     )?;
     expect(
         same(
@@ -4937,6 +4938,46 @@ fn strings_finds_text() -> Outcome {
     expect(
         checked,
         "strings should find the runs of printable characters and their places",
+    )
+}
+
+/// du refuses what it cannot tell, and counts the blocks of a tree,
+/// each directory after what it holds.
+fn du_counts_blocks() -> Outcome {
+    let checked = same(
+        &shell_on("du -x")?,
+        &ran(
+            1,
+            b"du: -x: volumes cannot be told apart yet\ndu ended with 1\n",
+        ),
+    );
+    expect(checked, "du should refuse to tell volumes apart")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/U || exit 9\n\
+         md /System/U/d\n\
+         printf '%0600d' 0 > /System/U/d/f\n\
+         printf 'x' > /System/U/g\n\
+         du -a /System/U; du -s /System/U\n\
+         rm /System/U/d/f /System/U/g; rd /System/U/d; rd /System/U",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/U: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(
+                0,
+                b"2 /System/U/d/f\n2 /System/U/d\n1 /System/U/g\n3 /System/U\n3 /System/U\n",
+            ),
+        ),
+        "du should count the blocks of a tree, each directory after what it holds",
     )
 }
 

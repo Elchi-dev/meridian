@@ -27,6 +27,7 @@ pub mod layout;
 #[allow(unsafe_code)]
 mod raw;
 pub mod start;
+pub mod tabs;
 pub mod text;
 
 pub use raw::{Allocator, arguments};

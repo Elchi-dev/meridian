@@ -4816,6 +4816,17 @@ fn awk_runs_programs() -> Outcome {
         "awk should write to a command, read from one, run one with system, and end with the status exit gives",
     )?;
     let checked = same(
+        &shell_on(
+            "awk 'BEGIN { print \"w\" | \"sort\"; print \"x\"; print fflush(); close(\"sort\") }'\n\
+             awk 'BEGIN { print \"b\" | \"sleep 1; sort\" }'; echo after",
+        )?,
+        &ran(0, b"x\nw\n0\nb\nafter\n"),
+    );
+    expect(
+        checked,
+        "awk's fflush should write what it holds before a command writes, and awk wait for its commands as it ends",
+    )?;
+    let checked = same(
         &shell_on("awk 'BEGIN {'; awk -x")?,
         &ran(
             2,
@@ -4832,7 +4843,8 @@ fn awk_runs_programs() -> Outcome {
     }
     let (ended, said) = shell_on(
         "md /System/A || exit 9\n\
-         printf 'NR == 2 { print $1 > \"/System/A/o\" }\\n' > /System/A/p\n\
+         printf '# This rule comes after a line long enough that awk reads the file that holds its program in more than one piece, as it has to.\\n\
+         NR == 2 { print $1 > \"/System/A/o\" }\\n' > /System/A/p\n\
          printf 'x 1\\ny 2\\n' | awk -f /System/A/p\n\
          awk '{ print \"got\", $0 }' /System/A/o\n\
          rm /System/A/p /System/A/o; rd /System/A",
@@ -4845,7 +4857,7 @@ fn awk_runs_programs() -> Outcome {
     }
     expect(
         same(&(ended, said), &ran(0, b"got y\n")),
-        "awk should read its program from a file, and write a file that it reads back",
+        "awk should read its program from a file of more than one piece, and write a file that it reads back",
     )
 }
 

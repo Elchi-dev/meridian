@@ -5167,7 +5167,7 @@ fn ed_edits_files() -> Outcome {
         "ed should prompt before each command, take text, substitute and run a command",
     )?;
     let checked = same(
-        &shell_on("printf '1p\\n' | ed; ed -x; ed a b")?,
+        &shell_on("printf '1p\\n!echo x\\n' | ed; ed -x; ed a b")?,
         &ran(
             2,
             b"?\ned ended with 1\n\
@@ -5177,7 +5177,7 @@ fn ed_edits_files() -> Outcome {
     );
     expect(
         checked,
-        "ed should end with 1 after a mistake, and with 2 for words it cannot take",
+        "ed should end with 1 at a mistake in what it reads, and with 2 for words it cannot take",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -5188,7 +5188,8 @@ fn ed_edits_files() -> Outcome {
          diff -e /System/ea /System/eb > /System/es; echo w >> /System/es\n\
          ed -s /System/ea < /System/es; cat /System/ea\n\
          printf ',s/[ac]/X/\\nw\\nq\\n' | ed /System/ea; cat /System/ea\n\
-         rm /System/ea /System/eb /System/es",
+         printf '%0200d\\n' 0 > /System/ef; echo q | ed /System/ef\n\
+         rm /System/ea /System/eb /System/es /System/ef",
     )?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
@@ -5199,9 +5200,9 @@ fn ed_edits_files() -> Outcome {
     expect(
         same(
             &(ended, said),
-            &ran(0, b"diff ended with 1\na\nB\nc\nd\n8\n8\nX\nB\nX\nd\n"),
+            &ran(0, b"diff ended with 1\na\nB\nc\nd\n8\n8\nX\nB\nX\nd\n201\n"),
         ),
-        "ed should edit a file with diff's script, and write it back changed",
+        "ed should edit a file with diff's script, write it back changed, and read one past a message",
     )
 }
 

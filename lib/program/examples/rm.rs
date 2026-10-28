@@ -378,6 +378,7 @@ mod tests {
         match e.kind() {
             std::io::ErrorKind::NotFound => Error::NotFound,
             std::io::ErrorKind::DirectoryNotEmpty => Error::NotEmpty,
+            std::io::ErrorKind::PermissionDenied => Error::Denied,
             _ => Error::Unwritable,
         }
     }
@@ -502,5 +503,45 @@ mod tests {
         );
         assert_eq!(host.left(), ["d/", "d/x"]);
         assert_eq!(ran(&mut host, "-rf /").0, 1);
+    }
+
+    #[test]
+    fn what_cannot_go_is_said_and_keeps_what_holds_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut host = Host::new("denied", &["d/held/y", "d/sealed/x"]);
+        let set = |host: &Host, path: &str, mode| {
+            let mode = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(host.root.join(path), mode).unwrap();
+        };
+        // A directory that cannot be listed, and one whose file cannot go.
+        set(&host, "d/sealed", 0o000);
+        set(&host, "d/held", 0o555);
+        assert!(
+            std::fs::read_dir(host.root.join("d/sealed")).is_err(),
+            "run as root, nothing is sealed"
+        );
+        assert_eq!(
+            ran(&mut host, "-r d/sealed"),
+            (1, "rm: d/sealed: not allowed\n".into())
+        );
+        assert_eq!(
+            ran(&mut host, "-r d/held"),
+            (1, "rm: d/held/y: not allowed\n".into()),
+            "and what holds a file kept is not tried"
+        );
+        assert_eq!(
+            ran(&mut host, "-r d"),
+            (
+                1,
+                "rm: d/held/y: not allowed\nrm: d/sealed: not allowed\n".into()
+            ),
+            "nor what holds those"
+        );
+        set(&host, "d/sealed", 0o755);
+        set(&host, "d/held", 0o755);
+        assert_eq!(
+            host.left(),
+            ["d/", "d/held/", "d/held/y", "d/sealed/", "d/sealed/x"]
+        );
     }
 }

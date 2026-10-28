@@ -21,6 +21,7 @@ pub fn trouble(tool: &str, path: &str, e: Error) -> String {
         Error::ReadOnly => "on a volume that is only read",
         Error::DiskFull => "no room left on its disk",
         Error::Unwritable => "could not be written",
+        Error::NotAProgram => "not a program Meridian runs",
         _ => "could not be read",
     };
     format!("{tool}: {path}: {why}\n")
@@ -381,6 +382,11 @@ mod tests {
         assert_eq!(
             trouble("wc", "/x", Error::Unreadable),
             "wc: /x: could not be read\n"
+        );
+        assert_eq!(
+            trouble("xargs", "/x", Error::NotAProgram),
+            "xargs: /x: not a program Meridian runs\n",
+            "said of a file started as a program"
         );
         assert_eq!(
             trouble("tee", "/System/x", Error::ReadOnly),

@@ -43,3 +43,8 @@ strip = "debuginfo"
 # 1 MiB a program may ask for holds for programs of any depth.
 [profile.dev.package.awk]
 opt-level = 2
+
+# bc runs a program by recursion over its tree too, and works out its
+# numbers a limb at a time, which unoptimised takes many times as long.
+[profile.dev.package.bc]
+opt-level = 2

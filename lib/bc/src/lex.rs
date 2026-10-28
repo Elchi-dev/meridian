@@ -72,20 +72,24 @@ pub enum Token {
     Newline,
 }
 
-/// A token and the line it begins on, counted from 1.
+/// A token, the line it begins on, counted from 1, and where its bytes
+/// begin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spot {
     pub token: Token,
     pub line: usize,
+    pub at: usize,
 }
 
 /// Why the text has no tokens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wrong {
-    /// It ends inside a string or a comment, which more text may close.
-    Unfinished,
-    /// A character no token begins with, on its line.
-    Character(char, usize),
+    /// It ends inside a string or a comment, which more text may close,
+    /// and where that begins.
+    Unfinished(usize),
+    /// A character no token begins with, on its line, and where that
+    /// line begins and ends.
+    Character(char, usize, usize, usize),
 }
 
 fn keyword(name: &str) -> Option<Token> {
@@ -127,7 +131,7 @@ pub fn tokens(text: &[u8], mut line: usize) -> Result<Vec<Spot>, Wrong> {
     let mut at = 0;
     while let Some(&c) = text.get(at) {
         let next = text.get(at + 1).copied();
-        let start = line;
+        let (start, from) = (line, at);
         let token = match c {
             b' ' | b'\t' | b'\r' => {
                 at += 1;
@@ -148,7 +152,7 @@ pub fn tokens(text: &[u8], mut line: usize) -> Result<Vec<Spot>, Wrong> {
                 let end = text[at + 2..]
                     .windows(2)
                     .position(|w| w == b"*/")
-                    .ok_or(Wrong::Unfinished)?;
+                    .ok_or(Wrong::Unfinished(at))?;
                 line += newlines(&text[at..at + 2 + end]);
                 at += end + 4;
                 continue;
@@ -162,7 +166,7 @@ pub fn tokens(text: &[u8], mut line: usize) -> Result<Vec<Spot>, Wrong> {
                 let len = text[at + 1..]
                     .iter()
                     .position(|&b| b == b'"')
-                    .ok_or(Wrong::Unfinished)?;
+                    .ok_or(Wrong::Unfinished(at))?;
                 let string = text[at + 1..at + 1 + len].to_vec();
                 line += newlines(&string);
                 at += len + 2;
@@ -205,17 +209,33 @@ pub fn tokens(text: &[u8], mut line: usize) -> Result<Vec<Spot>, Wrong> {
                 keyword(&name).unwrap_or(Token::Name(name))
             }
             _ => {
-                let (token, len) = operator(c, next).ok_or_else(|| {
-                    let shown = String::from_utf8_lossy(&text[at..]);
-                    Wrong::Character(shown.chars().next().unwrap_or('?'), line)
-                })?;
+                let (token, len) = operator(c, next).ok_or_else(|| unknown(text, at, line))?;
                 at += len;
                 token
             }
         };
-        out.push(Spot { token, line: start });
+        out.push(Spot {
+            token,
+            line: start,
+            at: from,
+        });
     }
     Ok(out)
+}
+
+/// The character at `at` on line `line`, which no token begins with, as
+/// a mistake that takes its line.
+fn unknown(text: &[u8], at: usize, line: usize) -> Wrong {
+    let shown = String::from_utf8_lossy(&text[at..]);
+    let begins = text[..at]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |n| n + 1);
+    let end = text[at..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(text.len(), |n| at + n + 1);
+    Wrong::Character(shown.chars().next().unwrap_or('?'), line, begins, end)
 }
 
 /// The operator `c`, with `next` after it, begins, and how many bytes it
@@ -286,7 +306,7 @@ mod tests {
             Ok(alloc::vec![number("1234")]),
             "parted by an escaped newline"
         );
-        assert_eq!(kinds("1G"), Err(Wrong::Character('G', 1)));
+        assert_eq!(kinds("1G"), Err(Wrong::Character('G', 1, 0, 2)));
         assert_eq!(kinds("."), Ok(alloc::vec![number(".")]));
     }
 
@@ -368,8 +388,8 @@ mod tests {
             ])
         );
         assert_eq!(kinds("a+++b").map(|t| t.len()), Ok(4), "a ++ + b");
-        assert_eq!(kinds("&"), Err(Wrong::Character('&', 1)));
-        assert_eq!(kinds("|"), Err(Wrong::Character('|', 1)));
+        assert_eq!(kinds("&"), Err(Wrong::Character('&', 1, 0, 1)));
+        assert_eq!(kinds("|"), Err(Wrong::Character('|', 1, 0, 1)));
     }
 
     #[test]
@@ -387,7 +407,7 @@ mod tests {
             kinds("1 \\\n+ 2"),
             Ok(alloc::vec![number("1"), Token::Op(Op::Add), number("2")])
         );
-        assert_eq!(kinds("/* open"), Err(Wrong::Unfinished));
+        assert_eq!(kinds("1 /* open"), Err(Wrong::Unfinished(2)));
         assert_eq!(
             kinds("/ *"),
             Ok(alloc::vec![Token::Op(Op::Div), Token::Op(Op::Mul)])
@@ -400,17 +420,19 @@ mod tests {
             kinds("\"a\nb\\n\" 1"),
             Ok(alloc::vec![Token::String(b"a\nb\\n".to_vec()), number("1")])
         );
-        assert_eq!(kinds("\"open"), Err(Wrong::Unfinished));
+        assert_eq!(kinds("\"open"), Err(Wrong::Unfinished(0)));
         assert_eq!(kinds("\"\""), Ok(alloc::vec![Token::String(Vec::new())]));
     }
 
     #[test]
     fn tokens_know_their_lines() {
         let spots = tokens(b"1\n/* \n */ 2 \"x\ny\" 3\\\n4\n@", 5);
-        assert_eq!(spots, Err(Wrong::Character('@', 10)));
+        assert_eq!(spots, Err(Wrong::Character('@', 10, 23, 24)));
         let spots = tokens(b"1\n/* \n */ 2 \"x\ny\" 3\\\n4", 5).unwrap();
         let lines: Vec<usize> = spots.iter().map(|s| s.line).collect();
         assert_eq!(lines, [5, 5, 7, 7, 8]);
+        let starts: Vec<usize> = spots.iter().map(|s| s.at).collect();
+        assert_eq!(starts, [0, 1, 10, 12, 18]);
         assert_eq!(spots[4].token, number("34"));
     }
 }

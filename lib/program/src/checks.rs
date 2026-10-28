@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 160] = [
+const CHECKS: [(&str, Check); 161] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -177,6 +177,7 @@ const CHECKS: [(&str, Check); 160] = [
     ("tools.awk", awk_runs_programs),
     ("tools.ls", ls_lists_directories),
     ("tools.cp", cp_copies_files),
+    ("tools.mv", mv_moves_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2654,14 +2655,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"104\n"
+        b"106\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-two twice",
+        "ls should write the programs' names into the pipe, fifty-three twice",
     )?;
     expect(
         same(
@@ -4881,6 +4882,42 @@ fn cp_copies_files() -> Outcome {
             ),
         ),
         "cp should copy a directory with what it holds, and refuse a file onto itself",
+    )
+}
+
+/// mv as a program says what words it cannot take, and moves a file to
+/// another name, into a directory, and a directory with what it holds.
+fn mv_moves_files() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs mv")?,
+        &ran(
+            123,
+            b"mv: moves a file to another name, or files into a directory\nxargs ended with 123\n",
+        ),
+    );
+    expect(checked, "mv should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/M || exit 9\n\
+         md /System/M/d\n\
+         printf 'x' > /System/M/a\n\
+         echo /System/M/a /System/M/b | xargs mv\n\
+         echo /System/M/b /System/M/d | xargs mv\n\
+         echo /System/M/d /System/M/e | xargs mv\n\
+         cat /System/M/e/b; echo\n\
+         rm /System/M/e/b; rd /System/M/e; rd /System/M",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/M: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        same(&(ended, said), &ran(0, b"x\n")),
+        "mv should move a file to another name, into a directory, and the directory with it",
     )
 }
 

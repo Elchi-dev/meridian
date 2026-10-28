@@ -117,6 +117,8 @@ var (
 	Ls = Part{Package: "program", Target: "x86_64-unknown-none", File: "ls", Example: "ls"}
 	// Cp copies files, and directories with -R.
 	Cp = Part{Package: "program", Target: "x86_64-unknown-none", File: "cp", Example: "cp"}
+	// Mv moves files and directories.
+	Mv = Part{Package: "program", Target: "x86_64-unknown-none", File: "mv", Example: "mv"}
 	// Expand turns tabs into spaces.
 	Expand = Part{Package: "program", Target: "x86_64-unknown-none", File: "expand", Example: "expand"}
 	// Unexpand turns spaces into tabs.
@@ -134,7 +136,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False, Xargs, Cksum, Tsort, Diff, Patch, Find, Csplit, Pathchk, Dd, Rm, Mkdir, Rmdir, Cat, Awk, Ls, Cp}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False, Xargs, Cksum, Tsort, Diff, Patch, Find, Csplit, Pathchk, Dd, Rm, Mkdir, Rmdir, Cat, Awk, Ls, Cp, Mv}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

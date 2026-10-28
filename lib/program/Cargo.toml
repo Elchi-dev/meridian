@@ -237,3 +237,7 @@ test = true
 [[example]]
 name = "cp"
 test = true
+
+[[example]]
+name = "mv"
+test = true

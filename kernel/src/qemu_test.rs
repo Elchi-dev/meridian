@@ -2353,6 +2353,23 @@ fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -
         asked && ran && asked_again && after && declined,
         "xargs -p should ask at the console, run the command y answers and not the one n answers",
     );
+    // rm as a program, the shell's own rm being a command of its own.
+    type_line(report, "echo rm kept me > /System/ri");
+    type_line(report, "echo /System/ri | xargs rm -i");
+    let asked = shown("rm: remove /System/ri?");
+    type_line(report, "n");
+    type_line(report, "cat /System/ri");
+    let kept = shown("rm kept me");
+    type_line(report, "echo /System/ri | xargs rm -i");
+    let asked_again = shown("rm: remove /System/ri?");
+    type_line(report, "y");
+    type_line(report, "cat /System/ri");
+    let gone = shown("/System/ri: no such file");
+    report.check(
+        "kernel.shell.ask.rm",
+        asked && kept && asked_again && gone,
+        "rm -i should ask at the console, keep the file n answers and remove the one y answers",
+    );
 }
 
 /// What typing the shell's language does: a block over three lines, a

@@ -227,7 +227,9 @@ impl Number {
         Ok(exact.rescaled(wanted))
     }
 
-    /// The square root, to the greater of `scale` and the number's own.
+    /// The square root, to the greater of `scale` and the number's own;
+    /// those of 0 and 1 are themselves, with no digits after the point,
+    /// as GNU's bc has them.
     ///
     /// # Errors
     ///
@@ -235,6 +237,10 @@ impl Number {
     pub fn sqrt(&self, scale: usize) -> Result<Number, Fault> {
         if self.negative {
             return Err(Fault::NegativeRoot);
+        }
+        let one = Number::from_i64(1);
+        if self.is_zero() || self.compare(&one) == Ordering::Equal {
+            return Ok(self.rescaled(0));
         }
         let wanted = scale.max(self.scale);
         let root = self.magnitude.shl10(2 * wanted - self.scale).sqrt();
@@ -504,6 +510,15 @@ mod tests {
             );
         }
         assert_eq!(num("2.000").sqrt(0).map(|r| r.scale()), Ok(3));
+        for exact in ["0", "0.000", "1", "1.00"] {
+            assert_eq!(
+                num(exact).sqrt(3).map(|r| (r.decimal(), r.scale())),
+                Ok((exact[..1].into(), 0)),
+                "{exact}, as GNU bc has it"
+            );
+        }
+        assert_eq!(shown(num("4").sqrt(3)), Ok("2.000".into()));
+        assert_eq!(shown(num("1.0000001").sqrt(3)), Ok("1.0000000".into()));
         assert_eq!(num("-1").sqrt(0).err(), Some(Fault::NegativeRoot));
         assert_eq!(
             shown(num("-0.0").sqrt(2)),

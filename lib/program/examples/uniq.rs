@@ -179,4 +179,41 @@ mod tests {
         assert_eq!(runs(true, &["z\n", "z\nz"]), "3 z\n");
         assert_eq!(runs(true, &[]), "");
     }
+
+    #[test]
+    fn random_lines_come_out_as_their_runs_whatever_the_pieces() {
+        let mut seed = 0x3c6e_f372_fe94_f82b_u64;
+        for _ in 0..300 {
+            let mut lines = Vec::new();
+            for _ in 0..seed % 30 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                lines.push(["a", "b", "", "aa"][usize::try_from(seed % 4).unwrap()]);
+            }
+            let text: String = lines.iter().fold(String::new(), |all, l| all + l + "\n");
+            let mut runs_of: Vec<(usize, &str)> = Vec::new();
+            for line in &lines {
+                match runs_of.last_mut() {
+                    Some((count, last)) if last == line => *count += 1,
+                    _ => runs_of.push((1, line)),
+                }
+            }
+            let plain = runs_of
+                .iter()
+                .fold(String::new(), |all, (_, l)| all + l + "\n");
+            let counted = runs_of.iter().fold(String::new(), |all, (n, l)| {
+                all + &n.to_string() + " " + l + "\n"
+            });
+            let size = 1 + usize::try_from(seed % 5).unwrap();
+            let pieces: Vec<&str> = text
+                .as_bytes()
+                .chunks(size)
+                .map(|c| core::str::from_utf8(c).unwrap())
+                .collect();
+            assert_eq!(runs(false, &pieces), plain, "{text:?}");
+            assert_eq!(runs(true, &pieces), counted, "{text:?}");
+            assert_eq!(runs_of.iter().map(|(n, _)| n).sum::<usize>(), lines.len());
+        }
+    }
 }

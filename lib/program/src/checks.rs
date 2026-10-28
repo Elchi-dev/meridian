@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 147] = [
+const CHECKS: [(&str, Check); 148] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -164,6 +164,7 @@ const CHECKS: [(&str, Check); 147] = [
     ("tools.xargs.streams", xargs_hands_its_streams),
     ("tools.cksum", cksum_sums),
     ("tools.tsort", tsort_orders),
+    ("tools.diff", diff_on_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2641,14 +2642,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"78\n"
+        b"80\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, thirty-nine twice",
+        "ls should write the programs' names into the pipe, forty twice",
     )?;
     expect(
         same(
@@ -4249,6 +4250,68 @@ fn cksum_sums() -> Outcome {
             && lines.len() == 2
             && lines[0] == alloc::format!("{} {boot}", lines[1]),
         "cksum should sum a file named as it sums it through the standard input",
+    )
+}
+
+/// diff says what words it cannot take, finds a file the same as itself,
+/// writes an ed script that cuts what its standard input lacks, says what
+/// it could not find, and says how two files and two directories differ.
+fn diff_on_files() -> Outcome {
+    let checked = same(
+        &shell_on("diff /a; diff -x /a /b; diff -U")?,
+        &ran(
+            2,
+            b"diff: compares two files\ndiff ended with 2\n\
+              diff: -x is no option\ndiff ended with 2\n\
+              diff: -U wants a number of lines\ndiff ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "diff should say what words it cannot take, and end with 2",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!(
+        "diff {boot} {boot}; echo $?\n\
+         head -n 2 {boot} | diff -e {boot} -\n\
+         diff /nope {boot}"
+    ))?;
+    // The script cuts from the third line to the last, however many.
+    let last = said.strip_prefix(b"0\n3,".as_slice()).and_then(|rest| {
+        rest.strip_suffix(
+            b"d\ndiff ended with 1\ndiff: /nope: no such file\ndiff ended with 2\n".as_slice(),
+        )
+    });
+    expect(
+        ended == Ok(Ended::Exited(2))
+            && last.is_some_and(|last| !last.is_empty() && last.iter().all(u8::is_ascii_digit)),
+        "diff should find a file the same as itself, cut what its input lacks and say what it could not find",
+    )?;
+    let (ended, said) = shell_on(
+        "md /System/E || exit 9\n\
+         md /System/F\n\
+         printf 'x\\ny\\nz\\n' > /System/E/f\n\
+         printf 'x\\nY\\nz\\n' > /System/F/f\n\
+         echo k > /System/E/g\n\
+         diff /System/E/f /System/F/f; diff -u /System/E /System/F\n\
+         rm /System/E/f /System/E/g /System/F/f; rd /System/E; rd /System/F",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/E: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"2c2\n< y\n---\n> Y\ndiff ended with 1\n\
+                     diff -u /System/E/f /System/F/f\n--- /System/E/f\n+++ /System/F/f\n\
+                     @@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\nOnly in /System/E: g\ndiff ended with 1\n",
+        "diff should say how two files differ, and two directories in the unified form",
     )
 }
 

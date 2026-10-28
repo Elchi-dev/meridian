@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 abi = { path = "../abi" }
+diff = { path = "../diff" }
 heap = { path = "../heap" }
 meri = { path = "../meri" }
 regex = { path = "../regex" }
@@ -182,3 +183,7 @@ qemu-test = []
 
 [lints]
 workspace = true
+
+[[example]]
+name = "diff"
+test = true

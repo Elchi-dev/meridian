@@ -4865,16 +4865,16 @@ fn awk_runs_programs() -> Outcome {
 /// lists a directory and a file as its options ask.
 fn ls_lists_directories() -> Outcome {
     let checked = same(
-        &shell_on("echo | xargs ls -l")?,
+        &shell_on("echo | xargs ls -l; echo /nope | xargs ls")?,
         &ran(
             123,
             b"ls: -l: Meridian's files have no owners, modes, times, links or numbers yet\n\
-              xargs ended with 123\n",
+              xargs ended with 123\nls: /nope: no such file\nxargs ended with 123\n",
         ),
     );
     expect(
         checked,
-        "ls should refuse what Meridian's files cannot answer",
+        "ls should refuse what Meridian's files cannot answer, and say a path not there",
     )?;
     if !booted_from_disk() {
         return Ok(());

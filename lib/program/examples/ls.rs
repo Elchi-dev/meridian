@@ -717,6 +717,20 @@ mod tests {
             commas.lines().all(|line| line.chars().count() <= WIDTH),
             "{commas}"
         );
+        // With a first name of 7 the twelfth after it ends right at 80.
+        let full: Vec<String> = core::iter::once(String::from("abcdefg"))
+            .chain(core::iter::repeat_n(String::from("abcd"), 14))
+            .collect();
+        assert_eq!(
+            laid_out(&full, Form::Commas),
+            format!("abcdefg,{}\nabcd, abcd\n", " abcd,".repeat(12)),
+            "a line may be all 80 wide"
+        );
+        assert_eq!(
+            laid_out(&wide, Form::Commas),
+            format!("{},\nb\n", wide[0]),
+            "a name too wide for any line starts the first"
+        );
         assert_eq!(
             laid_out(&[String::from("äöü"), String::from("x")], Form::Columns),
             "äöü  x\n",
@@ -835,6 +849,26 @@ mod tests {
         assert!(!shows("..", Hidden::AlmostAll) && shows("..", Hidden::All));
         assert_eq!(joined("a/", "b"), "a/b");
         assert_eq!(joined("a", "b"), "a/b");
+    }
+
+    #[test]
+    fn what_cannot_be_looked_at_is_listed_by_its_name_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut host = Host::new("unsearched", &["d/x", "d/e/"]);
+        let set = |host: &Host, mode| {
+            let mode = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(host.root.join("d"), mode).unwrap();
+        };
+        // Its names can be read, but nothing in it looked at.
+        set(&host, 0o444);
+        assert!(
+            std::fs::metadata(host.root.join("d/x")).is_err(),
+            "run as root, everything can be looked at"
+        );
+        let listed = ran(&mut host, "-p d");
+        set(&host, 0o755);
+        assert_eq!(listed, wrote("e\nx\n"));
+        assert_eq!(ran(&mut host, "-p d"), wrote("e/\nx\n"));
     }
 
     #[test]

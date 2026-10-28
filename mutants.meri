@@ -366,3 +366,10 @@ allow {
     mutation = "/ to *"
     reason = "the ways from both ends meet by the true bound, so a larger one only makes the lists longer"
 }
+
+allow {
+    file = "lib/program/src/child.rs"
+    line = "true"
+    mutation = "true to false"
+    reason = "the loader brings every program the test images carry, and SPAWN takes its copy for the programs folder too, so the file's path and the program's name start the same program; they part only past the loader's 128"
+}

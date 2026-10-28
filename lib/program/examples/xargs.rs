@@ -20,16 +20,13 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
-use program::start::{Given, Sink};
-use program::{Ended, Error, Handle, abi, text};
+use program::child::{self, Ran};
+use program::{Ended, Error, Handle, text};
 
 program::main!(xargs);
-
-/// Where programs named without a path are.
-const PROGRAMS: &str = "/System/Boot/meridian/programs";
 
 /// How many bytes a command may take unless `-s` says otherwise.
 const SIZE: usize = 16384;
@@ -301,14 +298,14 @@ impl<'a> Gathering<'a> {
         command
     }
 
-    /// Takes what the input said next, and answers the commands it
-    /// completes.
+    /// Takes what the input said next, and answers the command it
+    /// completes, if any; one read completes one at most.
     ///
     /// # Errors
     ///
     /// When a command cannot be made as asked.
-    fn take(&mut self, read: Read) -> Result<Vec<Vec<String>>, TooLong> {
-        let mut done = Vec::new();
+    fn take(&mut self, read: Read) -> Result<Option<Vec<String>>, TooLong> {
+        let mut done = None;
         match (&self.asked.mode, read) {
             (Mode::Insert(text), Read::Word(line)) => {
                 let line = String::from_utf8_lossy(&line).into_owned();
@@ -321,8 +318,7 @@ impl<'a> Gathering<'a> {
                 if command.iter().map(|w| w.len() + 1).sum::<usize>() > self.asked.size {
                     return Err(TooLong::Word);
                 }
-                self.made = true;
-                done.push(command);
+                done = Some(command);
             }
             (mode, Read::Word(word)) => {
                 let word = String::from_utf8_lossy(&word).into_owned();
@@ -334,18 +330,20 @@ impl<'a> Gathering<'a> {
                     if self.asked.exact && !matches!(mode, Mode::Words(None)) {
                         return Err(TooLong::Exact);
                     }
-                    done.push(self.command());
+                    done = Some(self.command());
                 }
                 self.words.push(word);
                 self.used += adds;
+                // The word alone fills a command only with -n 1, which
+                // leaves no words before it to go first.
                 if matches!(mode, Mode::Words(Some(n)) if self.words.len() == *n) {
-                    done.push(self.command());
+                    done = Some(self.command());
                 }
             }
             (Mode::Lines(n), Read::LineEnd) => {
                 self.lines += 1;
                 if self.lines == *n {
-                    done.push(self.command());
+                    done = Some(self.command());
                 }
             }
             (Mode::Insert(_) | Mode::Words(_), Read::LineEnd) => {}
@@ -362,119 +360,80 @@ impl<'a> Gathering<'a> {
     }
 }
 
-/// How one command went.
+/// How one command went: as its program ran, or not at all, as the one
+/// asked at the console said.
 #[derive(Debug, PartialEq, Eq)]
-enum Ran {
-    Ended(Ended),
-    /// It was not run, as the one asked at the console said.
+enum Went {
+    Ran(Ran),
     Declined,
-    /// Its program is not there, or could not start.
-    NotThere,
-    Unstarted(Error),
 }
 
 /// The status xargs ends with after a command went so, and whether it
 /// stops there.
-fn status(ran: &Ran) -> (u64, bool) {
-    match ran {
-        Ran::Ended(Ended::Exited(0)) | Ran::Declined => (0, false),
-        Ran::Ended(Ended::Exited(255)) => (124, true),
-        Ran::Ended(Ended::Exited(_)) => (123, false),
-        Ran::Ended(Ended::Faulted(_)) => (125, true),
-        Ran::NotThere => (127, true),
-        Ran::Unstarted(_) => (126, true),
+fn status(went: &Went) -> (u64, bool) {
+    match went {
+        Went::Ran(Ran::Ended(Ended::Exited(0))) | Went::Declined => (0, false),
+        Went::Ran(Ran::Ended(Ended::Exited(255))) => (124, true),
+        Went::Ran(Ran::Ended(Ended::Exited(_))) => (123, false),
+        Went::Ran(Ran::Ended(Ended::Faulted(_))) => (125, true),
+        Went::Ran(Ran::NotThere) => (127, true),
+        Went::Ran(Ran::Unstarted(_)) => (126, true),
     }
 }
 
-/// What SPAWN is asked for to start the program `name`: the path as it
-/// is, else the file of that name among the programs, and where `has`
-/// finds no such file, as on a CD, the program of that name the loader
-/// brought.
-fn program_path(name: &str, has: impl FnOnce(&str) -> bool) -> String {
-    if name.contains('/') {
-        return name.to_string();
-    }
-    let path = format!("{PROGRAMS}/{name}.mexec");
-    if has(&path) {
-        path
-    } else {
-        format!("{name}.mexec")
-    }
+/// What xargs runs its commands with, says things on, and asks the one
+/// at the console through.
+trait Runner {
+    /// Starts the program `command` names and waits for it to end.
+    fn start(&mut self, command: &[String]) -> Ran;
+
+    /// Says `text` on the standard error.
+    fn say(&mut self, text: &str);
+
+    /// The line typed at the console, none when no one can answer.
+    fn ask(&mut self) -> Option<String>;
 }
 
-/// A handle for `sink` of the child's own.
-#[cfg_attr(test, allow(dead_code))]
-fn handed(sink: Option<Sink>) -> Option<Sink> {
-    match sink? {
-        Sink::Channel(end) => program::duplicate(end).ok().map(Sink::Channel),
-        Sink::File(file) => program::duplicate(file).ok().map(Sink::File),
-    }
-}
+/// Meridian's programs, the program's own standard error and its
+/// console.
+struct System;
 
-/// Runs `command`: writes it first with `-t` or `-p`, asks with `-p`,
-/// and waits for it to end. Its input is one that has ended, its output
-/// and errors are xargs's own.
-#[cfg_attr(test, allow(dead_code))]
-fn run(command: &[String], asked: &Asked) -> Ran {
-    if asked.trace || asked.prompt {
-        let shown = command.join(" ");
-        let asking = if asked.prompt { " ?..." } else { "\n" };
-        let _ = program::write_error(&format!("{shown}{asking}"));
-        if asked.prompt
-            && !program::typed_line().is_some_and(|answer| answer.starts_with(['y', 'Y']))
-        {
-            return Ran::Declined;
-        }
+impl Runner for System {
+    fn start(&mut self, command: &[String]) -> Ran {
+        let words: Vec<&str> = command[1..].iter().map(String::as_str).collect();
+        child::run(&command[0], &words)
     }
-    let Ok((mine, theirs)) = program::channel() else {
-        return Ran::Unstarted(Error::Full);
-    };
-    let _ = program::close(mine);
-    let given = Given {
-        input: Some(theirs),
-        output: handed(program::start::given().output),
-        error: handed(program::start::given().error),
-        line: None,
-    };
-    let path = program_path(&command[0], |path| {
-        program::open(path, abi::file::READ).is_ok_and(|file| {
-            let _ = program::close(file);
-            true
-        })
-    });
-    let arguments: Vec<&str> = command[1..].iter().map(String::as_str).collect();
-    match program::spawn_handing(&path, &arguments, given) {
-        Ok((child, start)) => {
-            let _ = program::close(start);
-            let ended = program::wait(child);
-            let _ = program::close(child);
-            ended.map_or_else(Ran::Unstarted, Ran::Ended)
-        }
-        Err(Error::NotFound | Error::NoSuchProgram) => Ran::NotThere,
-        Err(e) => Ran::Unstarted(e),
+
+    fn say(&mut self, text: &str) {
+        let _ = program::write_error(text);
+    }
+
+    fn ask(&mut self) -> Option<String> {
+        program::typed_line()
     }
 }
 
 /// A run of xargs: the commands it makes, how the worst of them ended,
 /// and whether it stopped before the input ended.
-struct Going<'a> {
+struct Going<'a, R> {
     asked: &'a Asked,
     gathering: Gathering<'a>,
     worst: u64,
     stopped: Option<String>,
     /// Whether the word -E names came.
     ended: bool,
+    runner: &'a mut R,
 }
 
-#[cfg_attr(test, allow(dead_code))]
-impl<'a> Going<'a> {
-    fn new(asked: &'a Asked) -> Going<'a> {
+impl<'a, R: Runner> Going<'a, R> {
+    fn new(asked: &'a Asked, runner: &'a mut R) -> Going<'a, R> {
         Going {
             asked,
             gathering: Gathering::new(asked),
             worst: 0,
             stopped: None,
             ended: false,
+            runner,
         }
     }
 
@@ -497,32 +456,45 @@ impl<'a> Going<'a> {
                 break;
             }
             match self.gathering.take(read) {
-                Ok(commands) => {
-                    for command in commands {
-                        if !self.run(&command) {
-                            break;
-                        }
-                    }
-                }
+                Ok(Some(command)) => self.run(&command),
+                Ok(None) => {}
                 Err(e) => self.stopped = Some(too_long(&e)),
             }
         }
         self.reading()
     }
 
-    /// Runs `command`, and says whether to go on.
-    fn run(&mut self, command: &[String]) -> bool {
-        let ran = run(command, self.asked);
-        let (status, stop) = status(&ran);
+    /// How `command` went: written first with `-t` or `-p`, and with
+    /// `-p` run only when the one asked says so.
+    fn went(&mut self, command: &[String]) -> Went {
+        if self.asked.trace || self.asked.prompt {
+            let shown = command.join(" ");
+            let asking = if self.asked.prompt { " ?..." } else { "\n" };
+            self.runner.say(&format!("{shown}{asking}"));
+            if self.asked.prompt
+                && !self
+                    .runner
+                    .ask()
+                    .is_some_and(|answer| answer.starts_with(['y', 'Y']))
+            {
+                return Went::Declined;
+            }
+        }
+        Went::Ran(self.runner.start(command))
+    }
+
+    /// Runs `command`, and stops xargs when it ended so.
+    fn run(&mut self, command: &[String]) {
+        let went = self.went(command);
+        let (status, stop) = status(&went);
         self.worst = self.worst.max(status);
         if stop {
-            self.stopped = Some(match ran {
-                Ran::NotThere => format!("xargs: {}: no such program\n", command[0]),
-                Ran::Unstarted(e) => text::trouble("xargs", &command[0], e),
+            self.stopped = Some(match went {
+                Went::Ran(Ran::NotThere) => format!("xargs: {}: no such program\n", command[0]),
+                Went::Ran(Ran::Unstarted(e)) => text::trouble("xargs", &command[0], e),
                 _ => format!("xargs: {} ended so that xargs stops\n", command[0]),
             });
         }
-        !stop
     }
 
     /// Runs the last command, unless it stopped, and answers the status
@@ -538,27 +510,27 @@ impl<'a> Going<'a> {
     }
 }
 
-#[cfg_attr(test, allow(dead_code))]
-fn xargs(_: Handle) -> u64 {
-    let asked = match asked(program::arguments()) {
-        Ok(asked) => asked,
-        Err(why) => {
-            let _ = program::write_error(&why);
-            return 1;
-        }
-    };
+/// Runs xargs as `asked` on the input `pieces` hands out a piece at a
+/// time, as long as it is told to go on, with `runner`; and answers the
+/// status it ends with and what it says last.
+fn xargs_on(
+    asked: &Asked,
+    pieces: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool) -> Result<(), Error>,
+    runner: &mut impl Runner,
+) -> (u64, Option<String>) {
     let mut words = Words::new(matches!(asked.mode, Mode::Insert(_)));
-    let mut going = Going::new(&asked);
+    let mut going = Going::new(asked, runner);
     // What the input broke on; the words before it still run.
     let mut broken = None;
-    let read = text::pieces(None, |piece| {
+    let read = pieces(&mut |piece| {
         let mut reads = Vec::new();
         if let Err(why) = words.feed(piece, &mut |r| reads.push(r)) {
             broken = Some(why);
         }
         going.take(reads) && broken.is_none()
     });
-    if broken.is_none() && going.reading() {
+    // A line feed in quotes broke the input, and ends it the same way.
+    if going.reading() {
         let mut reads = Vec::new();
         match core::mem::take(&mut words).finish(&mut |r| reads.push(r)) {
             Ok(()) => {
@@ -568,13 +540,27 @@ fn xargs(_: Handle) -> u64 {
         }
     }
     let (worst, stopped) = going.finish();
-    let said = match (read, broken, stopped) {
-        (_, _, Some(why)) | (_, Some(why), None) => why,
-        (Err(e), None, None) => text::trouble("xargs", "-", e),
-        (Ok(()), None, None) => return worst,
+    match (read, broken, stopped) {
+        (_, _, Some(why)) | (_, Some(why), None) => (worst.max(1), Some(why)),
+        (Err(e), None, None) => (worst.max(1), Some(text::trouble("xargs", "-", e))),
+        (Ok(()), None, None) => (worst, None),
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn xargs(_: Handle) -> u64 {
+    let asked = match asked(program::arguments()) {
+        Ok(asked) => asked,
+        Err(why) => {
+            let _ = program::write_error(&why);
+            return 1;
+        }
     };
-    let _ = program::write_error(&said);
-    worst.max(1)
+    let (status, said) = xargs_on(&asked, |each| text::pieces(None, each), &mut System);
+    if let Some(said) = said {
+        let _ = program::write_error(&said);
+    }
+    status
 }
 
 /// What xargs says when a command could not be made.
@@ -727,6 +713,12 @@ mod tests {
             Err(TooLong::Word)
         );
         assert_eq!(
+            commands("-s 15", "aaaaaaaaa\n"),
+            Ok(Vec::from(["echo aaaaaaaaa".into()])),
+            "a word that fills the command to its edge"
+        );
+        assert_eq!(commands("-s 15", "aaaaaaaaaa\n"), Err(TooLong::Word));
+        assert_eq!(
             commands("-s 4", ""),
             Ok(Vec::from(["echo".into()])),
             "the program alone may be at the edge"
@@ -813,30 +805,24 @@ mod tests {
         assert_eq!(wrong("-n 0"), "xargs: -n wants a number from 1, not 0\n");
         assert_eq!(wrong("-L x"), "xargs: -L wants a number from 1, not x\n");
         assert_eq!(wrong("-s -1"), "xargs: -s wants a number from 1, not -1\n");
+        assert_eq!(
+            wrong("-n +5"),
+            "xargs: -n wants a number from 1, not +5\n",
+            "digits alone"
+        );
     }
 
     #[test]
     fn how_a_command_went_sets_the_status_and_whether_to_stop() {
-        assert_eq!(status(&Ran::Ended(Ended::Exited(0))), (0, false));
-        assert_eq!(status(&Ran::Declined), (0, false));
-        assert_eq!(status(&Ran::Ended(Ended::Exited(1))), (123, false));
-        assert_eq!(status(&Ran::Ended(Ended::Exited(254))), (123, false));
-        assert_eq!(status(&Ran::Ended(Ended::Exited(255))), (124, true));
-        assert_eq!(status(&Ran::Ended(Ended::Faulted(14))), (125, true));
-        assert_eq!(status(&Ran::Unstarted(Error::Denied)), (126, true));
-        assert_eq!(status(&Ran::NotThere), (127, true));
-        let on_disk = |path: &str| path == "/System/Boot/meridian/programs/echo.mexec";
-        assert_eq!(
-            program_path("echo", on_disk),
-            "/System/Boot/meridian/programs/echo.mexec"
-        );
-        assert_eq!(
-            program_path("wc", on_disk),
-            "wc.mexec",
-            "a program not on the disk is one the loader brought"
-        );
-        assert_eq!(program_path("/x/y.mexec", |_| false), "/x/y.mexec");
-        assert_eq!(program_path("./y", |_| false), "./y");
+        let ran = |ran| status(&Went::Ran(ran));
+        assert_eq!(ran(Ran::Ended(Ended::Exited(0))), (0, false));
+        assert_eq!(status(&Went::Declined), (0, false));
+        assert_eq!(ran(Ran::Ended(Ended::Exited(1))), (123, false));
+        assert_eq!(ran(Ran::Ended(Ended::Exited(254))), (123, false));
+        assert_eq!(ran(Ran::Ended(Ended::Exited(255))), (124, true));
+        assert_eq!(ran(Ran::Ended(Ended::Faulted(14))), (125, true));
+        assert_eq!(ran(Ran::Unstarted(Error::Denied)), (126, true));
+        assert_eq!(ran(Ran::NotThere), (127, true));
         assert_eq!(
             too_long(&TooLong::Word),
             "xargs: a word is longer than -s lets a command be\n"
@@ -986,5 +972,237 @@ mod tests {
                 .collect();
             assert_eq!(made, want);
         }
+    }
+
+    /// What runs xargs's commands on the host: the shell's shared
+    /// commands, which Meridian's programs of those names run, writing
+    /// into what it keeps; and the answers typed to it.
+    struct Host {
+        written: String,
+        said: String,
+        answers: Vec<String>,
+        started: usize,
+    }
+
+    impl Host {
+        fn new() -> Host {
+            Host {
+                written: String::new(),
+                said: String::new(),
+                answers: Vec::new(),
+                started: 0,
+            }
+        }
+    }
+
+    impl Runner for Host {
+        fn start(&mut self, command: &[String]) -> Ran {
+            self.started += 1;
+            if !shell::commands::knows(&command[0]) {
+                return Ran::NotThere;
+            }
+            let status = shell::commands::run(command, self).unwrap_or(127);
+            Ran::Ended(Ended::Exited(u64::from(status)))
+        }
+
+        fn say(&mut self, text: &str) {
+            self.said.push_str(text);
+        }
+
+        fn ask(&mut self) -> Option<String> {
+            (!self.answers.is_empty()).then(|| self.answers.remove(0))
+        }
+    }
+
+    impl shell::commands::Streams for Host {
+        fn out(&mut self, bytes: &[u8]) -> bool {
+            self.written.push_str(&String::from_utf8_lossy(bytes));
+            true
+        }
+
+        fn err(&mut self, bytes: &[u8]) -> bool {
+            self.said.push_str(&String::from_utf8_lossy(bytes));
+            true
+        }
+
+        fn file(&mut self, _: &str) -> Option<shell::commands::File> {
+            None
+        }
+
+        fn terminal(&mut self, _: u32) -> bool {
+            false
+        }
+    }
+
+    /// How xargs asked with `options` ran on the input `pieces`: its
+    /// status, what it wrote and said, how many programs it started, and
+    /// how many pieces it read.
+    fn going(
+        host: &mut Host,
+        options: &str,
+        pieces: &[&str],
+    ) -> (u64, String, String, usize, usize) {
+        let given = args(options);
+        let asked = asked(&given).unwrap();
+        let mut read = 0;
+        let (status, said) = xargs_on(
+            &asked,
+            |each| {
+                for piece in pieces {
+                    read += 1;
+                    if !each(piece.as_bytes()) {
+                        break;
+                    }
+                }
+                Ok(())
+            },
+            host,
+        );
+        if let Some(said) = said {
+            host.said.push_str(&said);
+        }
+        let started = core::mem::take(&mut host.started);
+        (
+            status,
+            core::mem::take(&mut host.written),
+            core::mem::take(&mut host.said),
+            started,
+            read,
+        )
+    }
+
+    #[test]
+    fn every_command_a_piece_makes_runs() {
+        let mut host = Host::new();
+        assert_eq!(
+            going(&mut host, "-n 1 echo", &["a b c\n"]),
+            (0, "a\nb\nc\n".into(), String::new(), 3, 1)
+        );
+        assert_eq!(
+            going(&mut host, "-n 2", &["a b ", "c\n"]),
+            (0, "a b\nc\n".into(), String::new(), 2, 2)
+        );
+        assert_eq!(
+            going(&mut host, "echo", &[]),
+            (0, "\n".into(), String::new(), 1, 0),
+            "once with no input"
+        );
+        assert_eq!(
+            going(&mut host, "-n 1 false", &["a b\n"]).0,
+            123,
+            "a failure does not stop xargs"
+        );
+        assert_eq!(
+            going(&mut host, "-n 1 false", &["a b\n"]).3,
+            2,
+            "it ran both"
+        );
+    }
+
+    #[test]
+    fn nothing_is_read_after_the_end_word() {
+        let mut host = Host::new();
+        assert_eq!(
+            going(&mut host, "-E STOP echo", &["a STOP b\n", "c\n"]),
+            (0, "a\n".into(), String::new(), 1, 1)
+        );
+        assert_eq!(
+            going(&mut host, "-E STOP echo", &["a b ", "STOP c\n", "d\n"]),
+            (0, "a b\n".into(), String::new(), 1, 2)
+        );
+        assert_eq!(
+            going(&mut host, "-E STOP echo", &["STOP\n", "d\n"]),
+            (0, "\n".into(), String::new(), 1, 1),
+            "no words, one run"
+        );
+    }
+
+    #[test]
+    fn a_program_not_there_stops_xargs_and_its_reading() {
+        let mut host = Host::new();
+        assert_eq!(
+            going(&mut host, "-n 1 nope", &["a b\n", "c\n"]),
+            (
+                127,
+                String::new(),
+                "xargs: nope: no such program\n".into(),
+                1,
+                1
+            )
+        );
+    }
+
+    #[test]
+    fn a_broken_quote_runs_what_came_before_and_reads_no_more() {
+        let mut host = Host::new();
+        let (status, written, said, _, read) = going(&mut host, "-n 1 echo", &["a 'b\n", "c\n"]);
+        assert_eq!((status, written.as_str(), read), (1, "a\n", 1));
+        assert_eq!(said, "xargs: a single quote without its other half\n");
+        let (status, written, said, _, _) = going(&mut host, "echo", &["a 'b"]);
+        assert_eq!(
+            (status, written.as_str(), said.as_str()),
+            (1, "a\n", "xargs: a single quote without its other half\n"),
+            "at the end of the input"
+        );
+    }
+
+    #[test]
+    fn t_shows_each_command_and_p_asks_first() {
+        let mut host = Host::new();
+        assert_eq!(
+            going(&mut host, "-t -n 1 echo", &["a b\n"]),
+            (0, "a\nb\n".into(), "echo a\necho b\n".into(), 2, 1)
+        );
+        host.answers = Vec::from(["y".into(), "no".into()]);
+        assert_eq!(
+            going(&mut host, "-p -n 1 echo", &["a b c\n"]),
+            (
+                0,
+                "a\n".into(),
+                "echo a ?...echo b ?...echo c ?...".into(),
+                1,
+                1
+            ),
+            "no one left to answer the last is a no"
+        );
+    }
+
+    #[test]
+    fn input_that_cannot_be_read_is_said() {
+        let given = args("echo");
+        let asked = asked(&given).unwrap();
+        let mut host = Host::new();
+        let (status, said) = xargs_on(
+            &asked,
+            |each| {
+                each(b"a ");
+                Err(Error::Unreadable)
+            },
+            &mut host,
+        );
+        assert_eq!(
+            (status, said.as_deref()),
+            (1, Some("xargs: -: could not be read\n"))
+        );
+        assert_eq!(host.written, "a\n", "what came still ran");
+    }
+
+    #[test]
+    fn edges_of_lines_and_sizes() {
+        assert_eq!(
+            commands("-L 1", "a\\ \nb\n"),
+            Ok(Vec::from(["echo a ".into(), "echo b".into()])),
+            "a blank put in with a backslash does not carry a line on"
+        );
+        assert_eq!(
+            commands("-L 1", "a \nb\n"),
+            Ok(Vec::from(["echo a b".into()])),
+            "a plain one does"
+        );
+        assert_eq!(
+            commands("-I % -s 9 echo [%]", "x\n"),
+            Ok(Vec::from(["echo [x]".into()]))
+        );
+        assert_eq!(commands("-I % -s 8 echo [%]", "x\n"), Err(TooLong::Word));
     }
 }

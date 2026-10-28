@@ -4428,6 +4428,18 @@ fn xargs_runs_programs() -> Outcome {
         checked,
         "xargs should run a program on its words, echo without one, and stop at -E's word",
     )?;
+    // What follows the word comes in messages of its own, which xargs
+    // reads no more.
+    let checked = same(
+        &shell_on(
+            "printf 'a STOP w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39\\n' | xargs -E STOP echo",
+        )?,
+        &ran(0, b"a\n"),
+    );
+    expect(
+        checked,
+        "xargs should read nothing after -E's word, however much follows",
+    )?;
     let checked = same(
         &shell_on("printf '1\\n' | xargs false; echo $?; printf '1\\n' | xargs nope; echo $?")?,
         &ran(

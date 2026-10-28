@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 164] = [
+const CHECKS: [(&str, Check); 165] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -181,6 +181,7 @@ const CHECKS: [(&str, Check); 164] = [
     ("tools.strings", strings_finds_text),
     ("tools.du", du_counts_blocks),
     ("tools.touch", touch_makes_files),
+    ("tools.unlink", unlink_removes_a_file),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2658,14 +2659,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"112\n"
+        b"114\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-six twice",
+        "ls should write the programs' names into the pipe, fifty-seven twice",
     )?;
     expect(
         same(
@@ -5015,6 +5016,39 @@ fn touch_makes_files() -> Outcome {
             &ran(0, b"0 0 0\n/System/tg: no such file\n"),
         ),
         "touch should make an empty file, and with -c none",
+    )
+}
+
+/// unlink removes the one file it names, and no directory.
+fn unlink_removes_a_file() -> Outcome {
+    let checked = same(
+        &shell_on("unlink a b")?,
+        &ran(1, b"unlink: removes one file\nunlink ended with 1\n"),
+    );
+    expect(checked, "unlink should take one file")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'x' > /System/uf || exit 9\n\
+         unlink /System/uf; unlink /System/uf; unlink /System",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/uf: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(
+                1,
+                b"unlink: /System/uf: no such file\nunlink ended with 1\n\
+                  unlink: /System: a directory, which unlink does not remove\nunlink ended with 1\n",
+            ),
+        ),
+        "unlink should remove a file, then find none, and leave a directory",
     )
 }
 

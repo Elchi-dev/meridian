@@ -253,3 +253,7 @@ test = true
 [[example]]
 name = "touch"
 test = true
+
+[[example]]
+name = "unlink"
+test = true

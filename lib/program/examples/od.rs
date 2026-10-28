@@ -1081,6 +1081,10 @@ mod tests {
         );
         assert_eq!(float(0.0f64), "0");
         assert_eq!(float(-0.0f32), "-0");
+        assert_eq!(float(f64::NAN), "nan");
+        assert_eq!(float(-f64::NAN), "-nan");
+        assert_eq!(float(f64::INFINITY), "inf");
+        assert_eq!(float(f32::NEG_INFINITY), "-inf");
     }
 
     #[test]
@@ -1252,6 +1256,7 @@ mod tests {
     #[test]
     fn numbers_of_bytes_in_three_bases_and_three_units() {
         assert_eq!(bytes("0"), Some(0));
+        assert_eq!(bytes("9"), Some(9), "one digit is decimal, 8 and 9 too");
         assert_eq!(bytes("17"), Some(17));
         assert_eq!(bytes("017"), Some(15));
         assert_eq!(bytes("0x1f"), Some(31));

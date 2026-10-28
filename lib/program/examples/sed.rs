@@ -224,7 +224,8 @@ impl System<'_> {
                     let path = self.sources[self.next - 1].unwrap_or("-");
                     let _ = program::write_error(&text::trouble("sed", path, e));
                 }
-                false
+                // The source is closed, so this is false.
+                self.reading.is_some()
             }
         }
     }

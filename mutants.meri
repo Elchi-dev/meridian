@@ -324,3 +324,38 @@ allow {
     mutation = "> to >="
     reason = "settling at exactly the most ways rather than one past them only settles sooner, and settling leaves the ways in the order they would settle in at the end"
 }
+
+allow {
+    file = "lib/program/examples/od.rs"
+    line = "self.abs() < f32::MIN_POSITIVE"
+    mutation = "< to <="
+    reason = "the one value it changes, the smallest normal float, needs eight digits to read back, more than the six it would start from either way"
+}
+
+allow {
+    file = "lib/program/examples/od.rs"
+    line = "self.abs() < f64::MIN_POSITIVE"
+    mutation = "< to <="
+    reason = "the one value it changes, the smallest normal double, needs seventeen digits to read back, more than the fifteen it would start from either way"
+}
+
+allow {
+    file = "lib/program/examples/od.rs"
+    line = "starred: false,"
+    mutation = "false to true"
+    reason = "the first line has no line before it to be the same as, so it is written and sets starred before anything reads it"
+}
+
+allow {
+    file = "lib/program/examples/od.rs"
+    line = "while self.held.len() >= LINE + MOST_AFTER {"
+    mutation = ">= to >"
+    reason = "holding one byte more before a line is written only writes it later; the end of the text writes whatever is held"
+}
+
+allow {
+    file = "lib/program/examples/sed.rs"
+    line = "self.unwritten |= program::write_file(*file, *at, bytes).is_err();"
+    mutation = "|= to &="
+    reason = "a file w opened for writing fails to take a line only when its disk is full or fails, which the test machines cannot be made to do"
+}

@@ -3751,6 +3751,19 @@ fn sed_on_files() -> Outcome {
             && counts[0] == counts[1]
             && counts[0].parse::<usize>().is_ok_and(|count| count > 1),
         "sed should read two files as one input, its last line the second's",
+    )?;
+    // A directory opens but gives no bytes: sed says so, names it, and
+    // ends with 2.
+    let checked = same(
+        &shell_on("sed p /System/Boot; echo $?")?,
+        &ran(
+            0,
+            b"sed: /System/Boot: a directory, not a file\nsed ended with 2\n2\n",
+        ),
+    );
+    expect(
+        checked,
+        "sed should say which input it could not read and end with 2",
     )
 }
 
@@ -4588,6 +4601,19 @@ fn od_dumps_bytes() -> Outcome {
             && bytes.is_some_and(|bytes| bytes > 16)
             && bytes == end,
         "od should read a program's first bytes, skip to its type and machine, and end a whole file at its size",
+    )?;
+    // A directory opens but gives no bytes, which od says and ends with
+    // 1 for, after reading on.
+    let checked = same(
+        &shell_on("od /System/Boot; echo $?")?,
+        &ran(
+            0,
+            b"od: /System/Boot: a directory, not a file\n0000000\nod ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "od should say what it could not read and end with 1",
     )
 }
 

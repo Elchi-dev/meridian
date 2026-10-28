@@ -37,15 +37,23 @@ pub trait World {
     /// What went wrong, in words, when it cannot be written.
     fn write_file(&mut self, path: &[u8], bytes: &[u8], append: bool) -> Result<(), String>;
 
-    /// Runs `command` with `input` as its standard input, or none, and
-    /// gives what it writes on its standard output.
+    /// Runs `command`, with a standard input that has ended, and gives
+    /// what it writes on its standard output, as `r` and `e` read it.
     ///
     /// # Errors
     ///
     /// What went wrong, in words, when it cannot be run.
-    fn run(&mut self, command: &[u8], input: &[u8]) -> Result<Vec<u8>, String>;
+    fn run(&mut self, command: &[u8]) -> Result<Vec<u8>, String>;
 
-    /// Runs `command` on ed's own input and output, as `!` does.
+    /// Runs `command` with `input` as its standard input, writing on ed's
+    /// own output, as `w` gives it lines.
+    ///
+    /// # Errors
+    ///
+    /// What went wrong, in words, when it cannot be run.
+    fn pipe(&mut self, command: &[u8], input: &[u8]) -> Result<(), String>;
+
+    /// Runs `command` writing on ed's own output, as `!` does.
     fn shell(&mut self, command: &[u8]);
 
     /// Whether the input is a person at a console, who may go on after a
@@ -642,7 +650,7 @@ impl Ed {
         let read = match path.strip_prefix(b"!") {
             Some(command) => {
                 let command = self.shell_command(command)?;
-                world.run(&command, b"")
+                world.run(&command)
             }
             None => world.read(path),
         };
@@ -915,7 +923,7 @@ impl Ed {
                 let written = match path.strip_prefix(b"!") {
                     Some(command) => {
                         let command = self.shell_command(command)?;
-                        world.run(&command, &bytes).map(|out| world.write(&out))
+                        world.pipe(&command, &bytes)
                     }
                     None => world.write_file(&path, &bytes, letter == b'W'),
                 };
@@ -1453,7 +1461,15 @@ mod tests {
                 .map_err(|_| String::from("cannot be written"))
         }
 
-        fn run(&mut self, command: &[u8], input: &[u8]) -> Result<Vec<u8>, String> {
+        fn run(&mut self, command: &[u8]) -> Result<Vec<u8>, String> {
+            let done = self
+                .sh(command)
+                .output()
+                .map_err(|_| String::from("cannot be run"))?;
+            Ok(done.stdout)
+        }
+
+        fn pipe(&mut self, command: &[u8], input: &[u8]) -> Result<(), String> {
             use std::io::Write as _;
             let mut child = self
                 .sh(command)
@@ -1462,7 +1478,9 @@ mod tests {
                 .spawn()
                 .map_err(|_| String::from("cannot be run"))?;
             child.stdin.take().unwrap().write_all(input).unwrap();
-            Ok(child.wait_with_output().unwrap().stdout)
+            let done = child.wait_with_output().unwrap();
+            self.out.extend_from_slice(&done.stdout);
+            Ok(())
         }
 
         fn shell(&mut self, command: &[u8]) {

@@ -240,12 +240,18 @@ impl Tr {
             return Some(c);
         }
         let second = &self.asked.second;
+        // A character the second list is too short for becomes its last.
+        let last = second.len() - 1;
         let at = if self.asked.complement {
-            second.len() - 1
+            last
         } else {
-            self.asked.first.iter().rposition(|&f| f == c).unwrap_or(0)
+            self.asked
+                .first
+                .iter()
+                .rposition(|&f| f == c)
+                .map_or(last, |at| at.min(last))
         };
-        Some(second[at.min(second.len() - 1)])
+        Some(second[at])
     }
 
     /// Whether a run of `c` written goes on as one, as `-s` asks: the last

@@ -192,7 +192,7 @@ Loader and UEFI:
 - [x] `sed`, its scripts read and run in `lib/sed`
 - [x] `expr`, `sleep`, `cmp`, `comm`, `paste`, `fold` and `nl`
 - [x] `od`, `expand`, `unexpand`, `join` and `split`
-- [ ] The rest of POSIX's options for the first tools: `uniq -d`, `-u`, `-f` and `-s`; `sort -n`, `-k`, `-t`, `-u`, `-m`, `-o` and the rest
+- [x] The rest of POSIX's options for `uniq` and `sort`
 - [x] `wc`'s options: `-c`, `-l`, `-w` and `-m`
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time

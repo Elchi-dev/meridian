@@ -373,3 +373,10 @@ allow {
     mutation = "true to false"
     reason = "the loader brings every program the test images carry, and SPAWN takes its copy for the programs folder too, so the file's path and the program's name start the same program; they part only past the loader's 128"
 }
+
+allow {
+    file = "lib/program/examples/cksum.rs"
+    line = "Ok(()) => failed |= program::write(&line(sum.finish(), path)).is_err(),"
+    mutation = "|= to &="
+    reason = "the standard output fails to take a line only once what reads it is gone, which a check cannot time"
+}

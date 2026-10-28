@@ -4243,14 +4243,19 @@ fn cksum_sums() -> Outcome {
     }
     // A file sums the same named as through the standard input.
     let boot = "/System/Boot/meridian/boot.meri";
-    let (ended, said) = shell_on(&alloc::format!("cksum {boot}; cksum < {boot}"))?;
+    let (ended, said) = shell_on(&alloc::format!(
+        "cksum {boot}; cksum < {boot}; wc -c < {boot}"
+    ))?;
     let text = String::from_utf8_lossy(&said);
     let lines: Vec<&str> = text.lines().collect();
+    // Its count of bytes is all the file's, which takes many messages.
+    let counted = lines.get(1).and_then(|line| line.split(' ').nth(1));
     expect(
         ended == Ok(Ended::Exited(0))
-            && lines.len() == 2
-            && lines[0] == alloc::format!("{} {boot}", lines[1]),
-        "cksum should sum a file named as it sums it through the standard input",
+            && lines.len() == 3
+            && lines[0] == alloc::format!("{} {boot}", lines[1])
+            && counted == Some(lines[2].trim()),
+        "cksum should sum a file named as it sums it through the standard input, every byte of it",
     )
 }
 
@@ -4409,6 +4414,15 @@ fn tsort_orders() -> Outcome {
     expect(
         checked,
         "tsort should refuse an item without its pair, and more than one file",
+    )?;
+    // Pairs of more than one message, all of which count.
+    let checked = same(
+        &shell_on("printf 'w%s w%s\\n' 10 11 11 12 12 13 13 14 14 15 15 16 16 17 17 18 18 19 19 20 20 21 21 22 22 23 23 24 24 25 25 26 26 27 27 28 28 29 29 30 30 31 31 32 32 33 33 34 34 35 35 36 36 37 37 38 38 39 | tsort")?,
+        &ran(0, b"w10\nw11\nw12\nw13\nw14\nw15\nw16\nw17\nw18\nw19\nw20\nw21\nw22\nw23\nw24\nw25\nw26\nw27\nw28\nw29\nw30\nw31\nw32\nw33\nw34\nw35\nw36\nw37\nw38\nw39\n"),
+    );
+    expect(
+        checked,
+        "tsort should read every pair however long its input",
     )
 }
 

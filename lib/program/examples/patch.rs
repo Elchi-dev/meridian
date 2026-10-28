@@ -509,6 +509,25 @@ mod tests {
     use super::*;
     use diff::{Form, keys, write};
 
+    /// Where `path` is under `root`, a path from the top taken from
+    /// `root`. One that climbs out of it stops the test, so that no
+    /// mistake in the program reaches the host's own files.
+    fn confined(root: &std::path::Path, path: &str) -> std::path::PathBuf {
+        let mut depth = 0usize;
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    depth = depth
+                        .checked_sub(1)
+                        .unwrap_or_else(|| panic!("{path} climbs out of the test's directory"));
+                }
+                _ => depth += 1,
+            }
+        }
+        root.join(path.trim_start_matches('/'))
+    }
+
     fn words(text: &str) -> Vec<String> {
         text.split(' ')
             .filter(|w| !w.is_empty())
@@ -700,7 +719,7 @@ mod tests {
 
         /// What the file at `path` holds, none when nothing is there.
         fn holds(&self, path: &str) -> Option<String> {
-            std::fs::read(self.root.join(path))
+            std::fs::read(confined(&self.root, path))
                 .ok()
                 .map(|b| String::from_utf8(b).unwrap())
         }
@@ -724,12 +743,12 @@ mod tests {
         fn read(&mut self, path: Option<&str>) -> Result<Vec<u8>, Error> {
             match path {
                 None => Ok(core::mem::take(&mut self.input)),
-                Some(path) => std::fs::read(self.root.join(path)).map_err(|e| error(&e)),
+                Some(path) => std::fs::read(confined(&self.root, path)).map_err(|e| error(&e)),
             }
         }
 
         fn exists(&mut self, path: &str) -> bool {
-            self.root.join(path).exists()
+            confined(&self.root, path).exists()
         }
 
         fn write(&mut self, path: &str, bytes: &[u8], adding: bool) -> Result<(), Error> {
@@ -739,7 +758,7 @@ mod tests {
                 .write(true)
                 .append(adding)
                 .truncate(!adding)
-                .open(self.root.join(path))
+                .open(confined(&self.root, path))
                 .map_err(|e| error(&e))?;
             file.write_all(bytes).map_err(|e| error(&e))
         }

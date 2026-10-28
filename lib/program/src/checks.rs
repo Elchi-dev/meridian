@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 140] = [
+const CHECKS: [(&str, Check); 141] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -55,6 +55,7 @@ const CHECKS: [(&str, Check); 140] = [
     ("file.write", files_written),
     ("file.write_refused", writes_refused),
     ("file.rename", files_renamed),
+    ("file.source", sources_close_their_files),
     ("directory", working_directory),
     ("spawn.file", child_from_its_file),
     ("handle.duplicate", duplicates_stand_for_the_same_object),
@@ -1069,6 +1070,33 @@ fn directories_list_their_entries() -> Outcome {
     expect(
         close(meridian) == Ok(()) && close(settings) == Ok(()) && close(blind) == Ok(()),
         "the handles should close",
+    )
+}
+
+/// A file read through `text::Source` stays open, so removing it is
+/// refused, until the source closes it, and then it goes.
+fn sources_close_their_files() -> Outcome {
+    use abi::file::{CREATE_NEW, WRITE};
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let path = "/System/source.txt";
+    match open_with(path, WRITE, CREATE_NEW) {
+        Err(Error::ReadOnly) => return Ok(()),
+        Err(_) => return Err("a file should be made on /System"),
+        Ok(file) => {
+            expect(close(file) == Ok(()), "the new file should close")?;
+        }
+    }
+    let source = crate::text::Source::open(path).map_err(|_| "the file should open as a source")?;
+    expect(
+        remove(path) == Err(Error::InUse),
+        "a file read through a source should stay while it is open",
+    )?;
+    source.close();
+    expect(
+        remove(path) == Ok(()),
+        "once its source closed it, the file should go",
     )
 }
 

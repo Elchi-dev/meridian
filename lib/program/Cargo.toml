@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 abi = { path = "../abi" }
+awk = { path = "../awk" }
 diff = { path = "../diff" }
 fat = { path = "../fat" }
 heap = { path = "../heap" }
@@ -223,4 +224,8 @@ test = true
 
 [[example]]
 name = "cat"
+test = true
+
+[[example]]
+name = "awk"
 test = true

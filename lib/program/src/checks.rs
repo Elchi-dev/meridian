@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 157] = [
+const CHECKS: [(&str, Check); 158] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -174,6 +174,7 @@ const CHECKS: [(&str, Check); 157] = [
     ("tools.mkdir", mkdir_makes_directories),
     ("tools.rmdir", rmdir_removes_directories),
     ("tools.cat", cat_writes_files),
+    ("tools.awk", awk_runs_programs),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2651,14 +2652,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"98\n"
+        b"100\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-nine twice",
+        "ls should write the programs' names into the pipe, fifty twice",
     )?;
     expect(
         same(
@@ -4740,6 +4741,64 @@ fn rmdir_removes_directories() -> Outcome {
                 == b"rmdir: /System/E: holds something\nxargs ended with 123\n1\n\
                      rmdir: /System/E/f: no directory\nxargs ended with 123\n",
         "rmdir should go up a path with -p as long as each goes, and keep a file",
+    )
+}
+
+/// awk splits records into fields, reads and writes commands, ends with
+/// the status its program gives, and says where a program is wrong.
+fn awk_runs_programs() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "echo 'a b' | awk '{ print $2, $1 }'; printf '%0200d\\n' 0 | awk '{ print length($0) }'\n\
+             echo a:b | awk -F: -v x=5 '{ print $2, x * 2 }'",
+        )?,
+        &ran(0, b"b a\n200\nb 10\n"),
+    );
+    expect(
+        checked,
+        "awk should split records into fields, take -F and -v, and read a record past one message",
+    )?;
+    let checked = same(
+        &shell_on(
+            "awk 'BEGIN { print \"x\" | \"cat\"; close(\"cat\"); \"echo hi\" | getline v; print v; print system(\"exit 4\"); exit 3 }'",
+        )?,
+        &ran(3, b"x\nhi\n4\nawk ended with 3\n"),
+    );
+    expect(
+        checked,
+        "awk should write to a command, read from one, run one with system, and end with the status exit gives",
+    )?;
+    let checked = same(
+        &shell_on("awk 'BEGIN {'; awk -x")?,
+        &ran(
+            2,
+            b"awk: line 1: } was wanted, not the end\nawk ended with 2\n\
+              awk: -x is no option\nawk ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "awk should say where a program is wrong and what words it cannot take",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/A || exit 9\n\
+         printf 'NR == 2 { print $1 > \"/System/A/o\" }\\n' > /System/A/p\n\
+         printf 'x 1\\ny 2\\n' | awk -f /System/A/p\n\
+         awk '{ print \"got\", $0 }' /System/A/o\n\
+         rm /System/A/p /System/A/o; rd /System/A",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/A: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        same(&(ended, said), &ran(0, b"got y\n")),
+        "awk should read its program from a file, and write a file that it reads back",
     )
 }
 

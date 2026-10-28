@@ -4634,7 +4634,7 @@ fn dd_copies_blocks() -> Outcome {
     }
     // A step at a time, so that a step that never ends is known by the
     // shells that did.
-    let steps: [(&str, &[u8], &str); 5] = [
+    let steps: [(&str, &[u8], &str); 6] = [
         (
             "",
             b"2+0 records in\n2+0 records out\n56789abcde\n",
@@ -4656,7 +4656,13 @@ fn dd_copies_blocks() -> Outcome {
             "dd should keep what lies before the blocks it seeks past",
         ),
         (
-            "rm /System/D/in /System/D/out; rd /System/D",
+            "printf '%0300d' 0 > /System/D/big; printf 'XY' | dd of=/System/D/big bs=1 seek=200\n\
+             cksum < /System/D/big",
+            b"2+0 records in\n2+0 records out\n2305766754 202\n",
+            "dd should keep what lies before the blocks it seeks past, more of it than one read gives",
+        ),
+        (
+            "rm /System/D/in /System/D/out /System/D/big; rd /System/D",
             b"",
             "what dd wrote should be removed",
         ),
@@ -4760,7 +4766,8 @@ fn rmdir_removes_directories() -> Outcome {
         "md /System/E || exit 9\n\
          md /System/E/a; md /System/E/a/b; echo x > /System/E/f\n\
          echo /System/E/a/b | xargs rmdir -p; test -d /System/E/a; echo $?\n\
-         echo /System/E/f | xargs rmdir; rm /System/E/f; rd /System/E",
+         echo /System/E/f | xargs rmdir; md /System/E/g; echo /System/E/g | xargs rmdir\n\
+         test -d /System/E/g; echo $?; rm /System/E/f; rd /System/E",
     )?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
@@ -4772,8 +4779,8 @@ fn rmdir_removes_directories() -> Outcome {
         ended == Ok(Ended::Exited(0))
             && said
                 == b"rmdir: /System/E: holds something\nxargs ended with 123\n1\n\
-                     rmdir: /System/E/f: no directory\nxargs ended with 123\n",
-        "rmdir should go up a path with -p as long as each goes, and keep a file",
+                     rmdir: /System/E/f: no directory\nxargs ended with 123\n1\n",
+        "rmdir should go up a path with -p as long as each goes, keep a file, and end with 0 once all went",
     )
 }
 

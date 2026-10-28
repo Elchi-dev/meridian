@@ -387,3 +387,10 @@ allow {
     mutation = "false to true"
     reason = "the flag counts only for a q or e of a changed buffer, and nothing changes the buffer before the first command, which clears it"
 }
+
+allow {
+    file = "lib/program/examples/dd.rs"
+    line = "(held.len() as u64) < before"
+    mutation = "< to <="
+    reason = "with exactly as many bytes held as are kept, one more piece is read and then cut off again, which changes nothing written"
+}

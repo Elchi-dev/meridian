@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 144] = [
+const CHECKS: [(&str, Check); 146] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -161,6 +161,8 @@ const CHECKS: [(&str, Check); 144] = [
     ("tools.commands", commands_as_programs),
     ("tools.xargs", xargs_runs_programs),
     ("tools.xargs.streams", xargs_hands_its_streams),
+    ("tools.cksum", cksum_sums),
+    ("tools.tsort", tsort_orders),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2638,14 +2640,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"74\n"
+        b"78\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, thirty-seven twice",
+        "ls should write the programs' names into the pipe, thirty-nine twice",
     )?;
     expect(
         same(
@@ -4219,6 +4221,57 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// cksum writes POSIX's checksum and the bytes of its input, and says
+/// what it could not read.
+fn cksum_sums() -> Outcome {
+    let checked = same(
+        &shell_on("printf 'hello\\n' | cksum; printf '' | cksum; cksum /nope; echo $?")?,
+        &ran(
+            0,
+            b"3015617425 6\n4294967295 0\ncksum: /nope: no such file\ncksum ended with 1\n1\n",
+        ),
+    );
+    expect(checked, "cksum should write POSIX's checksum and the bytes")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    // A file sums the same named as through the standard input.
+    let boot = "/System/Boot/meridian/boot.meri";
+    let (ended, said) = shell_on(&alloc::format!("cksum {boot}; cksum < {boot}"))?;
+    let text = String::from_utf8_lossy(&said);
+    let lines: Vec<&str> = text.lines().collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && lines.len() == 2
+            && lines[0] == alloc::format!("{} {boot}", lines[1]),
+        "cksum should sum a file named as it sums it through the standard input",
+    )
+}
+
+/// tsort writes items in an order their pairs keep, and says a loop.
+fn tsort_orders() -> Outcome {
+    let checked = same(
+        &shell_on("printf 'b c\\na b\\n' | tsort; printf 'a b b a' | tsort; echo $?")?,
+        &ran(
+            0,
+            b"a\nb\nc\ntsort: -: a loop of a b\na\nb\ntsort ended with 1\n1\n",
+        ),
+    );
+    expect(checked, "tsort should keep the pairs' order and say a loop")?;
+    let checked = same(
+        &shell_on("printf 'x y z' | tsort -; echo $?; tsort a b")?,
+        &ran(
+            1,
+            b"tsort: -: an item without the other of its pair\ntsort ended with 1\n1\n\
+              tsort: sorts one file\ntsort ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "tsort should refuse an item without its pair, and more than one file",
     )
 }
 

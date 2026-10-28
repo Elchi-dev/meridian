@@ -172,7 +172,7 @@ struct System<'a> {
     held: Held,
     /// The line read ahead to know whether the one before was the last.
     ahead: Option<Vec<u8>>,
-    out: Vec<u8>,
+    out: text::Out<text::Write>,
     /// Each file `w` writes, and where its next line goes.
     written: Vec<(&'a str, Handle, u64)>,
     unread: bool,
@@ -250,12 +250,6 @@ impl System<'_> {
         }
         false
     }
-
-    /// Writes what is held for the standard output.
-    fn flush(&mut self) {
-        self.unwritten |= program::write_bytes(&self.out).is_err();
-        self.out.clear();
-    }
 }
 
 impl World for System<'_> {
@@ -271,10 +265,7 @@ impl World for System<'_> {
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        self.out.extend_from_slice(bytes);
-        if self.out.len() >= abi::MESSAGE_BYTES {
-            self.flush();
-        }
+        self.out.put(bytes);
     }
 
     fn append(&mut self, path: &str, bytes: &[u8]) {
@@ -326,7 +317,7 @@ fn sed(_: Handle) -> u64 {
         reading: None,
         held: Held::default(),
         ahead: None,
-        out: Vec::new(),
+        out: text::standard_output(),
         written: Vec::new(),
         unread: false,
         unwritten: false,
@@ -345,18 +336,26 @@ fn sed(_: Handle) -> u64 {
     } else {
         Sed::new(&script, asked.quiet).run(&mut system)
     };
-    system.flush();
-    for &(_, file, _) in &system.written {
+    let System {
+        out,
+        written,
+        reading,
+        unread,
+        unwritten,
+        ..
+    } = system;
+    let printed = out.finish();
+    for (_, file, _) in written {
         let _ = program::close(file);
     }
-    if let Some(Reading::File(file, _)) = system.reading.take() {
+    if let Some(Reading::File(file, _)) = reading {
         let _ = program::close(file);
     }
     if let Err(trouble) = ran {
         let _ = program::write_error(&format!("sed: {}\n", trouble.says()));
         return 1;
     }
-    ending(system.unread, system.unwritten)
+    ending(unread, unwritten || !printed)
 }
 
 #[cfg(test)]

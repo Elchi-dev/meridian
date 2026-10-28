@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 use program::Handle;
-use program::abi::MESSAGE_BYTES;
 use program::text::{self, Pieces, Source};
 
 program::main!(od);
@@ -647,7 +646,8 @@ fn od(_: Handle) -> u64 {
     };
     let mut dump = Dump::new(&asked);
     let mut failed = false;
-    let mut out = Vec::new();
+    let mut out = text::standard_output();
+    let mut lines = Vec::new();
     let mut piece = Vec::new();
     for path in files {
         if window.shut() {
@@ -664,7 +664,7 @@ fn od(_: Handle) -> u64 {
         while !window.shut() {
             piece.clear();
             match source.more(&mut piece) {
-                Ok(true) => dump.feed(window.through(&piece), &mut out),
+                Ok(true) => dump.feed(window.through(&piece), &mut lines),
                 Ok(false) => break,
                 Err(e) => {
                     let _ = program::write_error(&text::trouble("od", path, e));
@@ -672,10 +672,8 @@ fn od(_: Handle) -> u64 {
                     break;
                 }
             }
-            if out.len() >= MESSAGE_BYTES {
-                let _ = program::write_bytes(&out);
-                out.clear();
-            }
+            out.put(&lines);
+            lines.clear();
         }
         source.close();
     }
@@ -683,9 +681,9 @@ fn od(_: Handle) -> u64 {
         let _ = program::write_error("od: -j skips past the end of the input\n");
         return 1;
     }
-    dump.end(&mut out);
-    let _ = program::write_bytes(&out);
-    u64::from(failed)
+    dump.end(&mut lines);
+    out.put(&lines);
+    u64::from(!out.finish() || failed)
 }
 
 #[cfg(test)]
@@ -721,7 +719,7 @@ mod tests {
     }
 
     fn dumped(options: &str, input: &[u8]) -> String {
-        dumped_in(options, input, MESSAGE_BYTES)
+        dumped_in(options, input, program::abi::MESSAGE_BYTES)
     }
 
     fn wrong(options: &str) -> String {

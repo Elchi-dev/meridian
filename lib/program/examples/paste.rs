@@ -14,7 +14,6 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use program::abi::MESSAGE_BYTES;
 use program::text::{self, LineReader, Pieces, Source};
 use program::{Error, Handle};
 
@@ -202,21 +201,13 @@ fn paste(_: Handle) -> u64 {
             }
         }
     }
-    let mut held = Vec::new();
-    let mut failed = false;
-    let mut put = |line: &[u8]| {
-        held.extend_from_slice(line);
-        if held.len() >= MESSAGE_BYTES {
-            failed |= program::write_bytes(&held).is_err();
-            held.clear();
-        }
-    };
+    let mut out = text::standard_output();
     let joined = if asked.serial {
-        serial(&mut readers, &of, &asked.delimiters, &mut put)
+        serial(&mut readers, &of, &asked.delimiters, |line| out.put(line))
     } else {
-        parallel(&mut readers, &of, &asked.delimiters, &mut put)
+        parallel(&mut readers, &of, &asked.delimiters, |line| out.put(line))
     };
-    failed |= program::write_bytes(&held).is_err();
+    let written = out.finish();
     for reader in readers {
         reader.into_pieces().close();
     }
@@ -224,7 +215,7 @@ fn paste(_: Handle) -> u64 {
         let _ = program::write_error(&text::trouble("paste", paths[reader], e));
         return 1;
     }
-    u64::from(failed)
+    u64::from(!written)
 }
 
 #[cfg(test)]

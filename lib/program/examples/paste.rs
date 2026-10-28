@@ -294,6 +294,11 @@ mod tests {
         let files = ["/a", "/b", "/c", "/d"];
         assert_eq!(pasted("-d ,", &files, &texts), "1,2,3,4\n");
         assert_eq!(pasted("-d ,;", &files, &texts), "1,2;3,4\n", "round again");
+        assert_eq!(
+            pasted("-d ,;:", &files, &texts),
+            "1,2;3:4\n",
+            "the first between the first two columns"
+        );
         assert_eq!(pasted("-d \\0", &files, &texts), "1234\n", "none");
         assert_eq!(pasted("-d \\n", &files[..2], &texts[..2]), "1\n2\n");
         assert_eq!(pasted("-d \\t\\\\", &files, &texts), "1\t2\\3\t4\n");
@@ -309,6 +314,10 @@ mod tests {
         assert_eq!(pasted("-s", &["/a"], &["1\n2\n3\n"]), "1\t2\t3\n");
         assert_eq!(pasted("-s", &["/a", "/b"], &["1\n2\n", "x\n"]), "1\t2\nx\n");
         assert_eq!(pasted("-s -d ,;", &["/a"], &["1\n2\n3\n4\n"]), "1,2;3,4\n");
+        assert_eq!(
+            pasted("-s -d ,;:", &["/a"], &["1\n2\n3\n4\n5\n"]),
+            "1,2;3:4,5\n"
+        );
         assert_eq!(
             pasted("-s", &["/a"], &[""]),
             "\n",

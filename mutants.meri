@@ -317,3 +317,10 @@ allow {
     mutation = "! to nothing"
     reason = "a lone command of the shell's own runs in the shell's thread only to save a thread and a channel; with the change a foreground one runs in a thread the shell waits for at once, and a background one, its input closed, runs to its end before the next command instead of beside it, and either way it writes and ends the same"
 }
+
+allow {
+    file = "lib/regex/src/back.rs"
+    line = "let crowded = ways.len() > MOST_WAYS;"
+    mutation = "> to >="
+    reason = "settling at exactly the most ways rather than one past them only settles sooner, and settling leaves the ways in the order they would settle in at the end"
+}

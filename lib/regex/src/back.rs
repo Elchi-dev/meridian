@@ -101,7 +101,8 @@ pub fn find(
 /// way leaves the order they settle in at the end as it is.
 fn gather(ways: &mut Vec<Way>, more: Vec<Way>) -> Result<(), TooComplex> {
     ways.extend(more);
-    if ways.len() > MOST_WAYS {
+    let crowded = ways.len() > MOST_WAYS;
+    if crowded {
         *ways = settled(core::mem::take(ways));
         if ways.len() > MOST_WAYS {
             return Err(TooComplex);
@@ -117,9 +118,10 @@ fn settled(mut ways: Vec<Way>) -> Vec<Way> {
     let mut seen = BTreeSet::new();
     let kept: Vec<bool> = ways.iter().map(|way| seen.insert(way)).collect();
     drop(seen);
-    let mut keeps = kept.into_iter();
-    ways.retain(|_| keeps.next().unwrap_or(false));
-    ways
+    ways.into_iter()
+        .zip(kept)
+        .filter_map(|(way, keep)| keep.then_some(way))
+        .collect()
 }
 
 impl Search<'_, '_> {
@@ -320,6 +322,28 @@ mod tests {
 
     fn bre(pattern: &str, text: &str) -> Option<Spans> {
         search(pattern, Syntax::Basic, false, text.as_bytes())
+    }
+
+    #[test]
+    fn as_many_ways_as_the_most_are_kept_and_one_more_is_too_many() {
+        let different = |n: u32| way(1, Some((n, n)));
+        let most = u32::try_from(MOST_WAYS).unwrap();
+        let mut ways = Vec::new();
+        assert_eq!(
+            gather(&mut ways, (0..most).map(different).collect()),
+            Ok(())
+        );
+        assert_eq!(ways.len(), MOST_WAYS);
+        assert_eq!(
+            gather(&mut ways, Vec::from([different(0)])),
+            Ok(()),
+            "one alike settles away"
+        );
+        assert_eq!(ways.len(), MOST_WAYS);
+        assert_eq!(
+            gather(&mut ways, Vec::from([different(most)])),
+            Err(TooComplex)
+        );
     }
 
     #[test]

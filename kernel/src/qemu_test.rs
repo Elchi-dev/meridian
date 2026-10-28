@@ -2216,6 +2216,24 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
         for row in (0..rows).filter_map(raw::console::row) {
             let _ = writeln!(report.out, "kernel: the console shows {row:?}");
         }
+        // And whether the shell's thread was left asleep, or its core
+        // stopped ticking.
+        let ticks: alloc::vec::Vec<u64> = (0..raw::interrupts::CORES)
+            .map(raw::interrupts::ticks_of)
+            .take_while(|&ticks| ticks > 0)
+            .collect();
+        let _ = writeln!(
+            report.out,
+            "kernel: tick {}, each core's own {ticks:?}",
+            raw::interrupts::ticks()
+        );
+        for t in raw::thread::living() {
+            let _ = writeln!(
+                report.out,
+                "kernel: thread {} on core {}: {:?}, priority {}, space {:#x}",
+                t.slot, t.core, t.state, t.priority, t.root
+            );
+        }
     }
     report.check(
         "kernel.shell.files",

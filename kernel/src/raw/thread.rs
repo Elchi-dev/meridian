@@ -193,6 +193,17 @@ pub fn alive(slot: usize) -> bool {
     THREADS.lock().alive(slot)
 }
 
+/// Each thread that has started and not ended, as it is now. Only the
+/// test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn living() -> alloc::vec::Vec<thread::Living> {
+    // Room for all of them before the lock, so nothing is allocated while
+    // the table is held.
+    let mut living = alloc::vec::Vec::with_capacity(thread::THREADS);
+    living.extend(THREADS.lock().living());
+    living
+}
+
 /// The cores other than `except` that run a thread in the address space
 /// at `root`, a bit each.
 pub fn cores_in(root: u64, except: usize) -> u64 {

@@ -103,6 +103,18 @@ struct Core {
     leaving: usize,
 }
 
+/// A thread as it is at one moment, for telling why something did not
+/// run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Living {
+    pub slot: usize,
+    pub state: State,
+    pub core: usize,
+    pub priority: u8,
+    /// The level 4 table of its address space, or 0 for the kernel's.
+    pub root: u64,
+}
+
 /// A core going from one thread to another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switch {
@@ -387,6 +399,20 @@ impl<const CORES: usize> Table<CORES> {
             .get(slot)
             .is_some_and(|t| matches!(t.state, State::Ready | State::Running | State::Sleeping(_)))
     }
+
+    /// Each thread that has started and not ended, as it is now.
+    pub fn living(&self) -> impl Iterator<Item = Living> + '_ {
+        (0..THREADS).filter(|&slot| self.alive(slot)).map(|slot| {
+            let t = &self.all[slot];
+            Living {
+                slot,
+                state: t.state,
+                core: t.core,
+                priority: t.priority,
+                root: t.root,
+            }
+        })
+    }
 }
 
 /// The level 4 table to load for a thread whose address space is at
@@ -455,6 +481,61 @@ mod tests {
             Some(Switch { from: slot, to: 2 })
         );
         assert_eq!(t.current(1), 2, "back in its idle thread");
+    }
+
+    #[test]
+    fn the_living_threads_say_where_they_are_and_what_they_wait_for() {
+        let mut t = two();
+        let a = spawn(&mut t, 1, NORMAL);
+        let b = t.free().unwrap();
+        t.prepare(b, 0, NORMAL - 1, 0x7000, 0x9_0000);
+        t.queue(b);
+        assert_eq!(
+            t.give_way(1, State::Ready, 0),
+            Some(Switch { from: 2, to: a })
+        );
+        assert_eq!(
+            t.give_way(1, State::Sleeping(9), 3),
+            Some(Switch { from: a, to: b }),
+            "core 1 takes b, which waits on the busy core 0"
+        );
+        let living: Vec<Living> = t.living().collect();
+        let of = |slot| living.iter().find(|l| l.slot == slot).copied();
+        assert_eq!(
+            of(a),
+            Some(Living {
+                slot: a,
+                state: State::Sleeping(9),
+                core: 1,
+                priority: NORMAL,
+                root: 0
+            })
+        );
+        assert_eq!(
+            of(b),
+            Some(Living {
+                slot: b,
+                state: State::Running,
+                core: 1,
+                priority: NORMAL - 1,
+                root: 0x7000
+            })
+        );
+        assert_eq!(of(0).map(|l| (l.state, l.core)), Some((State::Running, 0)));
+        assert_eq!(of(2).map(|l| (l.state, l.core)), Some((State::Ready, 1)));
+        assert_eq!(living.len(), 5, "thread 0, two idle threads, a and b");
+        // Woken at tick 9 as b ends, a runs again, and b is no longer
+        // among them.
+        assert_eq!(
+            t.give_way(1, State::Ending, 9),
+            Some(Switch { from: b, to: a })
+        );
+        assert!(t.living().all(|l| l.slot != b));
+        assert_eq!(
+            t.living().find(|l| l.slot == a).map(|l| l.state),
+            Some(State::Running)
+        );
+        assert_eq!(t.living().count(), 4);
     }
 
     #[test]

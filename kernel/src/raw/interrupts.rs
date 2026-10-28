@@ -118,6 +118,16 @@ pub fn ticks() -> u64 {
 #[cfg(feature = "qemu-test")]
 static WOKEN: AtomicU64 = AtomicU64::new(0);
 
+/// How many timer interrupts each core took. Only the test image counts.
+#[cfg(feature = "qemu-test")]
+static TICKS_OF: [AtomicU64; CORES] = [const { AtomicU64::new(0) }; CORES];
+
+/// How many timer interrupts `core` took. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn ticks_of(core: usize) -> u64 {
+    TICKS_OF.get(core).map_or(0, |t| t.load(Ordering::Acquire))
+}
+
 /// How many times another core was woken for a job. Only the test image
 /// asks.
 #[cfg(feature = "qemu-test")]
@@ -241,6 +251,10 @@ extern "sysv64" fn exception(frame: &mut Frame) {
     if frame.vector == u64::from(TIMER) {
         if this_core() == 0 {
             TICKS.fetch_add(1, Ordering::AcqRel);
+        }
+        #[cfg(feature = "qemu-test")]
+        if let Some(ticks) = TICKS_OF.get(this_core()) {
+            ticks.fetch_add(1, Ordering::AcqRel);
         }
         x86::raw::end_of_interrupt();
         super::thread::tick();

@@ -20,8 +20,9 @@ import (
 )
 
 // ESPSize is the size of the EFI system partition. FAT32 needs at least
-// about 32.5MiB; 64MiB leaves room for the kernel and its files.
-const ESPSize = 64 << 20
+// about 32.5MiB; 128MiB leaves room for the kernel and its programs,
+// which test images carry twice.
+const ESPSize = 128 << 20
 
 // Contents is what goes onto an image.
 type Contents struct {

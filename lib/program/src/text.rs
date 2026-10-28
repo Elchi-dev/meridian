@@ -153,6 +153,26 @@ pub fn pieces(path: Option<&str>, mut each: impl FnMut(&[u8]) -> bool) -> Result
     read
 }
 
+/// Hands every piece of the files at `paths` to `each`, one file after
+/// another, `-` and no file at all meaning the standard input, and says
+/// what could not be read as `tool` does before it goes on with the next
+/// file. Answers whether every file was read whole.
+pub fn each_piece(tool: &str, paths: &[String], mut each: impl FnMut(&[u8])) -> bool {
+    let mut whole = true;
+    for path in sources(paths) {
+        let path = path.filter(|&p| p != "-");
+        let read = pieces(path, |piece| {
+            each(piece);
+            true
+        });
+        if let Err(e) = read {
+            let _ = crate::write_error(&trouble(tool, path.unwrap_or("-"), e));
+            whole = false;
+        }
+    }
+    whole
+}
+
 /// What gives a text a piece at a time, as it is asked for.
 pub trait Pieces {
     /// Reads the next piece onto the end of `held`, and says whether

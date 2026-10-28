@@ -24,7 +24,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use program::start::{Given, Sink};
-use program::{Ended, Error, Handle, text};
+use program::{Ended, Error, Handle, abi, text};
 
 program::main!(xargs);
 
@@ -386,13 +386,19 @@ fn status(ran: &Ran) -> (u64, bool) {
     }
 }
 
-/// The file the program `name` is in: as it is with a path, else among
-/// the programs.
-fn program_path(name: &str) -> String {
+/// What SPAWN is asked for to start the program `name`: the path as it
+/// is, else the file of that name among the programs, and where `has`
+/// finds no such file, as on a CD, the program of that name the loader
+/// brought.
+fn program_path(name: &str, has: impl FnOnce(&str) -> bool) -> String {
     if name.contains('/') {
-        name.to_string()
+        return name.to_string();
+    }
+    let path = format!("{PROGRAMS}/{name}.mexec");
+    if has(&path) {
+        path
     } else {
-        format!("{PROGRAMS}/{name}.mexec")
+        format!("{name}.mexec")
     }
 }
 
@@ -430,7 +436,12 @@ fn run(command: &[String], asked: &Asked) -> Ran {
         error: handed(program::start::given().error),
         line: None,
     };
-    let path = program_path(&command[0]);
+    let path = program_path(&command[0], |path| {
+        program::open(path, abi::file::READ).is_ok_and(|file| {
+            let _ = program::close(file);
+            true
+        })
+    });
     let arguments: Vec<&str> = command[1..].iter().map(String::as_str).collect();
     match program::spawn_handing(&path, &arguments, given) {
         Ok((child, start)) => {
@@ -814,12 +825,18 @@ mod tests {
         assert_eq!(status(&Ran::Ended(Ended::Faulted(14))), (125, true));
         assert_eq!(status(&Ran::Unstarted(Error::Denied)), (126, true));
         assert_eq!(status(&Ran::NotThere), (127, true));
+        let on_disk = |path: &str| path == "/System/Boot/meridian/programs/echo.mexec";
         assert_eq!(
-            program_path("echo"),
+            program_path("echo", on_disk),
             "/System/Boot/meridian/programs/echo.mexec"
         );
-        assert_eq!(program_path("/x/y.mexec"), "/x/y.mexec");
-        assert_eq!(program_path("./y"), "./y");
+        assert_eq!(
+            program_path("wc", on_disk),
+            "wc.mexec",
+            "a program not on the disk is one the loader brought"
+        );
+        assert_eq!(program_path("/x/y.mexec", |_| false), "/x/y.mexec");
+        assert_eq!(program_path("./y", |_| false), "./y");
         assert_eq!(
             too_long(&TooLong::Word),
             "xargs: a word is longer than -s lets a command be\n"

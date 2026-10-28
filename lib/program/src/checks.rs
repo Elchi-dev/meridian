@@ -4702,6 +4702,37 @@ fn expand_and_unexpand() -> Outcome {
     expect(
         checked,
         "expand should read the standard input for -, and say what it could not read; unexpand -t should set its stops",
+    )?;
+    let checked = same(
+        &shell_on("unexpand /nope; echo $?")?,
+        &ran(
+            0,
+            b"unexpand: /nope: no such file\nunexpand ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "unexpand should end with 1 for what it could not read",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    // A file longer than one piece, 26 lines of 12 bytes, comes through
+    // whole.
+    let (ended, said) = shell_on(
+        "printf '%s\\n' aaaaaaaaaaa bbbbbbbbbbb ccccccccccc ddddddddddd eeeeeeeeeee fffffffffff ggggggggggg hhhhhhhhhhh iiiiiiiiiii jjjjjjjjjjj kkkkkkkkkkk lllllllllll mmmmmmmmmmm nnnnnnnnnnn ooooooooooo ppppppppppp qqqqqqqqqqq rrrrrrrrrrr sssssssssss ttttttttttt uuuuuuuuuuu vvvvvvvvvvv wwwwwwwwwww xxxxxxxxxxx yyyyyyyyyyy zzzzzzzzzzz > /System/e.txt || exit 9\n\
+         wc -l < /System/e.txt; expand /System/e.txt | wc -l; unexpand /System/e.txt | wc -l\n\
+         rm /System/e.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/e.txt: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"26\n26\n26\n",
+        "expand and unexpand should read a whole file, longer than a piece",
     )
 }
 

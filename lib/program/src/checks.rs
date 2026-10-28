@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 159] = [
+const CHECKS: [(&str, Check); 160] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -176,6 +176,7 @@ const CHECKS: [(&str, Check); 159] = [
     ("tools.cat", cat_writes_files),
     ("tools.awk", awk_runs_programs),
     ("tools.ls", ls_lists_directories),
+    ("tools.cp", cp_copies_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2653,14 +2654,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"102\n"
+        b"104\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-one twice",
+        "ls should write the programs' names into the pipe, fifty-two twice",
     )?;
     expect(
         same(
@@ -4842,6 +4843,44 @@ fn ls_lists_directories() -> Outcome {
             &ran(0, b"a\nb\nd/\n1 /System/L/b\n\n/System/L/d:\ntotal 0\n"),
         ),
         "ls should list a directory with a / after the one within, and a file and a directory with their blocks",
+    )
+}
+
+/// cp as a program says what words it cannot take, copies a directory
+/// with all it holds, and copies no file onto itself.
+fn cp_copies_files() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs cp -x")?,
+        &ran(123, b"cp: -x is no option\nxargs ended with 123\n"),
+    );
+    expect(checked, "cp should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/C || exit 9\n\
+         md /System/C/t\n\
+         printf 'ab' > /System/C/t/f\n\
+         echo /System/C/t /System/C/u | xargs cp -R\n\
+         cat /System/C/u/f; echo\n\
+         echo /System/C/t/f /System/C/t/f | xargs cp\n\
+         rm /System/C/t/f /System/C/u/f; rd /System/C/t; rd /System/C/u; rd /System/C",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/C: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(
+                0,
+                b"ab\ncp: /System/C/t/f and /System/C/t/f are one file\nxargs ended with 123\n",
+            ),
+        ),
+        "cp should copy a directory with what it holds, and refuse a file onto itself",
     )
 }
 

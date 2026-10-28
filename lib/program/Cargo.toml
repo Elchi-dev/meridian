@@ -233,3 +233,7 @@ test = true
 [[example]]
 name = "ls"
 test = true
+
+[[example]]
+name = "cp"
+test = true

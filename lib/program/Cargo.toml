@@ -212,3 +212,7 @@ test = true
 [[example]]
 name = "rm"
 test = true
+
+[[example]]
+name = "mkdir"
+test = true

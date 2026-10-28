@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 154] = [
+const CHECKS: [(&str, Check); 155] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -171,6 +171,7 @@ const CHECKS: [(&str, Check); 154] = [
     ("tools.pathchk", pathchk_checks_names),
     ("tools.dd", dd_copies_blocks),
     ("tools.rm", rm_removes_files),
+    ("tools.mkdir", mkdir_makes_directories),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2648,14 +2649,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"92\n"
+        b"94\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-six twice",
+        "ls should write the programs' names into the pipe, forty-seven twice",
     )?;
     expect(
         same(
@@ -4657,6 +4658,39 @@ fn rm_removes_files() -> Outcome {
                 == b"rm: /System/R/nope: no such file\nxargs ended with 123\n123\n\
                      rm: /System/R/d: a directory, which goes only with -R\nxargs ended with 123\n1\n",
         "rm should remove a file, say one not there, and a directory only with -r",
+    )
+}
+
+/// mkdir as a program says what words it cannot take, makes a directory
+/// with those above it with -p, and says one that is there already.
+fn mkdir_makes_directories() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs mkdir; echo | xargs mkdir -m 7 a")?,
+        &ran(
+            123,
+            b"mkdir: makes a directory at least\nxargs ended with 123\n\
+              mkdir: -m: Meridian's files have no modes\nxargs ended with 123\n",
+        ),
+    );
+    expect(checked, "mkdir should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/M || exit 9\n\
+         echo /System/M/a/b | xargs mkdir -p; test -d /System/M/a/b && echo made\n\
+         echo /System/M/a | xargs mkdir; rd /System/M/a/b; rd /System/M/a; rd /System/M",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/M: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said == b"made\nmkdir: /System/M/a: there already\nxargs ended with 123\n",
+        "mkdir should make the directories above with -p, and say one there already",
     )
 }
 

@@ -1012,6 +1012,10 @@ mod tests {
         }
 
         fn run(&mut self, words: &[&str]) -> Ran {
+            // A file of the tree is none of the kernel's .mexec files.
+            if words[0].contains('/') && self.root.join(words[0]).is_file() {
+                return Ran::Unstarted(Error::NotAProgram);
+            }
             if !commands::knows(words[0]) {
                 return Ran::NotThere;
             }
@@ -1208,6 +1212,15 @@ mod tests {
         assert_eq!(
             ran(&mut host, "t/a -exec nope {} ;"),
             (1, String::new(), "find: nope: no such program\n".into())
+        );
+        assert_eq!(
+            ran(&mut host, "t/a -exec t/a {} ; -print"),
+            (
+                1,
+                String::new(),
+                "find: t/a: not a program Meridian runs\n".into()
+            ),
+            "nor is one that does not start"
         );
         assert_eq!(
             ran(&mut host, "t/a -name x -exec echo {} +"),

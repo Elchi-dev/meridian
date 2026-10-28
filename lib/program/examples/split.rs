@@ -295,13 +295,10 @@ fn split(_: Handle) -> u64 {
     let mut stopped = None;
     let input = Some(asked.input).filter(|&path| path != "-");
     let read = text::pieces(input, |piece| {
-        match splitter.feed(piece, &mut |event| writing.handle(event)) {
-            Ok(()) => true,
-            Err(stop) => {
-                stopped = Some(stop);
-                false
-            }
+        if let Err(stop) = splitter.feed(piece, &mut |event| writing.handle(event)) {
+            stopped = Some(stop);
         }
+        stopped.is_none()
     });
     writing.close();
     let said = match (read, stopped) {

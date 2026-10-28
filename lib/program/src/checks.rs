@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 146] = [
+const CHECKS: [(&str, Check); 147] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -156,6 +156,7 @@ const CHECKS: [(&str, Check); 146] = [
     ("tools.expand", expand_and_unexpand),
     ("tools.join", join_pairs_lines),
     ("tools.split", split_cuts_files),
+    ("tools.split.many", split_makes_many_files),
     ("tools.uniq", uniq_options),
     ("tools.sort", sort_options),
     ("tools.commands", commands_as_programs),
@@ -4539,6 +4540,32 @@ fn sort_options() -> Outcome {
     expect(
         ended == Ok(Ended::Exited(0)) && said == b"a\nb\na\nb\nx\n",
         "sort should write into the file it read, and merge its input with a file",
+    )
+}
+
+/// split closes each file it made before it makes the next, so it makes
+/// more than a program may hold open, and reads an input longer than a
+/// piece whole.
+fn split_makes_many_files() -> Outcome {
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/Sp2 || exit 9\n\
+         cd /System/Sp2\n\
+         printf '%s\\n' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 | split -l 1\n\
+         ls | wc -l; cat xcr\n\
+         rm x*; cd /; rd /System/Sp2",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/Sp2: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"70\n70\n",
+        "split should make seventy files of a line each, the last holding the last line",
     )
 }
 

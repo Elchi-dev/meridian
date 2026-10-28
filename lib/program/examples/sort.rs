@@ -49,12 +49,14 @@ struct Order {
 }
 
 impl Order {
-    /// Takes the type letter `letter`, attached to a key's start or end
-    /// when `end` says which; whether it is one.
-    fn take(&mut self, letter: char, end: bool) -> bool {
+    /// Takes the type letter `letter`, whose b leaves out blanks before
+    /// a key's start or its end as `ends` says; whether it is one.
+    fn take(&mut self, letter: char, ends: (bool, bool)) -> bool {
         match letter {
-            'b' if end => self.blanks.1 = true,
-            'b' => self.blanks.0 = true,
+            'b' => {
+                self.blanks.0 |= ends.0;
+                self.blanks.1 |= ends.1;
+            }
             'd' => self.kept.dictionary = true,
             'f' => self.fold = true,
             'i' => self.kept.printable = true,
@@ -128,7 +130,7 @@ fn key(value: &str) -> Result<Key, String> {
     }
     for letter in letters.chars() {
         own = true;
-        if !order.take(letter, false) {
+        if !order.take(letter, (true, false)) {
             return Err(wrong());
         }
     }
@@ -141,7 +143,7 @@ fn key(value: &str) -> Result<Key, String> {
             }
             for letter in letters.chars() {
                 own = true;
-                if !order.take(letter, true) {
+                if !order.take(letter, (false, true)) {
                     return Err(wrong());
                 }
             }
@@ -178,11 +180,7 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
         };
         words = rest;
         for (at, letter) in letters.char_indices() {
-            if asked.order.take(letter, false) {
-                // A b given for all keys leaves out blanks at both ends.
-                if letter == 'b' {
-                    asked.order.blanks = (true, true);
-                }
+            if asked.order.take(letter, (true, true)) {
                 continue;
             }
             match letter {
@@ -240,7 +238,7 @@ fn characters_on(line: &[u8], at: usize, count: usize) -> usize {
             at += 1;
         }
     }
-    at.min(line.len())
+    at
 }
 
 /// Where field `field`, counted from 1, starts and ends in `line`: parted
@@ -295,7 +293,7 @@ fn key_of<'l>(line: &'l [u8], key: &Key, order: Order, separator: Option<&[u8]>)
             characters_on(line, skip(from, to, order.blanks.1), character)
         }
     };
-    if end <= start { &[] } else { &line[start..end] }
+    line.get(start..end).unwrap_or_default()
 }
 
 /// A number as `-n` reads one from the start of `text`: blanks, a minus,
@@ -603,6 +601,12 @@ mod tests {
         );
         assert_eq!(sorted_of("-k 2b", &["x  b\nx a\n"]), "x a\nx  b\n");
         assert_eq!(sorted_of("-b -k 2", &["x  b\nx a\n"]), "x a\nx  b\n");
+        assert_eq!(
+            sorted_of("-b -k 2,2.1", &["y  a\nx  b\n"]),
+            "y  a\nx  b\n",
+            "-b given for all keys leaves out blanks before their ends too"
+        );
+        assert_eq!(sorted_of("-k 2,2.1", &["y  a\nx  b\n"]), "x  b\ny  a\n");
         assert_eq!(
             sorted_of("-b", &[" b\na\n"]),
             "a\n b\n",

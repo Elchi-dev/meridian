@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 155] = [
+const CHECKS: [(&str, Check); 156] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -172,6 +172,7 @@ const CHECKS: [(&str, Check); 155] = [
     ("tools.dd", dd_copies_blocks),
     ("tools.rm", rm_removes_files),
     ("tools.mkdir", mkdir_makes_directories),
+    ("tools.rmdir", rmdir_removes_directories),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2649,14 +2650,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"94\n"
+        b"96\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-seven twice",
+        "ls should write the programs' names into the pipe, forty-eight twice",
     )?;
     expect(
         same(
@@ -4691,6 +4692,41 @@ fn mkdir_makes_directories() -> Outcome {
         ended == Ok(Ended::Exited(0))
             && said == b"made\nmkdir: /System/M/a: there already\nxargs ended with 123\n",
         "mkdir should make the directories above with -p, and say one there already",
+    )
+}
+
+/// rmdir as a program says what words it cannot take, goes up a path
+/// with -p as long as each directory goes, and keeps a file.
+fn rmdir_removes_directories() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs rmdir")?,
+        &ran(
+            123,
+            b"rmdir: removes a directory at least\nxargs ended with 123\n",
+        ),
+    );
+    expect(checked, "rmdir should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/E || exit 9\n\
+         md /System/E/a; md /System/E/a/b; echo x > /System/E/f\n\
+         echo /System/E/a/b | xargs rmdir -p; test -d /System/E/a; echo $?\n\
+         echo /System/E/f | xargs rmdir; rm /System/E/f; rd /System/E",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/E: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"rmdir: /System/E: holds something\nxargs ended with 123\n1\n\
+                     rmdir: /System/E/f: no directory\nxargs ended with 123\n",
+        "rmdir should go up a path with -p as long as each goes, and keep a file",
     )
 }
 

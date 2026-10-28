@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 142] = [
+const CHECKS: [(&str, Check); 144] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -159,6 +159,8 @@ const CHECKS: [(&str, Check); 142] = [
     ("tools.uniq", uniq_options),
     ("tools.sort", sort_options),
     ("tools.commands", commands_as_programs),
+    ("tools.xargs", xargs_runs_programs),
+    ("tools.xargs.streams", xargs_hands_its_streams),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2636,14 +2638,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"72\n"
+        b"74\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, thirty-six twice",
+        "ls should write the programs' names into the pipe, thirty-seven twice",
     )?;
     expect(
         same(
@@ -4217,6 +4219,129 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// xargs runs a program on the words of its input, so many at a time,
+/// echo without one, a command for each line with -I, stops at -E's word,
+/// writes each command with -t, and ends as POSIX says when a program
+/// ends otherwise, is not there, or the input breaks.
+fn xargs_runs_programs() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'a b\\nc\\n' | xargs -n 2 echo; printf 'x\\n' | xargs printf '<%s>\\n'\n\
+             printf '1 2\\n' | xargs; printf 'a\\nSTOP\\nb\\n' | xargs -E STOP echo",
+        )?,
+        &ran(0, b"a b\nc\n<x>\n1 2\na\n"),
+    );
+    expect(
+        checked,
+        "xargs should run a program on its words, echo without one, and stop at -E's word",
+    )?;
+    let checked = same(
+        &shell_on("printf '1\\n' | xargs false; echo $?; printf '1\\n' | xargs nope; echo $?")?,
+        &ran(
+            0,
+            b"xargs ended with 123\n123\n\
+              xargs: nope: no such program\nxargs ended with 127\n127\n",
+        ),
+    );
+    expect(
+        checked,
+        "xargs should end with 123 after a program that failed and 127 for one not there",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf 'a\\n' | xargs -t echo; printf 'x y\\n' | xargs -I % echo '[%]'\n\
+             printf \"a 'b\\n\" | xargs echo; echo $?",
+        )?,
+        &ran(
+            0,
+            b"echo a\na\n[x y]\na\nxargs: a single quote without its other half\n\
+              xargs ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "xargs should write each command with -t, put each line where -I says, and run what came before a broken quote",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf 'a b \\nc\\nd\\n' | xargs -L 1 echo; printf 'aaaa bbbb cccc\\n' | xargs -s 15 echo\n\
+             printf 'a b c d\\n' | xargs -n 3 -s 10 -x echo; echo $?",
+        )?,
+        &ran(
+            0,
+            b"a b c\nd\naaaa bbbb\ncccc\n\
+              xargs: a command cannot take what -n or -L asks within -s\nxargs ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "xargs should take so many lines with -L, so many bytes with -s, and stop with -x when they do not fit",
+    )?;
+    // A program that ends with 255 stops xargs at once.
+    let checked = same(
+        &shell_on("printf 'exit 255\\nexit 0\\n' | xargs -I % shell -c %; echo $?")?,
+        &ran(
+            0,
+            b"xargs: shell ended so that xargs stops\nxargs ended with 124\n124\n",
+        ),
+    );
+    expect(
+        checked,
+        "xargs should stop with 124 once a program ends with 255",
+    )
+}
+
+/// The programs xargs starts read an input that has ended, write where
+/// xargs writes, and a long input makes as many of them as it needs.
+fn xargs_hands_its_streams() -> Outcome {
+    // The programs xargs starts read an input that has ended, not the
+    // keyboard, and what they say goes where xargs says it.
+    let checked = same(
+        &shell_on("printf '' | xargs wc; printf '/nope\\n' | xargs wc; echo $?")?,
+        &ran(
+            0,
+            b"0 0 0\nwc: /nope: no such file\nxargs ended with 123\n123\n",
+        ),
+    );
+    expect(
+        checked,
+        "the programs xargs starts should read an input that ended, and say what went wrong where xargs does",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    // A long input makes many commands, which together take every word.
+    let (ended, said) = shell_on(
+        "head -n 300 /System/Boot/meridian/boot.meri | wc -w\n\
+         head -n 300 /System/Boot/meridian/boot.meri | xargs -n 7 -s 200 echo | wc -w",
+    )?;
+    let counts: Vec<u64> = String::from_utf8_lossy(&said)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && counts.len() == 2
+            && counts[0] > 7
+            && counts[0] == counts[1],
+        "xargs should run as many commands as the words of a long input need, losing none",
+    )?;
+    let (ended, said) = shell_on(
+        "printf 'a b\\n' | xargs echo > /System/x.txt || exit 9\n\
+         cat /System/x.txt; rm /System/x.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/x.txt: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"a b\n",
+        "what the programs xargs starts write should go into the file xargs writes to",
     )
 }
 

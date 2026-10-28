@@ -477,6 +477,28 @@ pub fn stream(end: Handle, room: &mut [u8]) -> Result<usize, Error> {
     }
 }
 
+/// A line typed at the keyboard, shown on the console as it is typed,
+/// whatever the program's standard input is: what a program asks the one
+/// at the console, as `xargs -p` does. Backspace takes back the last
+/// character; none at control and D before Enter.
+#[must_use]
+pub fn typed_line() -> Option<String> {
+    let mut line = String::new();
+    let mut room = [0u8; 4];
+    loop {
+        let len = typed_into(&mut room);
+        match core::str::from_utf8(&room[..len]) {
+            _ if len == 0 => return None,
+            Ok("\n") => return Some(line),
+            Ok("\u{8}") => {
+                line.pop();
+            }
+            Ok(text) => line.push_str(text),
+            Err(_) => {}
+        }
+    }
+}
+
 /// Waits for a key that types a character, shows it on the console and
 /// puts it in `room`, and answers its length: 0 at control and D.
 fn typed_into(room: &mut [u8]) -> usize {

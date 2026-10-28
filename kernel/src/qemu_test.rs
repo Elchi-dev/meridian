@@ -1456,8 +1456,8 @@ fn tree_checks<W: Write>(report: &mut Report<'_, W>, top: &[&str], volumes: &[&s
     );
 }
 
-/// The programs' directory lists the four programs test images carry and
-/// the second copy of each, none of them a directory.
+/// The programs' directory lists the programs test images carry and the
+/// second copy of each, none of them a directory.
 fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     use raw::vfs;
     let system = security::Token::system();
@@ -1481,85 +1481,89 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     names.sort_unstable();
     report.check(
         "kernel.vfs.list",
-        names
-            == [
-                "arguments.mexec",
-                "arguments_again.mexec",
-                "basename.mexec",
-                "basename_again.mexec",
-                "cmp.mexec",
-                "cmp_again.mexec",
-                "comm.mexec",
-                "comm_again.mexec",
-                "cut.mexec",
-                "cut_again.mexec",
-                "dirname.mexec",
-                "dirname_again.mexec",
-                "echo.mexec",
-                "echo_again.mexec",
-                "exitwith.mexec",
-                "exitwith_again.mexec",
-                "expand.mexec",
-                "expand_again.mexec",
-                "expr.mexec",
-                "expr_again.mexec",
-                "false.mexec",
-                "false_again.mexec",
-                "fold.mexec",
-                "fold_again.mexec",
-                "grep.mexec",
-                "grep_again.mexec",
-                "head.mexec",
-                "head_again.mexec",
-                "hello.mexec",
-                "hello_again.mexec",
-                "init.mexec",
-                "init_again.mexec",
-                "join.mexec",
-                "join_again.mexec",
-                "nl.mexec",
-                "nl_again.mexec",
-                "od.mexec",
-                "od_again.mexec",
-                "paste.mexec",
-                "paste_again.mexec",
-                "printf.mexec",
-                "printf_again.mexec",
-                "sed.mexec",
-                "sed_again.mexec",
-                "shell.mexec",
-                "shell_again.mexec",
-                "sleep.mexec",
-                "sleep_again.mexec",
-                "sort.mexec",
-                "sort_again.mexec",
-                "split.mexec",
-                "split_again.mexec",
-                "tail.mexec",
-                "tail_again.mexec",
-                "tee.mexec",
-                "tee_again.mexec",
-                "test.mexec",
-                "test_again.mexec",
-                "threads.mexec",
-                "threads_again.mexec",
-                "tr.mexec",
-                "tr_again.mexec",
-                "true.mexec",
-                "true_again.mexec",
-                "unexpand.mexec",
-                "unexpand_again.mexec",
-                "uniq.mexec",
-                "uniq_again.mexec",
-                "wc.mexec",
-                "wc_again.mexec",
-                "whoami.mexec",
-                "whoami_again.mexec",
-            ]
-            && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the thirty-six programs test images carry, each twice",
+        names == PROGRAM_FILES && listed.iter().all(|(_, directory)| !directory),
+        "the programs' directory should list the thirty-seven programs test images carry, each twice",
     );
 }
+
+/// The files of the programs test images carry, each with its copy, in
+/// the order of their bytes.
+const PROGRAM_FILES: [&str; 74] = [
+    "arguments.mexec",
+    "arguments_again.mexec",
+    "basename.mexec",
+    "basename_again.mexec",
+    "cmp.mexec",
+    "cmp_again.mexec",
+    "comm.mexec",
+    "comm_again.mexec",
+    "cut.mexec",
+    "cut_again.mexec",
+    "dirname.mexec",
+    "dirname_again.mexec",
+    "echo.mexec",
+    "echo_again.mexec",
+    "exitwith.mexec",
+    "exitwith_again.mexec",
+    "expand.mexec",
+    "expand_again.mexec",
+    "expr.mexec",
+    "expr_again.mexec",
+    "false.mexec",
+    "false_again.mexec",
+    "fold.mexec",
+    "fold_again.mexec",
+    "grep.mexec",
+    "grep_again.mexec",
+    "head.mexec",
+    "head_again.mexec",
+    "hello.mexec",
+    "hello_again.mexec",
+    "init.mexec",
+    "init_again.mexec",
+    "join.mexec",
+    "join_again.mexec",
+    "nl.mexec",
+    "nl_again.mexec",
+    "od.mexec",
+    "od_again.mexec",
+    "paste.mexec",
+    "paste_again.mexec",
+    "printf.mexec",
+    "printf_again.mexec",
+    "sed.mexec",
+    "sed_again.mexec",
+    "shell.mexec",
+    "shell_again.mexec",
+    "sleep.mexec",
+    "sleep_again.mexec",
+    "sort.mexec",
+    "sort_again.mexec",
+    "split.mexec",
+    "split_again.mexec",
+    "tail.mexec",
+    "tail_again.mexec",
+    "tee.mexec",
+    "tee_again.mexec",
+    "test.mexec",
+    "test_again.mexec",
+    "threads.mexec",
+    "threads_again.mexec",
+    "tr.mexec",
+    "tr_again.mexec",
+    "true.mexec",
+    "true_again.mexec",
+    "unexpand.mexec",
+    "unexpand_again.mexec",
+    "uniq.mexec",
+    "uniq_again.mexec",
+    "wc.mexec",
+    "wc_again.mexec",
+    "whoami.mexec",
+    "whoami_again.mexec",
+    "xargs.mexec",
+    "xargs_again.mexec",
+];
 
 /// The PS/2 keyboard, through the I/O APIC: the keyboard's input is let
 /// through to this processor as the keyboard's vector, edge triggered and
@@ -2171,6 +2175,7 @@ fn init_services_checks<W: Write>(
     );
     if disk {
         shell_file_checks(report, &shown);
+        shell_ask_checks(report, &shown);
     }
 }
 
@@ -2271,6 +2276,29 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
     );
 }
 
+/// xargs -p asks at the console whether to run each command: it runs the
+/// one asked about once y is typed, and not the one n answered.
+fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -> bool) {
+    type_line(report, "echo yes | xargs -p echo asked");
+    let asked = shown("echo asked yes ?...");
+    type_line(report, "y");
+    let ran = shown("asked yes");
+    type_line(report, "echo no | xargs -p echo asked");
+    let asked_again = shown("echo asked no ?...");
+    type_line(report, "n");
+    type_line(report, "echo after");
+    let after = shown("after");
+    let rows = raw::console::shape().map_or(0, |((_, rows), _)| rows);
+    let declined = (0..rows)
+        .filter_map(raw::console::row)
+        .all(|row| row != "asked no");
+    report.check(
+        "kernel.shell.ask",
+        asked && ran && asked_again && after && declined,
+        "xargs -p should ask at the console, run the command y answers and not the one n answers",
+    );
+}
+
 /// What typing the shell's language does: a block over three lines, a
 /// line that does not read, and the last line run again with up, each
 /// whether it showed what it should.
@@ -2367,6 +2395,8 @@ fn type_line<W: Write>(report: &mut Report<'_, W>, line: &str) {
             '/' => writeln!(report.out, "PRESS slash"),
             '.' => writeln!(report.out, "PRESS dot"),
             '>' => writeln!(report.out, "PRESS shift-dot"),
+            '-' => writeln!(report.out, "PRESS minus"),
+            '|' => writeln!(report.out, "PRESS shift-backslash"),
             '\n' => writeln!(report.out, "PRESS ret"),
             c if c.is_ascii_uppercase() => {
                 writeln!(report.out, "PRESS shift-{}", c.to_ascii_lowercase())

@@ -3696,22 +3696,29 @@ fn grep_expressions() -> Outcome {
     let boot = "/System/Boot/meridian/boot.meri";
     let checked = same(
         &shell_on(&alloc::format!(
-            "grep -l = {boot} /nope; grep -ls = /nope {boot}; echo $?\n\
-             grep -q = {boot} /nope; echo $?; grep -q zz {boot} /nope; echo $?"
+            "grep -l = {boot} /nope; grep -ls = /nope {boot}; echo $?"
         ))?,
         &ran(
             0,
             alloc::format!(
-                "{boot}\ngrep: /nope: no such file\ngrep ended with 2\n{boot}\ngrep ended with 2\n2\n\
-                 0\ngrep: /nope: no such file\ngrep ended with 2\n2\n"
+                "{boot}\ngrep: /nope: no such file\ngrep ended with 2\n{boot}\ngrep ended with 2\n2\n"
             )
             .as_bytes(),
         ),
     );
     expect(
         checked,
-        "grep -l should name the files that hold a line, -s keep quiet about one it cannot read, \
-         and -q end at the first file that holds one",
+        "grep -l should name the files that hold a line, and -s keep quiet about one it cannot read",
+    )?;
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "grep -q = {boot} /nope; echo $?; grep -q zz {boot} /nope; echo $?"
+        ))?,
+        &ran(0, b"0\ngrep: /nope: no such file\ngrep ended with 2\n2\n"),
+    );
+    expect(
+        checked,
+        "grep -q should end at the first file that holds a line, and go on past one that holds none",
     )
 }
 

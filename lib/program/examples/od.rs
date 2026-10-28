@@ -201,11 +201,7 @@ fn bytes(text: &str) -> Option<u64> {
                 Some(b'm') => (&text[..text.len() - 1], 1 << 20),
                 _ => (text, 1),
             };
-            let radix = if digits.len() > 1 && digits.starts_with('0') {
-                8
-            } else {
-                10
-            };
+            let radix = if digits.starts_with('0') { 8 } else { 10 };
             (digits, radix, unit)
         };
     if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {

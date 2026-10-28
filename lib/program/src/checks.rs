@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 136] = [
+const CHECKS: [(&str, Check); 137] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -153,6 +153,7 @@ const CHECKS: [(&str, Check); 136] = [
     ("tools.od", od_dumps_bytes),
     ("tools.wc", wc_counts_what_it_is_asked),
     ("tools.expand", expand_and_unexpand),
+    ("tools.join", join_pairs_lines),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2603,14 +2604,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"58\n"
+        b"60\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-nine twice",
+        "ls should write the programs' names into the pipe, thirty twice",
     )?;
     expect(
         same(
@@ -4171,6 +4172,51 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// join says what words it cannot take and what it cannot open, pairs the
+/// lines of two sorted files, writes those that pair with none and the
+/// fields -o names, reads the standard input for -, and says when a file
+/// is out of order.
+fn join_pairs_lines() -> Outcome {
+    let checked = same(
+        &shell_on("join a; join -x a b; printf 'a 1\\n' | join - /nope")?,
+        &ran(
+            1,
+            b"join: joins two files\njoin ended with 1\n\
+              join: -x is no option\njoin ended with 1\n\
+              join: /nope: no such file\njoin ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "join should say what words it cannot take and what it cannot open",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'a 1\\nb 2\\nb 3\\nd 4\\n' > /System/j1 || exit 9\n\
+         printf 'a x\\nb y\\nc w\\n' > /System/j2\n\
+         join /System/j1 /System/j2; join -a 1 -a 2 -o 0,1.2,2.2 -e - /System/j1 /System/j2\n\
+         printf 'b z\\n' | join -v 1 /System/j1 -; printf 'b\\na\\n' | join - /System/j2\n\
+         rm /System/j1 /System/j2",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/j1: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"a 1 x\nb 2 y\nb 3 y\n\
+                     a 1 x\nb 2 y\nb 3 y\nc - w\nd 4 -\n\
+                     a 1\nd 4\n\
+                     b y\njoin: - is not sorted on its join field\njoin ended with 1\n",
+        "join should pair lines, write those that pair with none, and say a file is out of order",
     )
 }
 

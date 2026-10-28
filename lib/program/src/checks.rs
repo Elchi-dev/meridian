@@ -3678,20 +3678,23 @@ fn sed_on_its_input() -> Outcome {
     )
 }
 
-/// sed reads a script from a file with -f, writes lines into a file with
-/// w and a file into its output with r, and reads several files as one
-/// input.
+/// sed reads a whole script from a file with -f, however long, writes
+/// lines into a file with w and a file into its output with r, and reads
+/// several files as one input.
 fn sed_on_files() -> Outcome {
     if !booted_from_disk() {
         return Ok(());
     }
-    let (ended, said) = shell_on(
-        "echo 's/a/b/' > /System/s.sed || exit 9\n\
+    // Longer than the pieces a file is read in, so a script read only in
+    // part would lose the command at its end.
+    let script = alloc::format!("{}s/a/b/", "s/x/x/;".repeat(20));
+    let (ended, said) = shell_on(&alloc::format!(
+        "echo '{script}' > /System/s.sed || exit 9\n\
          echo a | sed -f /System/s.sed\n\
          printf 'a\\nb\\n' | sed -n '/b/w /System/sed.txt'; cat /System/sed.txt\n\
          printf 'x\\n' | sed 'r /System/s.sed'\n\
          rm /System/sed.txt /System/s.sed",
-    )?;
+    ))?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
             said.starts_with(b"/System/s.sed: on a volume that is only read\n"),
@@ -3699,8 +3702,8 @@ fn sed_on_files() -> Outcome {
         );
     }
     expect(
-        ended == Ok(Ended::Exited(0)) && said == b"b\nb\nx\ns/a/b/\n",
-        "sed should take a script from a file, write lines into one and read one in",
+        ended == Ok(Ended::Exited(0)) && said == alloc::format!("b\nb\nx\n{script}\n").as_bytes(),
+        "sed should take a whole script from a file, write lines into one and read one in",
     )?;
     let boot = "/System/Boot/meridian/boot.meri";
     let (ended, said) = shell_on(&alloc::format!(

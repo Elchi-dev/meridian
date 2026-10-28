@@ -1,6 +1,6 @@
 //! The keyboard behind the PS/2 controller: set up once, its bytes taken
-//! at each of its interrupts and read as keys, which wait until something
-//! takes them.
+//! at each of its interrupts, or when a key is asked for, and read as
+//! keys, which wait until something takes them.
 
 use ps2::{Decoder, Keys, Step, port, status};
 
@@ -74,16 +74,22 @@ pub fn start() -> bool {
     true
 }
 
-/// Takes the byte the keyboard's interrupt says waits, and keeps the key
-/// it ends.
-pub fn interrupt() {
+/// Takes the byte waiting at the controller, if one does, and keeps the
+/// key it ends. The decoder is held from the look to the take, so two
+/// cores never both take a byte one look saw.
+fn take_waiting() {
+    let mut decoder = DECODER.lock();
     if status() & status::OUTPUT_FULL == 0 {
         return;
     }
-    let byte = take();
-    if let Some(event) = DECODER.lock().feed(byte) {
+    if let Some(event) = decoder.feed(take()) {
         let _ = KEYS.lock().push(event);
     }
+}
+
+/// Takes the byte the keyboard's interrupt says waits.
+pub fn interrupt() {
+    take_waiting();
 }
 
 /// The controller's configuration byte. Only the test image asks.
@@ -94,7 +100,17 @@ pub fn configuration() -> Option<u8> {
         .flatten()
 }
 
-/// The oldest key event waiting.
+/// The oldest key event waiting. A byte still at the controller is taken
+/// first: were its interrupt lost, the line would stay up, no edge would
+/// come again, and every key after it would wait there for good.
 pub fn next() -> Option<ps2::Event> {
+    take_waiting();
+    KEYS.lock().pop()
+}
+
+/// The oldest key event the interrupts took, without asking the
+/// controller. Only the test image asks.
+#[cfg(feature = "qemu-test")]
+pub fn heard() -> Option<ps2::Event> {
     KEYS.lock().pop()
 }

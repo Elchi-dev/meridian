@@ -1546,7 +1546,8 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
 /// active high as q35 has it, and each key sextant presses comes as its
 /// events, a shift around the key it shifts and an arrow after its prefix.
 /// The interrupts it comes by need interrupts on, as they are while the
-/// timer runs. On a machine whose FADT says it has no 8042, the keyboard
+/// timer runs. A key whose interrupt is held back comes all the same once
+/// it is asked for. On a machine whose FADT says it has no 8042, the keyboard
 /// is a USB one: nothing answers, nothing is let through and no key comes.
 fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_hz: Option<u64>) {
     use ps2::{Event, Key};
@@ -1623,13 +1624,13 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         let mut got = alloc::vec::Vec::new();
         let start = x86::raw::tsc();
         while got.len() < wanted.len() && x86::raw::tsc() - start < patience {
-            match raw::ps2::next() {
+            match raw::ps2::heard() {
                 Some(event) => got.push(event),
                 None => core::hint::spin_loop(),
             }
         }
         raw::thread::sleep(2);
-        while let Some(event) = raw::ps2::next() {
+        while let Some(event) = raw::ps2::heard() {
             got.push(event);
         }
         got == wanted
@@ -1638,6 +1639,44 @@ fn keyboard_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_
         "kernel.keyboard.keys",
         all,
         "each key sextant presses should come as the keyboard's events, in order and nothing else, or nothing without an 8042",
+    );
+    if present {
+        unheard_key_check(report, machine, patience);
+    }
+}
+
+/// An interrupt that never came leaves its byte waiting and the line up,
+/// so no edge comes again. Held back at the I/O APIC, no interrupt comes
+/// at all, and the key should come all the same when asked for.
+fn unheard_key_check<W: Write>(report: &mut Report<'_, W>, machine: &Machine, patience: u64) {
+    use ps2::{Event, Key};
+    let Some(input) = machine
+        .keyboard
+        .zip(machine.io_apic)
+        .map(|(line, io)| line.interrupt - io.first)
+    else {
+        return;
+    };
+    let entry = raw::ioapic::entry(input);
+    raw::ioapic::route(input, entry | 1 << 16);
+    let _ = writeln!(report.out, "PRESS a");
+    let mut got = alloc::vec::Vec::new();
+    let start = x86::raw::tsc();
+    while got.len() < 2 && x86::raw::tsc() - start < patience {
+        match raw::ps2::next() {
+            Some(event) => got.push(event),
+            None => core::hint::spin_loop(),
+        }
+    }
+    raw::ioapic::route(input, entry);
+    let a = |pressed| Event {
+        key: Key::A,
+        pressed,
+    };
+    report.check(
+        "kernel.keyboard.unheard",
+        got == [a(true), a(false)],
+        "a key should come when asked for though its interrupt did not",
     );
 }
 

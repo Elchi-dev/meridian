@@ -4974,6 +4974,27 @@ fn mv_moves_files() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, b"x\n")),
         "mv should move a file to another name, into a directory, and the directory with it",
+    )?;
+    // From the boot volume, which is only read, everything is copied and
+    // then nothing can go.
+    let from = "/System/Boot/meridian/licences";
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "echo {from} /System/L | xargs mv\n\
+             cmp {from}/inter.txt /System/L/inter.txt && cmp {from}/jetbrains_mono.txt /System/L/jetbrains_mono.txt && cmp {from}/shim.txt /System/L/shim.txt && echo copied\n\
+             rm /System/L/inter.txt /System/L/jetbrains_mono.txt /System/L/shim.txt; rd /System/L"
+        ))?,
+        &ran(
+            0,
+            alloc::format!(
+                "mv: {from} to /System/L: on a volume that is only read\nxargs ended with 123\ncopied\n"
+            )
+            .as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "mv should copy a directory to another volume, every file whole, and say why it cannot remove it after",
     )
 }
 

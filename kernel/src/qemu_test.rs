@@ -1482,13 +1482,13 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     report.check(
         "kernel.vfs.list",
         names == PROGRAM_FILES && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the fifty programs test images carry, each twice",
+        "the programs' directory should list the fifty-one programs test images carry, each twice",
     );
 }
 
 /// The files of the programs test images carry, each with its copy, in
 /// the order of their bytes.
-const PROGRAM_FILES: [&str; 100] = [
+const PROGRAM_FILES: [&str; 102] = [
     "arguments.mexec",
     "arguments_again.mexec",
     "awk.mexec",
@@ -1537,6 +1537,8 @@ const PROGRAM_FILES: [&str; 100] = [
     "init_again.mexec",
     "join.mexec",
     "join_again.mexec",
+    "ls.mexec",
+    "ls_again.mexec",
     "mkdir.mexec",
     "mkdir_again.mexec",
     "nl.mexec",

@@ -229,3 +229,7 @@ test = true
 [[example]]
 name = "awk"
 test = true
+
+[[example]]
+name = "ls"
+test = true

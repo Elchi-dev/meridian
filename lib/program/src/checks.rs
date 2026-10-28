@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 158] = [
+const CHECKS: [(&str, Check); 159] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -175,6 +175,7 @@ const CHECKS: [(&str, Check); 158] = [
     ("tools.rmdir", rmdir_removes_directories),
     ("tools.cat", cat_writes_files),
     ("tools.awk", awk_runs_programs),
+    ("tools.ls", ls_lists_directories),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2652,14 +2653,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"100\n"
+        b"102\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty twice",
+        "ls should write the programs' names into the pipe, fifty-one twice",
     )?;
     expect(
         same(
@@ -4799,6 +4800,48 @@ fn awk_runs_programs() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, b"got y\n")),
         "awk should read its program from a file, and write a file that it reads back",
+    )
+}
+
+/// ls as a program refuses what Meridian's files cannot answer, and
+/// lists a directory and a file as its options ask.
+fn ls_lists_directories() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs ls -l")?,
+        &ran(
+            123,
+            b"ls: -l: Meridian's files have no owners, modes, times, links or numbers yet\n\
+              xargs ended with 123\n",
+        ),
+    );
+    expect(
+        checked,
+        "ls should refuse what Meridian's files cannot answer",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/L || exit 9\n\
+         md /System/L/d\n\
+         printf 'ab' > /System/L/b\n\
+         printf '' > /System/L/a\n\
+         echo /System/L | xargs ls -p\n\
+         echo /System/L/b /System/L/d | xargs ls -s\n\
+         rm /System/L/a /System/L/b; rd /System/L/d; rd /System/L",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/L: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(0, b"a\nb\nd/\n1 /System/L/b\n\n/System/L/d:\ntotal 0\n"),
+        ),
+        "ls should list a directory with a / after the one within, and a file and a directory with their blocks",
     )
 }
 

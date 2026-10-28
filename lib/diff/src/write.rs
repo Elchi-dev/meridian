@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 use crate::compare::Hunk;
+use crate::read::{Edit, Line, Mark};
 
 /// A text as diff reads it: its lines, and whether its last line ends
 /// with a line feed.
@@ -360,6 +361,79 @@ fn side<'h>(
     }
 }
 
+/// Writes the hunks `edits`, which patch could not put in, as patch
+/// keeps them: in the unified form when `unified`, else with context,
+/// under the names `names`.
+pub fn rejects(unified: bool, edits: &[Edit], names: (&str, &str), out: &mut Vec<u8>) {
+    let (old, new) = if unified {
+        ("---", "+++")
+    } else {
+        ("***", "---")
+    };
+    out.extend_from_slice(format!("{old} {}\n{new} {}\n", names.0, names.1).as_bytes());
+    for edit in edits {
+        let count = |put| edit.side(put).count();
+        let olds = edit.old..edit.old + count(false);
+        let news = edit.new..edit.new + count(true);
+        if unified {
+            let header = format!(
+                "@@ -{} +{} @@\n",
+                unified_range(&olds),
+                unified_range(&news)
+            );
+            out.extend_from_slice(header.as_bytes());
+            for &(mark, line) in &edit.lines {
+                let sign: &[u8] = match mark {
+                    Mark::Same => b" ",
+                    Mark::Gone => b"-",
+                    Mark::Put => b"+",
+                };
+                put_line(out, sign, line);
+            }
+            continue;
+        }
+        out.extend_from_slice(
+            format!("***************\n*** {} ****\n", context_range(&olds)).as_bytes(),
+        );
+        edit_side(edit, Mark::Gone, b"- ", out);
+        out.extend_from_slice(format!("--- {} ----\n", context_range(&news)).as_bytes());
+        edit_side(edit, Mark::Put, b"+ ", out);
+    }
+}
+
+/// Writes `line` after `mark`, and diff's note when it has no line feed.
+fn put_line(out: &mut Vec<u8>, mark: &[u8], line: Line) {
+    out.extend_from_slice(mark);
+    out.extend_from_slice(line.text);
+    out.push(b'\n');
+    if line.unended {
+        out.extend_from_slice(UNENDED);
+    }
+}
+
+/// One side of `edit` in the context form, the lines in both and those
+/// marked `own`, if it has any of those: `alone` before a line of a run
+/// of changes that has none of the other side's, `! ` before the others.
+fn edit_side(edit: &Edit, own: Mark, alone: &[u8], out: &mut Vec<u8>) {
+    if !edit.lines.iter().any(|(mark, _)| *mark == own) {
+        return;
+    }
+    for run in edit
+        .lines
+        .chunk_by(|(a, _), (b, _)| (*a == Mark::Same) == (*b == Mark::Same))
+    {
+        let both =
+            run.iter().any(|(m, _)| *m == Mark::Gone) && run.iter().any(|(m, _)| *m == Mark::Put);
+        for &(mark, line) in run {
+            if mark == Mark::Same {
+                put_line(out, b"  ", line);
+            } else if mark == own {
+                put_line(out, if both { b"! " } else { alone }, line);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +622,79 @@ mod tests {
                 assert_eq!(diff(form, a, b), expected, "{form:?} of {a:?} and {b:?}");
             }
         }
+    }
+
+    /// The hunks of the one patch in `patch`.
+    fn edits_in(patch: &[u8]) -> Vec<crate::read::Edit<'_>> {
+        match crate::read::patches(patch, None)
+            .unwrap()
+            .pop()
+            .map(|p| p.hunks)
+        {
+            Some(crate::read::Hunks::Edits(edits)) => edits,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejected_hunks_read_back_as_they_were() {
+        let mut seed = 0x4f1b_bcdc_bfa5_3e0a_u64;
+        for _ in 0..600 {
+            let first = random_text(&mut seed, 20);
+            let mut second = first.clone();
+            for _ in 0..=next(&mut seed) % 3 {
+                let at = usize::try_from(next(&mut seed)).unwrap() % (second.len() + 1);
+                let new = random_text(&mut seed, 2);
+                second.splice(at..(at + 1).min(second.len()), new);
+            }
+            let (a, b) = (
+                joined(&first, true),
+                joined(&second, next(&mut seed).is_multiple_of(2)),
+            );
+            let around = usize::try_from(next(&mut seed) % 3).unwrap();
+            for form in [Form::Normal, Form::Context(around), Form::Unified(around)] {
+                let patch = diff(form, &a, &b);
+                if patch.is_empty() {
+                    continue;
+                }
+                let edits = edits_in(patch.as_bytes());
+                for unified in [false, true] {
+                    let mut out = Vec::new();
+                    rejects(unified, &edits, ("A", "B"), &mut out);
+                    assert_eq!(edits_in(&out), edits, "{form:?} as {unified}:\n{patch}");
+                    let found = crate::read::patches(&out, None).unwrap();
+                    assert_eq!(
+                        (found[0].old_name, found[0].new_name),
+                        (Some(&b"A"[..]), Some(&b"B"[..]))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_from_diff_s_own_form_are_written_with_context() {
+        let patch = "3c3\n< 3\n---\n> 3x\n7d6\n< 7\n10a10\n> n\n";
+        let mut out = Vec::new();
+        rejects(false, &edits_in(patch.as_bytes()), ("f", "f"), &mut out);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "*** f\n--- f\n\
+             ***************\n*** 3 ****\n! 3\n--- 3 ----\n! 3x\n\
+             ***************\n*** 7 ****\n- 7\n--- 6 ----\n\
+             ***************\n*** 10 ****\n--- 10 ----\n+ n\n"
+        );
+        let mut out = Vec::new();
+        rejects(
+            true,
+            &edits_in(b"@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n"),
+            ("a", "b"),
+            &mut out,
+        );
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "--- a\n+++ b\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n"
+        );
     }
 
     #[test]

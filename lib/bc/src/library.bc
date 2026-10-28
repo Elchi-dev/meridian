@@ -1,0 +1,204 @@
+/* The functions bc -l gives: the sine s(x), the cosine c(x) and the
+   arctangent a(x) in radians, the natural logarithm l(x), the
+   exponential e(x) and the Bessel function j(n,x) of whole order n.
+   Each works with digits enough past scale that what it gives, cut to
+   scale, is the true value cut to scale. */
+
+define e(x) {
+	auto b, h, i, k, n, o, p, r, s, t, w
+	s = scale
+	if (x < 0) {
+		/* e(-x) is one over e(x), which is at least one. */
+		scale = s + 10
+		r = e(-x)
+		r = 1 / r
+		scale = s
+		return (r / 1)
+	}
+	scale = 0
+	n = x / 1
+	k = length(n)
+	/* The digits before the point, and those squaring may spoil. */
+	w = s + n / 2 + k + 12
+	scale = w
+	/* e(x) is e(1)^n times e(x - n) */
+	t = 1
+	r = 1
+	h = x - n
+	for (i = 1; t != 0; i++) {
+		t = t * h / i
+		r = r + t
+	}
+	if (n > 0) {
+		t = 1
+		b = 1
+		for (i = 1; t != 0; i++) {
+			t = t / i
+			b = b + t
+		}
+		p = 1
+		while (n > 0) {
+			scale = 0
+			o = n % 2
+			n = n / 2
+			scale = w
+			if (o == 1) p = p * b
+			if (n > 0) b = b * b
+		}
+		r = r * p
+	}
+	scale = s
+	return (r / 1)
+}
+
+define l(x) {
+	auto a, i, m, r, s, t, u, v
+	s = scale
+	if (x <= 0) {
+		/* As GNU's bc has it. */
+		r = 1 - 10 ^ s
+		return (r / 1)
+	}
+	scale = s + 20
+	/* Square roots bring x near one; each doubles what the series
+	   gives after. */
+	m = 1
+	while (x >= 2) {
+		x = sqrt(x)
+		m = m * 2
+	}
+	while (x <= 0.5) {
+		x = sqrt(x)
+		m = m * 2
+	}
+	/* l(x) is twice the sum of u^k/k for odd k, u = (x-1)/(x+1). */
+	u = (x - 1) / (x + 1)
+	v = u * u
+	t = u
+	r = u
+	for (i = 3; 1; i = i + 2) {
+		t = t * v
+		a = t / i
+		if (a == 0) break
+		r = r + a
+	}
+	r = 2 * m * r
+	scale = s
+	return (r / 1)
+}
+
+define a(x) {
+	auto i, m, n, r, s, t, v, y
+	s = scale
+	scale = s + 15
+	n = 1
+	if (x < 0) {
+		n = -1
+		x = -x
+	}
+	/* a(x) is twice a(x/(1+sqrt(1+x^2))), which is less than one. */
+	m = 1
+	while (x > 0.1) {
+		x = x / (1 + sqrt(1 + x * x))
+		m = m * 2
+	}
+	v = x * x
+	t = x
+	r = x
+	for (i = 3; 1; i = i + 2) {
+		t = -t * v
+		y = t / i
+		if (y == 0) break
+		r = r + y
+	}
+	r = n * m * r
+	scale = s
+	return (r / 1)
+}
+
+define s(x) {
+	auto i, p, q, r, s, t, v, w
+	s = scale
+	w = s + 15
+	scale = 0
+	q = x / 1
+	/* A turn to as many digits as the turns in x spoil. */
+	scale = w + length(q)
+	p = 8 * a(1)
+	scale = 0
+	q = x / p
+	scale = w + length(q)
+	x = x - q * p
+	scale = w
+	if (x > p / 2) x = x - p
+	if (x < -p / 2) x = x + p
+	v = x * x
+	t = x
+	r = x
+	for (i = 3; 1; i = i + 2) {
+		t = -t * v / (i * (i - 1))
+		if (t == 0) break
+		r = r + t
+	}
+	scale = s
+	return (r / 1)
+}
+
+define c(x) {
+	auto i, p, q, r, s, t, v, w
+	/* As s(x) takes out the turns, and then the series of the
+	   cosine, which gives c(0) as 1 itself. */
+	s = scale
+	w = s + 15
+	scale = 0
+	q = x / 1
+	scale = w + length(q)
+	p = 8 * a(1)
+	scale = 0
+	q = x / p
+	scale = w + length(q)
+	x = x - q * p
+	scale = w
+	if (x > p / 2) x = x - p
+	if (x < -p / 2) x = x + p
+	v = x * x
+	t = 1
+	r = 1
+	for (i = 2; 1; i = i + 2) {
+		t = -t * v / (i * (i - 1))
+		if (t == 0) break
+		r = r + t
+	}
+	scale = s
+	return (r / 1)
+}
+
+define j(n, x) {
+	auto f, i, k, m, r, s, t, v, w
+	s = scale
+	scale = 0
+	n = n / 1
+	m = 1
+	if (n < 0) {
+		/* j(-n,x) is (-1)^n j(n,x). */
+		n = -n
+		if (n % 2 == 1) m = -1
+	}
+	/* The terms grow to about e(|x|) before they shrink. */
+	w = x / 1
+	if (w < 0) w = -w
+	w = s + 15 + w / 2
+	scale = w
+	f = 1
+	for (i = 2; i <= n; i++) f = f * i
+	t = (x / 2) ^ n / f
+	v = -(x * x) / 4
+	r = t
+	for (k = 1; 1; k++) {
+		t = t * v / (k * (n + k))
+		if (t == 0) break
+		r = r + t
+	}
+	scale = s
+	return (m * r / 1)
+}

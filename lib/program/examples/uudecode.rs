@@ -91,7 +91,11 @@ struct Decoder {
 /// The six bits the historical encoding's `c` stands for: a space and on,
 /// a backquote for nothing as for a space.
 fn historical(c: u8) -> Option<u8> {
-    (b' '..=b'`').contains(&c).then(|| (c - b' ') & 0x3f)
+    match c {
+        b'`' => Some(0),
+        b' '..=b'_' => Some(c - b' '),
+        _ => None,
+    }
 }
 
 /// The six bits the base64 character `c` stands for.

@@ -128,6 +128,14 @@ test = true
 name = "od"
 test = true
 
+[[example]]
+name = "expand"
+test = true
+
+[[example]]
+name = "unexpand"
+test = true
+
 [features]
 # Makes the programs check the calls from ring 3, for the QEMU test image.
 qemu-test = []

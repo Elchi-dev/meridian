@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 135] = [
+const CHECKS: [(&str, Check); 136] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -152,6 +152,7 @@ const CHECKS: [(&str, Check); 135] = [
     ("tools.nl", nl_numbers_lines),
     ("tools.od", od_dumps_bytes),
     ("tools.wc", wc_counts_what_it_is_asked),
+    ("tools.expand", expand_and_unexpand),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2602,14 +2603,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"54\n"
+        b"58\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, twenty-seven twice",
+        "ls should write the programs' names into the pipe, twenty-nine twice",
     )?;
     expect(
         same(
@@ -4170,6 +4171,47 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// expand turns tabs into spaces up to the stops, every eight columns or
+/// as -t says, and unexpand turns the blanks a line starts with back into
+/// tabs, or with -a every run of two blanks or more, from files and from
+/// the standard input.
+fn expand_and_unexpand() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'a\\tb\\n' | expand; printf 'a\\tb\\tc\\td\\n' | expand -t 2,5\n\
+             printf '        a  b       c\\n' | unexpand | od -c\n\
+             printf '        a  b       c\\n' | unexpand -a | od -c\n\
+             expand -t 0",
+        )?,
+        &ran(
+            1,
+            b"a       b\na b  c d\n\
+              0000000  \\t   a           b                               c  \\n\n0000016\n\
+              0000000  \\t   a           b  \\t               c  \\n\n0000013\n\
+              expand: 0 is no tab stop\nexpand ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "expand and unexpand should turn tabs into spaces and spaces into tabs",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf '\\ta\\n' | expand -t 3 - /nope; echo $?; unexpand -q; printf '    x\\n' | unexpand -t 2 | od -c",
+        )?,
+        &ran(
+            0,
+            b"expand: /nope: no such file\n   a\nexpand ended with 1\n1\n\
+              unexpand: -q is no option\nunexpand ended with 1\n\
+              0000000  \\t  \\t   x  \\n\n0000004\n",
+        ),
+    );
+    expect(
+        checked,
+        "expand should read the standard input for -, and say what it could not read; unexpand -t should set its stops",
     )
 }
 

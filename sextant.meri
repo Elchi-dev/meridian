@@ -36,8 +36,9 @@ qemu {
     # auto picks KVM on Linux, HVF on Intel Macs, WHPX on Windows, and
     # falls back to TCG, which emulates every instruction and is slow.
     accel = auto
-    # How long a test boot may take before sextant gives up.
-    timeout = 2min
+    # How long a test boot may take before sextant gives up: hello's
+    # checks alone take more than a minute on a slow machine.
+    timeout = 6min
     # How long the firmware may print nothing before a test boot starts the
     # machine again. OVMF under KVM sometimes hangs at the very start on
     # some hosts; a slow host emulating with TCG may need more time.

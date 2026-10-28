@@ -3554,11 +3554,12 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
     seen::READ_PROGRAMS.store(0, Ordering::Release);
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());
     // Its checks start the shell on scores of scripts, each starting
-    // programs read from their files, which takes the slower machine half
-    // a minute and more beside the other machines of the Go tests.
+    // programs read from their files, which takes the slower machine more
+    // than a minute beside the other machines of the Go tests, and longer
+    // with each program's checks.
     report.check(
         "kernel.programs.hello",
-        ended_within(started, 0, 60 * raw::timer::HZ)
+        ended_within(started, 0, 240 * raw::timer::HZ)
             && seen::logged(b"Hello from ring 3, in Rust")
             && seen::ended(b"user: hello ended with 0\n"),
         "hello should run from its file, find every call working, greet, and have its end logged",

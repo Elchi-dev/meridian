@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 168] = [
+const CHECKS: [(&str, Check); 169] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -185,6 +185,7 @@ const CHECKS: [(&str, Check); 168] = [
     ("tools.ed", ed_edits_files),
     ("tools.uuencode", uuencode_writes_text),
     ("tools.uudecode", uudecode_makes_files),
+    ("tools.bc", bc_works_out_numbers),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2662,14 +2663,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"120\n"
+        b"122\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty twice",
+        "ls should write the programs' names into the pipe, sixty-one twice",
     )?;
     expect(
         same(
@@ -5206,6 +5207,58 @@ fn uudecode_makes_files() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, b"a\nb\na\nb\n")),
         "uudecode should make the file the text names, or the one -o names",
+    )
+}
+
+/// bc works out numbers to any length and scale, with -l's functions,
+/// reads a line past a message, breaks long lines, goes on past mistakes
+/// in a program, and runs a program from a file.
+fn bc_works_out_numbers() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "echo '2^500; scale=20; 1/3' | bc; echo 's(1); e(1)' | bc -l; printf '%0200d\\n' 0 | bc",
+        )?,
+        &ran(
+            0,
+            b"32733906078961418700131896968275991522166420460430647894832913680961\\\n\
+              33796404674554883270092325904157150886684127560071009217256545885393\\\n\
+              053328527589376\n.33333333333333333333\n\
+              .84147098480789650665\n2.71828182845904523536\n0\n",
+        ),
+    );
+    expect(
+        checked,
+        "bc should work out numbers past a line long, -l's functions, and read a line past a message",
+    )?;
+    let checked = same(
+        &shell_on("printf '1/0; 2\\n3\\n' | bc; bc -x; bc /nope")?,
+        &ran(
+            1,
+            b"bc: a division by zero\n3\n\
+              bc: -x is no option\nbc ended with 1\n\
+              bc: /nope: no such file\nbc ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "bc should go on past a mistake in a program, and end with 1 for words and files it cannot take",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'define f(n) { if (n < 2) return (1); return (n * f(n - 1)) }\\nf(20)\\n' > /System/bc.f || exit 9\n\
+         bc /System/bc.f; rm /System/bc.f",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/bc.f: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        same(&(ended, said), &ran(0, b"2432902008176640000\n")),
+        "bc should run a program from a file, and then its standard input",
     )
 }
 

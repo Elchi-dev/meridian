@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 abi = { path = "../abi" }
 awk = { path = "../awk" }
+bc = { path = "../bc" }
 diff = { path = "../diff" }
 ed = { path = "../ed" }
 fat = { path = "../fat" }
@@ -269,4 +270,8 @@ test = true
 
 [[example]]
 name = "uudecode"
+test = true
+
+[[example]]
+name = "bc"
 test = true

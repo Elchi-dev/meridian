@@ -1,0 +1,12 @@
+[package]
+name = "bc"
+description = "POSIX's bc: numbers of any length and scale, and programs of bc's language run over them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -22,6 +22,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc"
+version = "0.0.0"
+
+[[package]]
 name = "boot"
 version = "0.0.0"
 dependencies = [

@@ -792,8 +792,8 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
 }
 
 /// Reads the programs in [`PROGRAMS_PATH`] into memory the kernel keeps,
-/// at most [`Modules::MAX`] of them, and lists them for it on a page of
-/// their own. Without the folder there are none, and a file that cannot be
+/// at most [`Modules::MAX`] of them, and lists them for it on pages of
+/// their own, [`Modules::PAGES`] of them. Without the folder there are none, and a file that cannot be
 /// read is left out.
 fn read_programs(system: &System) -> Modules {
     let Ok(root) = system.boot_volume() else {
@@ -802,7 +802,7 @@ fn read_programs(system: &System) -> Modules {
     let Ok(mut folder) = root.open(PROGRAMS_PATH) else {
         return Modules::default();
     };
-    let Ok(mut page) = system.allocate_pages(KERNEL_TYPE, 1) else {
+    let Ok(mut page) = system.allocate_pages(KERNEL_TYPE, Modules::PAGES) else {
         return Modules::default();
     };
     let mut list = programs::List::new(page.bytes());

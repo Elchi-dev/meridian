@@ -68,7 +68,9 @@ pub struct Modules {
 }
 
 impl Modules {
-    pub const MAX: usize = 64;
+    pub const MAX: usize = 128;
+    /// How many pages the list of them takes at most.
+    pub const PAGES: usize = (Self::MAX * size_of::<Module>()).div_ceil(4096);
 }
 
 /// One file the loader read. Its pages are the kernel's in the memory map.
@@ -412,6 +414,14 @@ mod tests {
     }
 
     #[test]
+    fn the_most_modules_fit_on_the_pages_their_list_takes() {
+        assert_eq!(size_of::<Module>(), 48);
+        assert_eq!(Modules::PAGES, 2);
+        assert!(Modules::MAX * size_of::<Module>() <= Modules::PAGES * 4096);
+        assert!(Modules::MAX * size_of::<Module>() > (Modules::PAGES - 1) * 4096);
+    }
+
+    #[test]
     fn layout_is_fixed() {
         let offsets = [
             (offset_of!(BootInfo, magic), 0),
@@ -437,8 +447,8 @@ mod tests {
         assert_eq!(offset_of!(Module, size), 8);
         assert_eq!(offset_of!(Module, name), 16);
         assert!(
-            Modules::MAX * size_of::<Module>() <= 4096,
-            "the list fits a page"
+            Modules::MAX * size_of::<Module>() <= Modules::PAGES * 4096,
+            "the list fits its pages"
         );
         assert_eq!(size_of::<Framebuffer>(), 32);
         assert_eq!(offset_of!(Framebuffer, width), 16);

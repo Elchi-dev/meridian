@@ -8,7 +8,7 @@ use bootinfo::{Module, Modules};
 use canvas::Text;
 
 /// The modules the loader hands over, written one after another into the
-/// page that holds them for the kernel, at most [`Modules::MAX`].
+/// pages that hold them for the kernel, at most [`Modules::MAX`].
 pub struct List<'a> {
     page: &'a mut [u8],
     count: usize,
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn the_list_holds_no_more_than_the_kernel_reads() {
-        let mut page = vec![0u8; 4096];
+        let mut page = vec![0u8; Modules::PAGES * 4096];
         let mut list = List::new(&mut page);
         for i in 0..Modules::MAX as u64 {
             assert!(!list.full(), "room for module {i}");

@@ -160,6 +160,7 @@ dependencies = [
  "ed",
  "fat",
  "heap",
+ "lzw",
  "meri",
  "regex",
  "security",

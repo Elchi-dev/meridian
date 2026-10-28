@@ -16,6 +16,7 @@ diff = { path = "../diff" }
 ed = { path = "../ed" }
 fat = { path = "../fat" }
 heap = { path = "../heap" }
+lzw = { path = "../lzw" }
 meri = { path = "../meri" }
 regex = { path = "../regex" }
 security = { path = "../security" }

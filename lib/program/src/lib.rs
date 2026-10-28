@@ -28,6 +28,7 @@ pub mod commands;
 pub mod layout;
 #[allow(unsafe_code)]
 mod raw;
+pub mod squeeze;
 pub mod start;
 pub mod tabs;
 pub mod text;

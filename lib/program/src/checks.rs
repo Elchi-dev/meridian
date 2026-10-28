@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 134] = [
+const CHECKS: [(&str, Check); 135] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -151,6 +151,7 @@ const CHECKS: [(&str, Check); 134] = [
     ("tools.fold", fold_breaks_lines),
     ("tools.nl", nl_numbers_lines),
     ("tools.od", od_dumps_bytes),
+    ("tools.wc", wc_counts_what_it_is_asked),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -4166,6 +4167,22 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// wc counts only what its options ask for, in its own order, characters
+/// apart from bytes, and refuses an option it does not know.
+fn wc_counts_what_it_is_asked() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "printf 'été a\\nb\\n' | wc -m; printf 'été a\\nb\\n' | wc -c -l\n\
+             printf 'a b\\nc\\n' | wc -wl; wc -x",
+        )?,
+        &ran(1, b"8\n2 10\n2 3\nwc: -x is no option\nwc ended with 1\n"),
+    );
+    expect(
+        checked,
+        "wc should count what its options ask for, characters apart from bytes",
     )
 }
 

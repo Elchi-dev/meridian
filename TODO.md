@@ -192,7 +192,7 @@ Loader and UEFI:
 - [x] `sed`, its scripts read and run in `lib/sed`
 - [x] `expr`, `sleep`, `cmp`, `comm`, `paste`, `fold` and `nl`
 - [x] `od`
-- [ ] `wc`'s options: `-c`, `-l`, `-w` and `-m`
+- [x] `wc`'s options: `-c`, `-l`, `-w` and `-m`
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

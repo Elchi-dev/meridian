@@ -7,7 +7,9 @@
 
 extern crate alloc;
 
+pub mod apply;
 pub mod compare;
+pub mod read;
 pub mod write;
 
 pub use compare::{Hunk, common, hunks};

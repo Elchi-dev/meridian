@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 137] = [
+const CHECKS: [(&str, Check); 138] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -154,6 +154,7 @@ const CHECKS: [(&str, Check); 137] = [
     ("tools.wc", wc_counts_what_it_is_asked),
     ("tools.expand", expand_and_unexpand),
     ("tools.join", join_pairs_lines),
+    ("tools.split", split_cuts_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2604,14 +2605,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"60\n"
+        b"62\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, thirty twice",
+        "ls should write the programs' names into the pipe, thirty-one twice",
     )?;
     expect(
         same(
@@ -4172,6 +4173,42 @@ fn nl_numbers_lines() -> Outcome {
             && last == lines.first().and_then(|l| count(l))
             && padded,
         "nl -b a should number every line of a file, and -b n set each seven bytes in",
+    )
+}
+
+/// split says what words it cannot take, and cuts its input into files of
+/// so many lines or bytes, named after the name it is given.
+fn split_cuts_files() -> Outcome {
+    let checked = same(
+        &shell_on("split -x; split -l 0; split a b c")?,
+        &ran(
+            1,
+            b"split: -x is no option\nsplit ended with 1\n\
+              split: -l wants a number from 1, not 0\nsplit ended with 1\n\
+              split: takes a file and a name\nsplit ended with 1\n",
+        ),
+    );
+    expect(checked, "split should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/Sp || exit 9\n\
+         cd /System/Sp\n\
+         printf '1\\n2\\n3\\n4\\n5\\n' | split -l 2; cat xaa xab xac | wc -l; cat xac\n\
+         printf 'abcdefg\\n' | split -b 3 - p; cat pab pac\n\
+         printf 'a\\nb\\nc\\n' | split -l 1 -a 1 - n; ls | wc -l\n\
+         rm xaa xab xac paa pab pac na nb nc; cd /; rd /System/Sp",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/Sp: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0)) && said == b"5\n5\ndefg\n9\n",
+        "split should cut its input into files of so many lines or bytes",
     )
 }
 

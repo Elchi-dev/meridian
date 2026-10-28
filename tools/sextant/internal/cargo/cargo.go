@@ -73,6 +73,8 @@ var (
 	Od = Part{Package: "program", Target: "x86_64-unknown-none", File: "od", Example: "od"}
 	// Join pairs the lines of two files.
 	Join = Part{Package: "program", Target: "x86_64-unknown-none", File: "join", Example: "join"}
+	// Split cuts a file into files.
+	Split = Part{Package: "program", Target: "x86_64-unknown-none", File: "split", Example: "split"}
 	// Expand turns tabs into spaces.
 	Expand = Part{Package: "program", Target: "x86_64-unknown-none", File: "expand", Example: "expand"}
 	// Unexpand turns spaces into tabs.
@@ -90,7 +92,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

@@ -1,0 +1,12 @@
+[package]
+name = "awk"
+description = "POSIX's awk: programs read into a tree and run, and numbers written as C's printf writes them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

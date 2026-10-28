@@ -2335,7 +2335,7 @@ fn shell_file_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) 
 /// xargs -p asks at the console whether to run each command: it runs the
 /// one asked about once y is typed, and not the one n answered. Where the
 /// disk can be written, rm -i asks the same way before it removes a file,
-/// and cp -i before it writes over one.
+/// and cp -i and mv -i before they write over one.
 fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -> bool) {
     type_line(report, "echo yes | xargs -p echo asked");
     let asked = shown("echo asked yes ?...");
@@ -2399,6 +2399,29 @@ fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -
         "kernel.shell.ask.cp",
         asked && kept && asked_again && written,
         "cp -i should ask at the console, keep the file n answers and write over the one y answers",
+    );
+    // And mv.
+    type_line(report, "echo moved > /System/ma");
+    type_line(report, "echo kept > /System/mb");
+    type_line(report, "clear");
+    type_line(report, "echo /System/mb | xargs mv -i /System/ma");
+    let asked = shown("mv: write over /System/mb?");
+    type_line(report, "n");
+    type_line(report, "cat /System/mb");
+    let kept = shown("kept");
+    type_line(report, "clear");
+    type_line(report, "echo /System/mb | xargs mv -i /System/ma");
+    let asked_again = shown("mv: write over /System/mb?");
+    type_line(report, "y");
+    type_line(report, "cat /System/mb");
+    let moved = shown("moved");
+    type_line(report, "cat /System/ma");
+    let gone = shown("/System/ma: no such file");
+    type_line(report, "rm /System/mb");
+    report.check(
+        "kernel.shell.ask.mv",
+        asked && kept && asked_again && moved && gone,
+        "mv -i should ask at the console, keep the file n answers and move onto the one y answers",
     );
 }
 

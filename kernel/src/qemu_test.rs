@@ -1482,13 +1482,13 @@ fn list_checks<W: Write>(report: &mut Report<'_, W>) {
     report.check(
         "kernel.vfs.list",
         names == PROGRAM_FILES && listed.iter().all(|(_, directory)| !directory),
-        "the programs' directory should list the sixty-one programs test images carry, each twice",
+        "the programs' directory should list the sixty-four programs test images carry, each twice",
     );
 }
 
 /// The files of the programs test images carry, each with its copy, in
 /// the order of their bytes.
-const PROGRAM_FILES: [&str; 122] = [
+const PROGRAM_FILES: [&str; 128] = [
     "arguments.mexec",
     "arguments_again.mexec",
     "awk.mexec",
@@ -1505,6 +1505,8 @@ const PROGRAM_FILES: [&str; 122] = [
     "cmp_again.mexec",
     "comm.mexec",
     "comm_again.mexec",
+    "compress.mexec",
+    "compress_again.mexec",
     "cp.mexec",
     "cp_again.mexec",
     "csplit.mexec",
@@ -1595,6 +1597,8 @@ const PROGRAM_FILES: [&str; 122] = [
     "true_again.mexec",
     "tsort.mexec",
     "tsort_again.mexec",
+    "uncompress.mexec",
+    "uncompress_again.mexec",
     "unexpand.mexec",
     "unexpand_again.mexec",
     "uniq.mexec",
@@ -1611,6 +1615,8 @@ const PROGRAM_FILES: [&str; 122] = [
     "whoami_again.mexec",
     "xargs.mexec",
     "xargs_again.mexec",
+    "zcat.mexec",
+    "zcat_again.mexec",
 ];
 
 /// The PS/2 keyboard, through the I/O APIC: the keyboard's input is let

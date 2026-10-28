@@ -276,3 +276,15 @@ test = true
 [[example]]
 name = "bc"
 test = true
+
+[[example]]
+name = "compress"
+test = true
+
+[[example]]
+name = "uncompress"
+test = true
+
+[[example]]
+name = "zcat"
+test = true

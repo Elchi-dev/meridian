@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 169] = [
+const CHECKS: [(&str, Check); 170] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -186,6 +186,7 @@ const CHECKS: [(&str, Check); 169] = [
     ("tools.uuencode", uuencode_writes_text),
     ("tools.uudecode", uudecode_makes_files),
     ("tools.bc", bc_works_out_numbers),
+    ("tools.compress", compress_squeezes_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2663,14 +2664,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"122\n"
+        b"128\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-one twice",
+        "ls should write the programs' names into the pipe, sixty-four twice",
     )?;
     expect(
         same(
@@ -5259,6 +5260,55 @@ fn bc_works_out_numbers() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, b"2432902008176640000\n")),
         "bc should run a program from a file, and then its standard input",
+    )
+}
+
+/// compress, uncompress and zcat take what they are given through
+/// pipes, past a message, and files on a disk to their names with .Z and
+/// back, keep a file compress cannot make smaller, and say what is not
+/// compress's.
+fn compress_squeezes_files() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "echo hello | compress | uncompress; printf '%0300d\\n' 0 | compress -b 9 | zcat | cksum\n\
+             echo hi | zcat; compress -x; uncompress /nope",
+        )?,
+        &ran(
+            1,
+            b"hello\n4020527664 301\n\
+              zcat: -: not what compress writes\nzcat ended with 1\n\
+              compress: -x is no option\ncompress ended with 1\n\
+              uncompress: /nope.Z: no such file\nuncompress ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "compress and its others should take what they are given through pipes, and say what they cannot",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf '%0300d\\n' 0 > /System/cz || exit 9\n\
+         compress -v /System/cz; zcat /System/cz | cksum; uncompress /System/cz.Z; cksum < /System/cz\n\
+         echo ab > /System/cs; compress /System/cs; cat /System/cs; rm /System/cz /System/cs",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/cz: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(
+                0,
+                b"/System/cz: 89.36% smaller, now /System/cz.Z\n4020527664 301\n4020527664 301\n\
+                  compress ended with 2\nab\n",
+            ),
+        ),
+        "compress should put a file into its name with .Z and back, and keep one it cannot make smaller",
     )
 }
 

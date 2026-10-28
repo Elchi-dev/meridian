@@ -443,10 +443,10 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
     let mut read = |lba, into: &mut [u8]| raw::ahci::read(disk.port, lba, into).is_ok();
     let table = kernel::disk::Table::read(&mut read);
     let listed = [
-        (gpt::EFI_SYSTEM, 2048, 131_072, "EFI system partition"),
-        (gpt::MERIDIAN_SYSTEM, 133_120, 69_632, "Meridian system"),
-        (gpt::BASIC_DATA, 202_752, 2048, "Unlocked"),
-        (gpt::MERIDIAN_SYSTEM, 204_800, 2048, "Not listed"),
+        (gpt::EFI_SYSTEM, 2048, 262_144, "EFI system partition"),
+        (gpt::MERIDIAN_SYSTEM, 264_192, 69_632, "Meridian system"),
+        (gpt::BASIC_DATA, 333_824, 2048, "Unlocked"),
+        (gpt::MERIDIAN_SYSTEM, 335_872, 2048, "Not listed"),
     ];
     report.check(
         "kernel.gpt.read",
@@ -462,7 +462,7 @@ fn ahci_checks<W: Write>(report: &mut Report<'_, W>) {
                     },
                 )
         }),
-        "the boot disk's partition table should list sextant's EFI system partition of 64 MiB from 1 MiB on, then the test disk's Meridian system partition of 34 MiB, and its unlocked partition and one not listed, 1 MiB each",
+        "the boot disk's partition table should list sextant's EFI system partition of 128 MiB from 1 MiB on, then the test disk's Meridian system partition of 34 MiB, and its unlocked partition and one not listed, 1 MiB each",
     );
     ahci_port_checks(report, disk.port);
 }

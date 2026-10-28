@@ -250,6 +250,59 @@ impl<P: Pieces> LineReader<P> {
     }
 }
 
+/// Output held until a message's worth has come and then written at once,
+/// so a long text goes out in as few messages as it can, remembering
+/// whether a write did not go through.
+pub struct Out<W: FnMut(&[u8]) -> Result<(), Error>> {
+    held: Vec<u8>,
+    write: W,
+    failed: bool,
+}
+
+impl<W: FnMut(&[u8]) -> Result<(), Error>> Out<W> {
+    /// Output that `write` writes.
+    pub fn new(write: W) -> Self {
+        Out {
+            held: Vec::new(),
+            write,
+            failed: false,
+        }
+    }
+
+    /// Takes `bytes`, and writes all that is held once it is a message's
+    /// worth or more.
+    pub fn put(&mut self, bytes: &[u8]) {
+        self.held.extend_from_slice(bytes);
+        if self.held.len() >= abi::MESSAGE_BYTES {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.held.is_empty() {
+            self.failed |= (self.write)(&self.held).is_err();
+            self.held.clear();
+        }
+    }
+
+    /// Writes what is still held, and says whether every write went
+    /// through.
+    #[must_use]
+    pub fn finish(mut self) -> bool {
+        self.flush();
+        !self.failed
+    }
+}
+
+/// What writes the program's standard output.
+pub type Write = fn(&[u8]) -> Result<(), Error>;
+
+/// Output onto the program's standard output.
+#[must_use]
+pub fn standard_output() -> Out<Write> {
+    Out::new(crate::write_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +467,120 @@ mod tests {
         assert_eq!(reader.line(), Ok(Some(b"c".to_vec())));
         assert_eq!(reader.line(), Ok(None));
         assert_eq!(reader.into_pieces().0.len(), 0);
+    }
+
+    /// The writes an [`Out`] made, and what it writes them with: the
+    /// writes whose numbers, from 0, are in `failing` go wrong.
+    struct Writes {
+        made: core::cell::RefCell<Vec<Vec<u8>>>,
+        failing: Vec<usize>,
+    }
+
+    impl Writes {
+        fn new(failing: &[usize]) -> Writes {
+            Writes {
+                made: core::cell::RefCell::new(Vec::new()),
+                failing: failing.to_vec(),
+            }
+        }
+
+        fn out(&self) -> Out<impl FnMut(&[u8]) -> Result<(), Error> + '_> {
+            Out::new(|bytes: &[u8]| {
+                let mut made = self.made.borrow_mut();
+                made.push(bytes.to_vec());
+                if self.failing.contains(&(made.len() - 1)) {
+                    Err(Error::Closed)
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn lengths(&self) -> Vec<usize> {
+            self.made.borrow().iter().map(Vec::len).collect()
+        }
+    }
+
+    #[test]
+    fn output_is_written_once_a_message_s_worth_is_held() {
+        let writes = Writes::new(&[]);
+        let mut out = writes.out();
+        out.put(&[b'a'; abi::MESSAGE_BYTES - 1]);
+        assert_eq!(writes.lengths(), [0usize; 0], "one byte short");
+        out.put(b"b");
+        assert_eq!(writes.lengths(), [abi::MESSAGE_BYTES], "exactly a message");
+        out.put(b"cd");
+        assert_eq!(writes.lengths(), [abi::MESSAGE_BYTES]);
+        assert!(out.finish());
+        assert_eq!(writes.lengths(), [abi::MESSAGE_BYTES, 2]);
+        assert_eq!(writes.made.borrow()[1], b"cd");
+    }
+
+    #[test]
+    fn a_long_piece_goes_out_in_one_write() {
+        let writes = Writes::new(&[]);
+        let mut out = writes.out();
+        out.put(b"x");
+        out.put(&[b'y'; 300]);
+        assert_eq!(writes.lengths(), [301]);
+        assert!(out.finish());
+        assert_eq!(
+            writes.lengths(),
+            [301],
+            "nothing held, nothing more written"
+        );
+    }
+
+    #[test]
+    fn output_with_nothing_held_writes_nothing() {
+        let writes = Writes::new(&[]);
+        assert!(writes.out().finish());
+        assert_eq!(writes.lengths(), [0usize; 0]);
+        let mut out = writes.out();
+        out.put(b"");
+        assert!(out.finish());
+        assert_eq!(writes.lengths(), [0usize; 0]);
+    }
+
+    #[test]
+    fn a_write_that_went_wrong_is_remembered() {
+        let writes = Writes::new(&[0]);
+        let mut out = writes.out();
+        out.put(&[b'a'; abi::MESSAGE_BYTES]);
+        out.put(b"more");
+        assert!(!out.finish(), "the first of two writes went wrong");
+        assert_eq!(writes.lengths(), [abi::MESSAGE_BYTES, 4]);
+        let writes = Writes::new(&[1]);
+        let mut out = writes.out();
+        out.put(&[b'a'; abi::MESSAGE_BYTES]);
+        out.put(b"last");
+        assert!(!out.finish(), "the last went wrong");
+    }
+
+    #[test]
+    fn output_comes_out_as_it_was_put_in_any_pieces() {
+        let mut seed = 0x0bad_5eed_1234_5678_u64;
+        for _ in 0..200 {
+            let writes = Writes::new(&[]);
+            let mut out = writes.out();
+            let mut put = Vec::new();
+            for _ in 0..seed % 20 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let len = usize::try_from(seed % 200).unwrap();
+                let piece: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
+                out.put(&piece);
+                put.extend(piece);
+            }
+            assert!(out.finish());
+            let made = writes.made.borrow();
+            assert_eq!(made.concat(), put);
+            let (last, all_but) = made
+                .split_last()
+                .map_or((0, &[][..]), |(l, a)| (l.len(), a));
+            assert!(all_but.iter().all(|w| w.len() >= abi::MESSAGE_BYTES));
+            assert!(last > 0 || made.is_empty());
+        }
     }
 }

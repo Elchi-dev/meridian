@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 151] = [
+const CHECKS: [(&str, Check); 152] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -168,6 +168,7 @@ const CHECKS: [(&str, Check); 151] = [
     ("tools.patch", patch_puts_diffs_in),
     ("tools.find", find_walks_trees),
     ("tools.csplit", csplit_cuts_files),
+    ("tools.pathchk", pathchk_checks_names),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2645,14 +2646,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"86\n"
+        b"88\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-three twice",
+        "ls should write the programs' names into the pipe, forty-four twice",
     )?;
     expect(
         same(
@@ -4518,6 +4519,42 @@ fn csplit_cuts_files() -> Outcome {
     expect(
         checked,
         "csplit should remove what it made when a pattern finds no line",
+    )
+}
+
+/// pathchk says what words it cannot take, which pathnames are not
+/// portable or no names a FAT volume takes, finds the loader's own path
+/// fine and one through nothing there too, and with -P refuses a name
+/// that begins with a hyphen.
+fn pathchk_checks_names() -> Outcome {
+    let checked = same(
+        &shell_on(
+            "pathchk -p 'a b' ok; echo $?\n\
+             pathchk 'x:y' /System/Boot/meridian/boot.meri /nope/a/b; echo $?",
+        )?,
+        &ran(
+            0,
+            b"pathchk: a b: the name a b holds ' ', which is no portable character\n\
+              pathchk ended with 1\n1\n\
+              pathchk: x:y: the name x:y is none a FAT volume takes\n\
+              pathchk ended with 1\n1\n",
+        ),
+    );
+    expect(
+        checked,
+        "pathchk should say which pathnames are not portable or no FAT names, and pass the rest",
+    )?;
+    let checked = same(
+        &shell_on("pathchk -P -- -a; pathchk; pathchk /System/Boot; echo $?")?,
+        &ran(
+            0,
+            b"pathchk: -a: the name -a begins with -\npathchk ended with 1\n\
+              pathchk: checks a pathname at least\npathchk ended with 1\n0\n",
+        ),
+    );
+    expect(
+        checked,
+        "pathchk should refuse a name beginning with - with -P, and want a pathname",
     )
 }
 

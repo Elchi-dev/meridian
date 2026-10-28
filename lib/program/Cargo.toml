@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 abi = { path = "../abi" }
 diff = { path = "../diff" }
+fat = { path = "../fat" }
 heap = { path = "../heap" }
 meri = { path = "../meri" }
 regex = { path = "../regex" }
@@ -198,4 +199,8 @@ test = true
 
 [[example]]
 name = "csplit"
+test = true
+
+[[example]]
+name = "pathchk"
 test = true

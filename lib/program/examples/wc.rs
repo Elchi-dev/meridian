@@ -379,4 +379,45 @@ mod tests {
             "nor is the next line control past ASCII"
         );
     }
+
+    #[test]
+    fn random_texts_count_the_same_whole_or_in_any_pieces() {
+        let mut seed = 0x853c_49e6_748f_ea9b_u64;
+        let alphabet = [
+            "a",
+            "b",
+            " ",
+            "\t",
+            "\n",
+            "\u{e9}",
+            "\u{20ac}",
+            "\u{1f600}",
+            "\x0b",
+        ];
+        for _ in 0..300 {
+            let mut text = String::new();
+            for _ in 0..seed % 40 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                text.push_str(alphabet[usize::try_from(seed % 9).unwrap()]);
+            }
+            let words = text
+                .split([' ', '\t', '\n', '\x0b'])
+                .filter(|w| !w.is_empty())
+                .count();
+            let want = counts(
+                u64::try_from(text.matches('\n').count()).unwrap(),
+                u64::try_from(words).unwrap(),
+                u64::try_from(text.len()).unwrap(),
+                u64::try_from(text.chars().count()).unwrap(),
+            );
+            let bytes = text.as_bytes();
+            assert_eq!(fed_bytes(&[bytes]), want, "{text:?}");
+            for size in [1, 2, 3, 5] {
+                let pieces: Vec<&[u8]> = bytes.chunks(size).collect();
+                assert_eq!(fed_bytes(&pieces), want, "{text:?} in pieces of {size}");
+            }
+        }
+    }
 }

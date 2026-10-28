@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 153] = [
+const CHECKS: [(&str, Check); 154] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -170,6 +170,7 @@ const CHECKS: [(&str, Check); 153] = [
     ("tools.csplit", csplit_cuts_files),
     ("tools.pathchk", pathchk_checks_names),
     ("tools.dd", dd_copies_blocks),
+    ("tools.rm", rm_removes_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2647,14 +2648,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"90\n"
+        b"92\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, forty-five twice",
+        "ls should write the programs' names into the pipe, forty-six twice",
     )?;
     expect(
         same(
@@ -4618,6 +4619,44 @@ fn dd_copies_blocks() -> Outcome {
         checked,
         "dd should copy blocks past those it skips, write into a file it keeps the rest of, \
          and keep what lies before the blocks it seeks past",
+    )
+}
+
+/// rm as a program, the shell's own rm being a command of its own: it
+/// says what words it cannot take, removes a file and says one not
+/// there, keeps a directory without -r and removes it with it.
+fn rm_removes_files() -> Outcome {
+    let checked = same(
+        &shell_on("echo | xargs rm; echo | xargs rm -x")?,
+        &ran(
+            123,
+            b"rm: removes a file at least\nxargs ended with 123\n\
+              rm: -x is no option\nxargs ended with 123\n",
+        ),
+    );
+    expect(checked, "rm should say what words it cannot take")?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "md /System/R || exit 9\n\
+         md /System/R/d; echo x > /System/R/d/f; echo y > /System/R/g\n\
+         echo /System/R/g /System/R/nope | xargs rm; echo $?\n\
+         echo /System/R/d | xargs rm; echo /System/R/d | xargs rm -r; test -d /System/R/d; echo $?\n\
+         rd /System/R",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/R: on a volume that is only read\n"),
+            "on /System read only no directory should be made",
+        );
+    }
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said
+                == b"rm: /System/R/nope: no such file\nxargs ended with 123\n123\n\
+                     rm: /System/R/d: a directory, which goes only with -R\nxargs ended with 123\n1\n",
+        "rm should remove a file, say one not there, and a directory only with -r",
     )
 }
 

@@ -103,6 +103,8 @@ var (
 	Pathchk = Part{Package: "program", Target: "x86_64-unknown-none", File: "pathchk", Example: "pathchk"}
 	// Dd copies a file a block at a time, converting it on the way.
 	Dd = Part{Package: "program", Target: "x86_64-unknown-none", File: "dd", Example: "dd"}
+	// Rm removes files, and directories with -r.
+	Rm = Part{Package: "program", Target: "x86_64-unknown-none", File: "rm", Example: "rm"}
 	// Expand turns tabs into spaces.
 	Expand = Part{Package: "program", Target: "x86_64-unknown-none", File: "expand", Example: "expand"}
 	// Unexpand turns spaces into tabs.
@@ -120,7 +122,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False, Xargs, Cksum, Tsort, Diff, Patch, Find, Csplit, Pathchk, Dd}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False, Xargs, Cksum, Tsort, Diff, Patch, Find, Csplit, Pathchk, Dd, Rm}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

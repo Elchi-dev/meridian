@@ -208,3 +208,7 @@ test = true
 [[example]]
 name = "dd"
 test = true
+
+[[example]]
+name = "rm"
+test = true

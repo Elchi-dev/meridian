@@ -3674,17 +3674,21 @@ fn grep_expressions() -> Outcome {
     )?;
     let checked = same(
         &shell_on(
-            "printf 'x\\n' | grep -q x; echo $?; printf 'x\\n' | grep -l x; grep 'a\\{2'; echo $?",
+            "printf 'x\\n' | grep -q x; echo $?; printf 'x\\n' | grep -l x; grep 'a\\{2'; echo $?\n\
+             printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' | grep '\\(\\(a*\\)*\\)*\\1x'; echo $?",
         )?,
         &ran(
             0,
             b"0\n(standard input)\n\
-              grep: a\\{2: an interval that is no count from 0 to 255\ngrep ended with 2\n2\n",
+              grep: a\\{2: an interval that is no count from 0 to 255\ngrep ended with 2\n2\n\
+              grep: -: the back-references leave too many ways to match this text\n\
+              grep ended with 2\n2\n",
         ),
     );
     expect(
         checked,
-        "grep -q and -l should say only what they are for, and grep refuse what is no expression",
+        "grep -q and -l should say only what they are for, and grep refuse what is no expression \
+         or too complex to search",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -3692,19 +3696,22 @@ fn grep_expressions() -> Outcome {
     let boot = "/System/Boot/meridian/boot.meri";
     let checked = same(
         &shell_on(&alloc::format!(
-            "grep -l = {boot} /nope; grep -ls = /nope {boot}; echo $?"
+            "grep -l = {boot} /nope; grep -ls = /nope {boot}; echo $?\n\
+             grep -q = {boot} /nope; echo $?; grep -q zz {boot} /nope; echo $?"
         ))?,
         &ran(
             0,
             alloc::format!(
-                "{boot}\ngrep: /nope: no such file\ngrep ended with 2\n{boot}\ngrep ended with 2\n2\n"
+                "{boot}\ngrep: /nope: no such file\ngrep ended with 2\n{boot}\ngrep ended with 2\n2\n\
+                 0\ngrep: /nope: no such file\ngrep ended with 2\n2\n"
             )
             .as_bytes(),
         ),
     );
     expect(
         checked,
-        "grep -l should name the files that hold a line, and -s keep quiet about one it cannot read",
+        "grep -l should name the files that hold a line, -s keep quiet about one it cannot read, \
+         and -q end at the first file that holds one",
     )
 }
 

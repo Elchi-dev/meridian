@@ -664,14 +664,20 @@ mod tests {
 
     #[test]
     fn a_search_too_complex_ends_the_text_with_its_trouble() {
-        let line = "a".repeat(40) + "\nnext\n";
+        let pattern = "\\(\\(a*\\)*\\)*\\1x";
+        assert!(takes(pattern, b"aax"), "a short line it takes");
+        let line = "a".repeat(40) + "\naax\n";
         let (out, count, trouble) = found_in(
-            &[String::from("\\(\\(a*\\)*\\)*\\1x")],
+            &[String::from(pattern)],
             None,
             false,
-            &[line.as_bytes()],
+            &[line.as_bytes(), b"aax\naax"],
         );
-        assert_eq!((out, count, trouble), (Vec::new(), 0, Some(TooComplex)));
+        assert_eq!(
+            (out, count, trouble),
+            (Vec::new(), 0, Some(TooComplex)),
+            "no line after it is taken, in its piece, a later one or held back"
+        );
     }
 
     #[test]

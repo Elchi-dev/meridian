@@ -3681,6 +3681,13 @@ mod tests {
         assert_eq!(ended, Err(Stop::Said(1)));
         assert_eq!(desk.err, b"set: -o pipefail: no such option\n");
         assert_eq!(out("set -o noglob -- a b; echo $- $#"), "f 2\n");
+        assert!(out("set -o; echo $?").ends_with("noclobber off\n0\n"));
+        assert!(out("set +o; echo $?").ends_with("set +o noclobber\n0\n"));
+        assert_eq!(
+            out("set -o >&-; echo $?"),
+            "1\n",
+            "the list could not be written"
+        );
     }
 
     #[test]

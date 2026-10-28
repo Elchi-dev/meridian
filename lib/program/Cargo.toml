@@ -12,6 +12,7 @@ publish.workspace = true
 abi = { path = "../abi" }
 awk = { path = "../awk" }
 diff = { path = "../diff" }
+ed = { path = "../ed" }
 fat = { path = "../fat" }
 heap = { path = "../heap" }
 meri = { path = "../meri" }
@@ -256,4 +257,8 @@ test = true
 
 [[example]]
 name = "unlink"
+test = true
+
+[[example]]
+name = "ed"
 test = true

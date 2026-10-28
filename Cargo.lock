@@ -148,6 +148,7 @@ dependencies = [
  "abi",
  "awk",
  "diff",
+ "ed",
  "fat",
  "heap",
  "meri",

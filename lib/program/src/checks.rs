@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 165] = [
+const CHECKS: [(&str, Check); 166] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -182,6 +182,7 @@ const CHECKS: [(&str, Check); 165] = [
     ("tools.du", du_counts_blocks),
     ("tools.touch", touch_makes_files),
     ("tools.unlink", unlink_removes_a_file),
+    ("tools.ed", ed_edits_files),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2659,14 +2660,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"114\n"
+        b"116\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, fifty-seven twice",
+        "ls should write the programs' names into the pipe, fifty-eight twice",
     )?;
     expect(
         same(
@@ -5049,6 +5050,68 @@ fn unlink_removes_a_file() -> Outcome {
             ),
         ),
         "unlink should remove a file, then find none, and leave a directory",
+    )
+}
+
+/// ed takes its commands from its standard input, reads and writes past
+/// a message through commands, prompts, says what words it cannot take,
+/// and edits a file with the script diff writes.
+fn ed_edits_files() -> Outcome {
+    let mut wanted = b"200\n".to_vec();
+    wanted.extend_from_slice("0".repeat(200).as_bytes());
+    wanted.extend_from_slice(b"\n201\n");
+    let checked = same(
+        &shell_on("printf 'r !printf %%0200d 0\\nw !cat\\nQ\\n' | ed")?,
+        &ran(0, &wanted),
+    );
+    expect(
+        checked,
+        "ed should read what a command writes and give a command its lines, past one message each",
+    )?;
+    let checked = same(
+        &shell_on("printf 'a\\nhello\\n.\\n,s/l*o/p/p\\n!echo y\\nQ\\n' | ed -p '> '")?,
+        &ran(0, b"> > hep\n> y\n!\n> "),
+    );
+    expect(
+        checked,
+        "ed should prompt before each command, take text, substitute and run a command",
+    )?;
+    let checked = same(
+        &shell_on("printf '1p\\n' | ed; ed -x; ed a b")?,
+        &ran(
+            2,
+            b"?\ned ended with 1\n\
+              ed: -x is no option\ned ended with 2\n\
+              ed: edits one file\ned ended with 2\n",
+        ),
+    );
+    expect(
+        checked,
+        "ed should end with 1 after a mistake, and with 2 for words it cannot take",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf 'a\\nb\\nc\\n' > /System/ea || exit 9\n\
+         printf 'a\\nB\\nc\\nd\\n' > /System/eb\n\
+         diff -e /System/ea /System/eb > /System/es; echo w >> /System/es\n\
+         ed -s /System/ea < /System/es; cat /System/ea\n\
+         printf ',s/[ac]/X/\\nw\\nq\\n' | ed /System/ea; cat /System/ea\n\
+         rm /System/ea /System/eb /System/es",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/ea: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    expect(
+        same(
+            &(ended, said),
+            &ran(0, b"diff ended with 1\na\nB\nc\nd\n8\n8\nX\nB\nX\nd\n"),
+        ),
+        "ed should edit a file with diff's script, and write it back changed",
     )
 }
 

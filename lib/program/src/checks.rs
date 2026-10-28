@@ -4621,10 +4621,7 @@ fn dd_copies_blocks() -> Outcome {
     let (ended, said) = shell_on(
         "md /System/D || exit 9\n\
          printf '0123456789abcdefghij' > /System/D/in\n\
-         dd if=/System/D/in of=/System/D/out bs=5 skip=1 count=2; cat /System/D/out; echo\n\
-         printf 'XY' | dd of=/System/D/out bs=2 seek=1 conv=notrunc; cat /System/D/out; echo\n\
-         printf 'XY' | dd of=/System/D/out bs=2 seek=2; cat /System/D/out; echo\n\
-         rm /System/D/in /System/D/out; rd /System/D",
+         dd if=/System/D/in of=/System/D/out bs=5 skip=1 count=2; cat /System/D/out; echo",
     )?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
@@ -4632,20 +4629,43 @@ fn dd_copies_blocks() -> Outcome {
             "on /System read only no directory should be made",
         );
     }
-    let checked = same(
-        &(ended, said),
-        &ran(
-            0,
-            b"2+0 records in\n2+0 records out\n56789abcde\n\
-              1+0 records in\n1+0 records out\n56XY9abcde\n\
-              1+0 records in\n1+0 records out\n56XYXY\n",
+    // A step at a time, so that a step that never ends is known by the
+    // shells that did.
+    let steps: [(&str, &[u8], &str); 5] = [
+        (
+            "",
+            b"2+0 records in\n2+0 records out\n56789abcde\n",
+            "dd should copy blocks past those it skips",
         ),
-    );
-    expect(
-        checked,
-        "dd should copy blocks past those it skips, write into a file it keeps the rest of, \
-         and keep what lies before the blocks it seeks past",
-    )
+        (
+            "printf 'XY' | dd of=/System/D/out bs=2 seek=1 conv=notrunc; cat /System/D/out; echo",
+            b"1+0 records in\n1+0 records out\n56XY9abcde\n",
+            "dd should write into a file it keeps the rest of",
+        ),
+        (
+            "printf 'XY' | dd of=/System/D/out bs=2 seek=2",
+            b"1+0 records in\n1+0 records out\n",
+            "dd should write past the blocks it seeks past in a file made anew",
+        ),
+        (
+            "cat /System/D/out; echo",
+            b"56XYXY\n",
+            "dd should keep what lies before the blocks it seeks past",
+        ),
+        (
+            "rm /System/D/in /System/D/out; rd /System/D",
+            b"",
+            "what dd wrote should be removed",
+        ),
+    ];
+    let mut done = (ended, said);
+    for (at, (script, wanted, why)) in steps.into_iter().enumerate() {
+        if at > 0 {
+            done = shell_on(script)?;
+        }
+        expect(same(&done, &ran(0, wanted)), why)?;
+    }
+    Ok(())
 }
 
 /// rm as a program, the shell's own rm being a command of its own: it

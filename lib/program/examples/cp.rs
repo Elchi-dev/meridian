@@ -691,4 +691,35 @@ mod tests {
         );
         assert_eq!(ran(&mut host, "-R t m"), went());
     }
+
+    #[test]
+    fn a_directory_that_cannot_be_made_or_listed_fails_the_copy() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut host = Host::new("denied", &["empty/", "shut/", "sealed/x"]);
+        let set = |host: &Host, path: &str, mode| {
+            let mode = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(host.root.join(path), mode).unwrap();
+        };
+        set(&host, "shut", 0o555);
+        set(&host, "sealed", 0o000);
+        assert!(
+            std::fs::read_dir(host.root.join("sealed")).is_err(),
+            "run as root, nothing is sealed"
+        );
+        let made = ran(&mut host, "-R empty shut/new");
+        let listed = ran(&mut host, "-R sealed copy");
+        set(&host, "shut", 0o755);
+        set(&host, "sealed", 0o755);
+        assert_eq!(
+            made,
+            (false, "cp: shut/new: not allowed\n".into()),
+            "even with nothing in it to copy"
+        );
+        assert_eq!(listed, (false, "cp: sealed: not allowed\n".into()));
+        assert_eq!(
+            host.left(),
+            ["copy/", "empty/", "sealed/", "sealed/x", "shut/"],
+            "the copy made before its source could not be listed"
+        );
+    }
 }

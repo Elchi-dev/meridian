@@ -7,7 +7,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 
 use crate::start::{Given, Sink};
-use crate::{Ended, Error};
+use crate::{Ended, Error, Handle};
 
 /// Where programs named without a path are.
 pub const PROGRAMS: &str = "/System/Boot/meridian/programs";
@@ -38,8 +38,17 @@ pub fn path(name: &str, has: impl FnOnce(&str) -> bool) -> String {
     }
 }
 
+/// Whether a file is at `path`.
+fn there(path: &str) -> bool {
+    crate::open(path, crate::abi::file::READ).is_ok_and(|file| {
+        let _ = crate::close(file);
+        true
+    })
+}
+
 /// A handle for `sink` of the child's own.
-fn handed(sink: Option<Sink>) -> Option<Sink> {
+#[must_use]
+pub fn handed(sink: Option<Sink>) -> Option<Sink> {
     match sink? {
         Sink::Channel(end) => crate::duplicate(end).ok().map(Sink::Channel),
         Sink::File(file) => crate::duplicate(file).ok().map(Sink::File),
@@ -59,13 +68,7 @@ pub fn run(name: &str, words: &[&str]) -> Ran {
         error: handed(crate::start::given().error),
         line: None,
     };
-    let path = path(name, |path| {
-        crate::open(path, crate::abi::file::READ).is_ok_and(|file| {
-            let _ = crate::close(file);
-            true
-        })
-    });
-    match crate::spawn_handing(&path, words, given) {
+    match crate::spawn_handing(&path(name, there), words, given) {
         Ok((child, start)) => {
             let _ = crate::close(start);
             let ended = crate::wait(child);
@@ -75,6 +78,19 @@ pub fn run(name: &str, words: &[&str]) -> Ran {
         Err(Error::NotFound | Error::NoSuchProgram) => Ran::NotThere,
         Err(e) => Ran::Unstarted(e),
     }
+}
+
+/// Starts `command` in the shell's sh dialect, handing it `given`, and
+/// gives its process to wait for.
+///
+/// # Errors
+///
+/// When the shell cannot start.
+pub fn shell(command: &str, given: Given) -> Result<Handle, Error> {
+    let (process, start) =
+        crate::spawn_handing(&path("shell", there), &["--sh", "-c", command], given)?;
+    let _ = crate::close(start);
+    Ok(process)
 }
 
 #[cfg(test)]

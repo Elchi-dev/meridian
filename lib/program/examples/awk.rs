@@ -130,14 +130,6 @@ struct System {
     open: BTreeMap<Vec<u8>, Open>,
 }
 
-/// A handle for `sink` of a child's own.
-fn handed(sink: Option<Sink>) -> Option<Sink> {
-    match sink? {
-        Sink::Channel(end) => program::duplicate(end).ok().map(Sink::Channel),
-        Sink::File(file) => program::duplicate(file).ok().map(Sink::File),
-    }
-}
-
 /// The status awk gives for how a program ended.
 fn status(ended: Result<Ended, program::Error>) -> i32 {
     match ended {
@@ -174,19 +166,10 @@ impl System {
         let given = Given {
             input: Some(input),
             output,
-            error: handed(program::start::given().error),
+            error: child::handed(program::start::given().error),
             line: None,
         };
-        let shell = child::path("shell", |path| {
-            program::open(path, READ).is_ok_and(|file| {
-                let _ = program::close(file);
-                true
-            })
-        });
-        let words = ["--sh", "-c", &String::from_utf8_lossy(command)];
-        let (process, start) = program::spawn_handing(&shell, &words, given).map_err(says)?;
-        let _ = program::close(start);
-        Ok(process)
+        child::shell(&String::from_utf8_lossy(command), given).map_err(says)
     }
 
     /// Closes everything still open, as awk ends; whether all output went.
@@ -269,7 +252,7 @@ impl World for System {
                     self.out.flush();
                     let (mine, theirs) = program::channel().map_err(says)?;
                     let process =
-                        Self::start(name, theirs, handed(program::start::given().output))?;
+                        Self::start(name, theirs, child::handed(program::start::given().output))?;
                     Open::Command { process, end: mine }
                 }
             };

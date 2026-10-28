@@ -193,6 +193,7 @@ Loader and UEFI:
 - [x] `expr`, `sleep`, `cmp`, `comm`, `paste`, `fold` and `nl`
 - [x] `od`, `expand`, `unexpand`, `join` and `split`
 - [x] `xargs`, and `echo`, `printf`, `test`, `true` and `false` as programs too
+- [x] `cksum` and `tsort`
 - [x] The rest of POSIX's options for `uniq` and `sort`
 - [x] `wc`'s options: `-c`, `-l`, `-w` and `-m`
 - [ ] More command-line tools

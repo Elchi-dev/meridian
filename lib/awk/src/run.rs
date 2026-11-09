@@ -2017,6 +2017,14 @@ mod tests {
             "a:b:::e\n5\n"
         );
         assert_eq!(awk("{ NF = 2; print }", "a b c d\n"), "a b\n");
+        assert_eq!(
+            awk(
+                "{ NF = 0; print \"[\" $0 \"]\", NF; $2 = \"x\"; print \"[\" $0 \"]\", NF }",
+                "a b c\n"
+            ),
+            "[] 0\n[ x] 2\n",
+            "as gawk does"
+        );
         assert_eq!(awk("{ NF = 4; $1 = $1; print }", "a b\n"), "a b  \n");
         assert_eq!(awk("{ $0 = \"x y z\"; print NF, $3 }", "a\n"), "3 z\n");
         assert_eq!(awk("{ $3 = \"\"; print NF }", "a b c d\n"), "4\n");

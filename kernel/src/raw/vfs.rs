@@ -96,6 +96,7 @@ fn on_path<T>(
     let (volume, names) = MOUNTS.lock().find(&path).ok_or(Error::NotFound)?;
     let mut mounted = MOUNTED.lock();
     let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
+    v.set_now(super::wall::seconds());
     f(v, names, volume)
 }
 
@@ -193,6 +194,7 @@ pub fn write(slot: usize, offset: u64, from: &[u8]) -> Result<usize, Error> {
     let mut mounted = MOUNTED.lock();
     let (volume, written) = on_volume(slot)?;
     let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
+    v.set_now(super::wall::seconds());
     let entry = v.write(&written, offset, from)?;
     for open in OPEN.lock().iter_mut().flatten() {
         if let Of::Volume {
@@ -308,6 +310,20 @@ pub fn info(slot: usize) -> Option<(u64, bool)> {
         Of::Volume { opened, .. } => Some((u64::from(opened.entry.size), opened.entry.directory)),
         Of::Tree { .. } => Some((0, true)),
     }
+}
+
+/// When the open file in `slot` last changed, as seconds since 1970
+/// began; none for what keeps no time, as the root and the tree's
+/// directories.
+///
+/// # Errors
+///
+/// When nothing is open there.
+pub fn changed(slot: usize) -> Result<Option<u64>, Error> {
+    Ok(match open_in(slot)?.of {
+        Of::Volume { opened, .. } => fat::stamp::seconds(opened.entry.changed),
+        Of::Tree { .. } => None,
+    })
 }
 
 /// One more handle stands for the open file in `slot`. False when none

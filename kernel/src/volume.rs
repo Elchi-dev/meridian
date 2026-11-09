@@ -190,6 +190,13 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Volume<R, W
             .map_err(|_| Error::Read)
     }
 
+    /// Stamps what is made and written from here on with `seconds` since
+    /// 1970 began, or with FAT's first day when the time is not known
+    /// (decision record 0029).
+    pub fn set_now(&mut self, seconds: Option<u64>) {
+        self.fs.set_now(seconds);
+    }
+
     /// Writes `from` into the file `opened` from its byte `offset` on,
     /// which may lie past its end, and returns what its directory entry
     /// says now. Bytes between its old end and `offset` read as zeros.
@@ -626,6 +633,35 @@ mod tests {
             whole(&mut v, &file),
             "on the disk"
         );
+    }
+
+    #[test]
+    fn what_is_made_and_written_is_stamped_with_the_time_set() {
+        let image = image();
+        let mut v = volume(&image, false);
+        let noon = 1_794_225_600;
+        v.set_now(Some(noon));
+        let file = v
+            .open(&["made.txt"], &system(), READ | WRITE, CREATE_NEW)
+            .unwrap();
+        assert_eq!(fat::stamp::seconds(file.entry.changed), Some(noon));
+        v.set_now(Some(noon + 120));
+        let written = v.write(&file, 0, b"later").unwrap();
+        assert_eq!(fat::stamp::seconds(written.changed), Some(noon + 120));
+        let mut fresh = volume(&image, true);
+        let read = fresh.open(&["made.txt"], &system(), READ, 0).unwrap();
+        assert_eq!(read.entry.changed, written.changed, "on the disk");
+        let old = fresh.open(&["a.txt"], &system(), READ, 0).unwrap();
+        assert_eq!(
+            fat::stamp::seconds(old.entry.changed),
+            Some(315_532_800),
+            "made with no time set: 1980 began"
+        );
+        v.set_now(None);
+        let unknown = v
+            .open(&["when.txt"], &system(), READ | WRITE, CREATE_NEW)
+            .unwrap();
+        assert_eq!(unknown.entry.changed, fat::stamp::FIRST);
     }
 
     #[test]

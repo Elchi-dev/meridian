@@ -451,6 +451,7 @@ pub fn system_call(frame: &mut Frame) {
         | Call::Read { .. }
         | Call::List { .. }
         | Call::Info(_)
+        | Call::Changed(_)
         | Call::WriteFile { .. }
         | Call::Remove { .. }
         | Call::MakeDirectory { .. }
@@ -504,6 +505,13 @@ fn file_call(call: Call, frame: &mut Frame) -> u64 {
             Ok((size, directory)) => {
                 frame.rdx = u64::from(directory);
                 size
+            }
+            Err(e) => e,
+        },
+        Call::Changed(handle) => match changed(handle) {
+            Ok(seconds) => {
+                frame.rdx = u64::from(seconds.is_some());
+                seconds.unwrap_or(0)
             }
             Err(e) => e,
         },
@@ -1055,6 +1063,13 @@ fn info(handle: u64) -> Result<(u64, bool), u64> {
         return Err(syscall::DENIED);
     };
     super::vfs::info(slot).ok_or(syscall::BAD_HANDLE)
+}
+
+fn changed(handle: u64) -> Result<Option<u64>, u64> {
+    let Some(Object::File { slot }) = Object::from_number(object(handle, Rights(0))?) else {
+        return Err(syscall::DENIED);
+    };
+    super::vfs::changed(slot).map_err(|_| syscall::BAD_HANDLE)
 }
 
 /// Answers a second handle to what `handle` stands for, with its rights.

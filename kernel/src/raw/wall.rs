@@ -14,6 +14,12 @@ pub fn keep(clock: Clock, tsc_hz: Option<u64>) {
     *WALL.lock() = tsc_hz.map(|hz| (clock, hz));
 }
 
+/// The whole seconds since 1970 began, in UTC; none while the time is not
+/// known.
+pub fn seconds() -> Option<u64> {
+    now().map(|nanoseconds| nanoseconds / 1_000_000_000)
+}
+
 /// The nanoseconds since 1970 began, in UTC; none while the time is not
 /// known.
 pub fn now() -> Option<u64> {

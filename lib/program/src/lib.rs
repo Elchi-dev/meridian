@@ -127,6 +127,17 @@ pub fn now() -> Option<u64> {
     known(rax, rdx)
 }
 
+/// When the file of `file` last changed, as the seconds since 1970 began;
+/// none for what keeps no time (decision record 0029).
+///
+/// # Errors
+///
+/// When the handle is no file of the program's.
+pub fn changed(file: Handle) -> Result<Option<u64>, Error> {
+    let (rax, rdx) = raw::call(Call::Changed(file.0));
+    answer(rax).map(|seconds| known(seconds, rdx))
+}
+
 /// What TIME answered: the time in rax when rdx says it is known.
 fn known(rax: u64, rdx: u64) -> Option<u64> {
     (rdx == 1).then_some(rax)

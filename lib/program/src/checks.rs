@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 175] = [
+const CHECKS: [(&str, Check); 176] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -54,6 +54,7 @@ const CHECKS: [(&str, Check); 175] = [
     ("file.refused", files_that_do_not_open),
     ("file.list", directories_list_their_entries),
     ("file.write", files_written),
+    ("file.changed", files_say_when_they_changed),
     ("file.write_refused", writes_refused),
     ("file.rename", files_renamed),
     ("file.source", sources_close_their_files),
@@ -1152,6 +1153,49 @@ fn sources_close_their_files() -> Outcome {
 /// read back, and removed once closed; a directory made and removed.
 /// Where /System hangs read only, as on a disk that only reads, nothing is
 /// made or removed there.
+/// CHANGED says when a file last changed: one on the boot volume when
+/// its image was made, one written now in the hour sextant starts test
+/// machines' clocks at, and nothing for the tree's own directories.
+fn files_say_when_they_changed() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, READ, WRITE};
+    let root = open("/", READ).map_err(|_| "the root should open")?;
+    expect(
+        crate::changed(root) == Ok(None) && close(root) == Ok(()),
+        "the root should keep no time",
+    )?;
+    expect(
+        crate::changed(Handle(0x7fff_0001)) == Err(Error::BadHandle),
+        "a handle that is none should be said to be",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = open("/System/Boot/EFI/BOOT/BOOTX64.EFI", READ)
+        .map_err(|_| "the loader's file should open")?;
+    let made = crate::changed(boot);
+    let _ = close(boot);
+    expect(
+        made.is_ok_and(|seconds| seconds.is_some()),
+        "a file on the boot volume should say when it changed",
+    )?;
+    let path = "/System/stamped.txt";
+    let file = match open_with(path, READ | WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "a file should be made on /System")?,
+    };
+    let written = write_file(file, 0, b"now");
+    let changed = crate::changed(file);
+    let _ = close(file);
+    let _ = remove(path);
+    expect(
+        written == Ok(())
+            && changed.is_ok_and(|seconds| {
+                seconds.is_some_and(|s| (1_794_225_600..1_794_229_200).contains(&s))
+            }),
+        "a file written now should say it changed in the hour sextant set the clock to",
+    )
+}
+
 fn files_written() -> Outcome {
     use abi::file::{CREATE_NEW, READ, WRITE};
     if !booted_from_disk() {

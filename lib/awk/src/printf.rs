@@ -258,6 +258,7 @@ mod tests {
             b"\x00",
             "no character: its lowest byte"
         );
+        assert_eq!(printed("%c", &[Value::Number(55297.0)]), b"\x01");
         assert_eq!(printed("%c", &[Value::Number(-5.0)]), b"\x00");
         assert_eq!(printed("[%3c]", &[text("äx")]), "[  ä]".as_bytes());
         assert_eq!(printed("%c", &[text("")]), b"");

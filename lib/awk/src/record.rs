@@ -266,6 +266,11 @@ mod tests {
         assert_eq!(ends.first(b"12", false), None);
         assert_eq!(ends.first(b"12", true), Some((0, 2, 2)));
         assert!(Ends::new(b"a(").is_err());
+        assert_eq!(
+            records(b"[a-c]+", b"xABCyaz"),
+            [b"xABCy".to_vec(), b"z".to_vec()],
+            "capitals are other letters"
+        );
     }
 
     #[test]

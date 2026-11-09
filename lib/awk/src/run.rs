@@ -4510,6 +4510,112 @@ mod tests {
     }
 
     #[test]
+    fn rand_takes_splitmix64_s_numbers() {
+        // The first three it gives from 0, as its author's code and Java's
+        // SplittableRandom(0) give them.
+        let mut state = 0;
+        assert_eq!(splitmix(&mut state), 0xe220_a839_7b1d_cdaf);
+        assert_eq!(splitmix(&mut state), 0x6e78_9e6a_a1b9_65f4);
+        assert_eq!(splitmix(&mut state), 0x06c4_5d18_8009_454f);
+    }
+
+    #[test]
+    fn operands_name_variables_of_letters_digits_and_underscores() {
+        let mut host = Host::new("names");
+        host.put("x-y=1", "q\n");
+        let ran = run_on(
+            &mut host,
+            "{ print FILENAME, a_b }",
+            &["a_b=7", "x-y=1"],
+            "",
+        );
+        assert_eq!(ran.out, "x-y=1 7\n", "x-y is no name, so x-y=1 is a file");
+    }
+
+    // As gawk has them: FS holds from the next record, $0 is made of the
+    // fields once, with OFS as it was then, and paragraphs come only with
+    // an RS that asks for them.
+    #[test]
+    fn fields_split_as_fs_and_rs_were_when_their_record_came() {
+        assert_eq!(
+            awk(
+                "BEGIN { FS = \",\" } { print $1; FS = \":\" }",
+                "a:b,c\nd:e,f\n"
+            ),
+            "a:b\nd\n"
+        );
+        assert_eq!(
+            awk("{ $1 = $1; print; OFS = \"-\"; print }", "a b\n"),
+            "a b\na b\n"
+        );
+        assert_eq!(
+            awk("BEGIN { FS = \",\"; $0 = \"a\\nb,c\"; print NF }", ""),
+            "2\n"
+        );
+        assert_eq!(
+            awk(
+                "BEGIN { FS = \",\"; RS = \"\" } { print NF; RS = \";\" }",
+                "a\nb,c\n\nx\ny,z;"
+            ),
+            "3\n2\n",
+            "a line feed parts fields of a paragraph alone"
+        );
+        assert_eq!(awk("{ i = 0; print $i }", "a b\n"), "a b\n");
+        assert_eq!(awk("BEGIN { NF = 65535; print NF }", ""), "65535\n");
+    }
+
+    #[test]
+    fn split_takes_no_line_feed_for_a_separator_of_its_own() {
+        assert_eq!(
+            awk(
+                "BEGIN { n = split(\"a\\nb,c\", x, \",\"); FS = \",\"; m = split(\"a\\nb\", y); print n, m }",
+                ""
+            ),
+            "2 1\n"
+        );
+    }
+
+    #[test]
+    fn matching_tells_capitals_from_small_letters() {
+        assert_eq!(
+            awk(
+                "BEGIN { print (\"ABC\" ~ /abc/), (\"ABC\" ~ \"abc\"), (\"abc\" ~ \"abc\") }",
+                ""
+            ),
+            "0 0 1\n"
+        );
+    }
+
+    #[test]
+    fn sub_that_finds_nothing_leaves_its_place_as_it_was() {
+        assert_eq!(
+            awk("BEGIN { x = 5; sub(/z/, \"\", x); print (x < 10) }", ""),
+            "1\n",
+            "still a number"
+        );
+        assert_eq!(
+            awk(
+                "BEGIN { OFS = \"-\" } { sub(/z/, \"\", $2); print }",
+                "a b\n"
+            ),
+            "a b\n",
+            "the record not made anew"
+        );
+    }
+
+    #[test]
+    fn the_call_past_the_deepest_is_stopped() {
+        assert_eq!(
+            stopped(
+                "function f(n) { if (n <= 500) return f(n + 1) } BEGIN { f(1) }",
+                ""
+            ),
+            "functions called more than 500 deep",
+            "the 501st call"
+        );
+    }
+
+    #[test]
     fn close_says_what_was_open_and_what_never_was() {
         assert_eq!(
             awk(

@@ -296,6 +296,11 @@ mod tests {
         assert_eq!(number_text(0.5, b"%s"), b"0.5", "no string conversion");
         assert_eq!(number_text(0.5, b"%c"), b"0.5");
         assert_eq!(number_text(0.5, b"%*g"), b"0.5", "no stars");
+        assert_eq!(
+            number_text(0.123_456_789, b"%.*e"),
+            b"0.123457",
+            "no star for the precision either"
+        );
         assert_eq!(number_text(0.5, b"%g%g"), b"0.5", "one conversion");
         assert_eq!(number_text(0.5, b"text"), b"0.5", "no conversion");
         assert_eq!(number_text(0.5, b"%y"), b"0.5", "no such conversion");

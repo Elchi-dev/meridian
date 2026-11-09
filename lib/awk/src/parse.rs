@@ -2175,6 +2175,16 @@ mod tests {
         assert_eq!(wrong("BEGIN { x }\nEND {\n y = (1\n}").line, 3);
         assert_eq!(wrong("{\n}\n}").line, 3);
         assert!(parse("").is_ok(), "no program is an empty one");
+        // What is wrong with a word is said on the word's own line.
+        assert_eq!(wrong("function f(a, a\n\n) {}").line, 1);
+        assert_eq!(wrong("BEGIN { break\n\n}").line, 1);
+        assert_eq!(wrong("BEGIN { return\n\n}").line, 1);
+        assert_eq!(wrong("BEGIN { f(\\\n1) }").line, 1);
+        assert_eq!(
+            wrong("function f() { return 1 }\nBEGIN { return }").what,
+            "return goes only in a function",
+            "nor after one"
+        );
     }
 
     #[test]

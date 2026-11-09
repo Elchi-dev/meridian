@@ -155,7 +155,8 @@ fn added(a: f64, b: f64) -> (f64, f64) {
 
 /// The square root of `x`, rounded as IEEE 754 says: the root of its
 /// significand taken as a whole number, to as many digits as a double
-/// has and one more, which says the way to round.
+/// has and one more, which says the way to round. No root of a double
+/// lies halfway between two, so that digit is all it takes.
 #[must_use]
 pub fn sqrt(x: f64) -> f64 {
     if x.is_nan() || x < 0.0 {
@@ -176,33 +177,21 @@ pub fn sqrt(x: f64) -> f64 {
         significand <<= 1;
         power -= 1;
     }
-    // Shifted so that its root has 55 bits or more.
-    let shift = 110 - (64 - significand.leading_zeros());
-    let shift = shift + shift % 2;
-    let wide = u128::from(significand) << shift;
-    let mut root = isqrt(wide);
-    let exact = root * root == wide;
-    let mut half_power = (power - i32::try_from(shift).unwrap_or(0)) / 2;
-    // Down to 53 bits, rounding to the nearest and to even on a tie.
-    let extra = 128 - root.leading_zeros() - 53;
-    let dropped = root & ((1 << extra) - 1);
-    let half = 1u128 << (extra - 1);
-    root >>= extra;
-    half_power += i32::try_from(extra).unwrap_or(0);
-    if dropped > half || (dropped == half && (!exact || root & 1 == 1)) {
-        root += 1;
-    }
+    // Shifted to 107 or 108 bits, an even shift, its root has 54. The
+    // shifted significand is even, so no odd number is its root, and the
+    // root's last bit says whether the rest of it reaches half.
+    let mut shift = 107 - (64 - significand.leading_zeros());
+    shift += shift % 2;
+    let root = isqrt(u128::from(significand) << shift);
     #[allow(clippy::cast_precision_loss)]
-    let root = root as f64;
-    scaled(root, half_power)
+    let rounded = ((root >> 1) + (root & 1)) as f64;
+    scaled(rounded, (power - i32::try_from(shift).unwrap_or(0)) / 2 + 1)
 }
 
-/// The whole square root of `n`, rounded down.
+/// The whole square root of `n`, of 107 or 108 bits, rounded down: Newton's
+/// steps from 2^54, which is above it, down to it.
 fn isqrt(n: u128) -> u128 {
-    if n < 2 {
-        return n;
-    }
-    let mut root = 1u128 << (128 - n.leading_zeros()).div_ceil(2);
+    let mut root = 1u128 << 54;
     loop {
         let next = u128::midpoint(root, n / root);
         if next >= root {
@@ -782,11 +771,11 @@ mod tests {
         assert!(sqrt(f64::NAN).is_nan());
         assert_eq!(sqrt(-0.0).to_bits(), (-0.0f64).to_bits());
         assert_eq!(sqrt(f64::INFINITY), f64::INFINITY);
-        assert_eq!(isqrt(0), 0);
-        assert_eq!(isqrt(1), 1);
-        assert_eq!(isqrt(15), 3);
-        assert_eq!(isqrt(16), 4);
-        assert_eq!(isqrt(u128::MAX), u128::from(u64::MAX));
+        let odd = (1u128 << 53) + 1;
+        assert_eq!(isqrt(1 << 106), 1 << 53);
+        assert_eq!(isqrt(odd * odd), odd);
+        assert_eq!(isqrt(odd * odd - 1), odd - 1);
+        assert_eq!(isqrt((1 << 108) - 1), (1 << 54) - 1);
     }
 
     #[test]

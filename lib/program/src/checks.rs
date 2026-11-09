@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 176] = [
+const CHECKS: [(&str, Check); 177] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -55,6 +55,7 @@ const CHECKS: [(&str, Check); 176] = [
     ("file.list", directories_list_their_entries),
     ("file.write", files_written),
     ("file.changed", files_say_when_they_changed),
+    ("file.set_changed", files_take_the_time_they_are_given),
     ("file.write_refused", writes_refused),
     ("file.rename", files_renamed),
     ("file.source", sources_close_their_files),
@@ -1193,6 +1194,98 @@ fn files_say_when_they_changed() -> Outcome {
                 seconds.is_some_and(|s| (1_794_225_600..1_794_229_200).contains(&s))
             }),
         "a file written now should say it changed in the hour sextant set the clock to",
+    )
+}
+
+/// `SET_CHANGED` keeps a time as FAT keeps it, on the disk and for every
+/// handle open on the file, takes a directory opened to write, refuses
+/// what may not be written or keeps no time, and a write afterwards
+/// stamps the time of day again.
+fn files_take_the_time_they_are_given() -> Outcome {
+    use abi::file::{CREATE_ALWAYS, READ, WRITE};
+    let root = open("/", READ).map_err(|_| "the root should open")?;
+    let refused = crate::set_changed(root, 0);
+    let _ = close(root);
+    expect(
+        refused == Err(Error::Denied),
+        "the root should take no time",
+    )?;
+    expect(
+        crate::set_changed(Handle(0x7fff_0001), 0) == Err(Error::BadHandle),
+        "a handle that is none should be said to be",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let boot = open("/System/Boot/EFI/BOOT/BOOTX64.EFI", READ)
+        .map_err(|_| "the loader's file should open")?;
+    let refused = crate::set_changed(boot, 0);
+    let _ = close(boot);
+    expect(
+        refused == Err(Error::Denied),
+        "a file opened only to read should take no time",
+    )?;
+    let path = "/System/timed.txt";
+    let file = match open_with(path, READ | WRITE, CREATE_ALWAYS) {
+        Err(Error::ReadOnly) => return Ok(()),
+        other => other.map_err(|_| "a file should be made on /System")?,
+    };
+    let other = open(path, READ).map_err(|_| "the file should open twice")?;
+    // 01:46:40 UTC on 9 September 2001, and a second, which FAT cuts.
+    let set = crate::set_changed(file, 1_000_000_001);
+    let seen = (crate::changed(file), crate::changed(other));
+    let _ = close(other);
+    let again = open(path, READ).map_err(|_| "the file should open again")?;
+    let kept = crate::changed(again);
+    let _ = close(again);
+    let mut ends = [None; 2];
+    for (seconds, end) in [0, u64::MAX].into_iter().zip(&mut ends) {
+        *end = crate::set_changed(file, seconds)
+            .ok()
+            .and_then(|()| crate::changed(file).ok().flatten());
+    }
+    let written = write_file(file, 0, b"x");
+    let now = crate::changed(file);
+    let _ = close(file);
+    let _ = remove(path);
+    expect(
+        set == Ok(()) && seen == (Ok(Some(1_000_000_000)), Ok(Some(1_000_000_000))),
+        "a time set should be seen through every handle on the file, to two seconds",
+    )?;
+    expect(
+        kept == Ok(Some(1_000_000_000)),
+        "a time set should be on the disk",
+    )?;
+    expect(
+        ends == [Some(315_532_800), Some(4_354_819_198)],
+        "a time before 1980 or past 2107 should be kept as the first or the last FAT says",
+    )?;
+    expect(
+        written == Ok(())
+            && now.is_ok_and(|seconds| {
+                seconds.is_some_and(|s| (1_794_225_600..1_794_229_200).contains(&s))
+            }),
+        "a write after should stamp the time of day again",
+    )?;
+    let directory = "/System/timed";
+    make_directory(directory).map_err(|_| "a directory should be made on /System")?;
+    let opened = open(directory, READ | WRITE);
+    let set =
+        opened.and_then(|d| crate::set_changed(d, 1_794_000_000).and_then(|()| crate::changed(d)));
+    if let Ok(d) = opened {
+        let _ = close(d);
+    }
+    let _ = remove(directory);
+    expect(
+        set == Ok(Some(1_794_000_000)),
+        "a directory opened to write should take a time",
+    )?;
+    let volume = open("/System", READ | WRITE).map_err(|_| "/System should open to write")?;
+    let refused = crate::set_changed(volume, 0);
+    let _ = close(volume);
+    expect(
+        refused == Err(Error::Denied),
+        "a volume's root, which has no entry, should take no time",
     )
 }
 

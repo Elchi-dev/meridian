@@ -138,6 +138,22 @@ pub fn changed(file: Handle) -> Result<Option<u64>, Error> {
     answer(rax).map(|seconds| known(seconds, rdx))
 }
 
+/// Sets when the file of `file` last changed to `seconds` since 1970
+/// began, cut to two seconds, and from 1980 to 2107, as FAT keeps it
+/// (decision record 0030).
+///
+/// # Errors
+///
+/// When the handle is no file of the program's, may not write it, or
+/// stands for what keeps no time, or the disk cannot be written.
+pub fn set_changed(file: Handle, seconds: u64) -> Result<(), Error> {
+    let (rax, _) = raw::call(Call::SetChanged {
+        handle: file.0,
+        seconds,
+    });
+    done(rax)
+}
+
 /// What TIME answered: the time in rax when rdx says it is known.
 fn known(rax: u64, rdx: u64) -> Option<u64> {
     (rdx == 1).then_some(rax)

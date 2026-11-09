@@ -452,6 +452,7 @@ pub fn system_call(frame: &mut Frame) {
         | Call::List { .. }
         | Call::Info(_)
         | Call::Changed(_)
+        | Call::SetChanged { .. }
         | Call::WriteFile { .. }
         | Call::Remove { .. }
         | Call::MakeDirectory { .. }
@@ -515,6 +516,9 @@ fn file_call(call: Call, frame: &mut Frame) -> u64 {
             }
             Err(e) => e,
         },
+        Call::SetChanged { handle, seconds } => {
+            set_changed(handle, seconds).map_or_else(|e| e, |()| 0)
+        }
         _ => syscall::NO_SUCH_CALL,
     }
 }
@@ -1070,6 +1074,15 @@ fn changed(handle: u64) -> Result<Option<u64>, u64> {
         return Err(syscall::DENIED);
     };
     super::vfs::changed(slot).map_err(|_| syscall::BAD_HANDLE)
+}
+
+/// Sets when the file `handle` stands for last changed to `seconds` since
+/// 1970 began, which takes a handle that may write it.
+fn set_changed(handle: u64, seconds: u64) -> Result<(), u64> {
+    let Some(Object::File { slot }) = Object::from_number(object(handle, Rights::WRITE)?) else {
+        return Err(syscall::DENIED);
+    };
+    super::vfs::set_changed(slot, seconds).map_err(file_answer)
 }
 
 /// Answers a second handle to what `handle` stands for, with its rights.

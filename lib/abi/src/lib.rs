@@ -101,6 +101,10 @@ pub const TIME: u64 = 28;
 /// 1970 began, with rdx 1; or 0 with rdx 0 for what keeps no time
 /// (decision record 0029).
 pub const CHANGED: u64 = 29;
+/// Sets when the file of handle rdi last changed to rsi, as the seconds
+/// since 1970 began, cut to what FAT keeps (decision record 0030), and
+/// answers 0.
+pub const SET_CHANGED: u64 = 30;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -385,6 +389,10 @@ pub enum Call {
     },
     Time,
     Changed(u64),
+    SetChanged {
+        handle: u64,
+        seconds: u64,
+    },
     Unknown(u64),
 }
 
@@ -464,6 +472,7 @@ impl Call {
             } => (RENAME, [from_len, from_at, to_len, to_at]),
             Call::Time => (TIME, [0; 4]),
             Call::Changed(handle) => (CHANGED, [handle, 0, 0, 0]),
+            Call::SetChanged { handle, seconds } => (SET_CHANGED, [handle, seconds, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -511,6 +520,32 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             room: first,
             at: second,
         },
+        WRITE => Call::Write {
+            len: first,
+            at: second,
+        },
+        KEY => Call::Key,
+        TERMINATE => Call::Terminate {
+            handle: first,
+            code: second,
+        },
+        THREAD => Call::Thread {
+            entry: first,
+            stack: second,
+            argument: third,
+        },
+        END_THREAD => Call::EndThread(first),
+        DUPLICATE => Call::Duplicate(first),
+        TIME => Call::Time,
+        other => decode_file(other, args),
+    }
+}
+
+/// The call about files `number` asks for, with `args` as [`decode`]
+/// takes them, or none known.
+fn decode_file(number: u64, args: [u64; 4]) -> Call {
+    let [first, second, third, fourth] = args;
+    match number {
         OPEN => Call::Open {
             len: first,
             at: second,
@@ -530,21 +565,6 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             room: third,
             index: fourth,
         },
-        WRITE => Call::Write {
-            len: first,
-            at: second,
-        },
-        KEY => Call::Key,
-        TERMINATE => Call::Terminate {
-            handle: first,
-            code: second,
-        },
-        THREAD => Call::Thread {
-            entry: first,
-            stack: second,
-            argument: third,
-        },
-        END_THREAD => Call::EndThread(first),
         WRITE_FILE => Call::WriteFile {
             handle: first,
             at: second,
@@ -559,15 +579,17 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             len: first,
             at: second,
         },
-        DUPLICATE => Call::Duplicate(first),
         RENAME => Call::Rename {
             from_len: first,
             from_at: second,
             to_len: third,
             to_at: fourth,
         },
-        TIME => Call::Time,
         CHANGED => Call::Changed(first),
+        SET_CHANGED => Call::SetChanged {
+            handle: first,
+            seconds: second,
+        },
         other => Call::Unknown(other),
     }
 }
@@ -652,7 +674,14 @@ mod tests {
         );
         assert_eq!(decode(TIME, [1, 2, 3, 0]), Call::Time);
         assert_eq!(decode(CHANGED, [1, 2, 3, 0]), Call::Changed(1));
-        assert_eq!(decode(30, [1, 2, 3, 0]), Call::Unknown(30));
+        assert_eq!(
+            decode(SET_CHANGED, [1, 2, 3, 0]),
+            Call::SetChanged {
+                handle: 1,
+                seconds: 2
+            }
+        );
+        assert_eq!(decode(31, [1, 2, 3, 0]), Call::Unknown(31));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
@@ -705,11 +734,12 @@ mod tests {
                 DUPLICATE,
                 RENAME,
                 TIME,
-                CHANGED
+                CHANGED,
+                SET_CHANGED
             ],
             [
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27, 28, 29
+                23, 24, 25, 26, 27, 28, 29, 30
             ]
         );
     }
@@ -794,6 +824,20 @@ mod tests {
                 panic!("READ should read as a read");
             };
             assert_eq!(read, offset);
+        }
+    }
+
+    #[test]
+    fn set_changed_takes_its_seconds_whole_from_rsi() {
+        for seconds in [0, 1, 315_532_800, 1 << 32, u64::MAX] {
+            assert_eq!(
+                decode(SET_CHANGED, [0x3_0001, seconds, 3, 4]),
+                Call::SetChanged {
+                    handle: 0x3_0001,
+                    seconds
+                },
+                "{seconds}"
+            );
         }
     }
 
@@ -1028,7 +1072,11 @@ mod tests {
             },
             Call::Time,
             Call::Changed(0x3_0007),
-            Call::Unknown(30),
+            Call::SetChanged {
+                handle: 0x3_0008,
+                seconds: 1_794_225_600,
+            },
+            Call::Unknown(31),
         ];
 
         reads_back(&calls);
@@ -1067,6 +1115,7 @@ mod tests {
             (RENAME, 4),
             (TIME, 0),
             (CHANGED, 1),
+            (SET_CHANGED, 2),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -1089,7 +1138,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > CHANGED,
+                number > SET_CHANGED,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");

@@ -196,18 +196,44 @@ pub fn write(slot: usize, offset: u64, from: &[u8]) -> Result<usize, Error> {
     let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
     v.set_now(super::wall::seconds());
     let entry = v.write(&written, offset, from)?;
+    seen_everywhere(volume, &written, entry);
+    Ok(from.len())
+}
+
+/// Sets when the open file in `slot` last changed to `seconds` since 1970
+/// began, as FAT keeps it. Every slot open on the file sees it.
+///
+/// # Errors
+///
+/// When no file is open there, it keeps no time, it was not opened to
+/// write, or the volume says no.
+pub fn set_changed(slot: usize, seconds: u64) -> Result<(), Error> {
+    use kernel::vfs::Refusal;
+    let mut mounted = MOUNTED.lock();
+    let (volume, set) = match open_in(slot)?.of {
+        Of::Volume { volume, opened } => (volume, opened),
+        Of::Tree { .. } => return Err(Error::Refused(Refusal::Denied(abi::file::WRITE))),
+    };
+    let v = mounted[volume].as_mut().ok_or(Error::NotFound)?;
+    let entry = v.set_changed(&set, seconds)?;
+    seen_everywhere(volume, &set, entry);
+    Ok(())
+}
+
+/// Gives every slot open where `changed` lies on the volume numbered
+/// `volume` its entry as it now is.
+fn seen_everywhere(volume: usize, changed: &Opened, entry: fat::Entry) {
     for open in OPEN.lock().iter_mut().flatten() {
         if let Of::Volume {
             volume: on,
             ref mut opened,
         } = open.of
             && on == volume
-            && opened.place == written.place
+            && opened.place == changed.place
         {
             opened.entry = entry;
         }
     }
-    Ok(from.len())
 }
 
 /// Where each file open on the volume numbered `volume` lies on it.

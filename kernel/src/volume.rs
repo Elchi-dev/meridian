@@ -218,6 +218,24 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Volume<R, W
         Ok(entry)
     }
 
+    /// Sets when the file or directory `opened` last changed to `seconds`
+    /// since 1970 began, as FAT keeps it (decision record 0030), and
+    /// answers its entry as it now is.
+    ///
+    /// # Errors
+    ///
+    /// When it was not opened to write, it is the volume's root, which has
+    /// no entry to keep a time in, or the volume cannot be written.
+    pub fn set_changed(&mut self, opened: &Opened, seconds: u64) -> Result<Entry, Error> {
+        let (true, Some(place)) = (opened.writes, opened.place) else {
+            return Err(Error::Refused(Refusal::Denied(file::WRITE)));
+        };
+        let mut entry = opened.entry;
+        entry.changed = fat::stamp::stamp(seconds);
+        self.fs.save(place, &entry)?;
+        Ok(entry)
+    }
+
     /// Writes the name of entry `index` of the directory `opened`, counted
     /// from 0, into `into` in UTF-8, and returns its length and whether
     /// that entry is a directory itself.
@@ -662,6 +680,77 @@ mod tests {
             .open(&["when.txt"], &system(), READ | WRITE, CREATE_NEW)
             .unwrap();
         assert_eq!(unknown.entry.changed, fat::stamp::FIRST);
+    }
+
+    #[test]
+    fn a_time_set_is_kept_as_fat_keeps_it_and_nothing_else_changes() {
+        let image = image();
+        let mut v = volume(&image, false);
+        let file = v.open(&["a.txt"], &system(), READ | WRITE, 0).unwrap();
+        let before = image.borrow().clone();
+        // 01:46:40 UTC on 9 September 2001, and a second.
+        let set = v.set_changed(&file, 1_000_000_001).unwrap();
+        assert_eq!(
+            set,
+            Entry {
+                // The day, 21 years from 1980, September, the 9th, then the
+                // time, 1:46 and 20 steps of two seconds.
+                changed: 0x2b29_0dd4,
+                ..file.entry
+            },
+            "to the two seconds before"
+        );
+        let place = file.place.unwrap();
+        let at = usize::try_from(place.sector).unwrap() * 512 + place.index * 32 + 22;
+        let after = image.borrow().clone();
+        let changed: Vec<usize> = (0..after.len())
+            .filter(|&i| after[i] != before[i])
+            .collect();
+        assert_eq!(
+            changed,
+            [at, at + 1, at + 2, at + 3],
+            "the entry's time alone"
+        );
+        assert_eq!(after[at..at + 4], [0xd4, 0x0d, 0x29, 0x2b]);
+        let mut fresh = volume(&image, true);
+        let read = fresh.open(&["a.txt"], &system(), READ, 0).unwrap();
+        assert_eq!(read.entry, set, "on the disk");
+        for (seconds, kept) in [(0, 315_532_800), (u64::MAX, 4_354_819_198)] {
+            let set = v.set_changed(&file, seconds).unwrap();
+            assert_eq!(fat::stamp::seconds(set.changed), Some(kept), "{seconds}");
+        }
+        let directory = v.open(&["Dir"], &system(), READ | WRITE, 0).unwrap();
+        let set = v.set_changed(&directory, 1_794_225_600).unwrap();
+        let read = fresh.open(&["Dir"], &system(), READ, 0).unwrap();
+        assert_eq!(
+            fat::stamp::seconds(read.entry.changed),
+            Some(1_794_225_600),
+            "a directory too"
+        );
+        assert_eq!(read.entry, set);
+        v.set_now(Some(1_794_225_600 + 60));
+        let written = v.write(&file, 0, b"x").unwrap();
+        assert_eq!(
+            fat::stamp::seconds(written.changed),
+            Some(1_794_225_660),
+            "a write stamps the time of day again"
+        );
+    }
+
+    #[test]
+    fn a_time_is_set_only_through_a_handle_to_write_an_entry() {
+        let image = image();
+        let mut v = volume(&image, false);
+        let denied = Err(Error::Refused(Refusal::Denied(file::WRITE)));
+        let reader = v.open(&["a.txt"], &system(), READ, 0).unwrap();
+        assert_eq!(v.set_changed(&reader, 0), denied);
+        let root = v.open(&[], &system(), READ | WRITE, 0).unwrap();
+        assert_eq!(v.set_changed(&root, 0), denied, "the root has no entry");
+        let before = image.borrow().clone();
+        let mut fresh = volume(&image, true);
+        let read = fresh.open(&["a.txt"], &system(), READ, 0).unwrap();
+        assert_eq!(fresh.set_changed(&read, 0), denied);
+        assert!(*image.borrow() == before, "not a byte changed");
     }
 
     #[test]

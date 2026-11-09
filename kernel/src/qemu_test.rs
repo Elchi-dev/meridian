@@ -3713,6 +3713,7 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::END_THREAD,
         abi::TIME,
         abi::CHANGED,
+        abi::SET_CHANGED,
         abi::EXIT,
     ];
     report.check(

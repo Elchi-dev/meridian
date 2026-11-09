@@ -5826,22 +5826,30 @@ fn unread_archives_fail(from: &str) -> Outcome {
 /// pax copies more files than may be open at once, as each one written
 /// is closed.
 fn many_files_are_copied() -> Outcome {
-    let mut names = String::new();
-    for n in 1..=70 {
-        let _ = core::fmt::Write::write_fmt(&mut names, format_args!(" f{n}"));
-    }
     let checked = same(
         &shell_on(&alloc::format!(
-            "md /System/ph; for n in{names} {{ echo $n > /System/ph/$n }}\n\
-             md /System/pi; pax -rw /System/ph /System/pi; cat /System/pi/System/ph/f70\n\
-             echo /System/ph /System/pi | xargs rm -r"
+            "md /System/pi; cd /System/Boot/meridian/licences\n\
+             pax -rw{} /System/pi; cd /\n\
+             wc -c /System/pi/inter.txt; echo /System/pi | xargs rm -r",
+            seventy_licences()
         ))?,
-        &ran(0, b"f70\n"),
+        &ran(0, b"4380 /System/pi/inter.txt\n"),
     );
     expect(
         checked,
         "pax should copy more files than may be open at once, closing each",
     )
+}
+
+/// The licence of Inter, which test images carry, named seventy times
+/// from its directory: more files than may be open at once, to show a
+/// program closes each one it opens.
+fn seventy_licences() -> String {
+    let mut names = String::new();
+    for _ in 0..70 {
+        names.push_str(" inter.txt");
+    }
+    names
 }
 
 /// date writes the time of day sextant starts test machines' clocks at,
@@ -5941,21 +5949,17 @@ fn pr_writes_pages() -> Outcome {
 /// pr reads more files than may be open at once, closing each, and ends
 /// with 1 when what reads its output closed its end first.
 fn pr_closes_and_fails() -> Outcome {
-    let mut names = String::new();
-    for n in 1..=70 {
-        let _ = core::fmt::Write::write_fmt(&mut names, format_args!(" f{n}"));
-    }
-    let checked = same(
-        &shell_on(&alloc::format!(
-            "md /System/pm; for n in{names} {{ echo $n > /System/pm/$n }}\n\
-             pr -t /System/pm/* | wc -l\n\
-             echo /System/pm | xargs rm -r"
-        ))?,
-        &ran(0, b"70\n"),
-    );
+    let (ended, said) = shell_on(&alloc::format!(
+        "cd /System/Boot/meridian/licences; pr -t{0} | cksum; cat{0} | cksum",
+        seventy_licences()
+    ))?;
+    let sums: Vec<&[u8]> = said.split(|&b| b == b'\n').collect();
     expect(
-        checked,
-        "pr should read more files than may be open at once",
+        ended == Ok(Ended::Exited(0))
+            && sums.len() == 3
+            && sums[0] == sums[1]
+            && sums[2].is_empty(),
+        "pr should read more files than may be open at once, writing them as cat does",
     )?;
     let (out, theirs) = pair()?;
     let (errors, error_end) = pair()?;
@@ -6026,21 +6030,17 @@ fn iconv_turns_text() -> Outcome {
         return Ok(());
     }
     // More files than may be open at once go through, as each is closed.
-    let mut names = String::new();
-    for n in 1..=70 {
-        let _ = core::fmt::Write::write_fmt(&mut names, format_args!(" f{n}"));
-    }
-    let checked = same(
-        &shell_on(&alloc::format!(
-            "md /System/im; for n in{names} {{ echo $n > /System/im/$n }}\n\
-             iconv -t latin1 /System/im/* | wc -l\n\
-             echo /System/im | xargs rm -r"
-        ))?,
-        &ran(0, b"70\n"),
-    );
+    let (ended, said) = shell_on(&alloc::format!(
+        "cd /System/Boot/meridian/licences; iconv{0} | cksum; cat{0} | cksum",
+        seventy_licences()
+    ))?;
+    let sums: Vec<&[u8]> = said.split(|&b| b == b'\n').collect();
     expect(
-        checked,
-        "iconv should read more files than may be open at once",
+        ended == Ok(Ended::Exited(0))
+            && sums.len() == 3
+            && sums[0] == sums[1]
+            && sums[2].is_empty(),
+        "iconv should read more files than may be open at once, writing UTF-8 as it was",
     )
 }
 

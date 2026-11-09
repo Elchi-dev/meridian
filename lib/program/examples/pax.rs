@@ -526,6 +526,9 @@ fn read_archive(files: &mut impl Files, asked: &Asked) -> bool {
             }
         }
     }
+    // What comes after the end is read too, as tar reads whole records,
+    // so that the pax writing into a pipe gets to its end.
+    while !ended && files.archive().is_ok_and(|piece| !piece.is_empty()) {}
     if !asked.picking.others {
         let unfound: Vec<String> = picker.unfound().map(String::from).collect();
         for written in &unfound {
@@ -1841,6 +1844,14 @@ mod tests {
             ["src/", "src/a", "src/d/", "src/d/x"],
             "nothing made"
         );
+        // The end comes before the record is whole; the rest is read.
+        let ours = archive_of(Format::Ustar, &[(member("f", Kind::File, 1, 0o644), b"f")]);
+        host.reading(&ours, 512);
+        host.printed.clear();
+        host.said.clear();
+        assert!(ran(&mut host, ""));
+        assert_eq!((host.printed.as_str(), host.said.as_str()), ("f\n", ""));
+        assert!(host.pieces.is_empty(), "{} pieces left", host.pieces.len());
     }
 
     #[test]

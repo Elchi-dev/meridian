@@ -351,7 +351,7 @@ fn byte_for(set: Charset, code: u32) -> Option<u8> {
     match set {
         Charset::Ascii => byte.filter(u8::is_ascii),
         Charset::Latin1 => byte,
-        Charset::Windows1252 if code < 0x100 && !(0x80..=0x9f).contains(&code) => byte,
+        Charset::Windows1252 if byte.is_some_and(|b| !(0x80..=0x9f).contains(&b)) => byte,
         Charset::Ibm437 if code < 0x80 => byte,
         _ => {
             let table: &[u16] = if set == Charset::Windows1252 {

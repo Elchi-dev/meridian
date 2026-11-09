@@ -3,7 +3,8 @@
 //! A file there already is written over, after a question at the console
 //! with `-i`, none with `-f`, the last of the two counting; a directory
 //! there takes the place of one only when that holds nothing. Across
-//! volumes what moves is copied, and then removed. Nothing moves onto
+//! volumes what moves is copied, keeping when each file and directory
+//! last changed, and then removed. Nothing moves onto
 //! itself, nor a directory into itself. It ends with 0 when everything
 //! moved, and 1 otherwise.
 
@@ -16,7 +17,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use program::abi::file::{CREATE_ALWAYS, READ, WRITE};
+use program::abi::file::{CREATE_ALWAYS, OPEN_EXISTING, READ, WRITE};
 use program::{Error, Handle, text};
 
 program::main!(mv);
@@ -81,6 +82,13 @@ trait Files {
     /// Copies the file at `from` to `to`, made new.
     fn copy(&mut self, from: &str, to: &str) -> Result<(), Error>;
 
+    /// When the file at `path` last changed, as seconds since 1970 began;
+    /// none for what keeps no time.
+    fn changed(&mut self, path: &str) -> Result<Option<u64>, Error>;
+
+    /// Sets when the file at `path` last changed.
+    fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error>;
+
     /// Makes a directory at `path`.
     fn make_directory(&mut self, path: &str) -> Result<(), Error>;
 
@@ -115,14 +123,18 @@ fn last_name(path: &str) -> &str {
 
 /// Copies what is at `from` to `to`, a directory with all it holds.
 fn copy_tree(files: &mut impl Files, from: &str, to: &str) -> Result<(), Error> {
-    if !files.directory(from)? {
-        return files.copy(from, to);
+    if files.directory(from)? {
+        files.make_directory(to)?;
+        for name in files.names(from)? {
+            copy_tree(files, &joined(from, &name), &joined(to, &name))?;
+        }
+    } else {
+        files.copy(from, to)?;
     }
-    files.make_directory(to)?;
-    for name in files.names(from)? {
-        copy_tree(files, &joined(from, &name), &joined(to, &name))?;
-    }
-    Ok(())
+    // What moves keeps when it last changed, set once all is written.
+    files
+        .changed(from)?
+        .map_or(Ok(()), |seconds| files.set_changed(to, seconds))
 }
 
 /// Removes what is at `path`, a directory with all it holds.
@@ -278,6 +290,20 @@ impl Files for System {
         copied
     }
 
+    fn changed(&mut self, path: &str) -> Result<Option<u64>, Error> {
+        let file = program::open(path, READ)?;
+        let changed = program::changed(file);
+        let _ = program::close(file);
+        changed
+    }
+
+    fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error> {
+        let file = program::open_with(path, WRITE, OPEN_EXISTING)?;
+        let set = program::set_changed(file, seconds);
+        let _ = program::close(file);
+        set
+    }
+
     fn make_directory(&mut self, path: &str) -> Result<(), Error> {
         program::make_directory(path)
     }
@@ -404,6 +430,12 @@ mod tests {
         fn there(&self, path: &str) -> bool {
             confined(&self.root, &self.shm, path).exists()
         }
+
+        /// When the file at `path` last changed, as seconds since 1970
+        /// began.
+        fn when(&mut self, path: &str) -> u64 {
+            self.changed(path).unwrap().unwrap()
+        }
     }
 
     impl Drop for Host {
@@ -452,6 +484,23 @@ mod tests {
             let bytes =
                 std::fs::read(confined(&self.root, &self.shm, from)).map_err(|e| error(&e))?;
             std::fs::write(confined(&self.root, &self.shm, to), bytes).map_err(|e| error(&e))
+        }
+
+        fn changed(&mut self, path: &str) -> Result<Option<u64>, Error> {
+            let found =
+                std::fs::metadata(confined(&self.root, &self.shm, path)).map_err(|e| error(&e))?;
+            let since = found
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH);
+            Ok(Some(since.unwrap().as_secs()))
+        }
+
+        fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error> {
+            let file = std::fs::File::open(confined(&self.root, &self.shm, path))
+                .map_err(|e| error(&e))?;
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            file.set_modified(at).map_err(|e| error(&e))
         }
 
         fn make_directory(&mut self, path: &str) -> Result<(), Error> {
@@ -692,9 +741,24 @@ mod tests {
     #[test]
     fn trees_are_copied_and_removed_whole() {
         let mut host = Host::new("whole", &["t/a", "t/u/b", "t/u/v/"]);
+        // 01:46:40 UTC on 9 September 2001, and seconds and days after.
+        let old = 1_000_000_000;
+        let times = [
+            ("a", old),
+            ("u/b", old + 2),
+            ("u/v", old + 4),
+            ("u", old + 86_400),
+            ("", old + 172_800),
+        ];
+        for (path, at) in times {
+            host.set_changed(&joined("t", path), at).unwrap();
+        }
         assert_eq!(copy_tree(&mut host, "t", "c"), Ok(()));
         assert_eq!(host.holds("c/u/b").as_deref(), Some("t/u/b"));
         assert!(host.there("c/u/v"));
+        for (path, at) in times {
+            assert_eq!(host.when(&joined("c", path)), at, "{path:?} keeps its time");
+        }
         assert_eq!(remove_tree(&mut host, "c"), Ok(()));
         assert!(!host.there("c"));
 

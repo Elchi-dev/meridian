@@ -5128,7 +5128,8 @@ fn cp_copies_files() -> Outcome {
 }
 
 /// mv as a program says what words it cannot take, and moves a file to
-/// another name, into a directory, and a directory with what it holds.
+/// another name, into a directory, and a directory with what it holds,
+/// each keeping when it last changed, across volumes too.
 fn mv_moves_files() -> Outcome {
     let checked = same(
         &shell_on("echo | xargs mv")?,
@@ -5144,11 +5145,11 @@ fn mv_moves_files() -> Outcome {
     let (ended, said) = shell_on(
         "md /System/M || exit 9\n\
          md /System/M/d\n\
-         printf 'x' > /System/M/a\n\
+         printf 'x' > /System/M/a; touch -t 200109090146.40 /System/M/a\n\
          echo /System/M/a /System/M/b | xargs mv\n\
          echo /System/M/b /System/M/d | xargs mv\n\
          echo /System/M/d /System/M/e | xargs mv\n\
-         cat /System/M/e/b; echo\n\
+         cat /System/M/e/b; echo; find /System/M/e/b -mtime +9000\n\
          rm /System/M/e/b; rd /System/M/e; rd /System/M",
     )?;
     if ended == Ok(Ended::Exited(9)) {
@@ -5158,8 +5159,8 @@ fn mv_moves_files() -> Outcome {
         );
     }
     expect(
-        same(&(ended, said), &ran(0, b"x\n")),
-        "mv should move a file to another name, into a directory, and the directory with it",
+        same(&(ended, said), &ran(0, b"x\n/System/M/e/b\n")),
+        "mv should move a file to another name, into a directory, and the directory with it, keeping its time",
     )?;
     // From the boot volume, which is only read, everything is copied and
     // then nothing can go.
@@ -5168,19 +5169,20 @@ fn mv_moves_files() -> Outcome {
         &shell_on(&alloc::format!(
             "echo {from} /System/L | xargs mv\n\
              cmp {from}/inter.txt /System/L/inter.txt && cmp {from}/jetbrains_mono.txt /System/L/jetbrains_mono.txt && cmp {from}/shim.txt /System/L/shim.txt && echo copied\n\
+             test /System/L/shim.txt -nt {from}/shim.txt || test /System/L/shim.txt -ot {from}/shim.txt || echo kept\n\
              rm /System/L/inter.txt /System/L/jetbrains_mono.txt /System/L/shim.txt; rd /System/L"
         ))?,
         &ran(
             0,
             alloc::format!(
-                "mv: {from} to /System/L: on a volume that is only read\nxargs ended with 123\ncopied\n"
+                "mv: {from} to /System/L: on a volume that is only read\nxargs ended with 123\ncopied\nkept\n"
             )
             .as_bytes(),
         ),
     );
     expect(
         checked,
-        "mv should copy a directory to another volume, every file whole, and say why it cannot remove it after",
+        "mv should copy a directory to another volume, every file whole with its time, and say why it cannot remove it after",
     )
 }
 

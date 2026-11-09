@@ -464,3 +464,24 @@ allow {
     mutation = "> to >="
     reason = "with both sides alike the quotient is exactly 1 either way, and π/4 seen from the x axis and from the y axis is the same pair of doubles, with nothing past it"
 }
+
+allow {
+    file = "lib/awk/src/run.rs"
+    line = "if !x.is_finite() || x.abs() >= 4_503_599_627_370_496.0 {"
+    mutation = ">= to >"
+    reason = "2^52 itself fits an i64, so the cast below gives it back unchanged, as returning it does"
+}
+
+allow {
+    file = "lib/awk/src/run.rs"
+    line = "if self.dynamic.len() >= 64 {"
+    mutation = ">= to >"
+    reason = "how many expressions are kept changes only how often one is read again, never what it matches"
+}
+
+allow {
+    file = "lib/awk/src/record.rs"
+    line = "while at <= bytes.len() {"
+    mutation = "<= to <"
+    reason = "a match that starts where the text ends is empty, so the look there finds nothing either way"
+}

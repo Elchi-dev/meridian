@@ -1,10 +1,12 @@
 //! The archives POSIX's pax writes and reads: ustar, blocks of 512
 //! bytes, each member a header block and its data filled to a whole
 //! block, two empty blocks at the end; and cpio's portable kind, a header
-//! of octal text, the name and the data. Meridian's files have no modes,
-//! owners or times, so members are written with 644 for files, 755 for
+//! of octal text, the name and the data. A member's mode, owners and time
+//! go in as it has them and come out as the archive has them; Meridian's
+//! files keep none, so its programs give 644 for files, 755 for
 //! directories and zeros for the rest. Reading takes POSIX's extended
-//! headers and GNU's long names for names past ustar's room.
+//! headers, GNU's long names for names past ustar's room, and GNU's
+//! numbers of 256 digits for those past octal's.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -28,6 +30,15 @@ pub enum Kind {
     Other(u8),
 }
 
+/// Who owns a member: by number, and in ustar by name too.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Owner {
+    pub user: u64,
+    pub group: u64,
+    pub user_name: String,
+    pub group_name: String,
+}
+
 /// A member's header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -36,6 +47,9 @@ pub struct Member {
     pub size: u64,
     /// Its mode as the archive has it, which Meridian does not keep.
     pub mode: u32,
+    /// When it last changed, in seconds from the start of 1970.
+    pub time: u64,
+    pub owner: Owner,
 }
 
 /// The kinds of archive.
@@ -67,8 +81,20 @@ fn octal(n: u64, width: usize) -> Vec<u8> {
     out
 }
 
-/// The number written in octal in `field`, blanks and zeros around it.
+/// The number written in octal in `field`, blanks and zeros around it,
+/// or as GNU writes one past what its octal digits hold: the bits after
+/// the first, in bytes, the highest first.
 fn number(field: &[u8]) -> Result<u64, Fault> {
+    if let Some((&first, rest)) = field.split_first()
+        && first & 0x80 != 0
+    {
+        return rest
+            .iter()
+            .try_fold(u64::from(first & 0x7f), |n, &b| {
+                n.checked_mul(256).map(|n| n + u64::from(b))
+            })
+            .ok_or(Fault::Number);
+    }
     let text = field
         .iter()
         .copied()
@@ -85,6 +111,15 @@ fn number(field: &[u8]) -> Result<u64, Fault> {
             .ok_or(Fault::Number),
         _ => Err(Fault::Number),
     })
+}
+
+/// `text`, cut to the most whole characters that fit `room` bytes.
+fn fitted(text: &str, room: usize) -> &[u8] {
+    let mut end = text.len().min(room);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text.as_bytes()[..end]
 }
 
 /// The text of a field, up to its first zero.
@@ -126,11 +161,13 @@ pub fn ustar_header(member: &Member) -> Result<[u8; BLOCK], Fault> {
     let put = |h: &mut [u8; BLOCK], at: usize, digits: &[u8]| {
         h[at..at + digits.len()].copy_from_slice(digits);
     };
+    // What octal's digits cannot hold is written as the most they do.
+    let owner = &member.owner;
     put(&mut h, 100, &octal(u64::from(member.mode & 0o7777), 7));
-    put(&mut h, 108, &octal(0, 7));
-    put(&mut h, 116, &octal(0, 7));
+    put(&mut h, 108, &octal(owner.user.min(0o777_7777), 7));
+    put(&mut h, 116, &octal(owner.group.min(0o777_7777), 7));
     put(&mut h, 124, &octal(member.size, 11));
-    put(&mut h, 136, &octal(0, 11));
+    put(&mut h, 136, &octal(member.time.min(0o777_7777_7777), 11));
     h[156] = match member.kind {
         Kind::File => b'0',
         Kind::Directory => b'5',
@@ -138,6 +175,9 @@ pub fn ustar_header(member: &Member) -> Result<[u8; BLOCK], Fault> {
     };
     h[257..263].copy_from_slice(b"ustar\0");
     h[263..265].copy_from_slice(b"00");
+    // The names end with a zero within their 32 bytes.
+    put(&mut h, 265, fitted(&owner.user_name, 31));
+    put(&mut h, 297, fitted(&owner.group_name, 31));
     put(&mut h, 329, &octal(0, 7));
     put(&mut h, 337, &octal(0, 7));
     h[345..345 + prefix.len()].copy_from_slice(prefix);
@@ -162,11 +202,11 @@ pub fn cpio_header(member: &Member, inode: u64) -> Vec<u8> {
     h.extend(octal(0, 6));
     h.extend(octal(inode % 0o1_000_000, 6));
     h.extend(octal(u64::from(kind | (member.mode & 0o7777)), 6));
-    h.extend(octal(0, 6));
-    h.extend(octal(0, 6));
+    h.extend(octal(member.owner.user.min(0o77_7777), 6));
+    h.extend(octal(member.owner.group.min(0o77_7777), 6));
     h.extend(octal(1, 6));
     h.extend(octal(0, 6));
-    h.extend(octal(0, 11));
+    h.extend(octal(member.time.min(0o777_7777_7777), 11));
     h.extend(octal(member.name.len() as u64 + 1, 6));
     h.extend(octal(member.size, 11));
     h.extend_from_slice(member.name.as_bytes());
@@ -183,6 +223,8 @@ pub fn cpio_trailer() -> Vec<u8> {
             kind: Kind::File,
             size: 0,
             mode: 0,
+            time: 0,
+            owner: Owner::default(),
         },
         0,
     )
@@ -432,9 +474,9 @@ impl Reader {
             }
             return Ok(Headed::Again);
         }
+        let ustar = &h[257..262] == b"ustar";
         let name = self.long_name.take().unwrap_or_else(|| {
             let (rest, prefix) = (field_text(&h[..100]), field_text(&h[345..500]));
-            let ustar = &h[257..262] == b"ustar";
             if ustar && !prefix.is_empty() {
                 format!("{prefix}/{rest}")
             } else {
@@ -449,6 +491,21 @@ impl Reader {
             other => Kind::Other(other),
         };
         let mode = u32::try_from(number(&h[100..108])?).map_err(|_| Fault::Number)?;
+        // Tar before ustar had no names for owners there.
+        let named = |at: usize| {
+            if ustar {
+                field_text(&h[at..at + 32])
+            } else {
+                String::new()
+            }
+        };
+        let owner = Owner {
+            user: number(&h[108..116])?,
+            group: number(&h[116..124])?,
+            user_name: named(265),
+            group_name: named(297),
+        };
+        let time = number(&h[136..148])?;
         // Links, devices and directories have no data, whatever their
         // size says; other kinds' data is passed over as data.
         let size = if matches!(kind, Kind::Directory | Kind::Other(b'1'..=b'6')) {
@@ -463,6 +520,8 @@ impl Reader {
             kind,
             size,
             mode,
+            time,
+            owner,
         })))
     }
 
@@ -498,6 +557,12 @@ impl Reader {
         }
         let field = |at: usize, len: usize| number(&self.held[at..at + len]);
         let mode = field(18, 6)?;
+        let owner = Owner {
+            user: field(24, 6)?,
+            group: field(30, 6)?,
+            ..Owner::default()
+        };
+        let time = field(48, 11)?;
         let name_size = usize::try_from(field(59, 6)?).map_err(|_| Fault::Header)?;
         let size = field(65, 11)?;
         if self.held.len() < 76 + name_size {
@@ -520,6 +585,8 @@ impl Reader {
             kind,
             size,
             mode: u32::try_from(mode & 0o7777).unwrap_or(0),
+            time,
+            owner,
         })))
     }
 }
@@ -532,8 +599,10 @@ mod tests {
     /// input, in `dir`.
     fn run(dir: &std::path::Path, program: &str, words: &[&str], input: &[u8]) -> Vec<u8> {
         use std::io::Write as _;
+        // Times are listed in UTC, wherever the tests run.
         let mut child = std::process::Command::new(program)
             .args(words)
+            .env("TZ", "UTC")
             .current_dir(dir)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -624,6 +693,8 @@ mod tests {
             kind: Kind::File,
             size,
             mode: 0o644,
+            time: 0,
+            owner: Owner::default(),
         }
     }
 
@@ -633,6 +704,8 @@ mod tests {
             kind: Kind::Directory,
             size: 0,
             mode: 0o755,
+            time: 0,
+            owner: Owner::default(),
         }
     }
 
@@ -1098,6 +1171,13 @@ mod tests {
                     kind,
                     size: size as u64,
                     mode: if kind == Kind::File { 0o644 } else { 0o755 },
+                    time: next() % 8u64.pow(11),
+                    owner: Owner {
+                        user: next() % 8u64.pow(6),
+                        group: next() % 8u64.pow(6),
+                        user_name: format!("u{}", next() % 1000),
+                        group_name: String::new(),
+                    },
                 });
                 datas.push(data[..size].to_vec());
             }
@@ -1110,8 +1190,17 @@ mod tests {
                 let archive = written(format, &given);
                 let piece = usize::try_from(next() % 700).unwrap() + 1;
                 let read = read_all(&archive, piece).unwrap();
-                let back: Vec<(Member, Vec<u8>)> =
-                    given.iter().map(|(m, d)| (m.clone(), d.to_vec())).collect();
+                // cpio keeps owners by number alone.
+                let back: Vec<(Member, Vec<u8>)> = given
+                    .iter()
+                    .map(|(m, d)| {
+                        let mut m = m.clone();
+                        if format == Format::Cpio {
+                            m.owner.user_name.clear();
+                        }
+                        (m, d.to_vec())
+                    })
+                    .collect();
                 assert_eq!(read, back, "round {round}, {format:?}, pieces of {piece}");
             }
         }
@@ -1172,6 +1261,134 @@ mod tests {
         archive.extend_from_slice(b"ok");
         archive.extend([b'?'; 76]);
         assert_eq!(read_all(&archive, archive.len()), Err(Fault::Header));
+    }
+
+    /// `file`, its time and owners those given.
+    fn owned(name: &str, size: u64, time: u64, owner: (u64, u64, &str, &str)) -> Member {
+        Member {
+            time,
+            owner: Owner {
+                user: owner.0,
+                group: owner.1,
+                user_name: owner.2.into(),
+                group_name: owner.3.into(),
+            },
+            ..file(name, size)
+        }
+    }
+
+    #[test]
+    fn times_and_owners_go_both_ways_with_tar_and_cpio() {
+        let scratch = Scratch::new("owners");
+        let member = owned("a", 6, 1_700_000_000, (1000, 100, "elchi", "users"));
+        let tar = written(Format::Ustar, &[(member.clone(), b"hello\n")]);
+        let fields = |listed: Vec<u8>| -> Vec<String> {
+            String::from_utf8(listed)
+                .unwrap()
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        };
+        assert_eq!(
+            fields(run(&scratch.0, "tar", &["-tvf", "-"], &tar)),
+            ["-rw-r--r--", "elchi/users", "6", "2023-11-14", "22:13", "a"]
+        );
+        assert_eq!(
+            fields(run(
+                &scratch.0,
+                "tar",
+                &["--numeric-owner", "-tvf", "-"],
+                &tar
+            ))[1],
+            "1000/100"
+        );
+        let cpio = written(Format::Cpio, &[(member.clone(), b"hello\n")]);
+        assert_eq!(
+            fields(run(
+                &scratch.0,
+                "cpio",
+                &["-itv", "--numeric-uid-gid"],
+                &cpio
+            )),
+            [
+                "-rw-r--r--",
+                "1",
+                "1000",
+                "100",
+                "6",
+                "Nov",
+                "14",
+                "2023",
+                "a"
+            ]
+        );
+        // What tar writes of them comes back, GNU's numbers past octal's
+        // among them.
+        scratch.put("a", b"hello\n");
+        let theirs = run(
+            &scratch.0,
+            "tar",
+            &[
+                "--format=ustar",
+                "--owner=elchi:1000",
+                "--group=users:100",
+                "--mtime=@1700000000",
+                "-cf",
+                "-",
+                "a",
+            ],
+            b"",
+        );
+        assert_eq!(read_all(&theirs, 100).unwrap()[0].0, member);
+        let gnu = run(
+            &scratch.0,
+            "tar",
+            &[
+                "--format=gnu",
+                "--owner=big:3000000",
+                "--group=users:100",
+                "--mtime=@1700000000",
+                "-cf",
+                "-",
+                "a",
+            ],
+            b"",
+        );
+        let read = &read_all(&gnu, 512).unwrap()[0].0;
+        assert_eq!(
+            (read.owner.user, read.owner.user_name.as_str()),
+            (3_000_000, "big")
+        );
+    }
+
+    #[test]
+    fn owners_and_times_past_their_fields_are_cut_to_them() {
+        let member = owned(
+            "a",
+            0,
+            u64::MAX,
+            (u64::MAX, u64::MAX, &"\u{fc}".repeat(16), "g"),
+        );
+        let header = ustar_header(&member).unwrap();
+        assert_eq!(&header[108..116], b"7777777\0");
+        assert_eq!(&header[116..124], b"7777777\0");
+        assert_eq!(&header[136..148], b"77777777777\0");
+        assert_eq!(
+            field_text(&header[265..297]),
+            "\u{fc}".repeat(15),
+            "whole characters within 31 bytes"
+        );
+        assert_eq!(field_text(&header[297..329]), "g");
+        let cpio = cpio_header(&member, 1);
+        assert_eq!(&cpio[24..36], b"777777777777");
+        assert_eq!(&cpio[48..59], b"77777777777");
+        assert_eq!(number(&[0x80, 0, 0, 0, 0, 0x2d, 0xc6, 0xc0]), Ok(3_000_000));
+        assert_eq!(
+            number(&[0xff; 12]),
+            Err(Fault::Number),
+            "past what u64 holds"
+        );
+        assert_eq!(fitted("ab", 31), b"ab");
     }
 
     #[test]

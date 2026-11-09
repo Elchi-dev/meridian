@@ -5551,15 +5551,24 @@ fn pax_reads_and_writes_archives() -> Outcome {
         return Ok(());
     }
     let from = "/System/Boot/meridian/licences";
+    // The image's files changed when it was made, as CHANGED says.
+    let licences = open(from, abi::file::READ).map_err(|_| "the licences should open")?;
+    let made = crate::changed(licences);
+    let _ = close(licences);
+    let made = made
+        .ok()
+        .flatten()
+        .ok_or("the licences should say when they changed")?;
+    let when = crate::date::formatted("%b %e  %Y", &crate::date::Moment::at(made));
     let checked = same(
         &shell_on(&alloc::format!("pax -w {from} | pax -v"))?,
         &ran(
             0,
             alloc::format!(
-                "drwxr-xr-x 1 0 0 0 Jan  1  1970 {from}\n\
-                 -rw-r--r-- 1 0 0 4380 Jan  1  1970 {from}/inter.txt\n\
-                 -rw-r--r-- 1 0 0 4399 Jan  1  1970 {from}/jetbrains_mono.txt\n\
-                 -rw-r--r-- 1 0 0 11823 Jan  1  1970 {from}/shim.txt\n"
+                "drwxr-xr-x 1 0 0 0 {when} {from}\n\
+                 -rw-r--r-- 1 0 0 4380 {when} {from}/inter.txt\n\
+                 -rw-r--r-- 1 0 0 4399 {when} {from}/jetbrains_mono.txt\n\
+                 -rw-r--r-- 1 0 0 11823 {when} {from}/shim.txt\n"
             )
             .as_bytes(),
         ),

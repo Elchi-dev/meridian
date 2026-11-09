@@ -11,9 +11,10 @@
 //! and `-n` only the first each pattern finds. `-v` lists as `ls -l` does,
 //! and else names each file on the standard error as it goes; `-k` keeps
 //! a file that is there already, and `-x` says which kind is written,
-//! `ustar` or `cpio`. Meridian's files keep no modes, owners or times, so
-//! they go into an archive as 644 for files, 755 for directories and
-//! zeros, and `-p` and `-t` change nothing; with no links `-H`, `-L` and
+//! `ustar` or `cpio`. Meridian's files keep no modes or owners, so they go
+//! into an archive as 644 for files, 755 for directories and zeros, with
+//! the time each last changed; `-p` and `-t` change nothing, and with no
+//! links `-H`, `-L` and
 //! `-l` change nothing either, and `-b`'s blocks are those the archive's
 //! kind writes. A member whose name climbs out with `..` is passed over.
 //! It ends with 0 when everything went, and 1 otherwise.
@@ -184,6 +185,10 @@ enum Look {
 trait Files {
     /// What the file at `path` is.
     fn look(&mut self, path: &str) -> Result<Look, Error>;
+
+    /// When the file at `path` last changed, as seconds since 1970 began;
+    /// none for what keeps no time.
+    fn changed(&mut self, path: &str) -> Option<u64>;
 
     /// The names in the directory at `path`.
     fn names(&mut self, path: &str) -> Result<Vec<String>, Error>;
@@ -671,7 +676,7 @@ fn written(
         kind,
         size,
         mode,
-        time: 0,
+        time: files.changed(path).unwrap_or(0),
         owner: Owner::default(),
     };
     let header = match writer.begin(&member) {
@@ -907,6 +912,13 @@ impl Files for System {
         } else {
             Look::File(info.size)
         })
+    }
+
+    fn changed(&mut self, path: &str) -> Option<u64> {
+        let file = program::open(path, READ).ok()?;
+        let changed = program::changed(file);
+        let _ = program::close(file);
+        changed.ok().flatten()
     }
 
     fn names(&mut self, path: &str) -> Result<Vec<String>, Error> {
@@ -1181,6 +1193,18 @@ mod tests {
             })
         }
 
+        fn changed(&mut self, path: &str) -> Option<u64> {
+            let modified = std::fs::metadata(confined(&self.root, path))
+                .and_then(|m| m.modified())
+                .ok()?;
+            Some(
+                modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs(),
+            )
+        }
+
         fn names(&mut self, path: &str) -> Result<Vec<String>, Error> {
             std::fs::read_dir(confined(&self.root, path))
                 .map_err(|e| error(&e))?
@@ -1277,6 +1301,16 @@ mod tests {
             (false, false) => 0o644,
         };
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Gives the file or directory at `path` on `host` the time it last
+    /// changed, `seconds` since 1970 began.
+    fn changed_at(host: &Host, path: &str, seconds: u64) {
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+        std::fs::File::open(confined(&host.root, path))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
     }
 
     /// Runs pax with the words `line` on `host`; whether everything went.
@@ -1595,6 +1629,11 @@ mod tests {
         let big: Vec<u8> = (0..9000u32).map(|i| (i % 251).to_le_bytes()[0]).collect();
         host.put("d/b/c", &big);
         host.put("top", b"");
+        // Each one changed a minute after the one before, from 22:13:20 on
+        // 14 November 2023.
+        for (at, path) in ["d", "d/a", "d/b", "d/b/c", "top"].iter().enumerate() {
+            changed_at(&host, path, 1_700_000_000 + 60 * at as u64);
+        }
         assert!(ran(&mut host, "-w d top"));
         assert_eq!(host.said, "");
         let tar = core::mem::take(&mut host.archive);
@@ -1607,11 +1646,11 @@ mod tests {
         assert_eq!(
             fields,
             [
-                vec!["drwxr-xr-x", "0/0", "0", "1970-01-01", "00:00", "d/"],
-                vec!["-rw-r--r--", "0/0", "4", "1970-01-01", "00:00", "d/a"],
-                vec!["drwxr-xr-x", "0/0", "0", "1970-01-01", "00:00", "d/b/"],
-                vec!["-rw-r--r--", "0/0", "9000", "1970-01-01", "00:00", "d/b/c"],
-                vec!["-rw-r--r--", "0/0", "0", "1970-01-01", "00:00", "top"],
+                vec!["drwxr-xr-x", "0/0", "0", "2023-11-14", "22:13", "d/"],
+                vec!["-rw-r--r--", "0/0", "4", "2023-11-14", "22:14", "d/a"],
+                vec!["drwxr-xr-x", "0/0", "0", "2023-11-14", "22:15", "d/b/"],
+                vec!["-rw-r--r--", "0/0", "9000", "2023-11-14", "22:16", "d/b/c"],
+                vec!["-rw-r--r--", "0/0", "0", "2023-11-14", "22:17", "top"],
             ]
         );
         let out = host.root.join("out");

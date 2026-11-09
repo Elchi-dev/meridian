@@ -1591,11 +1591,11 @@ fn ran(status: u64, said: &[u8]) -> Ran {
 /// check that fails shows what came instead.
 fn same(got: &Ran, want: &Ran) -> bool {
     if got != want {
-        let _ = crate::log!(
-            "the shell ended {:?} after {:?}",
-            got.0,
-            String::from_utf8_lossy(&got.1)
-        );
+        let _ = crate::log!("the shell ended {:?}, and said:", got.0);
+        // A line of the text to a line of the log, which keeps it whole.
+        for line in String::from_utf8_lossy(&got.1).split_inclusive('\n') {
+            let _ = crate::log!("  {line:?}");
+        }
     }
     got == want
 }

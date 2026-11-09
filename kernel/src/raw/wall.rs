@@ -14,6 +14,18 @@ pub fn keep(clock: Clock, tsc_hz: Option<u64>) {
     *WALL.lock() = tsc_hz.map(|hz| (clock, hz));
 }
 
+/// Counts the time of day on from `nanoseconds` since 1970 began, from
+/// now (decision record 0031); false while it cannot be counted, the
+/// counter's rate not known.
+pub fn set(nanoseconds: u64) -> bool {
+    let mut wall = WALL.lock();
+    let Some((_, hz)) = *wall else {
+        return false;
+    };
+    *wall = Some((kernel::clock::set_at(nanoseconds, x86::raw::tsc()), hz));
+    true
+}
+
 /// The whole seconds since 1970 began, in UTC; none while the time is not
 /// known.
 pub fn seconds() -> Option<u64> {

@@ -22,7 +22,7 @@ use kernel::program::{self, Refusal};
 use kernel::syscall::{self, Call};
 use kernel::thread::THREADS;
 use paging::Flags;
-use security::{Restriction, Token};
+use security::{Privileges, Restriction, Token};
 
 use super::interrupts::Frame;
 use super::memory::{self, Spin};
@@ -404,6 +404,7 @@ pub fn system_call(frame: &mut Frame) {
             frame.rdx = u64::from(now.is_some());
             now.unwrap_or(0)
         }
+        Call::SetTime(nanoseconds) => set_time(nanoseconds).map_or_else(|e| e, |()| 0),
         Call::Channel => match make_channel() {
             Ok((a, b)) => {
                 frame.rdx = b;
@@ -1083,6 +1084,18 @@ fn set_changed(handle: u64, seconds: u64) -> Result<(), u64> {
         return Err(syscall::DENIED);
     };
     super::vfs::set_changed(slot, seconds).map_err(file_answer)
+}
+
+/// Sets the time of day to `nanoseconds` since 1970 began, which only a
+/// token with `SeSystemtimePrivilege` may (decision record 0031).
+fn set_time(nanoseconds: u64) -> Result<(), u64> {
+    let token = with_process(|p| Ok(p.token))?;
+    let allowed = token.privileges.contains(Privileges::SYSTEM_TIME);
+    if allowed && super::wall::set(nanoseconds) {
+        Ok(())
+    } else {
+        Err(syscall::DENIED)
+    }
 }
 
 /// Answers a second handle to what `handle` stands for, with its rights.

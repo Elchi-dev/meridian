@@ -21,11 +21,12 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 178] = [
+const CHECKS: [(&str, Check); 179] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
     ("time", time_of_day),
+    ("time.set", time_is_set),
     ("stack", the_stack_asked_for),
     ("channel", round_trip),
     ("channel.empty", nothing_waits),
@@ -295,6 +296,23 @@ fn time_of_day() -> Outcome {
             .is_some_and(|ns| (1_794_225_600_000_000_000..1_794_229_200_000_000_000).contains(&ns))
             && first.zip(later).is_some_and(|(a, b)| b > a),
         "the time of day should reach programs, in the hour sextant set the clock to, and go on",
+    )
+}
+
+/// `SET_TIME` counts the time of day on from what it is given, for
+/// SYSTEM's token.
+fn time_is_set() -> Outcome {
+    let hour = 3_600_000_000_000;
+    let ahead = crate::now().ok_or("the time of day should be known")? + hour;
+    let set = crate::set_time(ahead);
+    let after = crate::now();
+    // About where it was, for the checks after.
+    let back = crate::set_time(after.unwrap_or(ahead) - hour);
+    expect(
+        set == Ok(())
+            && back == Ok(())
+            && after.is_some_and(|ns| (ahead..ahead + 1_000_000_000).contains(&ns)),
+        "the time of day should go on from what SET_TIME gives, for SYSTEM's token",
     )
 }
 

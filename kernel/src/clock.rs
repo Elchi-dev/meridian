@@ -41,6 +41,19 @@ pub fn wall(clock: &bootinfo::Clock, hz: u64, tsc: u64) -> Option<u64> {
     u64::try_from(at + since).ok()
 }
 
+/// The moment to count the time of day on from when it is set to
+/// `nanoseconds` since 1970 began as the time stamp counter reads `tsc`
+/// (decision record 0031).
+#[must_use]
+pub fn set_at(nanoseconds: u64, tsc: u64) -> bootinfo::Clock {
+    bootinfo::Clock {
+        known: 1,
+        seconds: nanoseconds / 1_000_000_000,
+        nanoseconds: nanoseconds % 1_000_000_000,
+        tsc,
+    }
+}
+
 /// How many ticks of a timer that ticks `hz` times a second the status
 /// screen sleeps between looks at the uptime: a tenth of a second, so a new
 /// second shows at most that late, and at least one tick.
@@ -117,6 +130,32 @@ mod tests {
             wall(&late, 1, u64::MAX),
             None,
             "past what 64 bits of nanoseconds hold"
+        );
+    }
+
+    #[test]
+    fn a_time_set_is_counted_on_from_the_counter_then() {
+        let noon = 1_794_225_600_000_000_000;
+        let set = set_at(noon + 999_999_999, 7_000);
+        assert_eq!(
+            set,
+            bootinfo::Clock {
+                known: 1,
+                seconds: 1_794_225_600,
+                nanoseconds: 999_999_999,
+                tsc: 7_000,
+            }
+        );
+        assert_eq!(wall(&set, 1_000, 7_000), Some(noon + 999_999_999));
+        assert_eq!(
+            wall(&set, 1_000, 7_000 + 2_500),
+            Some(noon + 3_499_999_999),
+            "two and a half seconds on"
+        );
+        assert_eq!(
+            wall(&set_at(0, 0), 1, 0),
+            Some(0),
+            "the start of 1970 is a time too"
         );
     }
 

@@ -105,6 +105,10 @@ pub const CHANGED: u64 = 29;
 /// since 1970 began, cut to what FAT keeps (decision record 0030), and
 /// answers 0.
 pub const SET_CHANGED: u64 = 30;
+/// Counts the time of day on from rdi, the nanoseconds since 1970 began,
+/// in UTC, for a program whose token holds `SeSystemtimePrivilege`
+/// (decision record 0031), and answers 0.
+pub const SET_TIME: u64 = 31;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -393,6 +397,7 @@ pub enum Call {
         handle: u64,
         seconds: u64,
     },
+    SetTime(u64),
     Unknown(u64),
 }
 
@@ -473,6 +478,7 @@ impl Call {
             Call::Time => (TIME, [0; 4]),
             Call::Changed(handle) => (CHANGED, [handle, 0, 0, 0]),
             Call::SetChanged { handle, seconds } => (SET_CHANGED, [handle, seconds, 0, 0]),
+            Call::SetTime(nanoseconds) => (SET_TIME, [nanoseconds, 0, 0, 0]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -537,6 +543,7 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
         END_THREAD => Call::EndThread(first),
         DUPLICATE => Call::Duplicate(first),
         TIME => Call::Time,
+        SET_TIME => Call::SetTime(first),
         other => decode_file(other, args),
     }
 }
@@ -681,7 +688,8 @@ mod tests {
                 seconds: 2
             }
         );
-        assert_eq!(decode(31, [1, 2, 3, 0]), Call::Unknown(31));
+        assert_eq!(decode(SET_TIME, [1, 2, 3, 0]), Call::SetTime(1));
+        assert_eq!(decode(32, [1, 2, 3, 0]), Call::Unknown(32));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
@@ -735,11 +743,12 @@ mod tests {
                 RENAME,
                 TIME,
                 CHANGED,
-                SET_CHANGED
+                SET_CHANGED,
+                SET_TIME
             ],
             [
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27, 28, 29, 30
+                23, 24, 25, 26, 27, 28, 29, 30, 31
             ]
         );
     }
@@ -1076,7 +1085,8 @@ mod tests {
                 handle: 0x3_0008,
                 seconds: 1_794_225_600,
             },
-            Call::Unknown(31),
+            Call::SetTime(1_794_225_600_000_000_000),
+            Call::Unknown(32),
         ];
 
         reads_back(&calls);
@@ -1116,6 +1126,7 @@ mod tests {
             (TIME, 0),
             (CHANGED, 1),
             (SET_CHANGED, 2),
+            (SET_TIME, 1),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -1138,7 +1149,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > SET_CHANGED,
+                number > SET_TIME,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");

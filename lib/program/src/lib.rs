@@ -127,6 +127,17 @@ pub fn now() -> Option<u64> {
     known(rax, rdx)
 }
 
+/// Sets the time of day to `nanoseconds` since 1970 began, in UTC, until
+/// the machine stops (decision record 0031).
+///
+/// # Errors
+///
+/// When the program's token holds no `SeSystemtimePrivilege`, or the
+/// kernel cannot count time.
+pub fn set_time(nanoseconds: u64) -> Result<(), Error> {
+    done(raw::call(Call::SetTime(nanoseconds)).0)
+}
+
 /// When the file of `file` last changed, as the seconds since 1970 began;
 /// none for what keeps no time (decision record 0029).
 ///
@@ -348,8 +359,28 @@ pub fn spawn_handing(
     arguments: &[&str],
     given: start::Given,
 ) -> Result<(Handle, Handle), Error> {
+    spawn_handing_as(name, arguments, given, None)
+}
+
+/// Starts the program `name` as [`spawn_handing`] does, with no more than
+/// `restriction` leaves of the program's own security token when there is
+/// one.
+///
+/// # Errors
+///
+/// As for [`spawn_with`].
+pub fn spawn_handing_as(
+    name: &str,
+    arguments: &[&str],
+    given: start::Given,
+    restriction: Option<Restriction>,
+) -> Result<(Handle, Handle), Error> {
     let (mine, theirs) = channel()?;
-    let child = match spawn(name, Some(theirs)) {
+    let started = match restriction {
+        None => spawn(name, Some(theirs)),
+        Some(restriction) => spawn_restricted(name, Some(theirs), restriction),
+    };
+    let child = match started {
         Ok(child) => child,
         Err(e) => {
             let _ = close(mine);

@@ -444,7 +444,7 @@ fn like_c(text: &str, digits: usize) -> String {
     let below = usize::try_from(exponent.unsigned_abs()).unwrap_or(usize::MAX);
     if exponent < -4 || exponent >= i32::try_from(digits).unwrap_or(i32::MAX) {
         let (first, fraction) = figures.split_at(1);
-        let exponent_sign = if exponent < 0 { '-' } else { '+' };
+        let exponent_sign = if exponent.is_negative() { '-' } else { '+' };
         format!("{}e{exponent_sign}{below:02}", with_point(first, fraction))
     } else if exponent >= 0 {
         let (whole, fraction) = figures.split_at(below + 1);

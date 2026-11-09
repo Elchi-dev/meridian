@@ -72,8 +72,10 @@ struct Asked<'w> {
     times: bool,
     format: Format,
     picking: Picking,
-    /// The patterns, or the files and for copying the directory last.
+    /// The patterns, or the files.
     operands: &'w [String],
+    /// The directory `-r -w` copies into, its last operand.
+    target: &'w str,
 }
 
 /// What pax's words ask for, or why they cannot be taken.
@@ -88,6 +90,7 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
         format: Format::Ustar,
         picking: Picking::default(),
         operands: &[],
+        target: "",
     };
     let mut at = 0;
     while let Some(word) = arguments.get(at) {
@@ -136,14 +139,15 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
         (true, true) => Mode::Copy,
     };
     if asked.mode == Mode::Copy {
-        if asked.operands.is_empty() {
+        let Some((target, sources)) = asked.operands.split_last() else {
             return Err(String::from(
                 "pax: -r -w copies files into a directory, which comes last\n",
             ));
-        }
+        };
         if asked.archive.is_some() {
             return Err(String::from("pax: -r -w copies with no archive for -f\n"));
         }
+        (asked.target, asked.operands) = (target, sources);
     }
     Ok(asked)
 }
@@ -563,13 +567,11 @@ fn closed(files: &mut impl Files, asked: &Asked, into: &mut Into) -> bool {
     let Into::File(path, seconds) = core::mem::replace(into, Into::Nowhere) else {
         return true;
     };
-    match files.done() {
-        Ok(()) => !asked.times || stamped(files, &path, seconds),
-        Err(e) => {
-            files.say(&text::trouble("pax", &path, e));
-            false
-        }
-    }
+    let done = files
+        .done()
+        .inspect_err(|&e| files.say(&text::trouble("pax", &path, e)))
+        .is_ok();
+    done && (!asked.times || stamped(files, &path, seconds))
 }
 
 /// Lists the picked `member`, or makes what it is; whether that went.
@@ -763,9 +765,7 @@ fn written(
 /// Copies the files `asked` names into its directory; whether everything
 /// went.
 fn copy_all(files: &mut impl Files, asked: &Asked) -> bool {
-    let Some((target, sources)) = asked.operands.split_last() else {
-        return false;
-    };
+    let (target, sources) = (asked.target, asked.operands);
     if files.look(target) != Ok(Look::Directory) {
         files.say(&format!("pax: {target}: is no directory to copy into\n"));
         return false;
@@ -857,10 +857,10 @@ fn copied(
         return false;
     }
     let mut room = alloc::vec![0u8; 4096];
-    let mut at = 0;
+    let mut done = 0;
     let mut went = true;
-    while at < size {
-        match files.read(path, at, &mut room) {
+    while done < size {
+        match files.read(path, done, &mut room) {
             Ok(0) => break,
             Ok(len) => {
                 if let Err(e) = files.write(&room[..len]) {
@@ -868,7 +868,7 @@ fn copied(
                     went = false;
                     break;
                 }
-                at += len as u64;
+                done += len as u64;
             }
             Err(e) => {
                 files.say(&text::trouble("pax", path, e));
@@ -877,15 +877,11 @@ fn copied(
             }
         }
     }
-    match files.done() {
-        Ok(()) => {
-            went && (!asked.times || files.changed(path).is_none_or(|s| stamped(files, &to, s)))
-        }
-        Err(e) => {
-            files.say(&text::trouble("pax", &to, e));
-            false
-        }
-    }
+    let closed = files
+        .done()
+        .inspect_err(|&e| files.say(&text::trouble("pax", &to, e)))
+        .is_ok();
+    closed && went && (!asked.times || files.changed(path).is_none_or(|s| stamped(files, &to, s)))
 }
 
 /// Does what `asked` says; whether everything went.
@@ -1164,6 +1160,11 @@ mod tests {
         said: String,
         writing: Option<std::fs::File>,
         change: Option<(String, Change)>,
+        /// A file the standard input's lines come from, in place of
+        /// `lines`.
+        input: Option<std::io::BufReader<std::fs::File>>,
+        /// A file the archive goes into, in place of `archive`.
+        sink: Option<std::fs::File>,
     }
 
     impl Host {
@@ -1181,6 +1182,8 @@ mod tests {
                 said: String::new(),
                 writing: None,
                 change: None,
+                input: None,
+                sink: None,
             }
         }
 
@@ -1335,12 +1338,23 @@ mod tests {
         }
 
         fn put_archive(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            if let Some(sink) = &mut self.sink {
+                return sink.write_all(bytes).map_err(|e| error(&e));
+            }
             self.archive.extend_from_slice(bytes);
             Ok(())
         }
 
         fn line(&mut self) -> Result<Option<String>, Error> {
-            Ok(self.lines.pop_front())
+            use std::io::BufRead as _;
+            let Some(input) = &mut self.input else {
+                return Ok(self.lines.pop_front());
+            };
+            let mut line = String::new();
+            match input.read_line(&mut line).map_err(|e| error(&e))? {
+                0 => Ok(None),
+                _ => Ok(Some(line.trim_end_matches('\n').into())),
+            }
         }
 
         fn print(&mut self, text: &str) {
@@ -1459,7 +1473,17 @@ mod tests {
         assert_eq!(asked(&words("-w")).unwrap().format, Format::Ustar);
         let line = words("-r -w d");
         let got = asked(&line).unwrap();
-        assert_eq!((got.mode, got.operands), (Mode::Copy, &line[2..]));
+        assert_eq!(
+            (got.mode, got.operands, got.target),
+            (Mode::Copy, &line[..0], "d")
+        );
+        let line = words("-rw a b d");
+        let got = asked(&line).unwrap();
+        assert_eq!(
+            (got.operands, got.target),
+            (&line[1..3], "d"),
+            "the last operand is where the rest go"
+        );
         assert_eq!(asked(&words("-rw d")).unwrap().mode, Mode::Copy);
         let line = words("-dcnk");
         let got = asked(&line).unwrap();
@@ -2241,6 +2265,138 @@ mod tests {
             assert!(
                 when(&mut host, &joined("plain/src", path)) >= begun,
                 "with -p m {path:?} changed as it was copied"
+            );
+        }
+    }
+
+    /// A link at `path` on `host` to the host's /dev/full, which takes
+    /// nothing written into it.
+    fn full(host: &Host, path: &str) {
+        std::os::unix::fs::symlink("/dev/full", confined(&host.root, path)).unwrap();
+    }
+
+    /// Takes the right to write into the directory at `path` away; whether
+    /// that stops this process, which root's does not.
+    fn shut_to_writes(host: &Host, path: &str) -> bool {
+        use std::os::unix::fs::PermissionsExt as _;
+        let at = confined(&host.root, path);
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let stopped = std::fs::File::create(at.join("probe")).is_err();
+        let _ = std::fs::remove_file(at.join("probe"));
+        stopped
+    }
+
+    #[test]
+    fn each_thing_read_mode_cannot_make_fails_it_alone() {
+        for (name, member, data, why) in [
+            (
+                "file",
+                member("ro/x", Kind::File, 3, 0o644),
+                &b"xxx"[..],
+                "pax: ro/x: not allowed\n",
+            ),
+            (
+                "directory",
+                member("ro/d", Kind::Directory, 0, 0o755),
+                b"",
+                "pax: ro/d: not allowed\n",
+            ),
+            (
+                "data",
+                member("full", Kind::File, 3, 0o644),
+                b"abc",
+                "pax: full: could not be written\n",
+            ),
+            (
+                "time",
+                member("full", Kind::File, 0, 0o644),
+                b"",
+                "pax: full: not allowed\n",
+            ),
+        ] {
+            let mut host = Host::new(&format!("alone-{name}"));
+            host.directory("ro");
+            full(&host, "full");
+            // One who may write anywhere is stopped by no rights.
+            if !shut_to_writes(&host, "ro") && !matches!(name, "data" | "time") {
+                shut(&confined(&host.root, "ro"), false);
+                continue;
+            }
+            let archive = archive_of(
+                Format::Ustar,
+                &[(member.clone(), data), (member_at("after"), b"z")],
+            );
+            host.reading(&archive, 512);
+            let went = ran(&mut host, "-r");
+            shut(&confined(&host.root, "ro"), false);
+            assert_eq!((went, host.said.as_str()), (false, why), "{name}");
+            assert_eq!(
+                host.holds("after").unwrap(),
+                b"z",
+                "{name}: the rest is read out"
+            );
+        }
+    }
+
+    /// A file member named `name` holding one byte.
+    fn member_at(name: &str) -> Member {
+        member(name, Kind::File, 1, 0o644)
+    }
+
+    #[test]
+    fn each_thing_copy_mode_cannot_copy_fails_it_alone() {
+        let mut host = Host::new("copy-alone");
+        host.put("src/a", b"aaaa");
+        host.directory("empty");
+        host.directory("dst/src");
+        host.directory("ro");
+        full(&host, "dst/src/a");
+        for (line, why) in [
+            ("-rw nope dst", "pax: nope: no such file\n"),
+            (
+                "-rw src/../src/a ro",
+                "pax: src/../src/a: climbs out with .., so it is not copied\n",
+            ),
+            ("-rw src/a dst", "pax: dst/src/a: could not be written\n"),
+        ] {
+            assert!(!ran(&mut host, line), "{line}");
+            assert_eq!(core::mem::take(&mut host.said), why, "{line}");
+        }
+        if shut_to_writes(&host, "ro") {
+            let went = ran(&mut host, "-rw empty ro");
+            shut(&confined(&host.root, "ro"), false);
+            assert_eq!(
+                (went, host.said.as_str()),
+                (false, "pax: ro/empty: not allowed\n")
+            );
+        } else {
+            shut(&confined(&host.root, "ro"), false);
+        }
+    }
+
+    #[test]
+    fn an_archive_that_cannot_be_written_or_names_that_cannot_be_read_are_said() {
+        let mut host = Host::new("unwritten");
+        host.put("a", b"a");
+        full(&host, "full");
+        host.sink = Some(std::fs::File::create(confined(&host.root, "full")).unwrap());
+        assert!(!ran(&mut host, "-w a"));
+        assert_eq!(
+            host.said,
+            "pax: the archive: could not be written\n".repeat(4),
+            "the header, the byte, what fills its block, and the end"
+        );
+        let mut host = Host::new("unnamed");
+        host.directory("dst");
+        host.directory("names");
+        for line in ["-w", "-rw dst"] {
+            let names = std::fs::File::open(confined(&host.root, "names")).unwrap();
+            host.input = Some(std::io::BufReader::new(names));
+            assert!(!ran(&mut host, line), "{line}");
+            assert_eq!(
+                core::mem::take(&mut host.said),
+                "pax: the standard input: a directory, not a file\n",
+                "{line}"
             );
         }
     }

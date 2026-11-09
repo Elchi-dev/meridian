@@ -5721,6 +5721,7 @@ fn pax_reads_and_writes_archives() -> Outcome {
         checked,
         "pax should write a directory with all it holds into a pipe, and list it",
     )?;
+    unread_archives_fail(from)?;
     let (ended, said) = shell_on(&alloc::format!(
         "printf '' > /System/p.cpio || exit 9\n\
          md /System/px; pax -rw {from} /System/px\n\
@@ -5752,6 +5753,51 @@ fn pax_reads_and_writes_archives() -> Outcome {
             ),
         ),
         "pax should copy a directory, write an archive of the copy and read it out whole, each file with its time",
+    )?;
+    many_files_are_copied()
+}
+
+/// pax ends with 1, saying nothing, when what reads the archive it writes
+/// of `from` closed its end before reading any of it, as only its status
+/// can tell.
+fn unread_archives_fail(from: &str) -> Outcome {
+    let (out, theirs) = pair()?;
+    let (errors, error_end) = pair()?;
+    let given = start::Given {
+        output: Some(start::Sink::Channel(theirs)),
+        error: Some(start::Sink::Channel(error_end)),
+        ..start::Given::default()
+    };
+    let _ = close(out);
+    let (child, back) =
+        spawn_handing("pax.mexec", &["-w", from], given).map_err(|_| "pax should start")?;
+    let ended = wait(child);
+    let said = drained(errors);
+    let _ = (close(child), close(back), close(errors));
+    expect(
+        ended == Ok(Ended::Exited(1)) && said.is_empty(),
+        "pax should end with 1 when nothing reads its archive",
+    )
+}
+
+/// pax copies more files than may be open at once, as each one written
+/// is closed.
+fn many_files_are_copied() -> Outcome {
+    let mut names = String::new();
+    for n in 1..=70 {
+        let _ = core::fmt::Write::write_fmt(&mut names, format_args!(" f{n}"));
+    }
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "md /System/ph; for n in{names} {{ echo $n > /System/ph/$n }}\n\
+             md /System/pi; pax -rw /System/ph /System/pi; cat /System/pi/System/ph/f70\n\
+             echo /System/ph /System/pi | xargs rm -r"
+        ))?,
+        &ran(0, b"f70\n"),
+    );
+    expect(
+        checked,
+        "pax should copy more files than may be open at once, closing each",
     )
 }
 

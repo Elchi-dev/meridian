@@ -506,3 +506,24 @@ allow {
     mutation = "< to <="
     reason = "a read past the 4096 bytes looked at is cut off again just below"
 }
+
+allow {
+    file = "lib/program/examples/pax.rs"
+    line = "went &= put(files, &room[..take]);"
+    mutation = "&= to |="
+    reason = "the two differ only when a member's header goes into the archive and its data then does not, and a sink on the host takes all or nothing: /dev/full refuses the header as well, so went is false either way"
+}
+
+allow {
+    file = "lib/program/examples/pax.rs"
+    line = "if at < size {"
+    mutation = "< to <="
+    reason = "at the size the read finds nothing more and the loop ends there, so what it held is never used"
+}
+
+allow {
+    file = "lib/program/examples/pax.rs"
+    line = "while done < size {"
+    mutation = "< to <="
+    reason = "at the size the next read gives 0 bytes, which ends the loop as reaching the size does"
+}

@@ -69,6 +69,13 @@ fn registers(century: Option<u8>) -> Registers {
     }
 }
 
+/// Status register B, which says the form the clock keeps the time in.
+#[cfg(feature = "qemu-test")]
+pub fn form() -> u8 {
+    let _clock = CLOCK.lock();
+    register(STATUS_B)
+}
+
 /// The time the clock holds, as seconds since 1970 began; none without a
 /// clock, or when its registers make no time.
 #[cfg(feature = "qemu-test")]

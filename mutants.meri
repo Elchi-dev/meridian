@@ -548,3 +548,17 @@ allow {
     mutation = "false to true"
     reason = "every test machine measures the time stamp counter's rate against the ACPI timer or the HPET, so SET_TIME never comes while the time cannot be counted; the kernel.time checks fail on one that cannot"
 }
+
+allow {
+    file = "kernel/src/raw/rtc.rs"
+    line = "return false;"
+    mutation = "false to true"
+    reason = "QEMU's FADT names a real-time clock, as kernel.time.rtc checks, and SET_TIME's nanoseconds reach 2554 at most, so on test machines write always has a clock and a time with a century of two digits"
+}
+
+allow {
+    file = "kernel/src/raw/rtc.rs"
+    line = "fn settled() {"
+    mutation = "body to {}"
+    reason = "QEMU's clock, the only one the tests run on, takes registers read and written during its update as at any other moment, so waiting the update out changes nothing there"
+}

@@ -2823,14 +2823,19 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
         "the real-time clock should be where QEMU's FADT says, with its century, and hold the hour sextant set it to",
     );
     // 12:34:56, read back within the seconds it takes, and then the time
-    // of day again.
+    // of day again, the clock keeping its form all the while.
+    let form = raw::rtc::form();
     let written = raw::rtc::write(1_794_227_696);
     let back = raw::rtc::read();
+    let kept = raw::rtc::form();
     let again = raw::wall::seconds().is_some_and(raw::rtc::write);
     report.check(
         "kernel.time.rtc_set",
-        written && again && back.is_some_and(|s| (1_794_227_696..1_794_227_699).contains(&s)),
-        "a time written into the real-time clock should read back",
+        written
+            && again
+            && kept == form
+            && back.is_some_and(|s| (1_794_227_696..1_794_227_699).contains(&s)),
+        "a time written into the real-time clock should read back, its form as it was",
     );
     hpet_checks(report, machine, tsc_hz);
 }

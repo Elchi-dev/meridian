@@ -5340,8 +5340,8 @@ fn bc_works_out_numbers() -> Outcome {
 
 /// compress, uncompress and zcat take what they are given through
 /// pipes, past a message, and files on a disk to their names with .Z and
-/// back, keep a file compress cannot make smaller, and say what is not
-/// compress's.
+/// back, keep a file compress cannot make smaller and one where theirs
+/// would go, and say what is not compress's and output that cannot go.
 fn compress_squeezes_files() -> Outcome {
     let checked = same(
         &shell_on(
@@ -5359,6 +5359,14 @@ fn compress_squeezes_files() -> Outcome {
     expect(
         checked,
         "compress and its others should take what they are given through pipes, and say what they cannot",
+    )?;
+    let checked = same(
+        &shell_on("#!/bin/sh\necho hello | compress >&-; echo \"closed $?\"")?,
+        &ran(0, b"compress ended with 1\nclosed 1\n"),
+    );
+    expect(
+        checked,
+        "compress should end with 1 when what it writes cannot go",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -5384,6 +5392,22 @@ fn compress_squeezes_files() -> Outcome {
             ),
         ),
         "compress should put a file into its name with .Z and back, and keep one it cannot make smaller",
+    )?;
+    let checked = same(
+        &shell_on(
+            "echo x > /System/ct; echo y > /System/ct.Z; compress /System/ct; uncompress /System/ct.Z\n\
+             cat /System/ct /System/ct.Z; rm /System/ct /System/ct.Z",
+        )?,
+        &ran(
+            0,
+            b"compress: /System/ct.Z: there already, so /System/ct is kept\ncompress ended with 1\n\
+              uncompress: /System/ct: there already, so /System/ct.Z is kept\nuncompress ended with 1\n\
+              x\ny\n",
+        ),
+    );
+    expect(
+        checked,
+        "compress and uncompress should keep a file where theirs would go",
     )
 }
 

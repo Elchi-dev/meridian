@@ -2456,6 +2456,21 @@ fn shell_ask_checks<W: Write>(report: &mut Report<'_, W>, shown: &dyn Fn(&str) -
         asked && kept && asked_again && moved && gone,
         "mv -i should ask at the console, keep the file n answers and move onto the one y answers",
     );
+    // pr -p waits for Enter at the console before its page, so the line
+    // typed then is pr's and never runs.
+    type_line(report, "echo one > /System/pp");
+    type_line(report, "clear");
+    type_line(report, "pr -p -t /System/pp");
+    type_line(report, "echo leaked > /System/pl");
+    let paged = shown("one");
+    type_line(report, "cat /System/pl");
+    let waited = shown("/System/pl: no such file");
+    type_line(report, "rm /System/pp");
+    report.check(
+        "kernel.shell.ask.pr",
+        paged && waited,
+        "pr -p should wait for Enter at the console before its page, and take the line typed then",
+    );
 }
 
 /// What typing the shell's language does: a block over three lines, a

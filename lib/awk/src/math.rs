@@ -325,7 +325,7 @@ pub fn pow(x: f64, y: f64) -> f64 {
     }
     let odd = odd(y);
     if x == 0.0 || x.is_infinite() {
-        let magnitude = if (x == 0.0) == (y < 0.0) {
+        let magnitude = if (x == 0.0) == y.is_sign_negative() {
             f64::INFINITY
         } else {
             0.0
@@ -336,11 +336,11 @@ pub fn pow(x: f64, y: f64) -> f64 {
             magnitude
         };
     }
-    if x < 0.0 && !whole_number(y) {
+    if x.is_sign_negative() && !whole_number(y) {
         return f64::NAN;
     }
     let magnitude = power_of(x.abs(), y);
-    if x < 0.0 && odd {
+    if x.is_sign_negative() && odd {
         -magnitude
     } else {
         magnitude
@@ -350,7 +350,6 @@ pub fn pow(x: f64, y: f64) -> f64 {
 /// `a`, finite and above zero, to the power `y`, finite.
 fn power_of(a: f64, y: f64) -> f64 {
     if whole_number(y)
-        && y.abs() <= 1024.0
         && let Some(power) = exact_power(a, y)
     {
         return power;
@@ -358,7 +357,7 @@ fn power_of(a: f64, y: f64) -> f64 {
     let (high, low) = log_of(a);
     let rough = y * high;
     // Far past the doubles' range the parts below change nothing.
-    if !rough.is_finite() || rough.abs() > 1000.0 {
+    if rough.abs() > 1000.0 {
         return exp(rough);
     }
     let (product, lost) = multiplied(y, high);
@@ -393,7 +392,11 @@ fn exact_power(a: f64, y: f64) -> Option<f64> {
             base = exact(base, base)?;
         }
     }
-    Some(if y < 0.0 { 1.0 / power } else { power })
+    Some(if y.is_sign_negative() {
+        1.0 / power
+    } else {
+        power
+    })
 }
 
 /// The remainder of `x` / `y`, with the sign of `x`, as C's fmod has
@@ -426,12 +429,13 @@ pub fn fmod(x: f64, y: f64) -> f64 {
     }
     #[allow(clippy::cast_precision_loss)]
     let rest = scaled(rest as f64, bottom_power);
-    if x < 0.0 { -rest } else { rest }
+    if x.is_sign_negative() { -rest } else { rest }
 }
 
 /// `x`, which is finite and above zero, as m 2^k with m in [1, 2).
 fn parts(x: f64) -> (f64, i32) {
-    let (x, shift) = if x < f64::MIN_POSITIVE {
+    // One below the least normal double has no power in its bits.
+    let (x, shift) = if x.to_bits() >> 52 == 0 {
         (x * f64::from_bits(0x4350_0000_0000_0000), 54)
     } else {
         (x, 0)
@@ -539,7 +543,11 @@ pub fn sin(x: f64) -> f64 {
         2 => -sine(near, missed),
         _ => -cosine(near, missed),
     };
-    if x < 0.0 { -turned } else { turned }
+    if x.is_sign_negative() {
+        -turned
+    } else {
+        turned
+    }
 }
 
 /// The cosine of `x`, in radians.
@@ -633,14 +641,14 @@ pub fn atan2(y: f64, x: f64) -> f64 {
         return toward(HALF_PI);
     }
     if x.is_infinite() && y.is_infinite() {
-        return toward(if x < 0.0 {
+        return toward(if x.is_sign_negative() {
             THREE_QUARTERS_PI
         } else {
             QUARTER_PI
         });
     }
     if x.is_infinite() {
-        return toward(if x < 0.0 { PI } else { 0.0 });
+        return toward(if x.is_sign_negative() { PI } else { 0.0 });
     }
     if y.is_infinite() {
         return toward(HALF_PI);
@@ -653,7 +661,7 @@ pub fn atan2(y: f64, x: f64) -> f64 {
         quotient(up, across)
     };
     let (from, past) = atan(t, missed);
-    let way = match (steep, x < 0.0) {
+    let way = match (steep, x.is_sign_negative()) {
         (false, false) => 0,
         (true, false) => 1,
         (true, true) => 2,

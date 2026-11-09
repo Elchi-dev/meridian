@@ -415,3 +415,52 @@ allow {
     mutation = "body to { false }"
     reason = "the loader brings every program the programs folder holds, so the one it brought is the same program as the file"
 }
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "x.abs() >= 4_503_599_627_370_496.0 || (x as i64) as f64 == x"
+    mutation = ">= to >"
+    reason = "2^52 itself fits an i64, so the cast gives it back and the second test says it is whole too"
+}
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "whole_number(x) && x.abs() < 9_007_199_254_740_992.0 && (x as i64) % 2 != 0"
+    mutation = "< to <="
+    reason = "2^53 itself is even, so letting it through to the cast still says it is not odd"
+}
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "return if (x.abs() > 1.0) == (y > 0.0) {"
+    mutation = "> to >="
+    reason = "an x of size 1 has already been answered just above, and y is infinite here, never 0"
+}
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "if rough.abs() > 1000.0 {"
+    mutation = "> to >="
+    reason = "with y ln x at 1000 either way the power is infinite, or 0 at -1000, whichever path works it out"
+}
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "if x.abs() <= FRAC_PI_4 {"
+    mutation = "<= to <"
+    reason = "the double nearest π/4 lies below it, so the reduction gives it back in quarter 0 with nothing missed that reaches a double, and sine and cosine come out the same both ways; a probe of both signs agreed to the bit"
+}
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "if t < f64::from_bits(0x3e40_0000_0000_0000) {"
+    mutation = "< to <="
+    reason = "of normal numbers, a quotient that rounds to exactly 2^-27 is exact, as the doubles next to b times 2^-27 give quotients a whole place away, so nothing is missed; of a number below the least normal one, a probe of 20 million found none where the arctangent changed"
+}
+
+allow {
+    file = "lib/awk/src/math.rs"
+    line = "let steep = up > across;"
+    mutation = "> to >="
+    reason = "with both sides alike the quotient is exactly 1 either way, and π/4 seen from the x axis and from the y axis is the same pair of doubles, with nothing past it"
+}

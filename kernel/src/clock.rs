@@ -43,7 +43,7 @@ pub fn wall(clock: &bootinfo::Clock, hz: u64, tsc: u64) -> Option<u64> {
 
 /// The moment to count the time of day on from when it is set to
 /// `nanoseconds` since 1970 began as the time stamp counter reads `tsc`
-/// (decision record 0031).
+/// (decision record 0033).
 #[must_use]
 pub fn set_at(nanoseconds: u64, tsc: u64) -> bootinfo::Clock {
     bootinfo::Clock {

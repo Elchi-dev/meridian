@@ -62,7 +62,7 @@ at 0.x until the native API is stable.
   - Cores from the ACPI MADT, and the time stamp counter measured against the ACPI timer, or against the HPET where that is missing.
   - The time of day, counted on with the time stamp counter from the moment the loader read it, and TIME, which gives programs the nanoseconds since 1970 in UTC, or says the time is not known.
   - Files keep when they last changed (decision record 0029): the FAT writer stamps what it makes with the time of day as made, read and changed, and a file it writes into as changed, in UTC, CHANGED says when the file of a handle last changed, or that it keeps no time, and SET_CHANGED sets it, to two seconds and from 1980 to 2107 as FAT keeps it (decision record 0030).
-  - SET_TIME sets the time of day for a program whose token holds `SeSystemtimePrivilege`, until the machine stops, as the firmware's clock is left as it is (decision record 0031).
+  - SET_TIME sets the time of day for a program whose token holds `SeSystemtimePrivilege`, and keeps it in the PC's real-time clock, unless the FADT says there is none, so it stays after a restart (decision records 0031 and 0033).
   - A physical frame allocator built from the memory map, and a 4 MiB heap from its frames, so `Box`, `Vec` and `String` work in the kernel. Both sit behind spin locks.
   - The local APIC in x2APIC mode, or in xAPIC mode through its page mapped uncached on processors without x2APIC, its timer measured against the time stamp counter and interrupting a hundred times a second, so the processor sleeps with `hlt` between ticks instead of spinning.
   - Every core starts: each one listed in the MADT gets INIT and two startup interrupts, runs a trampoline below 640 KiB from real mode through protected mode into long mode, and comes into the kernel on its own stack and the kernel's descriptor tables. Each core has a task state and a fault stack of its own, and its stacks are mapped with nothing below them, so one that runs over faults instead of writing into the next.
@@ -103,6 +103,7 @@ at 0.x until the native API is stable.
   - `lib/lzw`: the LZW coding of compress, both ways a piece at a time, as compress writes it, the old kind without CLEAR read too.
   - `lib/archive`: the archives pax writes and reads, ustar and cpio's portable kind, both ways a piece at a time, a member's mode, owners and time with it, with POSIX's extended headers, GNU's long names and GNU's numbers past octal's read too.
   - `lib/charset`: bytes of UTF-8, UTF-16 and UTF-32 in either order, US-ASCII, ISO 8859-1, Windows-1252 and code page 437 read into Unicode and written back, a character at a time, the code pages from the tables Unicode publishes (decision record 0032).
+  - `lib/rtc`: the time in the registers of the PC's real-time clock and back, in binary or binary-coded decimal and in 12 or 24 hours, with the century where the FADT names its register (decision record 0033).
   - `lib/calendar`: leap years, the days of each month, and the days since 1970 began turned into dates and back, by Howard Hinnant's way, for the loader's clock, FAT's stamps and `program::date`.
 
 ### Fixed
@@ -130,6 +131,7 @@ at 0.x until the native API is stable.
 - **`lib/lzw`.** gzip reads what it writes at every number of bits, past full tables started again, and the codes are those an LZW written apart gives.
 - **`lib/archive`.** GNU tar, bsdtar and cpio list and unpack what it writes, the times and owners it gives with it, it reads what they write in ustar, pax, GNU's and cpio's portable kind, and random members come back through both kinds in pieces of any size.
 - **`lib/charset`.** Every byte of the four sets of bytes, every character up to U+2FFF they write, and random UTF text read, stopped at and written in all seven forms of UTF match glibc's iconv, and every pair of bytes starting UTF-8 reads as Rust's own UTF-8 reads it.
+- **`lib/rtc`.** The registers of random times hold the digits GNU date writes, in binary-coded decimal and in 12 hours, and read back to the same times in all four forms.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
   - the FAT size calculation overflowed near 2 TiB

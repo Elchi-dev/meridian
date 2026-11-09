@@ -1,0 +1,15 @@
+[package]
+name = "rtc"
+description = "The time in the registers of the PC's real-time clock, and back"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+calendar = { path = "../calendar" }
+
+[lints]
+workspace = true

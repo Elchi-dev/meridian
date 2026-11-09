@@ -24,6 +24,8 @@ pub struct Machine {
     /// Whether the FADT says there is an 8042, the PS/2 controller. Some
     /// firmware says no where there is one, so the kernel looks anyway.
     pub i8042: Option<bool>,
+    /// The PC's real-time clock, unless the FADT says there is none.
+    pub rtc: Option<acpi::RealTimeClock>,
 }
 
 /// A clock the time stamp counter is measured against: how often it ticks
@@ -82,6 +84,7 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
     let pm_timer =
         fadt.and_then(|fadt| Some((acpi::pm_timer_port(fadt)?, acpi::pm_timer_bits(fadt))));
     let i8042 = fadt.and_then(acpi::has_8042);
+    let rtc = fadt.and_then(acpi::real_time_clock);
     let hpet = acpi::find(memory, xsdt, b"HPET")
         .and_then(|at| acpi::table(memory, at, b"HPET"))
         .ok()
@@ -98,6 +101,7 @@ pub fn read(memory: &impl Memory, rsdp: u64) -> Machine {
         io_apic,
         keyboard,
         i8042,
+        rtc,
     }
 }
 
@@ -284,6 +288,7 @@ mod tests {
                 io_apic: None,
                 keyboard: Some(ISA_FIRST),
                 i8042: None,
+                rtc: Some(acpi::RealTimeClock { century: None }),
             }
         );
     }
@@ -301,6 +306,7 @@ mod tests {
                 io_apic: None,
                 keyboard: Some(ISA_FIRST),
                 i8042: None,
+                rtc: None,
             }
         );
         let ram = tables(&[fadt(0x408, 0)]);
@@ -314,6 +320,7 @@ mod tests {
                 io_apic: None,
                 keyboard: None,
                 i8042: None,
+                rtc: Some(acpi::RealTimeClock { century: None }),
             }
         );
         let ram = tables(&[fadt(0, 0)]);
@@ -333,6 +340,31 @@ mod tests {
         assert_eq!(with(3, 0), Some(false), "and as it has it with i8042=off");
         assert_eq!(with(1, 0b10), None, "too old a FADT to say");
         assert_eq!(read(&tables(&[madt(1)]), 0x1000).i8042, None, "no FADT");
+    }
+
+    #[test]
+    fn the_fadt_says_where_the_clock_keeps_its_century() {
+        let with = |revision: u8, century: u8, boot: u8| {
+            let mut t = fadt(0x608, 0);
+            t[8] = revision;
+            t[108] = century;
+            t[109] = boot;
+            fix(&mut t, 9);
+            read(&tables(&[t]), 0x1000).rtc
+        };
+        let clock = |century| Some(acpi::RealTimeClock { century });
+        assert_eq!(with(6, 0x32, 0b10), clock(Some(0x32)), "as QEMU has it");
+        assert_eq!(with(6, 0, 0b10), clock(None));
+        assert_eq!(
+            with(6, 0x32, 0b10_0000),
+            None,
+            "the FADT says there is none"
+        );
+        assert_eq!(
+            with(4, 0x32, 0b10_0000),
+            clock(Some(0x32)),
+            "too old a FADT to say so"
+        );
     }
 
     fn hpet(address: u64) -> Vec<u8> {

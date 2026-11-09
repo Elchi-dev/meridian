@@ -42,6 +42,7 @@ sched = { path = "../lib/sched" }
 security = { path = "../lib/security" }
 services = { path = "../lib/services" }
 qr = { path = "../lib/qr" }
+rtc = { path = "../lib/rtc" }
 x86 = { path = "../lib/x86" }
 
 [lints]

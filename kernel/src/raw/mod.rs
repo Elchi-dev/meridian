@@ -15,6 +15,7 @@ pub mod memory;
 pub mod nvme;
 pub mod pci;
 pub mod ps2;
+pub mod rtc;
 pub mod serial;
 pub mod smp;
 pub mod thread;

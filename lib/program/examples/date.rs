@@ -2,8 +2,8 @@
 //! the C locale's form or in the one a word starting with `+` gives, with
 //! the conversions of C's strftime; or sets the time to the one a word
 //! gives as `mmddhhmm[[cc]yy]` and writes it, which a token with
-//! `SeSystemtimePrivilege` may, until the machine stops (decision record
-//! 0031). Meridian knows no zones yet, so the time is UTC's, and `-u`,
+//! `SeSystemtimePrivilege` may, kept in the real-time clock (decision
+//! record 0033). Meridian knows no zones yet, so the time is UTC's, and `-u`,
 //! which asks for it, changes nothing. It ends with 0, or with 1 when the
 //! time is not known or cannot be set, or a word cannot be taken.
 

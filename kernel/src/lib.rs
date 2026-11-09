@@ -858,6 +858,7 @@ mod tests {
             io_apic: None,
             keyboard: None,
             i8042: None,
+            rtc: None,
         };
         let measured = |hz, against| Some(machine::Measured { hz, against });
         describe(
@@ -995,6 +996,7 @@ mod tests {
             io_apic: None,
             keyboard: None,
             i8042: None,
+            rtc: None,
         };
         assert!(describe(&mut Broken, &known, None).is_err());
     }

@@ -107,7 +107,7 @@ pub const CHANGED: u64 = 29;
 pub const SET_CHANGED: u64 = 30;
 /// Counts the time of day on from rdi, the nanoseconds since 1970 began,
 /// in UTC, for a program whose token holds `SeSystemtimePrivilege`
-/// (decision record 0031), and answers 0.
+/// (decision record 0033), and answers 0.
 pub const SET_TIME: u64 = 31;
 
 /// The most bytes one WRITE takes.

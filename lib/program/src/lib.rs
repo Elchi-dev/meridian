@@ -127,8 +127,9 @@ pub fn now() -> Option<u64> {
     known(rax, rdx)
 }
 
-/// Sets the time of day to `nanoseconds` since 1970 began, in UTC, until
-/// the machine stops (decision record 0031).
+/// Sets the time of day to `nanoseconds` since 1970 began, in UTC, and
+/// keeps it in the real-time clock where the machine has one (decision
+/// record 0033).
 ///
 /// # Errors
 ///

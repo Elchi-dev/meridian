@@ -1087,15 +1087,17 @@ fn set_changed(handle: u64, seconds: u64) -> Result<(), u64> {
 }
 
 /// Sets the time of day to `nanoseconds` since 1970 began, which only a
-/// token with `SeSystemtimePrivilege` may (decision record 0031).
+/// token with `SeSystemtimePrivilege` may, and keeps it in the real-time
+/// clock (decision record 0033).
 fn set_time(nanoseconds: u64) -> Result<(), u64> {
     let token = with_process(|p| Ok(p.token))?;
     let allowed = token.privileges.contains(Privileges::SYSTEM_TIME);
-    if allowed && super::wall::set(nanoseconds) {
-        Ok(())
-    } else {
-        Err(syscall::DENIED)
+    if !(allowed && super::wall::set(nanoseconds)) {
+        return Err(syscall::DENIED);
     }
+    // A machine without the clock keeps the time until it stops.
+    let _ = super::rtc::write(nanoseconds / 1_000_000_000);
+    Ok(())
 }
 
 /// Answers a second handle to what `handle` stands for, with its rights.

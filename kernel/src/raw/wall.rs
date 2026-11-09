@@ -15,7 +15,7 @@ pub fn keep(clock: Clock, tsc_hz: Option<u64>) {
 }
 
 /// Counts the time of day on from `nanoseconds` since 1970 began, from
-/// now (decision record 0031); false while it cannot be counted, the
+/// now (decision record 0033); false while it cannot be counted, the
 /// counter's rate not known.
 pub fn set(nanoseconds: u64) -> bool {
     let mut wall = WALL.lock();

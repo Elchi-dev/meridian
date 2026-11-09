@@ -137,6 +137,7 @@ dependencies = [
  "pci",
  "ps2",
  "qr",
+ "rtc",
  "sched",
  "security",
  "services",
@@ -198,6 +199,13 @@ version = "0.0.0"
 [[package]]
 name = "regex"
 version = "0.0.0"
+
+[[package]]
+name = "rtc"
+version = "0.0.0"
+dependencies = [
+ "calendar",
+]
 
 [[package]]
 name = "sched"

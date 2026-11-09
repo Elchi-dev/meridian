@@ -485,3 +485,17 @@ allow {
     mutation = "<= to <"
     reason = "a match that starts where the text ends is empty, so the look there finds nothing either way"
 }
+
+allow {
+    file = "lib/archive/src/lib.rs"
+    line = "if self.held.len() < skip {"
+    mutation = "< to <="
+    reason = "with just the fill held it is passed and no header has come yet, which waits or says the archive is cut, as stopping before the fill does"
+}
+
+allow {
+    file = "lib/archive/src/lib.rs"
+    line = "if self.held.len() < total {"
+    mutation = "< to <="
+    reason = "with just the extended header's data held, the header it names has not come yet, so reading it first or waiting first ends the same"
+}

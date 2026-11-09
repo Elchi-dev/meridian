@@ -157,7 +157,7 @@ pub fn cpio_header(member: &Member, inode: u64) -> Vec<u8> {
         Kind::Directory => 0o040_000,
         _ => 0o100_000,
     };
-    let mut h = Vec::with_capacity(76 + member.name.len() + 1);
+    let mut h = Vec::new();
     h.extend_from_slice(b"070707");
     h.extend(octal(0, 6));
     h.extend(octal(inode % 0o1_000_000, 6));
@@ -955,6 +955,8 @@ mod tests {
         let mut reader = Reader::new();
         reader.extended(b"999 path=long\n");
         assert_eq!(reader.long_name, None, "a length past the records");
+        reader.extended(b"1 path=x\n");
+        assert_eq!(reader.long_name, None, "a length of its own number alone");
         reader.extended(b"3 path=x\n");
         assert_eq!(reader.long_name, None, "a length within its own number");
         reader.extended(b"no space");
@@ -1165,12 +1167,26 @@ mod tests {
     }
 
     #[test]
+    fn what_stands_where_a_cpio_header_should_is_said_to_be_none() {
+        let mut archive = cpio_header(&file("f", 2), 1);
+        archive.extend_from_slice(b"ok");
+        archive.extend([b'?'; 76]);
+        assert_eq!(read_all(&archive, archive.len()), Err(Fault::Header));
+    }
+
+    #[test]
     fn writing_a_name_with_no_room_says_so() {
         let mut writer = Writer::new(Format::Ustar);
         let long = "x".repeat(300);
         assert_eq!(
             writer.begin(&file(&long, 0)),
             Err(Fault::NameTooLong(long.clone()))
+        );
+        // A prefix of nothing would lose the slash it is cut at.
+        let rooted = format!("/{}", "x".repeat(100));
+        assert_eq!(
+            writer.begin(&file(&rooted, 0)),
+            Err(Fault::NameTooLong(rooted.clone()))
         );
         let mut writer = Writer::new(Format::Cpio);
         let header = writer.begin(&file(&long, 0)).unwrap();

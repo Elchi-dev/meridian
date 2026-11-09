@@ -3,8 +3,9 @@
 //! and with `-R` or `-r` a directory and all it holds. `-i` asks at the
 //! console before a file is written over, and `-f` removes a file that
 //! cannot be opened to be written over and tries again. Meridian's files
-//! have no modes, owners or times to keep, so `-p` keeps what there is,
-//! and with no symbolic links `-H`, `-L` and `-P` change nothing. A file
+//! have no modes or owners to keep, so `-p` keeps when each file and
+//! directory last changed, and with no symbolic links `-H`, `-L` and `-P`
+//! change nothing. A file
 //! is never copied onto itself, nor a directory into itself. It ends
 //! with 0 when everything was copied, and 1 otherwise.
 
@@ -17,27 +18,35 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use program::abi::file::{CREATE_ALWAYS, READ, WRITE};
+use program::abi::file::{CREATE_ALWAYS, OPEN_EXISTING, READ, WRITE};
 use program::{Error, Handle, text};
 
 program::main!(cp);
+
+/// How a file there already is written over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Over {
+    /// Whether the one at the console is asked first.
+    ask: bool,
+    /// Whether one that cannot be opened to be written is removed first.
+    force: bool,
+}
 
 /// What cp's words ask for.
 #[derive(Debug, PartialEq, Eq)]
 struct Asked<'w> {
     deep: bool,
-    /// Whether the one at the console is asked before a file is written
-    /// over.
-    ask: bool,
-    /// Whether a file that cannot be written over is removed first.
-    force: bool,
+    over: Over,
+    /// Whether each copy keeps when what it copies last changed, as `-p`
+    /// asks.
+    keep: bool,
     sources: &'w [String],
     target: &'w str,
 }
 
 /// What cp's words ask for, or why they cannot be taken.
 fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
-    let (mut deep, mut ask, mut force) = (false, false, false);
+    let (mut deep, mut over, mut keep) = (false, Over::default(), false);
     let mut words = arguments;
     while let Some((word, rest)) = words.split_first() {
         if word == "--" {
@@ -50,9 +59,10 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
         for letter in letters.chars() {
             match letter {
                 'R' | 'r' => deep = true,
-                'i' => ask = true,
-                'f' => force = true,
-                'p' | 'H' | 'L' | 'P' => {}
+                'i' => over.ask = true,
+                'f' => over.force = true,
+                'p' => keep = true,
+                'H' | 'L' | 'P' => {}
                 _ => return Err(format!("cp: -{letter} is no option\n")),
             }
         }
@@ -68,8 +78,8 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
     };
     Ok(Asked {
         deep,
-        ask,
-        force,
+        over,
+        keep,
         sources,
         target,
     })
@@ -85,6 +95,13 @@ trait Files {
 
     /// Copies the file at `from` to `to`, made new or emptied.
     fn copy(&mut self, from: &str, to: &str) -> Result<(), Error>;
+
+    /// When the file at `path` last changed, as seconds since 1970 began;
+    /// none for what keeps no time.
+    fn changed(&mut self, path: &str) -> Result<Option<u64>, Error>;
+
+    /// Sets when the file at `path` last changed.
+    fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error>;
 
     /// Makes a directory at `path`.
     fn make_directory(&mut self, path: &str) -> Result<(), Error>;
@@ -118,6 +135,16 @@ fn last_name(path: &str) -> &str {
     trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
+/// Gives `to` the time `from` last changed at, as `-p` asks, saying when
+/// it cannot; whether it could.
+fn kept(files: &mut impl Files, from: &str, to: &str) -> bool {
+    let set = files
+        .changed(from)
+        .and_then(|changed| changed.map_or(Ok(()), |seconds| files.set_changed(to, seconds)));
+    set.inspect_err(|&e| files.say(&text::trouble("cp", to, e)))
+        .is_ok()
+}
+
 /// Copies the file at `from` to `to` as `asked` says, saying what went
 /// wrong; whether it was copied, or rightly left.
 fn copy_file(files: &mut impl Files, asked: &Asked, from: &str, to: &str) -> bool {
@@ -126,19 +153,20 @@ fn copy_file(files: &mut impl Files, asked: &Asked, from: &str, to: &str) -> boo
         return false;
     }
     let there = files.directory(to).is_ok();
-    if there && asked.ask && !files.yes(&format!("cp: write over {to}? ")) {
+    if there && asked.over.ask && !files.yes(&format!("cp: write over {to}? ")) {
         return true;
     }
     let copied = match files.copy(from, to) {
         // One that cannot be opened goes, and a new one is made.
-        Err(Error::Denied | Error::Unwritable) if there && asked.force => {
+        Err(Error::Denied | Error::Unwritable) if there && asked.over.force => {
             files.remove(to).and_then(|()| files.copy(from, to))
         }
         other => other,
     };
-    copied
+    let copied = copied
         .inspect_err(|&e| files.say(&text::trouble("cp", &format!("{from} to {to}"), e)))
-        .is_ok()
+        .is_ok();
+    copied && (!asked.keep || kept(files, from, to))
 }
 
 /// Copies what is at `from` to `to`, a directory and all it holds when
@@ -193,7 +221,7 @@ fn copy(files: &mut impl Files, asked: &Asked, from: &str, to: &str) -> bool {
     for name in names {
         all &= copy(files, asked, &joined(from, &name), &joined(to, &name));
     }
-    all
+    all && (!asked.keep || kept(files, from, to))
 }
 
 /// Copies what `asked` names: onto the target, or into it when it is a
@@ -268,6 +296,20 @@ impl Files for System {
         });
         let _ = program::close(source);
         copied
+    }
+
+    fn changed(&mut self, path: &str) -> Result<Option<u64>, Error> {
+        let file = program::open(path, READ)?;
+        let changed = program::changed(file);
+        let _ = program::close(file);
+        changed
+    }
+
+    fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error> {
+        let file = program::open_with(path, WRITE, OPEN_EXISTING)?;
+        let set = program::set_changed(file, seconds);
+        let _ = program::close(file);
+        set
     }
 
     fn make_directory(&mut self, path: &str) -> Result<(), Error> {
@@ -370,6 +412,24 @@ mod tests {
             std::fs::read_to_string(self.root.join(path)).ok()
         }
 
+        /// When the file at `path` last changed, as seconds since 1970
+        /// began.
+        fn when(&self, path: &str) -> u64 {
+            let found = std::fs::metadata(self.root.join(path)).unwrap();
+            let since = found
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH);
+            since.unwrap().as_secs()
+        }
+
+        /// Sets when the file at `path` last changed.
+        fn set(&self, path: &str, seconds: u64) {
+            let file = std::fs::File::open(self.root.join(path)).unwrap();
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            file.set_modified(at).unwrap();
+        }
+
         /// Every path under the root, in order, directories with a `/`.
         fn left(&self) -> Vec<String> {
             fn walk(at: &std::path::Path, from: &std::path::Path, all: &mut Vec<String>) {
@@ -431,6 +491,21 @@ mod tests {
             std::fs::write(confined(&self.root, to), bytes).map_err(|e| error(&e))
         }
 
+        fn changed(&mut self, path: &str) -> Result<Option<u64>, Error> {
+            let found = std::fs::metadata(confined(&self.root, path)).map_err(|e| error(&e))?;
+            let since = found
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH);
+            Ok(Some(since.unwrap().as_secs()))
+        }
+
+        fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error> {
+            let file = std::fs::File::open(confined(&self.root, path)).map_err(|e| error(&e))?;
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            file.set_modified(at).map_err(|e| error(&e))
+        }
+
         fn make_directory(&mut self, path: &str) -> Result<(), Error> {
             std::fs::create_dir(confined(&self.root, path)).map_err(|e| error(&e))
         }
@@ -485,8 +560,11 @@ mod tests {
             asked(&given),
             Ok(Asked {
                 deep: true,
-                ask: true,
-                force: true,
+                over: Over {
+                    ask: true,
+                    force: true
+                },
+                keep: false,
                 sources: &given[1..3],
                 target: "c",
             })
@@ -494,8 +572,8 @@ mod tests {
         let given = words("-r -p -H -L -P a b");
         let taken = asked(&given).unwrap();
         assert_eq!(
-            (taken.deep, taken.ask, taken.force, taken.target),
-            (true, false, false, "b")
+            (taken.deep, taken.over, taken.keep, taken.target),
+            (true, Over::default(), true, "b")
         );
         let given = words("-- -a b");
         assert_eq!(
@@ -510,6 +588,51 @@ mod tests {
                 "{text:?}"
             );
         }
+    }
+
+    #[test]
+    fn p_keeps_when_each_file_and_directory_last_changed() {
+        let mut host = Host::new("keep", &["a", "d/", "d/x", "d/e/", "d/e/y"]);
+        // 01:46:40 UTC on 9 September 2001, and seconds and days after.
+        let old = 1_000_000_000;
+        for (path, at) in [
+            ("a", old),
+            ("d/x", old + 2),
+            ("d/e/y", old + 4),
+            ("d/e", old + 86_400),
+            ("d", old + 172_800),
+        ] {
+            host.set(path, at);
+        }
+        assert_eq!(ran(&mut host, "-p a b"), went());
+        assert_eq!(host.when("b"), old);
+        assert_eq!(ran(&mut host, "-Rp d c"), went());
+        for (path, at) in [
+            ("c", old + 172_800),
+            ("c/x", old + 2),
+            ("c/e", old + 86_400),
+            ("c/e/y", old + 4),
+        ] {
+            assert_eq!(host.when(path), at, "{path}");
+        }
+        assert_eq!(host.holds("c/e/y").as_deref(), Some("d/e/y"));
+        let begun = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(ran(&mut host, "-R d f"), went());
+        assert_eq!(ran(&mut host, "a g"), went());
+        for path in ["f", "f/x", "f/e/y", "g"] {
+            assert!(
+                host.when(path) >= begun,
+                "without -p {path} changed as it was written"
+            );
+        }
+        assert_eq!(
+            ran(&mut host, "-p a nowhere/b"),
+            (false, "cp: a to nowhere/b: no such file\n".into()),
+            "what was not copied gets no time"
+        );
     }
 
     #[test]

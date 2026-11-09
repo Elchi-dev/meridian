@@ -5086,7 +5086,8 @@ fn ls_lists_directories() -> Outcome {
 }
 
 /// cp as a program says what words it cannot take, copies a directory
-/// with all it holds, and copies no file onto itself.
+/// with all it holds, copies no file onto itself, and with -p keeps when
+/// a file last changed.
 fn cp_copies_files() -> Outcome {
     let checked = same(
         &shell_on("echo | xargs cp -x")?,
@@ -5103,7 +5104,9 @@ fn cp_copies_files() -> Outcome {
          echo /System/C/t /System/C/u | xargs cp -R\n\
          cat /System/C/u/f; echo\n\
          echo /System/C/t/f /System/C/t/f | xargs cp\n\
-         rm /System/C/t/f /System/C/u/f; rd /System/C/t; rd /System/C/u; rd /System/C",
+         touch -t 200109090146.40 /System/C/t/f; echo /System/C/t/f /System/C/k | xargs cp -p\n\
+         find /System/C/k /System/C/u/f -mtime +9000\n\
+         rm /System/C/t/f /System/C/u/f /System/C/k; rd /System/C/t; rd /System/C/u; rd /System/C",
     )?;
     if ended == Ok(Ended::Exited(9)) {
         return expect(
@@ -5116,10 +5119,11 @@ fn cp_copies_files() -> Outcome {
             &(ended, said),
             &ran(
                 0,
-                b"ab\ncp: /System/C/t/f and /System/C/t/f are one file\nxargs ended with 123\n",
+                b"ab\ncp: /System/C/t/f and /System/C/t/f are one file\nxargs ended with 123\n\
+                  /System/C/k\n",
             ),
         ),
-        "cp should copy a directory with what it holds, and refuse a file onto itself",
+        "cp should copy a directory with what it holds, refuse a file onto itself, and keep a file's time with -p",
     )
 }
 

@@ -499,3 +499,10 @@ allow {
     mutation = "< to <="
     reason = "with just the extended header's data held, the header it names has not come yet, so reading it first or waiting first ends the same"
 }
+
+allow {
+    file = "lib/program/examples/file.rs"
+    line = "while bytes.len() < LOOKED {"
+    mutation = "< to <="
+    reason = "a read past the 4096 bytes looked at is cut off again just below"
+}

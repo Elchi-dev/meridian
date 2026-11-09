@@ -5413,7 +5413,8 @@ fn compress_squeezes_files() -> Outcome {
 
 /// file says what words it cannot take, and names text, empty files,
 /// compressed data, directories, the UEFI loader and Meridian's ELF
-/// programs on a disk.
+/// programs on a disk, and text whose first 4096 bytes end inside a
+/// character from data that ends so.
 fn file_names_kinds() -> Outcome {
     let checked = same(
         &shell_on("file; file -x; file /nope")?,
@@ -5450,6 +5451,19 @@ fn file_names_kinds() -> Outcome {
             && said.starts_with(wanted)
             && said.ends_with(b" for x86-64\n"),
         "file should name text, an empty file, compressed data, a directory, the loader and its own program",
+    )?;
+    // 4096 bytes are looked at: the first file has no more, so its last
+    // byte is a character cut short; the second goes on to the ä.
+    let checked = same(
+        &shell_on(
+            "printf '%04095d\\303' 0 > /System/f1; printf '%04095d\\303\\244' 0 > /System/f2\n\
+             file /System/f1 /System/f2; rm /System/f1 /System/f2",
+        )?,
+        &ran(0, b"/System/f1: data\n/System/f2: ASCII text\n"),
+    );
+    expect(
+        checked,
+        "file should tell a character cut by its look from one cut by the file's end",
     )
 }
 

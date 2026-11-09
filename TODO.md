@@ -211,7 +211,8 @@ Loader and UEFI:
 - [x] `pax`
 - [x] `date`, in UTC, and `cal`
 - [x] Files keep when they last changed, in UTC: `test -nt` and `-ot`, `find -mtime` and `-newer`, `ls -t`, and what pax writes
-- [ ] Setting when a file changed, for `touch -r`, `-t` and `-d` and for what pax reads out
+- [x] Setting when a file changed: SET_CHANGED, and `touch` with `-r`, `-t` and `-d`
+- [ ] pax keeping when the files it reads out changed, and `cp -p`
 - [ ] Time zones, and setting the time
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time

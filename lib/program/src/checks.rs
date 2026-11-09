@@ -5255,18 +5255,23 @@ fn du_counts_blocks() -> Outcome {
     )
 }
 
-/// touch refuses times, makes a file not there, and with -c none.
+/// touch refuses what it cannot take and a time no volume keeps, makes a
+/// file not there, with -c none, says it cannot touch a file on a volume
+/// only read, and sets times: given, the time of day's, and another
+/// file's.
 fn touch_makes_files() -> Outcome {
     let checked = same(
-        &shell_on("touch -t 1 f")?,
+        &shell_on("touch -t 1 f; touch -t 197001010000 f; touch -r / f")?,
         &ran(
             1,
-            b"touch: -t: Meridian's files have no times yet\ntouch ended with 1\n",
+            b"touch: -t wants [[CC]YY]MMDDhhmm[.SS], not 1\ntouch ended with 1\n\
+              touch: 197001010000 is outside 1980 to 2107, the years Meridian's volumes keep\n\
+              touch ended with 1\ntouch: /: keeps no time\ntouch ended with 1\n",
         ),
     );
     expect(
         checked,
-        "touch should refuse the times Meridian's files do not have",
+        "touch should refuse what it cannot take, a time no volume keeps, and the time of what keeps none",
     )?;
     if !booted_from_disk() {
         return Ok(());
@@ -5285,9 +5290,29 @@ fn touch_makes_files() -> Outcome {
     expect(
         same(
             &(ended, said),
-            &ran(0, b"0 0 0\n/System/tg: no such file\n0\n"),
+            &ran(
+                0,
+                b"0 0 0\n/System/tg: no such file\n\
+                  touch: /System/Boot/meridian/boot.meri: on a volume that is only read\n\
+                  touch ended with 1\n1\n",
+            ),
         ),
-        "touch should make an empty file, with -c none, and leave a file there on a volume only read",
+        "touch should make an empty file, with -c none, and say it cannot touch a file on a volume only read",
+    )?;
+    let checked = same(
+        &shell_on(
+            "touch -t 200109090146.40 /System/tf; touch /System/tn\n\
+             find /System/tn /System/tf -newer /System/tf\n\
+             touch -r /System/tf /System/tn; find /System/tn /System/tf -newer /System/tf\n\
+             find /System/tf -mtime +9000\n\
+             touch -d 2107-12-31T23:59:59Z /System/tn; find /System/tn -newer /System/tf\n\
+             rm /System/tf /System/tn",
+        )?,
+        &ran(0, b"/System/tn\n/System/tf\n/System/tn\n"),
+    );
+    expect(
+        checked,
+        "touch should set the time given, the time of day's, another file's, and the last a volume keeps",
     )
 }
 

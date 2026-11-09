@@ -541,3 +541,10 @@ allow {
     mutation = ">= to >"
     reason = "a page of merged lines just full is then written when the next row comes, or at the end, the same page with the same number"
 }
+
+allow {
+    file = "kernel/src/raw/wall.rs"
+    line = "return false;"
+    mutation = "false to true"
+    reason = "every test machine measures the time stamp counter's rate against the ACPI timer or the HPET, so SET_TIME never comes while the time cannot be counted; the kernel.time checks fail on one that cannot"
+}

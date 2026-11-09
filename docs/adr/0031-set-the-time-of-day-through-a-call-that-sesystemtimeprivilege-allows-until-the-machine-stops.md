@@ -1,6 +1,6 @@
 # 0031. Set the time of day through a call that SeSystemtimePrivilege allows, until the machine stops
 
-- Status: accepted
+- Status: replaced by 0033
 - Date: 2026-11-09
 
 ## Context

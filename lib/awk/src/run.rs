@@ -1360,13 +1360,13 @@ impl<'p> Awk<'p> {
                 };
                 let key = (u8::from(command), name.clone());
                 let mut reader = self.readers.remove(&key).unwrap_or_default();
-                let record = self.next_record(&mut reader, stream, world)?;
+                // What could not be read is not kept, so closing it says
+                // nothing was open.
+                let Ok(record) = self.next_record(&mut reader, stream, world)? else {
+                    return Ok(Value::Number(-1.0));
+                };
                 self.readers.insert(key, reader);
-                match record {
-                    Ok(Some(record)) => Ok(record),
-                    Ok(None) => Err(()),
-                    Err(_) => return Ok(Value::Number(-1.0)),
-                }
+                record.ok_or(())
             }
         };
         let Ok(record) = record else {
@@ -4526,5 +4526,25 @@ mod tests {
             "",
         );
         assert_eq!(host.holds("o"), "y\nz\nw\n", ">> adds each time");
+    }
+
+    #[test]
+    fn close_says_what_was_open_and_what_never_was() {
+        assert_eq!(
+            awk(
+                "BEGIN { getline x < \"-\"; print x, close(\"-\") }",
+                "a\nb\n"
+            ),
+            "a 0\n",
+            "the standard input, which no world keeps"
+        );
+        assert_eq!(
+            awk(
+                "BEGIN { r = (getline x < \"/nope\"); print r, close(\"/nope\") }",
+                ""
+            ),
+            "-1 -1\n",
+            "as gawk has it"
+        );
     }
 }

@@ -29,6 +29,7 @@ use alloc::vec::Vec;
 
 use archive::{Fault, Format, Item, Kind, Member, Owner, Reader, Writer};
 use program::abi::file::{CREATE_ALWAYS, READ, WRITE};
+use program::date::{self, Moment};
 use program::text::{self, LineReader, Pieces, Source};
 use program::{Error, Handle};
 use shell::sh::pattern::Pattern;
@@ -371,31 +372,6 @@ fn pattern(written: &str) -> Pattern {
     Pattern::new(&chars)
 }
 
-/// The months as `ls -l` names them.
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-/// The year, month and day `days` after 1970 began, in the calendar of
-/// today carried back: Howard Hinnant's way, from years that start in
-/// March, so that a leap day comes last.
-fn civil(days: u64) -> (u64, u64, u64) {
-    let from_march = days + 719_468;
-    let era = from_march / 146_097;
-    let day_of_era = from_march % 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_from_march = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
-    let month = if month_from_march < 10 {
-        month_from_march + 3
-    } else {
-        month_from_march - 9
-    };
-    (year_of_era + era * 400 + u64::from(month <= 2), month, day)
-}
-
 /// A member's kind and mode as `ls -l` writes them.
 fn mode_text(member: &Member) -> String {
     // ustar names the kinds by a letter, cpio by the bits of its mode.
@@ -437,10 +413,9 @@ fn listed(member: &Member) -> String {
             String::from(name)
         }
     };
-    let (year, month, day) = civil(member.time / 86_400);
-    let month = MONTHS[usize::try_from(month - 1).unwrap_or(0)];
+    let when = date::formatted("%b %e  %Y", &Moment::at(member.time));
     format!(
-        "{} 1 {} {} {} {month} {day:>2}  {year} {}\n",
+        "{} 1 {} {} {} {when} {}\n",
         mode_text(member),
         by(&owner.user_name, owner.user),
         by(&owner.group_name, owner.group),
@@ -1058,7 +1033,6 @@ fn pax(_: Handle) -> u64 {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::fmt::Write as _;
     use std::io::{Read as _, Seek as _, Write as _};
     use std::path::{Path, PathBuf};
 
@@ -1450,45 +1424,6 @@ mod tests {
     }
 
     #[test]
-    fn days_become_the_dates_date_gives() {
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(19_675), (2023, 11, 14));
-        assert_eq!(civil(10_957), (2000, 1, 1));
-        assert_eq!(civil(11_016), (2000, 2, 29), "a leap day");
-        assert_eq!(civil(11_017), (2000, 3, 1));
-        assert_eq!(civil(47_540), (2100, 2, 28), "2100 has none");
-        assert_eq!(civil(47_541), (2100, 3, 1));
-        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
-        let days: Vec<u64> = (0..400)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                seed % 2_932_897
-            })
-            .collect();
-        let mut asked = String::new();
-        for day in &days {
-            let _ = writeln!(asked, "@{}", day * 86_400);
-        }
-        let dir = std::env::temp_dir();
-        let dates = text_of(tool(
-            &dir,
-            "date",
-            &["-u", "-f", "-", "+%Y %m %d"],
-            asked.as_bytes(),
-        ));
-        for (day, date) in days.iter().zip(dates.lines()) {
-            let (year, month, day_of) = civil(*day);
-            assert_eq!(
-                format!("{year:04} {month:02} {day_of:02}"),
-                date,
-                "day {day}"
-            );
-        }
-    }
-
-    #[test]
     fn modes_read_as_ls_writes_them() {
         for (kind, mode, text) in [
             (Kind::File, 0o644, "-rw-r--r--"),
@@ -1546,6 +1481,19 @@ mod tests {
         let mut december = member("z", Kind::Directory, 0, 0o755);
         december.time = 10_956 * 86_400;
         assert_eq!(listed(&december), "drwxr-xr-x 1 0 0 0 Dec 31  1999 z\n");
+        // A link, its owner named and its group not.
+        let mut link = member("to", Kind::Other(b'2'), 0, 0o777);
+        link.owner.user_name = "root".into();
+        link.owner.group = 7;
+        assert_eq!(
+            listed(&link),
+            "lrwxrwxrwx 1 root 7 0 Jan  1  1970 to\n",
+            "each by its name, or its number without one"
+        );
+        // Late on a leap day: the date is the day's, whatever its hour.
+        let mut leap_day = member("l", Kind::File, 12, 0o644);
+        leap_day.time = 1_709_164_800 + 86_399;
+        assert_eq!(listed(&leap_day), "-rw-r--r-- 1 0 0 12 Feb 29  2024 l\n");
     }
 
     /// The names of `names` that the picking `line` asks for picks, and

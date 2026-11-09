@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func goBinary(t *testing.T) string {
@@ -171,6 +173,25 @@ func TestTheWorkflowRunsTheseSteps(t *testing.T) {
 	}
 	if steps[0].name != "project rules" || steps[len(steps)-1].name != "the QEMU test image" {
 		t.Error("the quick rules come first and the QEMU test image last")
+	}
+	// The Go tests get more than go test's own ten minutes, and the job
+	// still has ten after them for the Rust tests and the test image.
+	_, minutes, _ := strings.Cut(linux, "\n    timeout-minutes: ")
+	minutes, _, _ = strings.Cut(minutes, "\n")
+	job, err := strconv.Atoi(minutes)
+	if err != nil {
+		t.Fatalf("the linux job should have a limit: %v", err)
+	}
+	var limit time.Duration
+	for _, s := range steps {
+		for _, a := range s.args {
+			if v, ok := strings.CutPrefix(a, "-timeout="); ok && s.args[1] == "test" {
+				limit, _ = time.ParseDuration(v)
+			}
+		}
+	}
+	if limit <= 10*time.Minute || limit > time.Duration(job-10)*time.Minute {
+		t.Errorf("the Go tests may take %v of the job's %d minutes", limit, job)
 	}
 }
 

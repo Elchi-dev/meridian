@@ -45,7 +45,10 @@ func ciSteps() []ciStep {
 		clippy("clippy for the kernel", "-p", "kernel", "--target", "x86_64-unknown-none"),
 		clippy("clippy for the kernel's test image", "-p", "kernel", "--target", "x86_64-unknown-none", "--features", "qemu-test"),
 		{name: "go vet", dir: "tools/sextant", args: []string{"go", "vet", "./..."}},
-		{name: "Go tests with the race detector", dir: "tools/sextant", args: []string{"go", "test", "-race", "-count=1", "./..."}},
+		// go test gives a package ten minutes unless told more, and the QEMU
+		// package, which boots the test image a dozen times, took more on a
+		// slow runner.
+		{name: "Go tests with the race detector", dir: "tools/sextant", args: []string{"go", "test", "-race", "-count=1", "-timeout=20m", "./..."}},
 		{name: "Rust tests", dir: ".", args: []string{"cargo", "test", "--locked", "--workspace"}},
 		{name: "the QEMU test image", dir: ".", args: []string{"sextant", "test", "--qemu"}},
 	}

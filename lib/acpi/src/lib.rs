@@ -289,6 +289,26 @@ pub fn pm_timer_bits(fadt: &[u8]) -> u32 {
     }
 }
 
+/// The PC's real-time clock, as the FADT tells of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RealTimeClock {
+    /// The register of its CMOS RAM it keeps the century in, when it has
+    /// one.
+    pub century: Option<u8>,
+}
+
+/// The PC's real-time clock, from the FADT: none when bit 5 of the boot
+/// architecture flags at 109 says there is no CMOS RTC, a flag revision 5
+/// brought; the register of its century is the byte at 108, 0 for none.
+#[must_use]
+pub fn real_time_clock(fadt: &[u8]) -> Option<RealTimeClock> {
+    let said = fadt.get(8).is_some_and(|&revision| revision >= 5);
+    let absent = said && fadt.get(109).is_some_and(|&flags| flags & 1 << 5 != 0);
+    (!absent).then(|| RealTimeClock {
+        century: fadt.get(108).copied().filter(|&register| register != 0),
+    })
+}
+
 /// Whether the FADT says the machine has an 8042, the PS/2 controller at
 /// ports 0x60 and 0x64: bit 1 of the boot architecture flags at 109.
 /// `None` when the FADT is too short or older than revision 3, which
@@ -836,6 +856,55 @@ mod tests {
         assert_eq!(has_8042(&t), Some(true));
         assert_eq!(has_8042(&t[..109]), None, "too short");
         assert_eq!(has_8042(&t[..110]), Some(true));
+    }
+
+    #[test]
+    fn the_fadt_says_where_the_clock_keeps_its_century_and_whether_there_is_one() {
+        let mut t = fadt(0x608, None);
+        t[8] = 6;
+        t[108] = 0x32;
+        t[109] = 0b10;
+        assert_eq!(
+            real_time_clock(&t),
+            Some(RealTimeClock {
+                century: Some(0x32)
+            }),
+            "as QEMU has it"
+        );
+        t[108] = 0;
+        assert_eq!(real_time_clock(&t), Some(RealTimeClock { century: None }));
+        t[109] = 0b10_0000;
+        assert_eq!(real_time_clock(&t), None, "no CMOS RTC");
+        t[8] = 5;
+        assert_eq!(real_time_clock(&t), None);
+        t[8] = 4;
+        assert_eq!(
+            real_time_clock(&t),
+            Some(RealTimeClock { century: None }),
+            "revision 4 had no such flag, and a PC has the clock"
+        );
+        t[8] = 6;
+        t[109] = 0xdf;
+        t[108] = 0x48;
+        assert_eq!(
+            real_time_clock(&t),
+            Some(RealTimeClock {
+                century: Some(0x48)
+            }),
+            "the other flags say nothing of it"
+        );
+        assert_eq!(
+            real_time_clock(&t[..109]),
+            Some(RealTimeClock {
+                century: Some(0x48)
+            }),
+            "no flags"
+        );
+        assert_eq!(
+            real_time_clock(&t[..108]),
+            Some(RealTimeClock { century: None }),
+            "no century either"
+        );
     }
 
     #[test]

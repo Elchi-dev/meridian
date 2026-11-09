@@ -87,7 +87,7 @@ at 0.x until the native API is stable.
   - `lib/qr`: QR codes of every version and error correction level, without allocating.
   - `lib/sched`: the run queue of 32 priority levels; `lib/handles`: handle tables with rights and generations; `lib/channel`: two queues of messages between two ends.
   - `lib/frames`: a bitmap of free units and the physical frame allocator built on it; `lib/heap`: the kernel's heap in blocks of the same bitmap, handed out as offsets.
-  - `lib/acpi`: the root pointer, the XSDT, the MADT and the FADT, with their checksums.
+  - `lib/acpi`: the root pointer, the XSDT, the MADT and the FADT, with their checksums, and from the FADT whether there is the PC's real-time clock and where it keeps its century.
   - `lib/meri`: `.meri` documents read in Rust without a heap, event by event or setting by setting, for the loader's settings.
   - `lib/x86`: the serial port, CPUID, control and model specific registers, the descriptor tables, the time stamp counter and I/O ports.
   - `lib/abi`: the system calls programs and the kernel agree on; `lib/program`: what a program in Rust is built on, the calls as functions, `main!`, a heap and `log!`; `lib/security`: SIDs, tokens and the access check, in the shape [MS-DTYP] gives them.

@@ -35,9 +35,10 @@ type Machine struct {
 	// DebugExit makes it a machine for test images: it adds isa-debug-exit
 	// on port 0xf4, which they end QEMU with to give their verdict, a PCIe
 	// root port with a random number generator behind it, for their checks
-	// of devices on a bus of their own, and with a disk the same disk once
-	// more as NVMe, read only, for their checks of NVMe. OVMF finds that
-	// one first and boots from it.
+	// of devices on a bus of their own, a real-time clock that starts at
+	// TestClock, and with a disk the same disk once more as NVMe, read
+	// only, for their checks of NVMe. OVMF finds that one first and boots
+	// from it.
 	DebugExit bool
 	// Monitor is a QEMU character device for the human monitor, such as
 	// "tcp:127.0.0.1:4444,server=on,wait=off". Empty means no monitor.
@@ -106,6 +107,10 @@ func (m Machine) Validate() error {
 	return errors.Join(errs...)
 }
 
+// TestClock is the moment, in UTC, test machines' real-time clocks start
+// at, so the test image's checks know the time of day they should see.
+const TestClock = "2026-11-09T12:00:00"
+
 // Args is the QEMU command line, without the binary.
 func (m Machine) Args() []string {
 	board := "q35"
@@ -165,6 +170,7 @@ func (m Machine) Args() []string {
 			"-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
 			"-device", "pcie-root-port,id=meridian.port,chassis=1,slot=1",
 			"-device", "virtio-rng-pci,bus=meridian.port",
+			"-rtc", "base="+TestClock+",clock=vm",
 		)
 		if m.Disk != "" {
 			// The disk is open for writing already; these looks at it

@@ -170,6 +170,16 @@ pub fn prepared(system: &System, ready: &crate::Ready, serial: &mut impl Write) 
             && info.modules.list.is_multiple_of(PAGE_SIZE),
         "every program on test images should be listed for the kernel, hello and its copy among them",
     );
+    // sextant starts test machines' clocks at 12:00 UTC on 9 November 2026.
+    let clock = info.clock;
+    report.check(
+        "boot.prepare.clock",
+        clock.known == 1
+            && (1_794_225_600..1_794_229_200).contains(&clock.seconds)
+            && clock.nanoseconds < 1_000_000_000
+            && clock.tsc != 0,
+        "the time of day should be passed on, in the hour sextant set the clock to",
+    );
     report.check(
         "boot.prepare.info",
         info.check().is_ok() && info.memory.count == 0,

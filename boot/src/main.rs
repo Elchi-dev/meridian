@@ -779,6 +779,7 @@ fn prepare(system: &System) -> Result<Ready, Problem> {
         back_buffer,
         modules,
         boot_partition: own_partition(system),
+        clock: handover::clock(system.time(), x86::raw::tsc()),
         ..BootInfo::new()
     };
     Ok(Ready {

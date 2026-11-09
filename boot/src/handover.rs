@@ -215,6 +215,22 @@ pub fn framebuffer(fb: Option<uefi::raw::graphics::Framebuffer>) -> bootinfo::Fr
     }
 }
 
+/// The time of day the firmware's clock gave, with the time stamp counter
+/// read right after, as the boot information carries it; not known when
+/// the firmware gave none that is a date (decision record 0028).
+#[must_use]
+pub fn clock(time: Result<uefi::time::Time, uefi::Status>, tsc: u64) -> bootinfo::Clock {
+    match time.ok().and_then(|time| time.unix()) {
+        Some((seconds, nanoseconds)) => bootinfo::Clock {
+            known: 1,
+            seconds,
+            nanoseconds: u64::from(nanoseconds),
+            tsc,
+        },
+        None => bootinfo::Clock::default(),
+    }
+}
+
 /// How many bytes one frame `width` by `height` pixels takes, four to a
 /// pixel, as the kernel's back buffer holds one.
 #[must_use]
@@ -797,6 +813,35 @@ mod tests {
             "writable code does not count"
         );
         assert!(!entry_is_code(&[], KERNEL));
+    }
+
+    #[test]
+    fn the_clock_carries_a_time_that_is_a_date_and_else_none() {
+        let noon = uefi::time::Time {
+            year: 2026,
+            month: 11,
+            day: 9,
+            hour: 12,
+            nanosecond: 5,
+            time_zone: uefi::time::Time::NO_ZONE,
+            ..uefi::time::Time::default()
+        };
+        assert_eq!(
+            clock(Ok(noon), 0x1234),
+            bootinfo::Clock {
+                known: 1,
+                seconds: 1_794_225_600,
+                nanoseconds: 5,
+                tsc: 0x1234
+            }
+        );
+        let no_date = uefi::time::Time { month: 13, ..noon };
+        assert_eq!(clock(Ok(no_date), 0x1234), bootinfo::Clock::default());
+        assert_eq!(
+            clock(Err(uefi::Status::DEVICE_ERROR), 0x1234),
+            bootinfo::Clock::default(),
+            "a clock that does not answer"
+        );
     }
 
     #[test]

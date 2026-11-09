@@ -10,7 +10,7 @@
 use core::mem::size_of;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"MERIDIAN");
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// Where the direct map of all physical memory starts: the first address of
 /// the higher half. Physical address `p` is at virtual `HHDM_BASE + p`.
@@ -55,6 +55,23 @@ pub struct BootInfo {
     /// in the bytes its entry holds it in; zeros when the firmware did not
     /// say.
     pub boot_partition: [u8; 16],
+    pub clock: Clock,
+}
+
+/// The time of day as the loader left the firmware, which the kernel
+/// counts on from (decision record 0028).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Clock {
+    /// 1 when the firmware gave a time that is a date, else 0, and the
+    /// rest 0 with it.
+    pub known: u64,
+    /// The seconds since 1970 began, in UTC, and the nanoseconds past
+    /// them.
+    pub seconds: u64,
+    pub nanoseconds: u64,
+    /// The time stamp counter right after the firmware gave the time.
+    pub tsc: u64,
 }
 
 /// The files the loader read for the kernel from `meridian/programs/` on
@@ -270,6 +287,7 @@ impl BootInfo {
             back_buffer: 0,
             modules: Modules::default(),
             boot_partition: [0; 16],
+            clock: Clock::default(),
         }
     }
 
@@ -307,6 +325,15 @@ impl BootInfo {
         out[136..144].copy_from_slice(&self.modules.list.to_le_bytes());
         out[144..152].copy_from_slice(&self.modules.count.to_le_bytes());
         out[152..168].copy_from_slice(&self.boot_partition);
+        let clock = [
+            self.clock.known,
+            self.clock.seconds,
+            self.clock.nanoseconds,
+            self.clock.tsc,
+        ];
+        for (chunk, word) in out[168..200].chunks_mut(8).zip(clock) {
+            chunk.copy_from_slice(&word.to_le_bytes());
+        }
         out
     }
 
@@ -359,6 +386,7 @@ mod tests {
             (0, 0, 0, 0, 0, 0, 0)
         );
         assert_eq!(b.boot_partition, [0; 16], "no word from the firmware yet");
+        assert_eq!(b.clock, Clock::default(), "no time yet");
     }
 
     #[test]
@@ -401,6 +429,13 @@ mod tests {
             "a loader from before it named its partition"
         );
         let mut b = BootInfo::new();
+        b.version = 4;
+        assert_eq!(
+            b.check(),
+            Err(Mismatch::Version(4)),
+            "a loader from before the clock"
+        );
+        let mut b = BootInfo::new();
         b.size -= 8;
         assert_eq!(b.check(), Err(Mismatch::Size(b.size)));
         b.size += 16;
@@ -410,7 +445,7 @@ mod tests {
     #[test]
     fn the_magic_spells_meridian() {
         assert_eq!(&MAGIC.to_le_bytes(), b"MERIDIAN");
-        assert_eq!(VERSION, 4);
+        assert_eq!(VERSION, 5);
     }
 
     #[test]
@@ -437,11 +472,21 @@ mod tests {
             (offset_of!(BootInfo, back_buffer), 128),
             (offset_of!(BootInfo, modules), 136),
             (offset_of!(BootInfo, boot_partition), 152),
+            (offset_of!(BootInfo, clock), 168),
         ];
         for (got, want) in offsets {
             assert_eq!(got, want);
         }
-        assert_eq!(size_of::<BootInfo>(), 168);
+        assert_eq!(size_of::<BootInfo>(), 200);
+        assert_eq!(
+            [
+                offset_of!(Clock, known),
+                offset_of!(Clock, seconds),
+                offset_of!(Clock, nanoseconds),
+                offset_of!(Clock, tsc),
+            ],
+            [0, 8, 16, 24]
+        );
         assert_eq!(offset_of!(Modules, count), 8);
         assert_eq!(size_of::<Module>(), 48);
         assert_eq!(offset_of!(Module, size), 8);
@@ -502,7 +547,7 @@ mod tests {
         let b = info.to_bytes();
         assert_eq!(&b[0..8], b"MERIDIAN");
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), VERSION);
-        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 168);
+        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 200);
         assert_eq!(&b[152..168], b"partition 16 b!!");
         let fields = [
             (
@@ -552,6 +597,30 @@ mod tests {
             0xffff_8000_0012_3000
         );
         assert_eq!(u64_at(&b, modules + offset_of!(Modules, count)), 3);
+    }
+
+    #[test]
+    fn the_clock_lands_after_the_partition() {
+        let info = BootInfo {
+            clock: Clock {
+                known: 1,
+                seconds: 0x6a00_0000,
+                nanoseconds: 999_999_999,
+                tsc: 0x0123_4567_89ab_cdef,
+            },
+            ..BootInfo::new()
+        };
+        let b = info.to_bytes();
+        let clock = offset_of!(BootInfo, clock);
+        assert_eq!(
+            [
+                u64_at(&b, clock + offset_of!(Clock, known)),
+                u64_at(&b, clock + offset_of!(Clock, seconds)),
+                u64_at(&b, clock + offset_of!(Clock, nanoseconds)),
+                u64_at(&b, clock + offset_of!(Clock, tsc)),
+            ],
+            [1, 0x6a00_0000, 999_999_999, 0x0123_4567_89ab_cdef]
+        );
     }
 
     #[test]

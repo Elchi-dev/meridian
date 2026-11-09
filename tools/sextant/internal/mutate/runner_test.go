@@ -175,6 +175,41 @@ func TestSecond(t *testing.T) {
 	}
 }
 
+func TestGoTestsHaveNoLimitButTheRunnersOwn(t *testing.T) {
+	src := "package m\n\nfunc Less(a, b int) bool {\n\treturn a < b\n}\n"
+	tests := `package m
+
+import (
+	"flag"
+	"testing"
+)
+
+func TestLimit(t *testing.T) {
+	if got := flag.Lookup("test.timeout").Value.String(); got != "0s" {
+		t.Fatalf("go test was given a limit of %s", got)
+	}
+	if !Less(1, 2) {
+		t.Fatal("1 < 2")
+	}
+}
+`
+	root := writeTree(t, map[string]string{"go.mod": goModule, "a.go": src, "a_test.go": tests})
+	ms, err := GoMutants("a.go", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var picked []Mutant
+	for _, m := range ms {
+		if m.Desc == "body to { return false }" {
+			picked = append(picked, m)
+		}
+	}
+	results, err := (&Runner{Root: root, Jobs: 1}).Run(context.Background(), picked, map[string]Target{"a.go": {Component: ".", Kind: "go"}})
+	if err != nil || len(results) != 1 || results[0].Outcome != Killed {
+		t.Fatalf("got %v %v", results, err)
+	}
+}
+
 func TestRunnerRefusesTestsThatAlreadyFail(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":    goModule,

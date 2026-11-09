@@ -355,8 +355,10 @@ func (w *worker) test(ctx context.Context, file string, t Target, bound limit) t
 			return testRun{err: err}
 		}
 		// One failure is enough to kill a mutant; the tests after it only
-		// cost time.
-		name, args = "go", []string{"test", "-failfast", "./" + filepath.ToSlash(rel)}
+		// cost time. The runner's bound is the only limit: go test's own
+		// ten minutes would fail a package that takes longer before any
+		// mutant ran.
+		name, args = "go", []string{"test", "-failfast", "-timeout=0", "./" + filepath.ToSlash(rel)}
 	case "rust":
 		name, args = "cargo", []string{"test", "-q", "--manifest-path", filepath.Join(dir, "Cargo.toml")}
 		dir = w.dir

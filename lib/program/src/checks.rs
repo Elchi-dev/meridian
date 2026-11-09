@@ -6021,6 +6021,26 @@ fn iconv_turns_text() -> Outcome {
     expect(
         checked,
         "iconv should stop at a character ASCII has no bytes for, and leave it out with -c",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    // More files than may be open at once go through, as each is closed.
+    let mut names = String::new();
+    for n in 1..=70 {
+        let _ = core::fmt::Write::write_fmt(&mut names, format_args!(" f{n}"));
+    }
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "md /System/im; for n in{names} {{ echo $n > /System/im/$n }}\n\
+             iconv -t latin1 /System/im/* | wc -l\n\
+             echo /System/im | xargs rm -r"
+        ))?,
+        &ran(0, b"70\n"),
+    );
+    expect(
+        checked,
+        "iconv should read more files than may be open at once",
     )
 }
 

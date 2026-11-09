@@ -1,17 +1,19 @@
 //! ls: writes the names of the files its operands name and of what the
 //! directories among them hold, as POSIX's ls does: the files first,
 //! then each directory under its name when there are more, in the order
-//! of their names' bytes, by size with `-S`, as they are with `-f`, the
-//! other way round with `-r`. Names that start with `.` show with `-a`,
+//! of their names' bytes, by size with `-S`, by when they last changed
+//! with `-t`, the newest first, as they are with `-f`, the other way round
+//! with `-r`. Names that start with `.` show with `-a`,
 //! which adds `.` and `..`, and with `-A`. `-1` writes one name a line,
 //! as ls does when it writes into a pipe, `-C` in columns down and `-x`
 //! across 80 characters, and `-m` parted by commas; `-F` and `-p` put a
 //! `/` after a directory, `-s` the blocks of 512 bytes, or 1024 with
 //! `-k`, a file takes before it, `-q` a `?` for a character that does not
 //! print, `-R` the directories within after, and `-d` a directory as
-//! itself. Meridian's files have no owners, modes, times, links or
-//! numbers yet, so the options that write those are refused; with no
-//! symbolic links `-H` and `-L` change nothing. It ends with 0, or 1 when
+//! itself. Meridian's files have no owners, modes, links or numbers yet,
+//! and keep only when they last changed, so the options that write those
+//! or ask for other times are refused; with no symbolic links `-H` and
+//! `-L` change nothing. It ends with 0, or 1 when
 //! something could not be read.
 
 #![cfg_attr(not(test), no_std)]
@@ -51,6 +53,8 @@ enum Form {
 enum Order {
     Name,
     Size,
+    /// The file that changed last first, as `-t` asks.
+    Time,
     /// As the directory lists them, as `-f` asks.
     Listed,
 }
@@ -120,6 +124,7 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
                 'm' => asked.form = Form::Commas,
                 'F' | 'p' => asked.marks.slash = true,
                 'S' => asked.order = Order::Size,
+                't' => asked.order = Order::Time,
                 // -f lists as it finds, every name, nothing else asked.
                 'f' => {
                     asked.order = Order::Listed;
@@ -132,9 +137,14 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
                 'R' => asked.walk.deep = true,
                 'd' => asked.walk.itself = true,
                 'H' | 'L' => {}
-                'i' | 'l' | 'n' | 'g' | 'o' | 't' | 'c' | 'u' => {
+                'i' | 'l' | 'n' | 'g' | 'o' => {
                     return Err(format!(
-                        "ls: -{letter}: Meridian's files have no owners, modes, times, links or numbers yet\n"
+                        "ls: -{letter}: Meridian's files have no owners, modes, links or numbers yet\n"
+                    ));
+                }
+                'c' | 'u' => {
+                    return Err(format!(
+                        "ls: -{letter}: Meridian's files keep only when they last changed\n"
                     ));
                 }
                 _ => return Err(format!("ls: -{letter} is no option\n")),
@@ -155,6 +165,9 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
 struct Found {
     directory: bool,
     size: u64,
+    /// When it last changed, as seconds since 1970 began; none for what
+    /// keeps no time.
+    changed: Option<u64>,
 }
 
 /// What ls does with files.
@@ -205,6 +218,13 @@ fn ordered(mut entries: Vec<Entry>, asked: &Asked) -> Vec<Entry> {
             b.found
                 .size
                 .cmp(&a.found.size)
+                .then_with(|| a.name.as_bytes().cmp(b.name.as_bytes()))
+        }),
+        // What keeps no time comes after every time.
+        Order::Time => entries.sort_by(|a, b| {
+            b.found
+                .changed
+                .cmp(&a.found.changed)
                 .then_with(|| a.name.as_bytes().cmp(b.name.as_bytes()))
         }),
     }
@@ -321,10 +341,15 @@ fn held(files: &mut impl Files, asked: &Asked, path: &str) -> Option<Vec<Entry>>
             "." | ".." => Found {
                 directory: true,
                 size: 0,
+                // Only an order by time asks when they changed.
+                changed: (asked.order == Order::Time)
+                    .then(|| files.found(&joined(path, &name)).ok()?.changed)
+                    .flatten(),
             },
             _ => files.found(&joined(path, &name)).unwrap_or(Found {
                 directory: false,
                 size: 0,
+                changed: None,
             }),
         };
         entries.push(Entry { name, found });
@@ -422,11 +447,13 @@ impl Files for System {
     fn found(&mut self, path: &str) -> Result<Found, Error> {
         let file = program::open(path, program::abi::file::READ)?;
         let info = program::info(file);
+        let changed = program::changed(file);
         let _ = program::close(file);
         let info = info?;
         Ok(Found {
             directory: info.directory,
             size: info.size,
+            changed: changed?,
         })
     }
 
@@ -554,9 +581,14 @@ mod tests {
     impl Files for Host {
         fn found(&mut self, path: &str) -> Result<Found, Error> {
             let meta = std::fs::metadata(confined(&self.root, path)).map_err(|e| error(&e))?;
+            let since = meta
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH);
             Ok(Found {
                 directory: meta.is_dir(),
                 size: if meta.is_dir() { 0 } else { meta.len() },
+                changed: Some(since.unwrap().as_secs()),
             })
         }
 
@@ -646,13 +678,127 @@ mod tests {
             Ok((Hidden::None, 1))
         );
         assert_eq!(asked(&words("-z")), Err("ls: -z is no option\n".into()));
-        for letter in ["i", "l", "n", "g", "o", "t", "c", "u"] {
+        for letter in ["i", "l", "n", "g", "o"] {
             assert_eq!(
                 asked(&words(&format!("-{letter}"))),
                 Err(format!(
-                    "ls: -{letter}: Meridian's files have no owners, modes, times, links or numbers yet\n"
+                    "ls: -{letter}: Meridian's files have no owners, modes, links or numbers yet\n"
                 ))
             );
+        }
+        for letter in ["c", "u"] {
+            assert_eq!(
+                asked(&words(&format!("-t{letter}"))),
+                Err(format!(
+                    "ls: -{letter}: Meridian's files keep only when they last changed\n"
+                ))
+            );
+        }
+        let order = |text: &str| asked(&words(text)).map(|a| (a.order, a.hidden));
+        assert_eq!(order("-t"), Ok((Order::Time, Hidden::None)));
+        assert_eq!(
+            order("-S -t"),
+            Ok((Order::Time, Hidden::None)),
+            "the last order given counts"
+        );
+        assert_eq!(order("-tS"), Ok((Order::Size, Hidden::None)));
+        assert_eq!(
+            order("-ft"),
+            Ok((Order::Time, Hidden::All)),
+            "as GNU's ls does"
+        );
+        assert_eq!(order("-tf"), Ok((Order::Listed, Hidden::All)));
+    }
+
+    /// Sets when the file at `path` of `host` last changed, as seconds
+    /// since 1970 began.
+    fn change(host: &Host, path: &str, at: u64) {
+        let file = std::fs::File::open(confined(&host.root, path)).unwrap();
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(at);
+        file.set_modified(at).unwrap();
+    }
+
+    /// 12:00 UTC on 9 November 2026.
+    const NOON: u64 = 1_794_225_600;
+
+    /// Files that changed seconds after [`NOON`]: b at 10, d/e at 5, d at
+    /// 20, a and c both at 30, and the directory that holds them at 40.
+    fn timed(name: &str) -> Host {
+        let host = Host::new(name, &["a", "b", "c", "d/", "d/e"]);
+        for (path, after) in [
+            ("a", 30),
+            ("b", 10),
+            ("c", 30),
+            ("d/e", 5),
+            ("d", 20),
+            (".", 40),
+        ] {
+            change(&host, path, NOON + after);
+        }
+        host
+    }
+
+    #[test]
+    fn t_puts_what_changed_last_first_and_names_in_order_after() {
+        let mut host = timed("time");
+        assert_eq!(ran(&mut host, "-t"), wrote("a\nc\nd\nb\n"));
+        assert_eq!(
+            ran(&mut host, "-tr"),
+            wrote("b\nd\nc\na\n"),
+            "names of one time the other way round too"
+        );
+        assert_eq!(
+            ran(&mut host, "-ta d"),
+            wrote("..\n.\ne\n"),
+            ". and .. by their own times"
+        );
+        assert_eq!(ran(&mut host, "-t b a d"), wrote("a\nb\n\nd:\ne\n"));
+        assert_eq!(ran(&mut host, "-td d a ."), wrote(".\na\nd\n"));
+        assert_eq!(ran(&mut host, "-tf d"), wrote(".\n..\ne\n"));
+        let mut entries = Vec::new();
+        for (name, changed) in [("x", None), ("y", Some(5)), ("w", Some(5)), ("z", Some(9))] {
+            entries.push(Entry {
+                name: name.into(),
+                found: Found {
+                    directory: false,
+                    size: 0,
+                    changed,
+                },
+            });
+        }
+        let given = words("-t");
+        let names: Vec<String> = ordered(entries, &asked(&given).unwrap())
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["z", "w", "y", "x"], "what keeps no time comes last");
+    }
+
+    #[test]
+    fn t_orders_as_gnu_s_ls_does() {
+        let mut host = timed("gnu");
+        for line in [
+            "-t",
+            "-tr",
+            "-ta d",
+            "-t b a d",
+            "-td d a .",
+            "-ft d",
+            "-tR",
+            "-tx",
+            "-tm",
+        ] {
+            let theirs = std::process::Command::new("ls")
+                .arg("-1")
+                .args(words(line))
+                .current_dir(&host.root)
+                .env("LC_ALL", "C")
+                .output()
+                .unwrap();
+            assert!(theirs.status.success(), "{line}");
+            let (all, ours, said) = ran(&mut host, &format!("-1 {line}"));
+            assert_eq!((all, said.as_str()), (true, ""), "{line}");
+            assert_eq!(ours, String::from_utf8(theirs.stdout).unwrap(), "{line}");
         }
     }
 
@@ -831,6 +977,7 @@ mod tests {
                 found: Found {
                     directory: false,
                     size,
+                    changed: None,
                 },
             });
         }
@@ -943,6 +1090,7 @@ mod tests {
             found: Found {
                 directory: true,
                 size: 0,
+                changed: None,
             },
         };
         let given = words("-qFs");

@@ -4946,13 +4946,13 @@ fn awk_runs_programs() -> Outcome {
 }
 
 /// ls as a program refuses what Meridian's files cannot answer, and
-/// lists a directory and a file as its options ask.
+/// lists a directory and files as its options ask, by time too.
 fn ls_lists_directories() -> Outcome {
     let checked = same(
         &shell_on("echo | xargs ls -l; echo /nope | xargs ls")?,
         &ran(
             123,
-            b"ls: -l: Meridian's files have no owners, modes, times, links or numbers yet\n\
+            b"ls: -l: Meridian's files have no owners, modes, links or numbers yet\n\
               xargs ended with 123\nls: /nope: no such file\nxargs ended with 123\n",
         ),
     );
@@ -4970,6 +4970,8 @@ fn ls_lists_directories() -> Outcome {
          printf '' > /System/L/a\n\
          echo /System/L | xargs ls -p\n\
          echo /System/L/b /System/L/d | xargs ls -s\n\
+         sleep 3; printf 'c' > /System/L/b\n\
+         echo /System/L/a /System/L/b | xargs ls -t\n\
          rm /System/L/a /System/L/b; rd /System/L/d; rd /System/L",
     )?;
     if ended == Ok(Ended::Exited(9)) {
@@ -4981,9 +4983,12 @@ fn ls_lists_directories() -> Outcome {
     expect(
         same(
             &(ended, said),
-            &ran(0, b"a\nb\nd/\n1 /System/L/b\n\n/System/L/d:\ntotal 0\n"),
+            &ran(
+                0,
+                b"a\nb\nd/\n1 /System/L/b\n\n/System/L/d:\ntotal 0\n/System/L/b\n/System/L/a\n",
+            ),
         ),
-        "ls should list a directory with a / after the one within, and a file and a directory with their blocks",
+        "ls should list a directory with a / after the one within, a file and a directory with their blocks, and a file written again first by time",
     )
 }
 

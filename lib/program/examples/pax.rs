@@ -2313,12 +2313,19 @@ mod tests {
                 b"",
                 "pax: full: not allowed\n",
             ),
+            (
+                "directory time",
+                member("full", Kind::Directory, 0, 0o755),
+                b"",
+                "pax: full: not allowed\n",
+            ),
         ] {
             let mut host = Host::new(&format!("alone-{name}"));
             host.directory("ro");
             full(&host, "full");
-            // One who may write anywhere is stopped by no rights.
-            if !shut_to_writes(&host, "ro") && !matches!(name, "data" | "time") {
+            // One who may write anywhere is stopped by no rights, and may
+            // set /dev/full's time too.
+            if !shut_to_writes(&host, "ro") && name != "data" {
                 shut(&confined(&host.root, "ro"), false);
                 continue;
             }
@@ -2368,6 +2375,15 @@ mod tests {
             assert_eq!(
                 (went, host.said.as_str()),
                 (false, "pax: ro/empty: not allowed\n")
+            );
+            // A directory there that is /dev/full takes no time.
+            host.said.clear();
+            host.directory("into");
+            full(&host, "into/empty");
+            assert_eq!(
+                (ran(&mut host, "-rw empty into"), host.said.as_str()),
+                (false, "pax: into/empty: not allowed\n"),
+                "a directory whose time cannot be kept"
             );
         } else {
             shut(&confined(&host.root, "ro"), false);

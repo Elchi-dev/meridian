@@ -48,6 +48,10 @@ name = "bootinfo"
 version = "0.0.0"
 
 [[package]]
+name = "calendar"
+version = "0.0.0"
+
+[[package]]
 name = "canvas"
 version = "0.0.0"
 dependencies = [
@@ -161,6 +165,7 @@ dependencies = [
  "archive",
  "awk",
  "bc",
+ "calendar",
  "diff",
  "ed",
  "fat",
@@ -215,6 +220,9 @@ version = "0.0.0"
 [[package]]
 name = "uefi"
 version = "0.0.0"
+dependencies = [
+ "calendar",
+]
 
 [[package]]
 name = "virtio"

@@ -23,45 +23,13 @@ pub struct Moment {
     pub day_of_year: u64,
 }
 
-/// The year, month and day `days` after 1970 began: Howard Hinnant's way,
-/// from years that start in March, so that a leap day comes last.
-#[must_use]
-pub fn civil(days: u64) -> (u64, u64, u64) {
-    let from_march = days + 719_468;
-    let era = from_march / 146_097;
-    let day_of_era = from_march % 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_from_march = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
-    let month = if month_from_march < 10 {
-        month_from_march + 3
-    } else {
-        month_from_march - 9
-    };
-    (year_of_era + era * 400 + u64::from(month <= 2), month, day)
-}
-
-/// Whether `year` has a 29 February.
-#[must_use]
-pub fn leap(year: u64) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-/// The days before the first of `month` in a year, leap or not.
-fn days_before(month: u64, leap: bool) -> u64 {
-    const BEFORE: [u64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    BEFORE[usize::try_from(month - 1).unwrap_or(0)] + u64::from(leap && month > 2)
-}
-
 impl Moment {
     /// The moment `seconds` after 1970 began.
     #[must_use]
     pub fn at(seconds: u64) -> Moment {
         let days = seconds / 86_400;
         let of_day = seconds % 86_400;
-        let (year, month, day) = civil(days);
+        let (year, month, day) = calendar::civil(days);
         Moment {
             seconds,
             year,
@@ -72,7 +40,7 @@ impl Moment {
             second: of_day % 60,
             // 1 January 1970 was a Thursday.
             weekday: (days + 4) % 7,
-            day_of_year: days_before(month, leap(year)) + day - 1,
+            day_of_year: days - calendar::days(year, 1, 1),
         }
     }
 
@@ -83,7 +51,7 @@ impl Moment {
         // How many weeks a year has: 53 when it starts on a Thursday, or
         // on a Wednesday in a leap year.
         let weeks = |year: u64| {
-            let starts = ((new_year(year) + 4) % 7, leap(year));
+            let starts = ((calendar::days(year, 1, 1) + 4) % 7, calendar::leap(year));
             if matches!(starts, (4, _) | (3, true)) {
                 53
             } else {
@@ -100,16 +68,6 @@ impl Moment {
             (self.year, week)
         }
     }
-}
-
-/// The days from the start of 1970 to the first of January of `year`,
-/// from 1970 on: the other way of [`civil`], 1 January being day 306 of
-/// a year that starts in March.
-fn new_year(year: u64) -> u64 {
-    let from_march = year - 1;
-    let era = from_march / 400;
-    let year_of_era = from_march - era * 400;
-    era * 146_097 + year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + 306 - 719_468
 }
 
 const DAYS: [&str; 7] = [
@@ -218,9 +176,6 @@ mod tests {
 
     #[test]
     fn days_and_seconds_become_dates() {
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(11_016), (2000, 2, 29));
-        assert_eq!(civil(47_541), (2100, 3, 1), "2100 has no 29 February");
         let noon = Moment::at(1_794_225_600);
         assert_eq!(
             (
@@ -241,38 +196,25 @@ mod tests {
         let first = Moment::at(0);
         assert_eq!((first.weekday, first.day_of_year), (4, 0), "a Thursday");
         assert_eq!(Moment::at(86_399).second, 59);
-        assert!(leap(2000) && leap(2024) && !leap(1900) && !leap(2100) && !leap(2026));
-        assert_eq!(new_year(1970), 0);
-        assert_eq!(new_year(1971), 365);
-        assert_eq!(new_year(1973), 365 * 3 + 1, "1972 was a leap year");
-        assert_eq!(new_year(2026), 20_454);
     }
 
     #[test]
     fn the_days_of_a_year_count_on_through_its_leap_day() {
         // 2024 was a leap year: its last day was its 366th.
-        let last = Moment::at((new_year(2025) - 1) * 86_400);
+        let last = Moment::at((calendar::days(2025, 1, 1) - 1) * 86_400);
         assert_eq!(
             (last.year, last.month, last.day, last.day_of_year),
             (2024, 12, 31, 365)
         );
-        let leap_day = Moment::at((new_year(2024) + 59) * 86_400);
+        let leap_day = Moment::at((calendar::days(2024, 1, 1) + 59) * 86_400);
         assert_eq!(
             (leap_day.month, leap_day.day, leap_day.day_of_year),
             (2, 29, 59)
         );
-        let after = Moment::at((new_year(2023) + 59) * 86_400);
+        let after = Moment::at((calendar::days(2023, 1, 1) + 59) * 86_400);
         assert_eq!((after.month, after.day), (3, 1), "2023 had none");
-        for (month, leap, before) in [
-            (1, false, 0),
-            (2, true, 31),
-            (3, false, 59),
-            (3, true, 60),
-            (12, false, 334),
-            (12, true, 335),
-        ] {
-            assert_eq!(days_before(month, leap), before, "{month}, {leap}");
-        }
+        let new_years_eve = Moment::at((calendar::days(2026, 1, 1) - 1) * 86_400);
+        assert_eq!(new_years_eve.day_of_year, 364, "a common year's last day");
         assert_eq!(Moment::at(253_402_300_799).year, 9999);
     }
 
@@ -364,7 +306,7 @@ mod tests {
         // The days around each new year, where ISO's weeks change years.
         for year in 1971..2040 {
             for day in 0..8 {
-                moments.push((new_year(year) + day) * 86_400 - 4 * 86_400 + 43_210);
+                moments.push((calendar::days(year, 1, 1) + day) * 86_400 - 4 * 86_400 + 43_210);
             }
         }
         let mut asked = String::new();

@@ -36,7 +36,7 @@ impl Time {
         );
         let fits = (1970..=9999).contains(&year)
             && (1..=12).contains(&month)
-            && (1..=days_in(year, month)).contains(&day)
+            && (1..=calendar::days_in(year, month)).contains(&day)
             && self.hour < 24
             && self.minute < 60
             && self.second < 60
@@ -44,36 +44,12 @@ impl Time {
         if !fits {
             return None;
         }
-        let seconds = days_from_civil(year, month, day) * 86_400
+        let seconds = calendar::days(year, month, day) * 86_400
             + u64::from(self.hour) * 3600
             + u64::from(self.minute) * 60
             + u64::from(self.second);
         Some((seconds, self.nanosecond))
     }
-}
-
-/// How many days `month` of `year` has.
-fn days_in(year: u64, month: u64) -> u64 {
-    match month {
-        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
-            29
-        }
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-/// The days from the start of 1970 to `day` of `month` of `year`, from
-/// 1970 on: Howard Hinnant's way, from years that start in March, so that
-/// a leap day comes last.
-fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
 }
 
 #[cfg(test)]
@@ -161,7 +137,7 @@ mod tests {
         past.nanosecond = 1_000_000_000;
         assert_eq!(past.unix(), None, "a whole second of nanoseconds");
         for (year, month, days) in [(2024, 2, 29), (2000, 2, 29), (1900, 2, 28), (2026, 6, 30)] {
-            assert_eq!(days_in(year, month), days, "{year}-{month}");
+            assert_eq!(calendar::days_in(year, month), days, "{year}-{month}");
         }
     }
 
@@ -180,7 +156,7 @@ mod tests {
             .map(|_| {
                 let year = 1970 + next(8030);
                 let month = 1 + next(12);
-                let day = 1 + next(days_in(year, month));
+                let day = 1 + next(calendar::days_in(year, month));
                 at(
                     u16::try_from(year).unwrap(),
                     u8::try_from(month).unwrap(),

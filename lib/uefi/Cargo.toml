@@ -12,5 +12,8 @@ publish.workspace = true
 # Adds the checks a QEMU test image runs against real firmware.
 qemu-test = []
 
+[dependencies]
+calendar = { path = "../calendar" }
+
 [lints]
 workspace = true

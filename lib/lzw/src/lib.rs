@@ -132,7 +132,7 @@ impl Encoder {
             string: None,
             packer: Packer::default(),
             read: 0,
-            written: 3,
+            written: 0,
             look_at: CHECK_GAP,
             ratio: 0,
         };
@@ -199,7 +199,7 @@ impl Encoder {
         self.look_at = self.read + CHECK_GAP;
         let written = self.written + self.packer.out.len() as u64;
         let ratio = (self.read << 8) / written.max(1);
-        if ratio > self.ratio {
+        if ratio >= self.ratio {
             self.ratio = ratio;
             return;
         }
@@ -778,6 +778,16 @@ mod tests {
             Vec::<u8>::new(),
             "and nothing is written"
         );
+        // As good as it was is not worse, as compress has it.
+        encoder.read = 4500;
+        encoder.written = 1125;
+        encoder.look();
+        assert_eq!(encoder.ratio, 1024);
+        assert_eq!(
+            (encoder.next, encoder.look_at),
+            (1 << 9, 4500 + CHECK_GAP),
+            "the table stays at the same ratio"
+        );
         encoder.read = 5000;
         encoder.written = 2000;
         encoder.look();
@@ -792,6 +802,25 @@ mod tests {
             "CLEAR and seven codes of nothing, ten bits each"
         );
         assert_eq!(encoder.packer.out[..2], [0x00, 0x01], "256, ten bits");
+    }
+
+    #[test]
+    fn a_full_table_is_looked_at_once_its_gap_is_read() {
+        let mut encoder = Encoder::new(9);
+        encoder.next = 1 << 9;
+        encoder.width = 10;
+        encoder.limit = limit(10, 9);
+        encoder.look_at = 2;
+        // b ends the string a at the second byte read: a's code goes out,
+        // ten bits, a whole byte of them after the header's three.
+        let out = encoder.feed(b"ab");
+        assert_eq!(out.len(), 4);
+        assert_eq!(
+            (encoder.look_at, encoder.ratio),
+            (2 + CHECK_GAP, (2 << 8) / 4),
+            "looked at the byte the gap ends on"
+        );
+        assert_eq!(encoder.written, 4, "the header counted once");
     }
 
     #[test]

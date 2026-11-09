@@ -118,30 +118,20 @@ fn scaled(x: f64, n: i32) -> f64 {
     let mut x = x;
     let mut n = n;
     // A power past what one double holds is taken in steps.
-    while n > 1023 {
-        x *= f64::from_bits(0x7fe0_0000_0000_0000);
-        n -= 1023;
-        if x.is_infinite() {
-            return x;
-        }
+    while n != 0 {
+        let step = n.clamp(-1022, 1023);
+        x *= f64::from_bits(u64::try_from(1023 + step).unwrap_or(0) << 52);
+        n -= step;
     }
-    while n < -1022 {
-        x *= f64::from_bits(0x0010_0000_0000_0000);
-        n += 1022;
-        if x == 0.0 {
-            return x;
-        }
-    }
-    let bits = u64::try_from(1023 + n).unwrap_or(0) << 52;
-    x * f64::from_bits(bits)
+    x
 }
 
 /// The whole number nearest `x`, which is well inside what an `i32`
 /// holds.
 #[allow(clippy::cast_possible_truncation)]
 fn nearest(x: f64) -> i32 {
-    // A cast goes toward zero; half a step first makes it the nearest.
-    (if x < 0.0 { x - 0.5 } else { x + 0.5 }) as i32
+    // A cast goes toward zero; half a step away first makes it the nearest.
+    (x + 0.5f64.copysign(x)) as i32
 }
 
 /// `a` + `b` as the double nearest it and what that double misses,
@@ -216,12 +206,9 @@ fn exp_of(x: f64, more: f64) -> f64 {
     if x.is_nan() {
         return x;
     }
-    if x > 709.8 {
-        return f64::INFINITY;
-    }
-    if x < -745.2 {
-        return 0.0;
-    }
+    // Past these e^x is more than the greatest double, or less than half
+    // the least.
+    let x = x.clamp(-746.0, 710.0);
     let k = nearest(x / LN_2);
     let whole = f64::from(k);
     let (r, missed) = added(x - whole * LN2_HIGH, -(whole * LN2_LOW));

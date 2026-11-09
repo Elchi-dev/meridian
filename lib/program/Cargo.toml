@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 calendar = { path = "../calendar" }
+charset = { path = "../charset" }
 abi = { path = "../abi" }
 archive = { path = "../archive" }
 awk = { path = "../awk" }
@@ -301,6 +302,10 @@ test = true
 
 [[example]]
 name = "pr"
+test = true
+
+[[example]]
+name = "iconv"
 test = true
 
 [[example]]

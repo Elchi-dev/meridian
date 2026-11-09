@@ -173,6 +173,7 @@ dependencies = [
  "awk",
  "bc",
  "calendar",
+ "charset",
  "diff",
  "ed",
  "fat",

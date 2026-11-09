@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 179] = [
+const CHECKS: [(&str, Check); 180] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -196,6 +196,7 @@ const CHECKS: [(&str, Check); 179] = [
     ("tools.date", date_tells_the_time),
     ("tools.cal", cal_writes_calendars),
     ("tools.pr", pr_writes_pages),
+    ("tools.iconv", iconv_turns_text),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2862,14 +2863,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"138\n"
+        b"140\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-nine twice",
+        "ls should write the programs' names into the pipe, seventy twice",
     )?;
     expect(
         same(
@@ -5927,6 +5928,50 @@ fn pr_writes_pages() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, pages.as_bytes())),
         "pr should cut a file into pages dated when it changed, merge it with itself, and not wait in a pipe",
+    )
+}
+
+/// iconv says what words it cannot take, lists its sets, writes text in
+/// Latin-1, UTF-16 and code page 437, stops at a character a set has no
+/// bytes for, and with -c leaves it out.
+fn iconv_turns_text() -> Outcome {
+    let checked = same(
+        &shell_on("iconv -x; iconv -f UTF-7")?,
+        &ran(
+            1,
+            b"iconv: -x is no option\niconv ended with 1\n\
+              iconv: UTF-7 is no character set iconv knows; iconv -l lists them\niconv ended with 1\n",
+        ),
+    );
+    expect(checked, "iconv should say what words it cannot take")?;
+    let checked = same(
+        &shell_on(
+            "iconv -l | head -1; printf 'caf\\303\\251\\n' | iconv -t latin1 | od -An -tx1\n\
+             printf 'ab\\n' | iconv -t UTF-16 | od -An -tx1\n\
+             printf '\\342\\224\\200\\n' | iconv -t cp437 | od -An -tx1",
+        )?,
+        &ran(
+            0,
+            b"UTF-8, UTF8\n 63 61 66 e9 0a\n ff fe 61 00 62 00 0a 00\n c4 0a\n",
+        ),
+    );
+    expect(
+        checked,
+        "iconv should list its sets and write text in Latin-1, UTF-16 and code page 437",
+    )?;
+    let checked = same(
+        &shell_on(
+            "printf 'caf\\303\\251\\n' | iconv -t ascii; printf 'caf\\303\\251\\n' | iconv -c -t ascii",
+        )?,
+        &ran(
+            1,
+            b"caficonv: the standard input: U+00E9 at byte 3 has no bytes in US-ASCII\n\
+              iconv ended with 1\ncaf\niconv ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "iconv should stop at a character ASCII has no bytes for, and leave it out with -c",
     )
 }
 

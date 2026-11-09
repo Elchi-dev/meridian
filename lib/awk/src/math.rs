@@ -610,10 +610,11 @@ fn arc(u: f64, more: f64) -> f64 {
 /// The arctangent of `t` + `missed`, for `t` from 0 to 1 and `missed`
 /// below its last place: which of 0, the arctangent of 1/2 and π/4 is
 /// nearest, by its place in `ANGLES`, and how far past that it is, the
-/// arctangent of (t - c)/(1 + tc) for c 0, 1/2 or 1.
+/// arctangent of (t - c)/(1 + tc) for c 0, 1/2 or 1. At 7/16 itself the
+/// series from 0 lands on the nearest double more often.
 fn atan(t: f64, missed: f64) -> (usize, f64) {
     let more = missed / (1.0 + t * t);
-    if t < 7.0 / 16.0 {
+    if t <= 7.0 / 16.0 {
         (0, arc(t, more))
     } else if t < 11.0 / 16.0 {
         (1, arc((2.0 * t - 1.0) / (2.0 + t), more))
@@ -2388,6 +2389,50 @@ mod tests {
         for x in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
             assert!(sin(x).is_nan() && cos(x).is_nan(), "{x} has no sine");
         }
+    }
+
+    /// Where what a reduction or a series carries decides the last bit,
+    /// or which of two ways to the same angle is taken, these land on the
+    /// double nearest the true value, worked out to 400 digits.
+    #[test]
+    fn where_the_little_carried_decides_the_last_bit_it_lands_right() {
+        for (x, sine) in [
+            // The bits of 2/π times x carry into the quarter turns here.
+            (0x5d0c_3e69_ebc5_e8ad_u64, 0x3fc2_1649_b3b4_3d49_u64),
+            // What the reduction missed counts, times about cos r.
+            (0x5d7f_ba71_ef6d_225d, 0x3fe0_44d8_7165_3990),
+            (0x5d82_fc3b_39cf_91a4, 0x3fdd_34b6_3ad8_5c24),
+            (0x40ef_0a92_f471_7654, 0xbfe4_0960_9bb0_3fc3),
+        ] {
+            let x = f64::from_bits(x);
+            assert_eq!(sin(x).to_bits(), sine, "sin of {x:e}");
+        }
+        for (x, cosine) in [
+            (0x5d0c_3e69_ebc5_e8ad_u64, 0x3fef_adcd_5a8e_9c5f_u64),
+            (0x40e6_45c7_b173_3e3d, 0xbfbd_26e6_cbfd_4f6d),
+        ] {
+            let x = f64::from_bits(x);
+            assert_eq!(cos(x).to_bits(), cosine, "cos of {x:e}");
+        }
+        // Quotients that are 7/16 and 11/16 as doubles, and a little off.
+        for (y, x, angle) in [
+            (
+                0x3a80_06bf_8fd3_4be1_u64,
+                0x3a92_50da_ed83_c46f_u64,
+                0x3fda_64ee_c3cc_23fd_u64,
+            ),
+            (
+                0x3884_70e2_f418_5851,
+                0x387c_1b38_0fa1_796f,
+                0x3fee_fe06_8bba_2275,
+            ),
+        ] {
+            let (y, x) = (f64::from_bits(y), f64::from_bits(x));
+            assert_eq!(atan2(y, x).to_bits(), angle, "atan2 of {y:e}, {x:e}");
+        }
+        // The double nearest √2 times 2^221, to the power 3.7.
+        let (x, y) = (f64::from_bits(0x4dc6_a09e_667f_3bcd), 3.7);
+        assert_eq!(pow(x, y).to_bits(), 0x7327_6ce5_1f6a_0c6d, "{x:e} to {y}");
     }
 
     #[test]

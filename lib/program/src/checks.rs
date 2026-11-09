@@ -4505,16 +4505,17 @@ fn patch_puts_diffs_in() -> Outcome {
 
 /// find says what words it cannot take, walks the programs' directory
 /// testing names and types, runs a program on what it found with -exec,
-/// keeps out of a directory with -prune, and walks a tree it made with
-/// -depth.
+/// keeps out of a directory with -prune, walks a tree it made with
+/// -depth, and tells files apart by when they changed.
 fn find_walks_trees() -> Outcome {
     let checked = same(
-        &shell_on("find; find a -foo; find a -mtime 1")?,
+        &shell_on("find; find a -foo; find a -atime 1")?,
         &ran(
             1,
             b"find: finds from a path at least\nfind ended with 1\n\
               find: -foo is no primary\nfind ended with 1\n\
-              find: -mtime: Meridian's files keep no times\nfind ended with 1\n",
+              find: -atime: Meridian's files keep only when they last changed\n\
+              find ended with 1\n",
         ),
     );
     expect(
@@ -4574,6 +4575,20 @@ fn find_walks_trees() -> Outcome {
         ended == Ok(Ended::Exited(0))
             && said == b"/System/W/a\n/System/W/s/b\n/System/W/s\n/System/W\n2 /System/W/a\n2 /System/W/s/b\n",
         "find should walk a tree it is given, its files first with -depth",
+    )?;
+    // Three seconds are more than the two FAT counts a time in.
+    let checked = same(
+        &shell_on(
+            "md /System/T; echo x > /System/T/a; sleep 3; echo y > /System/T/b\n\
+             find /System/T -newer /System/T/a; find /System/T -type f -mtime 0\n\
+             find /System/T -mtime +0; find / -prune -mtime +0\n\
+             rm /System/T/a /System/T/b; rd /System/T",
+        )?,
+        &ran(0, b"/System/T/b\n/System/T/a\n/System/T/b\n"),
+    );
+    expect(
+        checked,
+        "find should take a file written later for newer, both for changed today, and the root, which keeps no time, for neither",
     )
 }
 

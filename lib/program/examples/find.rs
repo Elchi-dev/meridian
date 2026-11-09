@@ -1,13 +1,15 @@
 //! find: walks the tree of files under each path it is given and does
 //! what its expression says with each file, as POSIX's find does: tests
-//! of a file's name, path, type, size and links, `-prune` and `-depth`,
-//! `-print` and `-print0`, and `-exec` and `-ok` to run a program on it,
-//! joined by `!`, `-a`, `-o` and parentheses. Meridian's files have no
-//! owners, modes or times, so `-user`, `-group`, `-nouser`, `-nogroup`,
-//! `-perm`, `-atime`, `-ctime`, `-mtime` and `-newer` are refused, as are
-//! `-xdev` and `-mount`, since volumes cannot be told apart yet; no file
-//! has a second link, and with no symbolic links `-H` and `-L` change
-//! nothing. It ends with 0, or 1 when a file could not be read or a
+//! of a file's name, path, type, size and links, of when it last changed
+//! with `-mtime` and `-newer`, `-prune` and `-depth`, `-print` and
+//! `-print0`, and `-exec` and `-ok` to run a program on it, joined by `!`,
+//! `-a`, `-o` and parentheses. Meridian's files have no owners or modes,
+//! and keep only when they last changed, so `-user`, `-group`, `-nouser`,
+//! `-nogroup`, `-perm`, `-atime` and `-ctime` are refused, as are `-xdev`
+//! and `-mount`, since volumes cannot be told apart yet. What keeps no
+//! time, as the directories above the volumes, holds for no `-mtime` or
+//! `-newer`. No file has a second link, and with no symbolic links `-H`
+//! and `-L` change nothing. It ends with 0, or 1 when a file could not be read or a
 //! program run with `-exec ... {} +` failed.
 
 #![cfg_attr(not(test), no_std)]
@@ -61,6 +63,10 @@ enum Primary {
     /// The size in blocks of 512 bytes, or in bytes when the flag says.
     Size(Compare, u64, bool),
     Links(Compare, u64),
+    /// The whole days since it last changed, counted from when find began.
+    Mtime(Compare, u64),
+    /// Whether it changed after the file the path names.
+    Newer(String),
     Prune,
     Print,
     Print0,
@@ -84,6 +90,21 @@ enum Expression {
     Or(Box<Expression>, Box<Expression>),
     /// What is always true, as `-depth`, `-H` and `-L` are.
     True,
+}
+
+impl Expression {
+    /// Hands each primary in it to `each`.
+    fn primaries<'e>(&'e self, each: &mut impl FnMut(&'e Primary)) {
+        match self {
+            Expression::Primary(primary) => each(primary),
+            Expression::Not(inside) => inside.primaries(each),
+            Expression::And(left, right) | Expression::Or(left, right) => {
+                left.primaries(each);
+                right.primaries(each);
+            }
+            Expression::True => {}
+        }
+    }
 }
 
 /// What find's words ask for: the paths to start at, the expression, and
@@ -234,6 +255,13 @@ impl<'w> Parser<'w> {
                     .ok_or_else(|| format!("find: -links wants a number, not {written}\n"))?;
                 Primary::Links(compare, n)
             }
+            "-mtime" => {
+                let written = self.value(word, "a number of days")?;
+                let (compare, n) = number(written)
+                    .ok_or_else(|| format!("find: -mtime wants a number, not {written}\n"))?;
+                Primary::Mtime(compare, n)
+            }
+            "-newer" => Primary::Newer(String::from(self.value(word, "a file")?)),
             "-prune" => Primary::Prune,
             "-print" => {
                 self.acts = true;
@@ -256,8 +284,10 @@ impl<'w> Parser<'w> {
                     "find: -perm: Meridian's files have no modes\n",
                 ));
             }
-            "-atime" | "-ctime" | "-mtime" | "-newer" => {
-                return Err(format!("find: {word}: Meridian's files keep no times\n"));
+            "-atime" | "-ctime" => {
+                return Err(format!(
+                    "find: {word}: Meridian's files keep only when they last changed\n"
+                ));
             }
             "-xdev" | "-mount" => {
                 return Err(format!("find: {word}: volumes cannot be told apart yet\n"));
@@ -344,8 +374,14 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
 /// What find needs of a tree of files, of its output and of the one at
 /// its console, and how it runs a program.
 trait Tree {
-    /// Whether the file at `path` is a directory, and its size.
-    fn info(&mut self, path: &str) -> Result<(bool, u64), Error>;
+    /// Whether the file at `path` is a directory, its size, and when it
+    /// last changed, as seconds since 1970 began; none for what keeps no
+    /// time.
+    fn info(&mut self, path: &str) -> Result<(bool, u64, Option<u64>), Error>;
+
+    /// The time of day, as seconds since 1970 began; none when it is not
+    /// known.
+    fn now(&mut self) -> Option<u64>;
 
     /// The names in the directory at `path`.
     fn names(&mut self, path: &str) -> Result<Vec<String>, Error>;
@@ -369,6 +405,7 @@ struct Found<'p> {
     name: &'p str,
     directory: bool,
     size: u64,
+    changed: Option<u64>,
 }
 
 /// The last part of `path`, as find's -name matches it.
@@ -404,6 +441,10 @@ struct Walk<'a, T> {
     /// bytes.
     gathered: Vec<(Vec<String>, usize)>,
     failed: bool,
+    /// What the times of files are compared with: when find began, and
+    /// when each file `-newer` names changed.
+    began: Option<u64>,
+    references: Vec<(String, Option<u64>)>,
 }
 
 impl<T: Tree> Walk<'_, T> {
@@ -466,6 +507,23 @@ impl<T: Tree> Walk<'_, T> {
                 compare.holds(size, *n)
             }
             Primary::Links(compare, n) => compare.holds(1, *n),
+            Primary::Mtime(compare, days) => {
+                file.changed
+                    .zip(self.began)
+                    .is_some_and(|(changed, began)| {
+                        compare.holds(began.saturating_sub(changed) / 86_400, *days)
+                    })
+            }
+            Primary::Newer(path) => {
+                let reference = self
+                    .references
+                    .iter()
+                    .find(|(named, _)| named == path)
+                    .and_then(|(_, changed)| *changed);
+                file.changed
+                    .zip(reference)
+                    .is_some_and(|(changed, reference)| changed > reference)
+            }
             Primary::Prune => {
                 self.pruned = true;
                 true
@@ -508,7 +566,7 @@ impl<T: Tree> Walk<'_, T> {
     /// Walks the tree from `path`, a directory's files before or after
     /// it as `-depth` says.
     fn visit(&mut self, path: &str) {
-        let (directory, size) = match self.tree.info(path) {
+        let (directory, size, changed) = match self.tree.info(path) {
             Ok(info) => info,
             Err(e) => {
                 self.tree.say(&text::trouble("find", path, e));
@@ -521,6 +579,7 @@ impl<T: Tree> Walk<'_, T> {
             name: last_part(path),
             directory,
             size,
+            changed,
         };
         if !self.asked.depth {
             self.holds(&self.asked.expression, &file);
@@ -566,12 +625,39 @@ impl<T: Tree> Walk<'_, T> {
 
 /// Walks the trees `asked` names, and answers the status find ends with.
 fn find_in(tree: &mut impl Tree, asked: &Asked) -> u64 {
+    let (mut by_days, mut newer) = (false, Vec::new());
+    asked.expression.primaries(&mut |primary| match primary {
+        Primary::Mtime(..) => by_days = true,
+        Primary::Newer(path) => newer.push(path.as_str()),
+        _ => {}
+    });
+    let began = if by_days {
+        let Some(now) = tree.now() else {
+            tree.say("find: -mtime: Meridian does not know the time of day\n");
+            return 1;
+        };
+        Some(now)
+    } else {
+        None
+    };
+    let mut references = Vec::new();
+    for path in newer {
+        match tree.info(path) {
+            Ok((_, _, changed)) => references.push((String::from(path), changed)),
+            Err(e) => {
+                tree.say(&text::trouble("find", path, e));
+                return 1;
+            }
+        }
+    }
     let mut walk = Walk {
         tree,
         asked,
         pruned: false,
         gathered: (0..asked.batches).map(|_| (Vec::new(), 0)).collect(),
         failed: false,
+        began,
+        references,
     };
     for path in &asked.paths {
         walk.visit(path);
@@ -587,12 +673,17 @@ struct System {
 }
 
 impl Tree for System {
-    fn info(&mut self, path: &str) -> Result<(bool, u64), Error> {
+    fn info(&mut self, path: &str) -> Result<(bool, u64, Option<u64>), Error> {
         let file = program::open(path, program::abi::file::READ)?;
         let info = program::info(file);
+        let changed = program::changed(file);
         let _ = program::close(file);
         let info = info?;
-        Ok((info.directory, info.size))
+        Ok((info.directory, info.size, changed?))
+    }
+
+    fn now(&mut self) -> Option<u64> {
+        program::now().map(|nanoseconds| nanoseconds / 1_000_000_000)
     }
 
     fn names(&mut self, path: &str) -> Result<Vec<String>, Error> {
@@ -739,6 +830,42 @@ mod tests {
     }
 
     #[test]
+    fn times_take_days_and_files() {
+        let primary = |p| Expression::Primary(p);
+        assert_eq!(
+            expression_of("a -mtime +3 -o -mtime -1 -newer b/c"),
+            Ok(and(
+                or(
+                    primary(Primary::Mtime(Compare::More, 3)),
+                    and(
+                        primary(Primary::Mtime(Compare::Less, 1)),
+                        primary(Primary::Newer("b/c".into()))
+                    )
+                ),
+                print()
+            ))
+        );
+        assert_eq!(
+            expression_of("a -mtime 0 -print"),
+            Ok(and(primary(Primary::Mtime(Compare::Exactly, 0)), print()))
+        );
+    }
+
+    #[test]
+    fn primaries_are_handed_out_in_order_however_deep() {
+        let given = words("a ( -newer x -o ! -mtime 1 ) -depth -newer y");
+        let taken = asked(&given).unwrap();
+        let mut seen = Vec::new();
+        taken
+            .expression
+            .primaries(&mut |p| seen.push(format!("{p:?}")));
+        assert_eq!(
+            seen,
+            ["Newer(\"x\")", "Mtime(Exactly, 1)", "Newer(\"y\")", "Print"]
+        );
+    }
+
+    #[test]
     fn only_an_action_other_than_print0_keeps_print_away() {
         let printing = |text: &str| {
             let given = words(text);
@@ -846,6 +973,22 @@ mod tests {
             Some("find: an expression ends too soon\n".into())
         );
         assert_eq!(
+            refused("a -mtime"),
+            Some("find: -mtime wants a number of days\n".into())
+        );
+        assert_eq!(
+            refused("a -mtime 1d"),
+            Some("find: -mtime wants a number, not 1d\n".into())
+        );
+        assert_eq!(
+            refused("a -mtime -"),
+            Some("find: -mtime wants a number, not -\n".into())
+        );
+        assert_eq!(
+            refused("a -newer"),
+            Some("find: -newer wants a file\n".into())
+        );
+        assert_eq!(
             refused("a -exec echo"),
             Some("find: -exec wants a ; at its end\n".into())
         );
@@ -875,10 +1018,12 @@ mod tests {
             refused("a -perm 644"),
             Some("find: -perm: Meridian's files have no modes\n".into())
         );
-        for word in ["-atime", "-ctime", "-mtime", "-newer"] {
+        for word in ["-atime", "-ctime"] {
             assert_eq!(
                 refused(&format!("a {word} 1")),
-                Some(format!("find: {word}: Meridian's files keep no times\n"))
+                Some(format!(
+                    "find: {word}: Meridian's files keep only when they last changed\n"
+                ))
             );
         }
         for word in ["-xdev", "-mount"] {
@@ -941,6 +1086,8 @@ mod tests {
         said: String,
         answers: Vec<String>,
         asked: Vec<String>,
+        /// The time of day find is told, none for none known.
+        now: Option<u64>,
     }
 
     impl Host {
@@ -966,6 +1113,7 @@ mod tests {
                 said: String::new(),
                 answers: Vec::new(),
                 asked: Vec::new(),
+                now: None,
             }
         }
     }
@@ -976,6 +1124,12 @@ mod tests {
         }
     }
 
+    /// When a host file last changed, as seconds since 1970 began.
+    fn changed(found: &std::fs::Metadata) -> Option<u64> {
+        let since = found.modified().ok()?.duration_since(std::time::UNIX_EPOCH);
+        Some(since.ok()?.as_secs())
+    }
+
     fn error(e: &std::io::Error) -> Error {
         match e.kind() {
             std::io::ErrorKind::NotFound => Error::NotFound,
@@ -984,9 +1138,13 @@ mod tests {
     }
 
     impl Tree for Host {
-        fn info(&mut self, path: &str) -> Result<(bool, u64), Error> {
+        fn info(&mut self, path: &str) -> Result<(bool, u64, Option<u64>), Error> {
             let found = std::fs::metadata(self.root.join(path)).map_err(|e| error(&e))?;
-            Ok((found.is_dir(), found.len()))
+            Ok((found.is_dir(), found.len(), changed(&found)))
+        }
+
+        fn now(&mut self) -> Option<u64> {
+            self.now
         }
 
         fn names(&mut self, path: &str) -> Result<Vec<String>, Error> {
@@ -1052,11 +1210,7 @@ mod tests {
                 kind,
                 size: found.len(),
                 allowed,
-                changed: found
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs()),
+                changed: changed(&found),
             })
         }
 
@@ -1144,6 +1298,161 @@ mod tests {
         assert_eq!(ran(&mut host, "t/d -links 1"), wrote("t/d\nt/d/F\n"));
         assert_eq!(ran(&mut host, "t/d -links +1"), wrote(""));
         assert_eq!(ran(&mut host, "t/d -links -2"), wrote("t/d\nt/d/F\n"));
+    }
+
+    /// 12:00 UTC on 9 November 2026, when find begins in the tests of
+    /// times.
+    const NOON: u64 = 1_794_225_600;
+
+    /// Sets when the file at `path` of `host` last changed, as seconds
+    /// since 1970 began.
+    fn change(host: &Host, path: &str, at: u64) {
+        let file = std::fs::File::open(host.root.join(path)).unwrap();
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(at);
+        file.set_modified(at).unwrap();
+    }
+
+    /// GNU's tree with its files changed whole days and a little before
+    /// `now`, by a second for t/a, at the edge of a day for t/b/big and
+    /// t/b/c/e, and after it for t/d/F; the directories, 400 days before.
+    fn aged(name: &str, now: u64) -> Host {
+        let host = tree(name);
+        for (path, at) in [
+            ("t/a", now - 2 * 86_400 - 1),
+            ("t/b/big", now - 86_399),
+            ("t/b/c/e", now - 86_400),
+            ("t/d/F", now + 10),
+            ("t", now - 400 * 86_400),
+            ("t/b", now - 400 * 86_400),
+            ("t/b/c", now - 400 * 86_400),
+            ("t/d", now - 400 * 86_400),
+        ] {
+            change(&host, path, at);
+        }
+        host
+    }
+
+    #[test]
+    fn mtime_counts_whole_days_back_from_when_find_began() {
+        let mut host = aged("mtime", NOON);
+        host.now = Some(NOON);
+        assert_eq!(
+            ran(&mut host, "t -mtime 0"),
+            wrote("t/b/big\nt/d/F\n"),
+            "a day less a second, and what changed after find began"
+        );
+        assert_eq!(ran(&mut host, "t -mtime 1"), wrote("t/b/c/e\n"));
+        assert_eq!(ran(&mut host, "t -mtime 2"), wrote("t/a\n"));
+        assert_eq!(
+            ran(&mut host, "t -mtime +1"),
+            wrote("t\nt/a\nt/b\nt/b/c\nt/d\n")
+        );
+        assert_eq!(
+            ran(&mut host, "t -mtime -2"),
+            wrote("t/b/big\nt/b/c/e\nt/d/F\n")
+        );
+        assert_eq!(
+            ran(&mut host, "t -mtime 400 -type d"),
+            wrote("t\nt/b\nt/b/c\nt/d\n")
+        );
+        assert_eq!(ran(&mut host, "t -mtime +400"), wrote(""));
+        host.now = None;
+        assert_eq!(
+            ran(&mut host, "t -print -o -mtime 0"),
+            (
+                1,
+                String::new(),
+                "find: -mtime: Meridian does not know the time of day\n".into()
+            ),
+            "it says so before walking"
+        );
+        assert_eq!(
+            ran(&mut host, "t -name a"),
+            wrote("t/a\n"),
+            "with no -mtime the time of day is not wanted"
+        );
+    }
+
+    #[test]
+    fn newer_holds_for_what_changed_after_the_file_named() {
+        let mut host = aged("newer", NOON);
+        assert_eq!(
+            ran(&mut host, "t -newer t/b/c/e"),
+            wrote("t/b/big\nt/d/F\n"),
+            "with no time of day known"
+        );
+        assert_eq!(ran(&mut host, "t -newer t/d/F"), wrote(""));
+        assert_eq!(
+            ran(&mut host, "t ! -newer t/a"),
+            wrote("t\nt/a\nt/b\nt/b/c\nt/d\n"),
+            "a file is no newer than itself"
+        );
+        assert_eq!(
+            ran(&mut host, "t -newer t/a ! -newer t/b/c/e"),
+            wrote("t/b/c/e\n"),
+            "each file named is its own"
+        );
+        assert_eq!(
+            ran(&mut host, "t -print -o -newer t/x"),
+            (1, String::new(), "find: t/x: no such file\n".into()),
+            "it says so before walking"
+        );
+    }
+
+    #[test]
+    fn times_are_what_the_host_s_find_takes_them_for() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // The host's find is GNU's or bfs, which take a file changed
+        // exactly whole days before they began, or after it, each its own
+        // way, so every time here is an hour off the edge of a day.
+        let mut host = tree("host");
+        for (path, at) in [
+            ("t/a", now - 2 * 86_400 - 3600),
+            ("t/b/big", now - 86_400 + 3600),
+            ("t/b/c/e", now - 86_400 - 3600),
+            ("t/d/F", now - 3600),
+            ("t", now - 400 * 86_400 - 3600),
+            ("t/b", now - 400 * 86_400 - 3600),
+            ("t/b/c", now - 400 * 86_400 - 3600),
+            ("t/d", now - 400 * 86_400 - 3600),
+        ] {
+            change(&host, path, at);
+        }
+        host.now = Some(now);
+        for expression in [
+            "-mtime 0",
+            "-mtime 1",
+            "-mtime 2",
+            "-mtime +1",
+            "-mtime -2",
+            "-mtime +399",
+            "-mtime 400",
+            "-mtime -400",
+            "-newer t/b/c/e",
+            "! -newer t/a",
+            "-newer t/a ! -newer t/b/c/e",
+        ] {
+            let theirs = std::process::Command::new("find")
+                .arg("t")
+                .args(expression.split(' '))
+                .current_dir(&host.root)
+                .env("LC_ALL", "C")
+                .output()
+                .unwrap();
+            assert!(theirs.status.success(), "{expression}");
+            let mut theirs: Vec<String> = String::from_utf8(theirs.stdout)
+                .unwrap()
+                .lines()
+                .map(String::from)
+                .collect();
+            theirs.sort_unstable();
+            let (status, ours, said) = ran(&mut host, &format!("t {expression}"));
+            assert_eq!((status, said.as_str()), (0, ""), "{expression}");
+            assert_eq!(ours.lines().collect::<Vec<_>>(), theirs, "{expression}");
+        }
     }
 
     #[test]

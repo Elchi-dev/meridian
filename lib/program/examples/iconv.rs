@@ -698,6 +698,10 @@ mod tests {
                 "UTF-16",
                 "UTF-32BE",
             ] {
+                // Whether glibc went over whole without -c: with -c some
+                // glibc ends with 1 and some with 0, where POSIX has -c
+                // change no status, so -c's status is taken from this.
+                let mut whole_without = true;
                 for c in ["", "-c "] {
                     let line = format!("{c}-t {to} t");
                     let mut theirs = std::process::Command::new("iconv")
@@ -718,11 +722,10 @@ mod tests {
                     let mut mine = Host::new(&format!("glibc-{round}"));
                     mine.put("t", &bytes);
                     let (whole, ours, _) = ran(&mut mine, &line);
-                    assert_eq!(
-                        (whole, ours),
-                        (status.success(), written),
-                        "{line} {bytes:x?}"
-                    );
+                    if c.is_empty() {
+                        whole_without = status.success();
+                    }
+                    assert_eq!((whole, ours), (whole_without, written), "{line} {bytes:x?}");
                 }
             }
         }

@@ -5884,16 +5884,22 @@ fn date_tells_the_time() -> Outcome {
 /// writes into a pipe.
 fn pr_writes_pages() -> Outcome {
     let checked = same(
-        &shell_on("pr -x; pr -37 a")?,
+        &shell_on("pr -x; pr -37 a; pr -t /nope")?,
         &ran(
             1,
             b"pr: -x is no option\npr ended with 1\n\
-              pr: a line of 72 columns leaves no room for 37 columns of text\npr ended with 1\n",
+              pr: a line of 72 columns leaves no room for 37 columns of text\npr ended with 1\n\
+              pr: /nope: no such file\npr ended with 1\n",
         ),
     );
     expect(
         checked,
-        "pr should say what words it cannot take, and end with 1",
+        "pr should say what words it cannot take and what it cannot read, and end with 1",
+    )?;
+    // Where pr -p waits: these checks, which the kernel handed no output.
+    expect(
+        crate::output_is_console(),
+        "the checks' own output should be the console",
     )?;
     let checked = same(
         &shell_on("printf 'a\\nb\\nc\\nd\\ne\\n' | pr -2 -t")?,
@@ -5928,6 +5934,49 @@ fn pr_writes_pages() -> Outcome {
     expect(
         same(&(ended, said), &ran(0, pages.as_bytes())),
         "pr should cut a file into pages dated when it changed, merge it with itself, and not wait in a pipe",
+    )?;
+    pr_closes_and_fails()
+}
+
+/// pr reads more files than may be open at once, closing each, and ends
+/// with 1 when what reads its output closed its end first.
+fn pr_closes_and_fails() -> Outcome {
+    let mut names = String::new();
+    for n in 1..=70 {
+        let _ = core::fmt::Write::write_fmt(&mut names, format_args!(" f{n}"));
+    }
+    let checked = same(
+        &shell_on(&alloc::format!(
+            "md /System/pm; for n in{names} {{ echo $n > /System/pm/$n }}\n\
+             pr -t /System/pm/* | wc -l\n\
+             echo /System/pm | xargs rm -r"
+        ))?,
+        &ran(0, b"70\n"),
+    );
+    expect(
+        checked,
+        "pr should read more files than may be open at once",
+    )?;
+    let (out, theirs) = pair()?;
+    let (errors, error_end) = pair()?;
+    let given = start::Given {
+        output: Some(start::Sink::Channel(theirs)),
+        error: Some(start::Sink::Channel(error_end)),
+        ..start::Given::default()
+    };
+    let _ = close(out);
+    let (child, back) = spawn_handing(
+        "pr.mexec",
+        &["-t", "/System/Boot/meridian/licences/inter.txt"],
+        given,
+    )
+    .map_err(|_| "pr should start")?;
+    let ended = wait(child);
+    let said = drained(errors);
+    let _ = (close(child), close(back), close(errors));
+    expect(
+        ended == Ok(Ended::Exited(1)) && said.is_empty(),
+        "pr should end with 1 when nothing reads what it writes",
     )
 }
 

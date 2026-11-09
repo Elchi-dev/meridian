@@ -1212,6 +1212,8 @@ mod tests {
             ("-o", "pr: -o wants a value after it\n"),
             ("-w", "pr: -w wants a value after it\n"),
             ("-l 0", "pr: -l 0: a number above 0\n"),
+            ("-l +5", "pr: -l +5: a number above 0\n"),
+            ("++2", "pr: ++2: a page is a number above 0\n"),
             ("-w x", "pr: -w x: a number above 0\n"),
             ("-o -1", "pr: -o -1: blanks are a number\n"),
             ("+0", "pr: +0: a page is a number above 0\n"),

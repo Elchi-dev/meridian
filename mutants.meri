@@ -527,3 +527,17 @@ allow {
     mutation = "< to <="
     reason = "at the size the next read gives 0 bytes, which ends the loop as reaching the size does"
 }
+
+allow {
+    file = "lib/program/examples/pr.rs"
+    line = "while cells.len() >= room {"
+    mutation = ">= to >"
+    reason = "a page just full is then written when the next line comes, or at the end, the same page with the same number"
+}
+
+allow {
+    file = "lib/program/examples/pr.rs"
+    line = "while lines.len() >= asked.rows() {"
+    mutation = ">= to >"
+    reason = "a page of merged lines just full is then written when the next row comes, or at the end, the same page with the same number"
+}

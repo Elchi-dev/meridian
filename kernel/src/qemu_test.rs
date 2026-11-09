@@ -3695,6 +3695,14 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
             .map(frames::Frames::free_frames)
     };
     let before = free();
+    // What the loader's copies of the programs and the checks so far
+    // leave for hello and the programs it starts.
+    let room = before.unwrap_or(0) / 256;
+    report.check(
+        "kernel.programs.room",
+        room >= 64,
+        &alloc::format!("at least 64 MiB should be free before hello starts, not {room} MiB"),
+    );
     seen::forget();
     seen::READ_PROGRAMS.store(0, Ordering::Release);
     let started = hello.and_then(|(_, file)| user::start_file(0, file, 0).ok());

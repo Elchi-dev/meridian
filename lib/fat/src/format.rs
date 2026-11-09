@@ -133,7 +133,7 @@ pub fn format(
     }
     // The root directory holds the label too, where tools look for it.
     let mut labelled = [0u8; 512];
-    labelled[..32].copy_from_slice(&short_entry(label, 0x08, 0));
+    labelled[..32].copy_from_slice(&short_entry(label, 0x08, 0, crate::stamp::FIRST));
     let root = volume.first_sector(2).ok_or(Error::NotFat)?;
     put(root, &labelled)?;
     for sector in root + 1..root + u64::from(volume.sectors_per_cluster) {

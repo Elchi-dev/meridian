@@ -3,14 +3,10 @@
 //! files written into their chains, which grow as they need, and entries
 //! made with their long names and removed.
 
-use crate::{Entry, Error, Fat, Place, name, u32_at};
+use crate::{Entry, Error, Fat, Place, name, stamp, u32_at};
 
 /// The most entries one name takes: 20 for its long name and the short.
 const MOST: usize = 21;
-
-/// When entries are made, as FAT dates and times count: 1 January 1980,
-/// the first day they can say, until there is a clock to ask.
-const DATE: u16 = 0x21;
 
 /// What a writer puts in the entry of a chain's last cluster.
 const LAST: u32 = 0x0fff_ffff;
@@ -30,12 +26,25 @@ const UNKNOWN: u32 = u32::MAX;
 pub struct Writer<R, W> {
     pub fat: Fat<R>,
     write: W,
+    /// What entries made and files written are stamped with.
+    now: u32,
 }
 
 impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W> {
     #[must_use]
     pub fn new(fat: Fat<R>, write: W) -> Writer<R, W> {
-        Writer { fat, write }
+        Writer {
+            fat,
+            write,
+            now: stamp::FIRST,
+        }
+    }
+
+    /// Stamps what is made and written from here on with `seconds` since
+    /// 1970 began, or with 1 January 1980 when the time is not known
+    /// (decision record 0029).
+    pub fn set_now(&mut self, seconds: Option<u64>) {
+        self.now = seconds.map_or(stamp::FIRST, stamp::stamp);
     }
 
     fn put(&mut self, at: u64, from: &[u8]) -> Result<(), Error> {
@@ -174,6 +183,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
         e[20..22].copy_from_slice(&first[2..4]);
         e[26..28].copy_from_slice(&first[..2]);
         e[28..32].copy_from_slice(&entry.size.to_le_bytes());
+        stamped(e, 22, entry.changed);
         self.put(place.sector, &room[..size])
     }
 
@@ -230,6 +240,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             }
         }
         entry.size = entry.size.max(end);
+        entry.changed = self.now;
         Ok(from.len())
     }
 
@@ -289,13 +300,14 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             first,
             size: 0,
             directory: directory_too,
+            changed: self.now,
         };
         let place = self.make(directory, name, &entry)?;
         if directory_too {
             let sector = self.fat.volume.first_sector(first).ok_or(Error::BadChain)?;
             self.put_entry(
                 Place { sector, index: 0 },
-                &short_entry(b".          ", 0x10, first),
+                &short_entry(b".          ", 0x10, first, self.now),
             )?;
             self.point_up(&entry, directory)?;
         }
@@ -318,7 +330,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
         };
         entries[..count].copy_from_slice(&longs[..count]);
         let attributes = if entry.directory { 0x10 } else { 0x20 };
-        entries[count] = short_entry(&short, attributes, entry.first);
+        entries[count] = short_entry(&short, attributes, entry.first, entry.changed);
         entries[count][28..32].copy_from_slice(&entry.size.to_le_bytes());
         let mut places = [Place {
             sector: 0,
@@ -380,7 +392,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
             .ok_or(Error::BadChain)?;
         self.put_entry(
             Place { sector, index: 1 },
-            &short_entry(b"..         ", 0x10, parent),
+            &short_entry(b"..         ", 0x10, parent, self.now),
         )
     }
 
@@ -576,18 +588,26 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Writer<R, W
 }
 
 /// A short entry called `short` with `attributes`, whose first cluster is
-/// `first`, empty, made on [`DATE`].
-pub(crate) fn short_entry(short: &[u8; 11], attributes: u8, first: u32) -> [u8; 32] {
+/// `first`, empty, made, read and changed at `stamp`.
+pub(crate) fn short_entry(short: &[u8; 11], attributes: u8, first: u32, stamp: u32) -> [u8; 32] {
     let mut e = [0u8; 32];
     e[..11].copy_from_slice(short);
     e[11] = attributes;
     let first = first.to_le_bytes();
     e[20..22].copy_from_slice(&first[2..4]);
     e[26..28].copy_from_slice(&first[..2]);
-    for at in [16, 18, 24] {
-        e[at..at + 2].copy_from_slice(&DATE.to_le_bytes());
-    }
+    stamped(&mut e, 14, stamp);
+    stamped(&mut e, 22, stamp);
+    // The day it was last read, which FAT keeps without a time.
+    e.copy_within(16..18, 18);
     e
+}
+
+/// Writes `stamp` into the entry `e` at `at`: its time, then its day.
+fn stamped(e: &mut [u8], at: usize, stamp: u32) {
+    let [day, time] = [stamp >> 16, stamp & 0xffff].map(|half| u16::try_from(half).unwrap_or(0));
+    e[at..at + 2].copy_from_slice(&time.to_le_bytes());
+    e[at + 2..at + 4].copy_from_slice(&day.to_le_bytes());
 }
 
 #[cfg(test)]
@@ -752,6 +772,7 @@ mod tests {
         let root = w.fat.volume.root;
         let (mut entry, place) = w.fat.lookup_at(root, "a.txt").unwrap();
         let before = image.borrow()[entry_bytes(place)].to_vec();
+        w.set_now(Some(1_794_225_600));
         assert_eq!(w.write_at(&mut entry, 510, b"across a sector"), Ok(15));
         assert_eq!(entry.size, 1000, "no longer than it was");
         w.save(place, &entry).unwrap();
@@ -759,7 +780,14 @@ mod tests {
         want[510..525].copy_from_slice(b"across a sector");
         let now = image.borrow().clone();
         assert_eq!(typed(&now, "inside", "a.txt"), want);
-        assert_eq!(now[entry_bytes(place)], before[..], "the entry as it was");
+        // 12:00 and 9 November 2026: 12 << 11, and 46 << 9 | 11 << 5 | 9.
+        let mut changed = before.clone();
+        changed[22..26].copy_from_slice(&[0x00, 0x60, 0x69, 0x5d]);
+        assert_eq!(
+            now[entry_bytes(place)],
+            changed[..],
+            "the entry as it was, but for when it changed"
+        );
         assert!(sound(&now, "inside"));
     }
 
@@ -891,6 +919,85 @@ mod tests {
                 l.rsplit('/').next().unwrap_or(l).to_string()
             })
             .collect()
+    }
+
+    /// What mdir lists for `directory` on the volume `image`, its times
+    /// read as they are.
+    fn dated(image: &[u8], name: &str, directory: &str) -> String {
+        let path = scratch(name);
+        std::fs::write(&path, image).unwrap();
+        let out = Command::new("mdir")
+            .env("TZ", "UTC")
+            .arg("-i")
+            .arg(&path)
+            .arg(format!("::{directory}"))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn what_is_made_and_written_is_stamped_with_the_time_it_was_given() {
+        let Some(image) = formatted("stamped") else {
+            return;
+        };
+        let image = Rc::new(RefCell::new(image));
+        let mut w = writer(&image);
+        let root = w.fat.volume.root;
+        // A minute and a second past noon on 9 November 2026.
+        let noon = 1_794_225_600;
+        w.set_now(Some(noon + 61));
+        let (mut file, place) = w.create(root, "made.txt", false).unwrap();
+        assert_eq!(
+            stamp::seconds(file.changed),
+            Some(noon + 60),
+            "two seconds at a time"
+        );
+        w.set_now(Some(noon + 3600));
+        assert_eq!(w.write_at(&mut file, 0, b"later"), Ok(5));
+        assert_eq!(stamp::seconds(file.changed), Some(noon + 3600));
+        w.save(place, &file).unwrap();
+        w.create(root, "d", true).unwrap();
+        let made = image.borrow()[entry_bytes(place)].to_vec();
+        let half = |at: usize| u32::from(made[at + 1]) << 8 | u32::from(made[at]);
+        assert_eq!(
+            (half(14), half(16), half(18)),
+            (
+                12 << 11 | 1 << 5,
+                stamp::stamp(noon) >> 16,
+                stamp::stamp(noon) >> 16
+            ),
+            "made at 12:01, and read that day, which the write left as they were"
+        );
+        // mtools reads the times as they are, as Meridian writes them.
+        let listing = dated(&image.borrow(), "stamped", "/");
+        let lines: Vec<&str> = listing.lines().map(str::trim_end).collect();
+        assert!(
+            lines.contains(&"MADE~1   TXT         5 2026-11-09  13:00  made.txt")
+                && lines.contains(&"D~1          <DIR>     2026-11-09  13:00  d"),
+            "{listing}"
+        );
+        // A move keeps when the file changed.
+        w.set_now(Some(noon + 7200));
+        let (moved, _) = w.rename(root, "made.txt", root, "moved.txt").unwrap();
+        let found = w.fat.lookup(root, "moved.txt").unwrap();
+        assert_eq!((moved.changed, found.changed), (file.changed, file.changed));
+        let directory = w.fat.lookup(root, "d").unwrap();
+        assert_eq!(
+            stamp::seconds(directory.changed),
+            Some(noon + 3600),
+            "the directory when it was made"
+        );
+        w.set_now(None);
+        let (unknown, _) = w.create(root, "when.txt", false).unwrap();
+        assert_eq!(
+            unknown.changed,
+            stamp::FIRST,
+            "no time known: 1 January 1980"
+        );
+        assert!(sound(&image.borrow(), "stamped"));
     }
 
     #[test]

@@ -8,5 +8,8 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+calendar = { path = "../calendar" }
+
 [lints]
 workspace = true

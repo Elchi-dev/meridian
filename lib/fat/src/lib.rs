@@ -8,6 +8,7 @@
 
 pub mod format;
 pub mod name;
+pub mod stamp;
 pub mod write;
 
 /// Why something on a volume could not be read.
@@ -166,6 +167,9 @@ pub struct Entry {
     pub first: u32,
     pub size: u32,
     pub directory: bool,
+    /// When it last changed, as a [`stamp`] holds it; 0 for the root
+    /// directory, which has no entry of its own.
+    pub changed: u32,
 }
 
 impl Entry {
@@ -174,6 +178,7 @@ impl Entry {
             first: u16_at(e, 20) << 16 | u16_at(e, 26),
             size: u32_at(e, 28),
             directory: e[11] & 0x10 != 0,
+            changed: u16_at(e, 24) << 16 | u16_at(e, 22),
         }
     }
 }
@@ -460,6 +465,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool> Fat<R> {
             first: self.volume.root,
             size: 0,
             directory: true,
+            changed: 0,
         };
         for name in path.split('/').filter(|n| !n.is_empty()) {
             if !entry.directory {
@@ -1161,6 +1167,7 @@ mod tests {
             first,
             size: 64 * 512,
             directory: false,
+            changed: 0,
         };
         let reads = RefCell::new(Vec::new());
         let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
@@ -1187,6 +1194,7 @@ mod tests {
             first: 10,
             size: 6 * 512 - 100,
             directory: false,
+            changed: 0,
         };
         let reads = RefCell::new(Vec::new());
         let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
@@ -1219,6 +1227,7 @@ mod tests {
             first,
             size: 8 * 512,
             directory: false,
+            changed: 0,
         };
         let reads = RefCell::new(Vec::new());
         let mut fat = Fat::open(noting(&disk, &reads)).unwrap();
@@ -1262,6 +1271,7 @@ mod tests {
             first: 66_000,
             size: 16 * 512,
             directory: false,
+            changed: 0,
         };
         let mut fat = Fat::open(disk.reader()).unwrap();
         let mut room = vec![0u8; 8 * 512];
@@ -1279,6 +1289,7 @@ mod tests {
             first,
             size: 3 * 512,
             directory: false,
+            changed: 0,
         };
         let mut fat = Fat::open(disk.reader()).unwrap();
         let mut room = [0u8; 1025];
@@ -1369,6 +1380,7 @@ mod tests {
             first: 1,
             size: 10,
             directory: false,
+            changed: 0,
         };
         assert_eq!(
             Fat::open(disk.reader())

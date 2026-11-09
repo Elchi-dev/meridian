@@ -94,6 +94,7 @@ impl<R: FnMut(u64, &mut [u8]) -> bool, W: FnMut(u64, &[u8]) -> bool> Volume<R, W
             first: self.fs.fat.volume.root,
             size: 0,
             directory: true,
+            changed: 0,
         };
         let mut place = None;
         for name in names {

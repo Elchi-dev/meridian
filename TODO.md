@@ -210,6 +210,7 @@ Loader and UEFI:
 - [x] `file`
 - [x] `pax`
 - [x] `date`, in UTC, and `cal`
+- [x] `pr`
 - [x] Files keep when they last changed, in UTC: `test -nt` and `-ot`, `find -mtime` and `-newer`, `ls -t`, and what pax writes
 - [x] Setting when a file changed: SET_CHANGED, and `touch` with `-r`, `-t` and `-d`
 - [x] pax keeping when the files it reads out and copies changed, `cp -p`, and `mv` across volumes

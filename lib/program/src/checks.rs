@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 177] = [
+const CHECKS: [(&str, Check); 178] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -194,6 +194,7 @@ const CHECKS: [(&str, Check); 177] = [
     ("tools.pax", pax_reads_and_writes_archives),
     ("tools.date", date_tells_the_time),
     ("tools.cal", cal_writes_calendars),
+    ("tools.pr", pr_writes_pages),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2820,14 +2821,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"136\n"
+        b"138\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-eight twice",
+        "ls should write the programs' names into the pipe, sixty-nine twice",
     )?;
     expect(
         same(
@@ -5831,6 +5832,59 @@ fn date_tells_the_time() -> Outcome {
 /// cal writes the month the time of day falls in, November 2026 on test
 /// machines, and the one England changed its calendar in, and says what
 /// it cannot take.
+/// pr says what words it cannot take, lays its standard input out in
+/// columns, and cuts a file into pages whose header names it and when it
+/// last changed, merges files side by side, and waits for no one when it
+/// writes into a pipe.
+fn pr_writes_pages() -> Outcome {
+    let checked = same(
+        &shell_on("pr -x; pr -37 a")?,
+        &ran(
+            1,
+            b"pr: -x is no option\npr ended with 1\n\
+              pr: a line of 72 columns leaves no room for 37 columns of text\npr ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "pr should say what words it cannot take, and end with 1",
+    )?;
+    let checked = same(
+        &shell_on("printf 'a\\nb\\nc\\nd\\ne\\n' | pr -2 -t")?,
+        &ran(0, b"a\t\t\t\t    d\nb\t\t\t\t    e\nc\n"),
+    );
+    expect(
+        checked,
+        "pr should lay five lines out in two columns, the first of three",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let (ended, said) = shell_on(
+        "printf '1\\n2\\n3\\n' > /System/pr.txt || exit 9\n\
+         touch -t 200109090146.40 /System/pr.txt; pr -l 12 /System/pr.txt\n\
+         pr -m -t /System/pr.txt /System/pr.txt; pr -p -t /System/pr.txt | cat\n\
+         rm /System/pr.txt",
+    )?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/pr.txt: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    let header = |page| alloc::format!("\n\nSep  9 01:46 2001 /System/pr.txt Page {page}\n\n\n");
+    let pages = alloc::format!(
+        "{}1\n2\n\n\n\n\n\n{}3\n\n\n\n\n\n\n\
+         1\t\t\t\t    1\n2\t\t\t\t    2\n3\t\t\t\t    3\n1\n2\n3\n",
+        header(1),
+        header(2)
+    );
+    expect(
+        same(&(ended, said), &ran(0, pages.as_bytes())),
+        "pr should cut a file into pages dated when it changed, merge it with itself, and not wait in a pipe",
+    )
+}
+
 fn cal_writes_calendars() -> Outcome {
     let changed: String = include_str!("../testdata/cal/months.txt")
         .split_inclusive('\n')

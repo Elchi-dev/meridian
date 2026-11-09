@@ -300,6 +300,10 @@ name = "pax"
 test = true
 
 [[example]]
+name = "pr"
+test = true
+
+[[example]]
 name = "date"
 test = true
 

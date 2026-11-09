@@ -33,3 +33,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0025](0025-find-differences-in-lib-diff-with-myers-algorithm-in-linear-space.md) | Find differences in lib/diff with Myers' algorithm in linear space | accepted |
 | [0026](0026-run-awk-programs-in-lib-awk-on-a-tree-of-their-own.md) | Run awk programs in lib/awk on a tree of their own | accepted |
 | [0027](0027-work-out-bc-s-numbers-exactly-in-lib-bc.md) | Work out bc's numbers exactly in lib/bc | accepted |
+| [0028](0028-take-the-time-of-day-from-the-firmware-at-boot-and-count-on-with-the-time-stamp-counter.md) | Take the time of day from the firmware at boot and count on with the time stamp counter | accepted |

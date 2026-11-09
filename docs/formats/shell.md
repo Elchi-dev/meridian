@@ -179,8 +179,9 @@ leaves off; a backslash stays as it is. `printf` works as POSIX's does,
 with widths and precisions of at most 4096, and says which word is not
 all a number or too big for 64 bits. `test` and `[` work as POSIX's do;
 Meridian has no links, devices, pipes or sockets, so `-h`, `-L`, `-b`,
-`-c`, `-p` and `-S` answer false, and `-nt`, `-ot` and `-ef` are
-refused, as Meridian keeps no times or links of files to compare.
+`-c`, `-p` and `-S` answer false, and `-ef` is refused. `-nt` and
+`-ot` compare when the two files last changed; a file that is there is
+newer than one that is not, and one that keeps no time is neither.
 Every command answers to its Linux name and to its Windows one where
 there is one: `ls` and `dir`, `cat` and `type`, `cp` and `copy`, `mv` and
 `move`, `rm` and `del`, `mkdir` and `md`, `rmdir` and `rd`.

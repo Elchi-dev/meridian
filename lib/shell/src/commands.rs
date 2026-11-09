@@ -29,6 +29,9 @@ pub struct File {
     pub kind: Kind,
     pub size: u64,
     pub allowed: Allowed,
+    /// When it last changed, as seconds since 1970 began; none for what
+    /// keeps no time.
+    pub changed: Option<u64>,
 }
 
 /// What a command reaches: where it writes, where it says what went
@@ -454,7 +457,7 @@ fn holds(words: &[&str], streams: &mut impl Streams) -> Result<bool, String> {
         ["!", one] => Ok(one.is_empty()),
         [op, operand] if UNARY.contains(&op) => unary(op, operand, streams),
         [first, _] => Err(format!("{first}: no test of one word")),
-        [left, op, right] if BINARY.contains(&op) => binary(left, op, right),
+        [left, op, right] if BINARY.contains(&op) => binary(left, op, right, streams),
         ["!", a, b] => holds(&[a, b], streams).map(|held| !held),
         ["(", one, ")"] => holds(&[one], streams),
         ["!", a, b, c] => holds(&[a, b, c], streams).map(|held| !held),
@@ -542,7 +545,7 @@ impl<'a> Expression<'a> {
         match (following, after) {
             (Some(op), Some(right)) if BINARY.contains(&op) && op != "-a" && op != "-o" => {
                 self.at += 2;
-                binary(word, op, right)
+                binary(word, op, right, streams)
             }
             (Some(operand), _) if UNARY.contains(&word) => {
                 self.at += 1;
@@ -580,7 +583,7 @@ fn whole(word: &str) -> Result<i64, String> {
 }
 
 /// Whether `left op right` holds.
-fn binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
+fn binary(left: &str, op: &str, right: &str, streams: &mut impl Streams) -> Result<bool, String> {
     Ok(match op {
         "=" => left == right,
         "!=" => left != right,
@@ -588,9 +591,22 @@ fn binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
         ">" => left.as_bytes() > right.as_bytes(),
         "-a" => !left.is_empty() && !right.is_empty(),
         "-o" => !left.is_empty() || !right.is_empty(),
-        "-nt" | "-ot" | "-ef" => {
-            return Err(format!(
-                "{op}: Meridian keeps no times or links of files to compare"
+        // As POSIX has them: a file that is there is newer than one that is
+        // not, and of two the one that changed later.
+        "-nt" | "-ot" => {
+            let (mut a, mut b) = (streams.file(left), streams.file(right));
+            if op == "-ot" {
+                core::mem::swap(&mut a, &mut b);
+            }
+            match (a, b) {
+                (Some(_), None) => true,
+                (Some(a), Some(b)) => a.changed.zip(b.changed).is_some_and(|(a, b)| a > b),
+                _ => false,
+            }
+        }
+        "-ef" => {
+            return Err(String::from(
+                "-ef: Meridian has no links, so no two paths name one file",
             ));
         }
         _ => {
@@ -649,6 +665,11 @@ mod tests {
                     write: mode & 0o200 != 0,
                     run: mode & 0o100 != 0,
                 },
+                changed: meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()),
             })
         }
 
@@ -945,12 +966,8 @@ mod tests {
             (&["(", "a", "-a", "b"], "( without its )"),
             (&["x", "-a", "x", "-a"], "a test is missing at its end"),
             (
-                &["a", "-nt", "b"],
-                "-nt: Meridian keeps no times or links of files to compare",
-            ),
-            (
                 &["a", "-ef", "b"],
-                "-ef: Meridian keeps no times or links of files to compare",
+                "-ef: Meridian has no links, so no two paths name one file",
             ),
         ] {
             assert_eq!(tested(words), (2, format!("test: {said}\n")), "{words:?}");
@@ -1034,6 +1051,50 @@ mod tests {
         }
         assert_eq!(tested(&["!", "-e", &missing]).0, 0);
         assert_eq!(tested(&["-f", &file, "-a", "-d", &folder]).0, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_are_newer_and_older_by_when_they_changed() {
+        let dir = std::env::temp_dir().join(format!("meridian-test-times-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let made = |name: &str, seconds: u64| {
+            let path = dir.join(name);
+            std::fs::write(&path, b"x").unwrap();
+            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+            String::from(path.to_str().unwrap())
+        };
+        let old = made("old", 1_700_000_000);
+        let new = made("new", 1_700_000_001);
+        let same = made("same", 1_700_000_001);
+        let missing = String::from(dir.join("missing").to_str().unwrap());
+        for (left, op, right, status) in [
+            (&new, "-nt", &old, 0),
+            (&old, "-nt", &new, 1),
+            (&new, "-ot", &old, 1),
+            (&old, "-ot", &new, 0),
+            (&new, "-nt", &same, 1),
+            (&new, "-ot", &same, 1),
+            (&old, "-nt", &missing, 0),
+            (&missing, "-nt", &old, 1),
+            (&missing, "-ot", &old, 0),
+            (&old, "-ot", &missing, 1),
+            (&missing, "-nt", &missing, 1),
+            (&missing, "-ot", &missing, 1),
+        ] {
+            assert_eq!(tested(&[left, op, right]).0, status, "{left} {op} {right}");
+        }
+        assert_eq!(
+            tested(&["!", &old, "-nt", &new, "-a", &new, "-nt", &old]).0,
+            0,
+            "within a longer test"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

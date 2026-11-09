@@ -24,6 +24,7 @@ fn may(path: &str, wanted: u32) -> bool {
 pub fn file(path: &str) -> Option<File> {
     let handle = crate::open(path, 0).ok()?;
     let info = crate::info(handle);
+    let changed = crate::changed(handle).ok().flatten();
     let _ = crate::close(handle);
     let info = info.ok()?;
     let program = path
@@ -41,6 +42,7 @@ pub fn file(path: &str) -> Option<File> {
             write: may(path, file::WRITE),
             run: info.directory || program && may(path, file::RUN),
         },
+        changed,
     })
 }
 

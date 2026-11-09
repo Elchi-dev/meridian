@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 171] = [
+const CHECKS: [(&str, Check); 172] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -188,6 +188,7 @@ const CHECKS: [(&str, Check); 171] = [
     ("tools.bc", bc_works_out_numbers),
     ("tools.compress", compress_squeezes_files),
     ("tools.file", file_names_kinds),
+    ("tools.pax", pax_reads_and_writes_archives),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2665,14 +2666,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"130\n"
+        b"132\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-five twice",
+        "ls should write the programs' names into the pipe, sixty-six twice",
     )?;
     expect(
         same(
@@ -5464,6 +5465,76 @@ fn file_names_kinds() -> Outcome {
     expect(
         checked,
         "file should tell a character cut by its look from one cut by the file's end",
+    )
+}
+
+/// pax says what words it cannot take and what is no archive, writes a
+/// directory and all it holds into a pipe and lists it as `ls -l` does,
+/// and on a disk it can write copies the directory, writes an archive of
+/// the copy and reads that out again whole.
+fn pax_reads_and_writes_archives() -> Outcome {
+    let checked = same(
+        &shell_on("pax -q; pax -x tar -w; echo hi | pax")?,
+        &ran(
+            1,
+            b"pax: -q is no option\npax ended with 1\n\
+              pax: -x tar: writes ustar and cpio\npax ended with 1\n\
+              pax: the archive: ends inside a member\npax ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "pax should say what words it cannot take and what is no archive",
+    )?;
+    if !booted_from_disk() {
+        return Ok(());
+    }
+    let from = "/System/Boot/meridian/licences";
+    let checked = same(
+        &shell_on(&alloc::format!("pax -w {from} | pax -v"))?,
+        &ran(
+            0,
+            alloc::format!(
+                "drwxr-xr-x 1 0 0 0 Jan  1  1970 {from}\n\
+                 -rw-r--r-- 1 0 0 4380 Jan  1  1970 {from}/inter.txt\n\
+                 -rw-r--r-- 1 0 0 4399 Jan  1  1970 {from}/jetbrains_mono.txt\n\
+                 -rw-r--r-- 1 0 0 11823 Jan  1  1970 {from}/shim.txt\n"
+            )
+            .as_bytes(),
+        ),
+    );
+    expect(
+        checked,
+        "pax should write a directory with all it holds into a pipe, and list it",
+    )?;
+    let (ended, said) = shell_on(&alloc::format!(
+        "printf '' > /System/p.cpio || exit 9\n\
+         md /System/px; pax -rw {from} /System/px\n\
+         cd /System/px; pax -w -x cpio -f /System/p.cpio System\n\
+         md /System/py; cd /System/py; pax -r -f /System/p.cpio\n\
+         cmp {from}/shim.txt /System/py/System/Boot/meridian/licences/shim.txt && echo whole\n\
+         pax -f /System/p.cpio; echo /System/px /System/py /System/p.cpio | xargs rm -r"
+    ))?;
+    if ended == Ok(Ended::Exited(9)) {
+        return expect(
+            said.starts_with(b"/System/p.cpio: on a volume that is only read\n"),
+            "on /System read only no file should be made",
+        );
+    }
+    let shown = "System/Boot/meridian/licences";
+    expect(
+        same(
+            &(ended, said),
+            &ran(
+                0,
+                alloc::format!(
+                    "whole\nSystem\nSystem/Boot\nSystem/Boot/meridian\n{shown}\n\
+                     {shown}/inter.txt\n{shown}/jetbrains_mono.txt\n{shown}/shim.txt\n"
+                )
+                .as_bytes(),
+            ),
+        ),
+        "pax should copy a directory, write an archive of the copy and read it out whole",
     )
 }
 

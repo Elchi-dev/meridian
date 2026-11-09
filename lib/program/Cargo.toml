@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 abi = { path = "../abi" }
+archive = { path = "../archive" }
 awk = { path = "../awk" }
 bc = { path = "../bc" }
 diff = { path = "../diff" }
@@ -291,4 +292,8 @@ test = true
 
 [[example]]
 name = "file"
+test = true
+
+[[example]]
+name = "pax"
 test = true

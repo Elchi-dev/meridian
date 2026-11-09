@@ -14,6 +14,7 @@ pub mod memory;
 pub mod qemu_test;
 pub mod status;
 pub mod text;
+pub mod time;
 pub mod variable;
 
 #[allow(unsafe_code)]

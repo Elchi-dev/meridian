@@ -1,10 +1,11 @@
 //! The runtime services the loader calls while boot services still run:
-//! firmware variables and restarting the machine.
+//! firmware variables, the time of day and restarting the machine.
 
 use core::ffi::c_void;
 
 use super::System;
 use super::table::{RUNTIME_SERVICES_SIGNATURE, ResetType, RuntimeServices, header_is_valid};
+use crate::time::Time;
 use crate::variable::{Attributes, is_name};
 use crate::{Guid, Status};
 
@@ -97,6 +98,21 @@ impl System {
             )
         }
         .ok()
+    }
+
+    /// The time of day the real-time clock keeps.
+    ///
+    /// # Errors
+    ///
+    /// `DEVICE_ERROR` when the clock does not answer, and the firmware's
+    /// other errors.
+    pub fn time(&self) -> Result<Time, Status> {
+        let rt = self.runtime_services()?;
+        let mut time = Time::default();
+        // SAFETY: the firmware writes one EFI_TIME into time, and no
+        // capabilities are asked for.
+        unsafe { (rt.get_time)(&raw mut time, core::ptr::null_mut()) }.ok()?;
+        Ok(time)
     }
 
     /// Restarts the machine, or switches it off. Returns only when the

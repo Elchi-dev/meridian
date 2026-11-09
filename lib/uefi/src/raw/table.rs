@@ -5,6 +5,7 @@ use core::ffi::c_void;
 use super::console::{SimpleTextInput, SimpleTextOutput};
 use super::{Event, Handle};
 use crate::memory::MemoryType;
+use crate::time::Time;
 use crate::{Guid, Status};
 
 /// A slot Meridian does not call yet. It only keeps the table layout; a
@@ -148,7 +149,7 @@ impl AllocateType {
 #[repr(C)]
 pub struct RuntimeServices {
     pub hdr: TableHeader,
-    pub get_time: NotCalled,
+    pub get_time: unsafe extern "efiapi" fn(time: *mut Time, capabilities: *mut c_void) -> Status,
     pub set_time: NotCalled,
     pub get_wakeup_time: NotCalled,
     pub set_wakeup_time: NotCalled,

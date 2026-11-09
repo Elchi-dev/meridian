@@ -39,6 +39,23 @@ pub const CONSOLE_PROBE: &str = concat!(
     " end",
 );
 
+/// The real-time clock: `GetTime` answers with a time that is a date, in the
+/// hour of the day sextant starts test machines' clocks at, 12:00 UTC on
+/// 9 November 2026.
+fn clock(system: &System, report: &mut impl Report) {
+    let time = system.time();
+    report.check(
+        "uefi.time",
+        time.is_ok_and(|t| t.unix().is_some()),
+        "GetTime should give a time that is a date",
+    );
+    report.check(
+        "uefi.time.set",
+        time.is_ok_and(|t| (t.year, t.month, t.day, t.hour) == (2026, 11, 9, 12)),
+        "the clock should be in the hour sextant set it to, 12:00 UTC on 9 November 2026",
+    );
+}
+
 pub fn run(system: &System, report: &mut impl Report) {
     // Distributions name their builds differently ("EDK II" on Arch, with
     // the distribution in front on Ubuntu), but every OVMF says EDK II.
@@ -66,6 +83,7 @@ pub fn run(system: &System, report: &mut impl Report) {
         system.stall(1_000).is_ok() && system.stall(0).is_ok(),
         "Stall refused 1000 or 0 microseconds",
     );
+    clock(system, report);
 
     memory(system, report);
     files(system, report);

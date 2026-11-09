@@ -25,6 +25,7 @@ use security::{Restriction, Token};
 pub mod checks;
 pub mod child;
 pub mod commands;
+pub mod date;
 pub mod layout;
 #[allow(unsafe_code)]
 mod raw;

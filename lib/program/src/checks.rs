@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 173] = [
+const CHECKS: [(&str, Check); 174] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -190,6 +190,7 @@ const CHECKS: [(&str, Check); 173] = [
     ("tools.compress", compress_squeezes_files),
     ("tools.file", file_names_kinds),
     ("tools.pax", pax_reads_and_writes_archives),
+    ("tools.date", date_tells_the_time),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2681,14 +2682,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"132\n"
+        b"134\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-six twice",
+        "ls should write the programs' names into the pipe, sixty-seven twice",
     )?;
     expect(
         same(
@@ -5550,6 +5551,33 @@ fn pax_reads_and_writes_archives() -> Outcome {
             ),
         ),
         "pax should copy a directory, write an archive of the copy and read it out whole",
+    )
+}
+
+/// date writes the time of day sextant starts test machines' clocks at,
+/// 12:00 UTC on 9 November 2026, a Monday, in the form it is given and in
+/// the C locale's, and says what it cannot do.
+fn date_tells_the_time() -> Outcome {
+    let checked = same(
+        &shell_on("date '+%F %H %Z %u'; date -u +%Y; date 1109120026; date -x")?,
+        &ran(
+            1,
+            b"2026-11-09 12 UTC 1\n2026\n\
+              date: the time cannot be set yet\ndate ended with 1\n\
+              date: -x is no option\ndate ended with 1\n",
+        ),
+    );
+    expect(
+        checked,
+        "date should write the time sextant set the clock to, and say what it cannot do",
+    )?;
+    let (ended, said) = shell_on("date")?;
+    expect(
+        ended == Ok(Ended::Exited(0))
+            && said.len() == 29
+            && said.starts_with(b"Mon Nov  9 12:")
+            && said.ends_with(b" UTC 2026\n"),
+        "date alone should write the time in the C locale's form",
     )
 }
 

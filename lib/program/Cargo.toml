@@ -297,3 +297,7 @@ test = true
 [[example]]
 name = "pax"
 test = true
+
+[[example]]
+name = "date"
+test = true

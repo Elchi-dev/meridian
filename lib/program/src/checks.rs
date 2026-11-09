@@ -300,7 +300,8 @@ fn time_of_day() -> Outcome {
 }
 
 /// `SET_TIME` counts the time of day on from what it is given, for
-/// SYSTEM's token.
+/// SYSTEM's token, and date run with a token that kept no privilege is
+/// refused it.
 fn time_is_set() -> Outcome {
     let hour = 3_600_000_000_000;
     let ahead = crate::now().ok_or("the time of day should be known")? + hour;
@@ -313,6 +314,28 @@ fn time_is_set() -> Outcome {
             && back == Ok(())
             && after.is_some_and(|ns| (ahead..ahead + 1_000_000_000).contains(&ns)),
         "the time of day should go on from what SET_TIME gives, for SYSTEM's token",
+    )?;
+    let (out, theirs) = pair()?;
+    let (errors, error_end) = pair()?;
+    let given = start::Given {
+        output: Some(start::Sink::Channel(theirs)),
+        error: Some(start::Sink::Channel(error_end)),
+        ..start::Given::default()
+    };
+    let none = Restriction {
+        integrity: Integrity::Medium,
+        keep: Privileges::NONE,
+    };
+    let (child, start) = crate::spawn_handing_as("date.mexec", &["1109123026"], given, Some(none))
+        .map_err(|_| "date should start")?;
+    let ended = wait(child);
+    let (wrote, said) = (drained(out), drained(errors));
+    let _ = (close(child), close(start), close(out), close(errors));
+    expect(
+        ended == Ok(Ended::Exited(1))
+            && wrote.is_empty()
+            && said == b"date: setting the time takes SeSystemtimePrivilege\n",
+        "date should be refused the time for a token without SeSystemtimePrivilege",
     )
 }
 
@@ -5822,20 +5845,24 @@ fn many_files_are_copied() -> Outcome {
 
 /// date writes the time of day sextant starts test machines' clocks at,
 /// 12:00 UTC on 9 November 2026, a Monday, in the form it is given and in
-/// the C locale's, and says what it cannot do.
+/// the C locale's, sets it to half past twelve, and says what it cannot
+/// do.
 fn date_tells_the_time() -> Outcome {
     let checked = same(
-        &shell_on("date '+%F %H %Z %u'; date -u +%Y; date 1109120026; date -x")?,
+        &shell_on(
+            "date '+%F %H %Z %u'; date -u +%Y; date 1109123026; date +%H:%M\n\
+             date 13091200; date -x",
+        )?,
         &ran(
             1,
-            b"2026-11-09 12 UTC 1\n2026\n\
-              date: the time cannot be set yet\ndate ended with 1\n\
+            b"2026-11-09 12 UTC 1\n2026\nMon Nov  9 12:30:00 UTC 2026\n12:30\n\
+              date: 13091200 is no time as mmddhhmm[[cc]yy]\ndate ended with 1\n\
               date: -x is no option\ndate ended with 1\n",
         ),
     );
     expect(
         checked,
-        "date should write the time sextant set the clock to, and say what it cannot do",
+        "date should write the time sextant set the clock to, set it, and say what it cannot do",
     )?;
     let (ended, said) = shell_on("date")?;
     expect(

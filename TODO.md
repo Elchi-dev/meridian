@@ -214,7 +214,8 @@ Loader and UEFI:
 - [x] Files keep when they last changed, in UTC: `test -nt` and `-ot`, `find -mtime` and `-newer`, `ls -t`, and what pax writes
 - [x] Setting when a file changed: SET_CHANGED, and `touch` with `-r`, `-t` and `-d`
 - [x] pax keeping when the files it reads out and copies changed, `cp -p`, and `mv` across volumes
-- [ ] Time zones, and setting the time
+- [x] Setting the time, with `date`, until the machine stops
+- [ ] Time zones, and a time set kept in the firmware's clock
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time
 - [x] A text console in the kernel: WRITE and KEY, rows of `JetBrains Mono` that wrap and scroll, a US layout in the runtime

@@ -199,6 +199,13 @@ fn text_messages(kind: u8, text: &str) -> Vec<Vec<u8>> {
 }
 
 impl Given {
+    /// Whether what the program writes goes to the console, as it does
+    /// when the parent handed no output over.
+    #[must_use]
+    pub fn writes_to_console(&self) -> bool {
+        self.output.is_none()
+    }
+
     /// Takes in the start message `bytes`, which came over the start
     /// channel `start` and brought `handle`, and says whether more are to
     /// come.
@@ -371,6 +378,25 @@ mod tests {
         }
         for byte in 7..=u8::MAX {
             assert_eq!(Kind::of(byte), None, "{byte}");
+        }
+    }
+
+    #[test]
+    fn output_is_the_console_s_until_one_is_handed_over() {
+        let mut given = Given::default();
+        assert!(given.writes_to_console());
+        given.error = Some(Sink::Channel(Handle(0x1_0004)));
+        given.input = Some(Handle(0x1_0002));
+        assert!(
+            given.writes_to_console(),
+            "what else is handed over changes nothing"
+        );
+        for sink in [
+            Sink::Channel(Handle(0x1_0003)),
+            Sink::File(Handle(0x1_0003)),
+        ] {
+            given.output = Some(sink);
+            assert!(!given.writes_to_console(), "{sink:?}");
         }
     }
 

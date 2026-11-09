@@ -426,6 +426,14 @@ pub fn write(text: &str) -> Result<(), Error> {
     write_to(start::given().output, text)
 }
 
+/// Whether the program's standard output is the console, as when its
+/// parent handed it none: where a program may wait for the one at it, as
+/// `pr -p` does.
+#[must_use]
+pub fn output_is_console() -> bool {
+    start::given().writes_to_console()
+}
+
 /// Writes `text` to the program's standard error, as [`write`] does to
 /// its standard output.
 ///

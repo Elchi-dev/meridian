@@ -855,6 +855,14 @@ mod tests {
         assert_eq!(compress(&mut host, Some("small"), &forced), Went::Done);
         assert_eq!(host.holds("small"), None);
         assert_eq!(gzip(&host.holds("small.Z").unwrap()), b"ab");
+        // Eight a's are four codes of nine bits, five bytes after the
+        // header's three: as large is no smaller. Nine a's are four too.
+        host.put_file("even", b"aaaaaaaa");
+        assert_eq!(compress(&mut host, Some("even"), &plain()), Went::Kept);
+        assert_eq!(host.holds("even.Z"), None);
+        host.put_file("nine", b"aaaaaaaaa");
+        assert_eq!(compress(&mut host, Some("nine"), &plain()), Went::Done);
+        assert_eq!(host.holds("nine.Z").map(|z| z.len()), Some(8));
     }
 
     #[test]

@@ -36,3 +36,4 @@ Outside code and files are only allowed through an accepted record with an `- Al
 | [0028](0028-take-the-time-of-day-from-the-firmware-at-boot-and-count-on-with-the-time-stamp-counter.md) | Take the time of day from the firmware at boot and count on with the time stamp counter | accepted |
 | [0029](0029-keep-a-file-s-last-change-in-its-fat-entry-in-utc-and-answer-it-through-a-call.md) | Keep a file's last change in its FAT entry, in UTC, and answer it through a call | accepted |
 | [0030](0030-set-when-a-file-last-changed-through-a-call-to-what-fat-keeps.md) | Set when a file last changed through a call, to what FAT keeps | accepted |
+| [0031](0031-set-the-time-of-day-through-a-call-that-sesystemtimeprivilege-allows-until-the-machine-stops.md) | Set the time of day through a call that SeSystemtimePrivilege allows, until the machine stops | accepted |

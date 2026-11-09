@@ -3473,7 +3473,7 @@ fn sh_names_of_files() -> Outcome {
             0,
             b"wc.mexec wc_again.mexec whoami.mexec whoami_again.mexec\n\
               /System/Boot/meridian/programs/shell.mexec\n\
-              head_again.mexec\nhello_again.mexec\ninit_again.mexec\n\
+              head_again.mexec\nhello_again.mexec\niconv_again.mexec\ninit_again.mexec\n\
               W* .x*\nw*\n",
         ),
     );
@@ -5946,7 +5946,7 @@ fn iconv_turns_text() -> Outcome {
     expect(checked, "iconv should say what words it cannot take")?;
     let checked = same(
         &shell_on(
-            "iconv -l | head -1; printf 'caf\\303\\251\\n' | iconv -t latin1 | od -An -tx1\n\
+            "iconv -l | head -n 1; printf 'caf\\303\\251\\n' | iconv -t latin1 | od -An -tx1\n\
              printf 'ab\\n' | iconv -t UTF-16 | od -An -tx1\n\
              printf '\\342\\224\\200\\n' | iconv -t cp437 | od -An -tx1",
         )?,

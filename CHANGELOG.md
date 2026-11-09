@@ -102,6 +102,7 @@ at 0.x until the native API is stable.
   - `lib/bc`: numbers of any length worked out exactly to the scales POSIX gives (decision record 0027), read and written in any base, and bc's programs read into their items and run as they come, with `-l`'s functions written anew in bc.
   - `lib/lzw`: the LZW coding of compress, both ways a piece at a time, as compress writes it, the old kind without CLEAR read too.
   - `lib/archive`: the archives pax writes and reads, ustar and cpio's portable kind, both ways a piece at a time, a member's mode, owners and time with it, with POSIX's extended headers, GNU's long names and GNU's numbers past octal's read too.
+  - `lib/charset`: bytes of UTF-8, UTF-16 and UTF-32 in either order, US-ASCII, ISO 8859-1, Windows-1252 and code page 437 read into Unicode and written back, a character at a time, the code pages from the tables Unicode publishes (decision record 0032).
   - `lib/calendar`: leap years, the days of each month, and the days since 1970 began turned into dates and back, by Howard Hinnant's way, for the loader's clock, FAT's stamps and `program::date`.
 
 ### Fixed
@@ -128,6 +129,7 @@ at 0.x until the native API is stable.
 - **`lib/bc`.** Its arithmetic and its numbers written and read in other bases match GNU bc's on random numbers, over a hundred programs write what GNU bc writes for them, read whole or a line at a time, and `-l`'s functions give the true values cut to their scale on two hundred values worked out with Python's decimal to 160 digits, where GNU's own misses sin(10^30).
 - **`lib/lzw`.** gzip reads what it writes at every number of bits, past full tables started again, and the codes are those an LZW written apart gives.
 - **`lib/archive`.** GNU tar, bsdtar and cpio list and unpack what it writes, the times and owners it gives with it, it reads what they write in ustar, pax, GNU's and cpio's portable kind, and random members come back through both kinds in pieces of any size.
+- **`lib/charset`.** Every byte of the four sets of bytes, every character up to U+2FFF they write, and random UTF text read, stopped at and written in all seven forms of UTF match glibc's iconv, and every pair of bytes starting UTF-8 reads as Rust's own UTF-8 reads it.
 - **`lib/qr`.** Every version at every level gives the same modules as `qrencode` with the same mask, and `zbarimg` reads every version back.
 - **Disk images.** The writers' output is read back by `sfdisk`, `fdisk`, `fsck.fat`, `fatlabel`, `mdir`, `mcopy`, `xorriso` and `bsdtar`. Mutation testing found two real bugs, both fixed:
   - the FAT size calculation overflowed near 2 TiB

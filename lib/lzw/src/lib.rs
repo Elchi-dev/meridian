@@ -243,7 +243,6 @@ pub enum Fault {
 pub struct Decoder {
     header: Vec<u8>,
     most: u8,
-    block: bool,
     width: u8,
     limit: u32,
     /// The next code a string gets.
@@ -275,7 +274,6 @@ impl Decoder {
         Decoder {
             header: Vec::new(),
             most: 0,
-            block: false,
             width: LEAST_BITS,
             limit: 0,
             next: FIRST,
@@ -290,15 +288,16 @@ impl Decoder {
         }
     }
 
-    /// Reads the header from the bytes at hand, if there are enough.
+    /// Reads the header from the bytes at hand, all of them when there
+    /// are not enough.
     ///
     /// # Errors
     ///
     /// When it is no compress header.
-    fn header(&mut self, bytes: &mut &[u8]) -> Result<bool, Fault> {
+    fn header(&mut self, bytes: &mut &[u8]) -> Result<(), Fault> {
         while self.header.len() < 3 {
             let Some((&b, rest)) = bytes.split_first() else {
-                return Ok(false);
+                return Ok(());
             };
             self.header.push(b);
             *bytes = rest;
@@ -310,16 +309,20 @@ impl Decoder {
         if self.most > MOST_BITS {
             return Err(Fault::TooManyBits(self.most));
         }
-        self.block = self.header[2] & BLOCK != 0;
         self.limit = limit(LEAST_BITS, self.most);
-        self.next = if self.block { FIRST } else { CLEAR };
+        self.next = if self.block() { FIRST } else { CLEAR };
         let size = 1usize << self.most.max(LEAST_BITS);
         self.prefix = vec![0; size];
         self.suffix = vec![0; size];
         for code in 0..256u16 {
             self.suffix[usize::from(code)] = code.to_le_bytes()[0];
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Whether the header says the table starts again at a [`CLEAR`].
+    fn block(&self) -> bool {
+        self.header[2] & BLOCK != 0
     }
 
     /// Decodes `bytes`, the next of the compressed text, and gives what
@@ -330,8 +333,8 @@ impl Decoder {
     /// When they are no compressed text, or a code names no string.
     pub fn feed(&mut self, mut bytes: &[u8]) -> Result<Vec<u8>, Fault> {
         let mut out = Vec::new();
-        if self.prefix.is_empty() && !self.header(&mut bytes)? {
-            return Ok(out);
+        if self.prefix.is_empty() {
+            self.header(&mut bytes)?;
         }
         for &b in bytes {
             if self.skip >= 8 {
@@ -340,20 +343,19 @@ impl Decoder {
             }
             self.bits |= u32::from(b) << self.held;
             self.held += 8;
-            while self.held >= u32::from(self.width) {
+            // A byte has fewer bits than a code, so it ends one at most.
+            if self.held >= u32::from(self.width) {
                 let code = self.bits & ((1 << self.width) - 1);
                 self.bits >>= self.width;
                 self.held -= u32::from(self.width);
                 self.in_group += u32::from(self.width);
                 self.code(code, &mut out)?;
-                if self.skip > 0 {
-                    // The rest of the group goes by, from the bits held.
-                    let dropped = self.skip.min(self.held);
-                    self.bits = self.bits.checked_shr(dropped).unwrap_or(0);
-                    self.held -= dropped;
-                    self.skip -= dropped;
-                    break;
-                }
+                // What is left of a group that ended goes by, from the
+                // bits held first.
+                let dropped = self.skip.min(self.held);
+                self.bits >>= dropped;
+                self.held -= dropped;
+                self.skip -= dropped;
             }
         }
         Ok(out)
@@ -367,7 +369,7 @@ impl Decoder {
     }
 
     fn code(&mut self, code: u32, out: &mut Vec<u8>) -> Result<(), Fault> {
-        if code == CLEAR && self.block {
+        if code == CLEAR && self.block() {
             self.end_group(self.width);
             self.width = LEAST_BITS;
             self.limit = limit(LEAST_BITS, self.most);
@@ -876,7 +878,7 @@ mod tests {
         );
         let mut decoder = Decoder::new();
         decoder.feed(&text).unwrap();
-        assert_eq!((decoder.most, decoder.block), (12, true));
+        assert_eq!((decoder.most, decoder.block()), (12, true));
         assert_eq!(
             uncompressed(b"\x1f\x9d\x9f", 1),
             Err(Fault::TooManyBits(31))

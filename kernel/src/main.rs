@@ -43,6 +43,7 @@ fn run(info: &BootInfo, regions: &[MemoryRegion], serial: &mut Serial) -> ! {
         machine::calibrate_against(hpet?, raw::hpet::count, x86::raw::tsc)
     });
     let tsc_hz = tsc.map(|t| t.hz);
+    raw::wall::keep(info.clock, tsc_hz);
     let _ = kernel::describe(serial, &machine, tsc);
     let _ = kernel::registers(serial, raw::fpu::saving());
     start_storage(machine.ecam, info.boot_partition, serial);

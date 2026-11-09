@@ -399,6 +399,11 @@ pub fn system_call(frame: &mut Frame) {
             0
         }
         Call::Ticks => super::interrupts::ticks(),
+        Call::Time => {
+            let now = super::wall::now();
+            frame.rdx = u64::from(now.is_some());
+            now.unwrap_or(0)
+        }
         Call::Channel => match make_channel() {
             Ok((a, b)) => {
                 frame.rdx = b;

@@ -23,6 +23,7 @@ pub mod tlb;
 pub mod user;
 pub mod vfs;
 pub mod virtio;
+pub mod wall;
 
 #[cfg(not(test))]
 use core::cell::UnsafeCell;

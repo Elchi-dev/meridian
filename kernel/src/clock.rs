@@ -26,6 +26,21 @@ pub fn tsc_hz(tsc: u64, ticks: u64, hz: u64) -> Option<u64> {
     u64::try_from(u128::from(tsc) * u128::from(hz) / u128::from(ticks)).ok()
 }
 
+/// The nanoseconds since 1970 began when the time stamp counter reads
+/// `tsc`, counted on at `hz` ticks a second from the moment `clock` gave
+/// at its own reading; none while the time is not known. A counter that
+/// reads earlier than that, as another core's may by a little, counts as
+/// that moment itself.
+#[must_use]
+pub fn wall(clock: &bootinfo::Clock, hz: u64, tsc: u64) -> Option<u64> {
+    if clock.known != 1 || hz == 0 {
+        return None;
+    }
+    let since = u128::from(tsc.saturating_sub(clock.tsc)) * 1_000_000_000 / u128::from(hz);
+    let at = u128::from(clock.seconds) * 1_000_000_000 + u128::from(clock.nanoseconds);
+    u64::try_from(at + since).ok()
+}
+
 /// How many ticks of a timer that ticks `hz` times a second the status
 /// screen sleeps between looks at the uptime: a tenth of a second, so a new
 /// second shows at most that late, and at least one tick.
@@ -65,6 +80,45 @@ pub fn span(seconds: u64, out: &mut impl Write) -> fmt::Result {
 mod tests {
     use super::*;
     use acpi::PM_TIMER_HZ;
+
+    #[test]
+    fn the_time_of_day_goes_on_with_the_counter() {
+        let clock = bootinfo::Clock {
+            known: 1,
+            seconds: 1_794_225_600,
+            nanoseconds: 250,
+            tsc: 1_000_000,
+        };
+        let noon = 1_794_225_600_000_000_000;
+        assert_eq!(wall(&clock, 3_000_000_000, 1_000_000), Some(noon + 250));
+        assert_eq!(
+            wall(&clock, 3_000_000_000, 1_000_000 + 4_500_000_000),
+            Some(noon + 1_500_000_250),
+            "a second and a half later"
+        );
+        assert_eq!(
+            wall(&clock, 3_000_000_000, 999_000),
+            Some(noon + 250),
+            "a counter a little behind"
+        );
+        assert_eq!(
+            wall(&clock, 3, 1_000_001),
+            Some(noon + 333_333_583),
+            "nanoseconds cut"
+        );
+        assert_eq!(wall(&clock, 0, 2_000_000), None, "no rate");
+        let unknown = bootinfo::Clock { known: 0, ..clock };
+        assert_eq!(wall(&unknown, 3_000_000_000, 2_000_000), None);
+        let late = bootinfo::Clock {
+            seconds: u64::MAX / 1_000_000_000,
+            ..clock
+        };
+        assert_eq!(
+            wall(&late, 1, u64::MAX),
+            None,
+            "past what 64 bits of nanoseconds hold"
+        );
+    }
 
     #[test]
     fn ticks_wrap_around_their_width() {

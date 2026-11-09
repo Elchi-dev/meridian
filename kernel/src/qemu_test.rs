@@ -2777,6 +2777,21 @@ fn machine_checks<W: Write>(report: &mut Report<'_, W>, machine: &Machine, tsc_h
         crate::up(tsc_hz).is_some_and(|s| s < 600),
         "the test machine was switched on less than ten minutes ago",
     );
+    // sextant starts test machines' clocks at 12:00 UTC on 9 November 2026.
+    let first = raw::wall::now();
+    x86::raw::spin(1_000_000);
+    let later = raw::wall::now();
+    report.check(
+        "kernel.time.of_day",
+        first
+            .is_some_and(|ns| (1_794_225_600_000_000_000..1_794_229_200_000_000_000).contains(&ns)),
+        "the time of day should be what the loader read, in the hour sextant set the clock to",
+    );
+    report.check(
+        "kernel.time.goes_on",
+        first.zip(later).is_some_and(|(a, b)| b > a),
+        "the time of day should go on with the counter",
+    );
     hpet_checks(report, machine, tsc_hz);
 }
 
@@ -3692,6 +3707,7 @@ fn program_checks<W: Write>(report: &mut Report<'_, W>, info: &BootInfo, regions
         abi::TERMINATE,
         abi::THREAD,
         abi::END_THREAD,
+        abi::TIME,
         abi::EXIT,
     ];
     report.check(

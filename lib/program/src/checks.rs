@@ -21,10 +21,11 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 172] = [
+const CHECKS: [(&str, Check); 173] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
+    ("time", time_of_day),
     ("stack", the_stack_asked_for),
     ("channel", round_trip),
     ("channel.empty", nothing_waits),
@@ -276,6 +277,20 @@ fn time_goes_on() -> Outcome {
     )?;
     crate::yield_now();
     expect(crate::ticks() >= after, "time should not go back")
+}
+
+/// The time of day reaches programs: in the hour sextant starts test
+/// machines' clocks at, 12:00 UTC on 9 November 2026, and going on.
+fn time_of_day() -> Outcome {
+    let first = crate::now();
+    crate::sleep(2);
+    let later = crate::now();
+    expect(
+        first
+            .is_some_and(|ns| (1_794_225_600_000_000_000..1_794_229_200_000_000_000).contains(&ns))
+            && first.zip(later).is_some_and(|(a, b)| b > a),
+        "the time of day should reach programs, in the hour sextant set the clock to, and go on",
+    )
 }
 
 fn round_trip() -> Outcome {

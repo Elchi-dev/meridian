@@ -118,6 +118,19 @@ pub fn ticks() -> u64 {
     raw::call(Call::Ticks).0
 }
 
+/// The nanoseconds since 1970 began, in UTC; none while the kernel does
+/// not know the time of day (decision record 0028).
+#[must_use]
+pub fn now() -> Option<u64> {
+    let (rax, rdx) = raw::call(Call::Time);
+    known(rax, rdx)
+}
+
+/// What TIME answered: the time in rax when rdx says it is known.
+fn known(rax: u64, rdx: u64) -> Option<u64> {
+    (rdx == 1).then_some(rax)
+}
+
 /// Makes a channel, and returns the handles of its two ends.
 ///
 /// # Errors
@@ -952,6 +965,18 @@ mod tests {
     use core::fmt::Write;
 
     use super::*;
+
+    #[test]
+    fn the_time_is_there_only_when_the_kernel_says_it_knows_it() {
+        assert_eq!(
+            known(1_794_225_600_000_000_000, 1),
+            Some(1_794_225_600_000_000_000)
+        );
+        assert_eq!(known(0, 1), Some(0), "1970 began is a time too");
+        assert_eq!(known(0, 0), None);
+        assert_eq!(known(5, 0), None, "rdx says, not rax");
+        assert_eq!(known(5, 2), None);
+    }
 
     #[test]
     fn a_thread_stack_takes_the_pages_above_its_guard() {

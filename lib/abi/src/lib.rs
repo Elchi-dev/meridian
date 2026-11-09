@@ -94,6 +94,9 @@ pub const DUPLICATE: u64 = 26;
 /// Moves the file or directory at the path of the rdi bytes at rsi to the
 /// path of the rdx bytes at r10, on the same volume.
 pub const RENAME: u64 = 27;
+/// Answers the nanoseconds since 1970 began, in UTC, with rdx 1; or 0
+/// with rdx 0 while the time of day is not known (decision record 0028).
+pub const TIME: u64 = 28;
 
 /// The most bytes one WRITE takes.
 pub const WRITE_BYTES: usize = 4096;
@@ -376,6 +379,7 @@ pub enum Call {
         to_len: u64,
         to_at: u64,
     },
+    Time,
     Unknown(u64),
 }
 
@@ -453,6 +457,7 @@ impl Call {
                 to_len,
                 to_at,
             } => (RENAME, [from_len, from_at, to_len, to_at]),
+            Call::Time => (TIME, [0; 4]),
             Call::Unknown(number) => (number, [0; 4]),
         }
     }
@@ -555,6 +560,7 @@ pub fn decode(number: u64, args: [u64; 4]) -> Call {
             to_len: third,
             to_at: fourth,
         },
+        TIME => Call::Time,
         other => Call::Unknown(other),
     }
 }
@@ -637,7 +643,8 @@ mod tests {
                 at: 0x7f_e000
             }
         );
-        assert_eq!(decode(28, [1, 2, 3, 0]), Call::Unknown(28));
+        assert_eq!(decode(TIME, [1, 2, 3, 0]), Call::Time);
+        assert_eq!(decode(29, [1, 2, 3, 0]), Call::Unknown(29));
         assert_eq!(decode(u64::MAX, [1, 2, 3, 0]), Call::Unknown(u64::MAX));
         assert_eq!(
             decode(THREAD, [0x40_1000, 0x10_0000_4000, 7, 4]),
@@ -688,11 +695,12 @@ mod tests {
                 REMOVE,
                 MAKE_DIRECTORY,
                 DUPLICATE,
-                RENAME
+                RENAME,
+                TIME
             ],
             [
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27
+                23, 24, 25, 26, 27, 28
             ]
         );
     }
@@ -1009,7 +1017,8 @@ mod tests {
                 to_len: 10,
                 to_at: 0x40_a000,
             },
-            Call::Unknown(28),
+            Call::Time,
+            Call::Unknown(29),
         ];
 
         reads_back(&calls);
@@ -1046,6 +1055,7 @@ mod tests {
             (MAKE_DIRECTORY, 2),
             (DUPLICATE, 1),
             (RENAME, 4),
+            (TIME, 0),
         ];
         let args = [11, 22, 33, 44];
         for (number, count) in used {
@@ -1068,7 +1078,7 @@ mod tests {
             let call = decode(number, [0; 4]);
             assert_eq!(
                 call == Call::Unknown(number),
-                number > RENAME,
+                number > TIME,
                 "call {number}"
             );
             assert_eq!(call.encode(), (number, [0; 4]), "call {number}");

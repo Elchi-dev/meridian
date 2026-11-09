@@ -5676,7 +5676,7 @@ fn file_names_kinds() -> Outcome {
 /// pax says what words it cannot take and what is no archive, writes a
 /// directory and all it holds into a pipe and lists it as `ls -l` does,
 /// and on a disk it can write copies the directory, writes an archive of
-/// the copy and reads that out again whole.
+/// the copy and reads that out again whole, the times kept all the way.
 fn pax_reads_and_writes_archives() -> Outcome {
     let checked = same(
         &shell_on("pax -q; pax -x tar -w; echo hi | pax")?,
@@ -5727,6 +5727,9 @@ fn pax_reads_and_writes_archives() -> Outcome {
          cd /System/px; pax -w -x cpio -f /System/p.cpio System\n\
          md /System/py; cd /System/py; pax -r -f /System/p.cpio\n\
          cmp {from}/shim.txt /System/py/System/Boot/meridian/licences/shim.txt && echo whole\n\
+         cd /System/py/System/Boot/meridian/licences\n\
+         test shim.txt -nt {from}/shim.txt || test shim.txt -ot {from}/shim.txt || echo kept\n\
+         cd /\n\
          pax -f /System/p.cpio; echo /System/px /System/py /System/p.cpio | xargs rm -r"
     ))?;
     if ended == Ok(Ended::Exited(9)) {
@@ -5742,13 +5745,13 @@ fn pax_reads_and_writes_archives() -> Outcome {
             &ran(
                 0,
                 alloc::format!(
-                    "whole\nSystem\nSystem/Boot\nSystem/Boot/meridian\n{shown}\n\
+                    "whole\nkept\nSystem\nSystem/Boot\nSystem/Boot/meridian\n{shown}\n\
                      {shown}/inter.txt\n{shown}/jetbrains_mono.txt\n{shown}/shim.txt\n"
                 )
                 .as_bytes(),
             ),
         ),
-        "pax should copy a directory, write an archive of the copy and read it out whole",
+        "pax should copy a directory, write an archive of the copy and read it out whole, each file with its time",
     )
 }
 

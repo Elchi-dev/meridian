@@ -13,10 +13,11 @@
 //! a file that is there already, and `-x` says which kind is written,
 //! `ustar` or `cpio`. Meridian's files keep no modes or owners, so they go
 //! into an archive as 644 for files, 755 for directories and zeros, with
-//! the time each last changed; `-p` and `-t` change nothing, and with no
-//! links `-H`, `-L` and
-//! `-l` change nothing either, and `-b`'s blocks are those the archive's
-//! kind writes. A member whose name climbs out with `..` is passed over.
+//! the time each last changed, and what is read out or copied keeps that
+//! time unless `-p m` says not, as POSIX has, a later `-p e` saying it
+//! again; the rest of `-p` and `-t` change nothing, with no links `-H`,
+//! `-L` and `-l` change nothing either, and `-b`'s blocks are those the
+//! archive's kind writes. A member whose name climbs out with `..` is passed over.
 //! It ends with 0 when everything went, and 1 otherwise.
 
 #![cfg_attr(not(test), no_std)]
@@ -29,7 +30,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use archive::{Fault, Format, Item, Kind, Member, Owner, Reader, Writer};
-use program::abi::file::{CREATE_ALWAYS, READ, WRITE};
+use program::abi::file::{CREATE_ALWAYS, OPEN_EXISTING, READ, WRITE};
 use program::date::{self, Moment};
 use program::text::{self, LineReader, Pieces, Source};
 use program::{Error, Handle};
@@ -66,6 +67,9 @@ struct Asked<'w> {
     verbose: bool,
     /// `-k`: a file that is there already stays.
     keep: bool,
+    /// Whether what is read out or copied keeps when it last changed,
+    /// which `-p m` says not.
+    times: bool,
     format: Format,
     picking: Picking,
     /// The patterns, or the files and for copying the directory last.
@@ -80,6 +84,7 @@ fn asked(arguments: &[String]) -> Result<Asked<'_>, String> {
         archive: None,
         verbose: false,
         keep: false,
+        times: true,
         format: Format::Ustar,
         picking: Picking::default(),
         operands: &[],
@@ -169,6 +174,10 @@ fn took<'w>(asked: &mut Asked<'w>, letter: char, value: &'w str) -> Result<(), S
             if !value.chars().all(|c| "aemop".contains(c)) {
                 return Err(format!("pax: -p {value}: keeps a, e, m, o or p\n"));
             }
+            // The last that speaks of the time counts.
+            if let Some(last) = value.chars().rev().find(|&c| c == 'e' || c == 'm') {
+                asked.times = last == 'e';
+            }
         }
     }
     Ok(())
@@ -208,6 +217,10 @@ trait Files {
 
     /// Makes a directory at `path`.
     fn make_directory(&mut self, path: &str) -> Result<(), Error>;
+
+    /// Sets when the file at `path` last changed, as seconds since 1970
+    /// began.
+    fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error>;
 
     /// `path` from the root, as the tree of files compares paths.
     fn compared(&mut self, path: &str) -> String;
@@ -460,10 +473,23 @@ fn next_item(
     }
 }
 
-/// Where the data of the member at hand goes, in read mode.
+/// Where the data of the member at hand goes, in read mode: a file, and
+/// when the member says it last changed.
 enum Into {
     Nowhere,
-    File(String),
+    File(String, u64),
+}
+
+/// Gives the file at `path` the time it last changed at, `seconds` since
+/// 1970 began, saying when it cannot; whether it could.
+fn stamped(files: &mut impl Files, path: &str, seconds: u64) -> bool {
+    match files.set_changed(path, seconds) {
+        Ok(()) => true,
+        Err(e) => {
+            files.say(&text::trouble("pax", path, e));
+            false
+        }
+    }
 }
 
 /// Lists the archive's members, or reads them out, as `asked` says;
@@ -474,6 +500,9 @@ fn read_archive(files: &mut impl Files, asked: &Asked) -> bool {
     let mut ended = false;
     let mut went = true;
     let mut into = Into::Nowhere;
+    // The directories read out, given their times once nothing more goes
+    // into them.
+    let mut directories = Vec::new();
     loop {
         let item = match next_item(files, &mut reader, &mut ended) {
             Ok(item) => item,
@@ -485,7 +514,7 @@ fn read_archive(files: &mut impl Files, asked: &Asked) -> bool {
         };
         match item {
             Some(Item::Data(data)) => {
-                if let Into::File(path) = &into
+                if let Into::File(path, _) = &into
                     && let Err(e) = files.write(&data)
                 {
                     files.say(&text::trouble("pax", path, e));
@@ -495,15 +524,24 @@ fn read_archive(files: &mut impl Files, asked: &Asked) -> bool {
                 }
             }
             Some(Item::Member(member)) => {
-                went &= closed(files, &mut into);
+                went &= closed(files, asked, &mut into);
                 if picker.picks(&member.name) {
-                    went &= begun(files, asked, &member, &mut into);
+                    let made = begun(files, asked, &member, &mut into);
+                    if made && asked.mode == Mode::Read && member.kind == Kind::Directory {
+                        directories.push((member.name, member.time));
+                    }
+                    went &= made;
                 }
             }
             Some(Item::End) | None => {
-                went &= closed(files, &mut into);
+                went &= closed(files, asked, &mut into);
                 break;
             }
+        }
+    }
+    if asked.times {
+        for (path, seconds) in &directories {
+            went &= stamped(files, path, *seconds);
         }
     }
     // What comes after the end is read too, as tar reads whole records,
@@ -519,13 +557,14 @@ fn read_archive(files: &mut impl Files, asked: &Asked) -> bool {
     went
 }
 
-/// Ends the file the last member went into; whether it closed.
-fn closed(files: &mut impl Files, into: &mut Into) -> bool {
-    let Into::File(path) = core::mem::replace(into, Into::Nowhere) else {
+/// Ends the file the last member went into, giving it the member's time
+/// as `asked` says; whether it closed with it.
+fn closed(files: &mut impl Files, asked: &Asked, into: &mut Into) -> bool {
+    let Into::File(path, seconds) = core::mem::replace(into, Into::Nowhere) else {
         return true;
     };
     match files.done() {
-        Ok(()) => true,
+        Ok(()) => !asked.times || stamped(files, &path, seconds),
         Err(e) => {
             files.say(&text::trouble("pax", &path, e));
             false
@@ -571,7 +610,7 @@ fn begun(files: &mut impl Files, asked: &Asked, member: &Member, into: &mut Into
             make_above(files, name);
             match files.create(name) {
                 Ok(()) => {
-                    *into = Into::File(String::from(name));
+                    *into = Into::File(String::from(name), member.time);
                     true
                 }
                 Err(e) => {
@@ -741,6 +780,8 @@ fn copy_all(files: &mut impl Files, asked: &Asked) -> bool {
         }
     };
     let into = files.compared(target);
+    // The directories copied, given their times once all is in them.
+    let mut directories = Vec::new();
     for source in &sources {
         let from = files.compared(source);
         if !asked.picking.itself && (into == from || into.starts_with(&joined(&from, ""))) {
@@ -751,19 +792,27 @@ fn copy_all(files: &mut impl Files, asked: &Asked) -> bool {
             continue;
         }
         for (path, look) in walked(files, source, asked.picking.itself) {
-            went &= copied(files, asked, target, &path, look);
+            went &= copied(files, asked, target, &path, look, &mut directories);
+        }
+    }
+    if asked.times {
+        for (to, seconds) in &directories {
+            went &= stamped(files, to, *seconds);
         }
     }
     went
 }
 
-/// Copies the file `path` into the directory `target`; whether it went.
+/// Copies the file `path` into the directory `target`, with its time as
+/// `asked` says, and adds a directory it makes to `directories` with its
+/// time; whether it went.
 fn copied(
     files: &mut impl Files,
     asked: &Asked,
     target: &str,
     path: &str,
     look: Result<Look, Error>,
+    directories: &mut Vec<(String, u64)>,
 ) -> bool {
     let look = match look {
         Ok(look) => look,
@@ -786,7 +835,12 @@ fn copied(
     let size = match look {
         Look::Directory => {
             return match files.make_directory(&to) {
-                Ok(()) | Err(Error::Exists) => true,
+                Ok(()) | Err(Error::Exists) => {
+                    if let Some(seconds) = files.changed(path) {
+                        directories.push((to, seconds));
+                    }
+                    true
+                }
                 Err(e) => {
                     files.say(&text::trouble("pax", &to, e));
                     false
@@ -824,7 +878,9 @@ fn copied(
         }
     }
     match files.done() {
-        Ok(()) => went,
+        Ok(()) => {
+            went && (!asked.times || files.changed(path).is_none_or(|s| stamped(files, &to, s)))
+        }
         Err(e) => {
             files.say(&text::trouble("pax", &to, e));
             false
@@ -976,6 +1032,13 @@ impl Files for System {
 
     fn make_directory(&mut self, path: &str) -> Result<(), Error> {
         program::make_directory(path)
+    }
+
+    fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error> {
+        let file = program::open_with(path, WRITE, OPEN_EXISTING)?;
+        let set = program::set_changed(file, seconds);
+        let _ = program::close(file);
+        set
     }
 
     fn compared(&mut self, path: &str) -> String {
@@ -1255,6 +1318,12 @@ mod tests {
 
         fn make_directory(&mut self, path: &str) -> Result<(), Error> {
             std::fs::create_dir(confined(&self.root, path)).map_err(|e| error(&e))
+        }
+
+        fn set_changed(&mut self, path: &str, seconds: u64) -> Result<(), Error> {
+            let file = std::fs::File::open(confined(&self.root, path)).map_err(|e| error(&e))?;
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            file.set_modified(at).map_err(|e| error(&e))
         }
 
         fn compared(&mut self, path: &str) -> String {
@@ -2033,6 +2102,147 @@ mod tests {
         host.directory("lines");
         assert!(ran(&mut host, "-rw lines"));
         assert_eq!(host.holds("lines/src/b/c").unwrap(), b"cc");
+    }
+
+    /// When the file at `path` on `host` last changed, as seconds since
+    /// 1970 began.
+    fn when(host: &mut Host, path: &str) -> u64 {
+        host.changed(path).unwrap()
+    }
+
+    /// The seconds since 1970 began, now.
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// 01:46:40 UTC on 9 September 2001.
+    const OLD: u64 = 1_000_000_000;
+
+    #[test]
+    fn p_m_keeps_the_times_away_and_a_later_e_brings_them_back() {
+        for (line, times) in [
+            ("-r", true),
+            ("-r -p m", false),
+            ("-r -p me", true),
+            ("-r -p em", false),
+            ("-r -pm -p e", true),
+            ("-r -p e -p m", false),
+            ("-r -p aop", true),
+            ("-r -p m -p ao", false),
+        ] {
+            assert_eq!(asked(&words(line)).map(|a| a.times), Ok(times), "{line}");
+        }
+    }
+
+    #[test]
+    fn read_mode_gives_what_it_makes_the_times_its_members_say() {
+        let at_time = |name, kind, size, time| Member {
+            time,
+            ..member(name, kind, size, 0o644)
+        };
+        let times = [
+            ("d", OLD),
+            ("d/a", OLD + 2),
+            ("d/e", OLD + 86_400),
+            ("d/e/b", OLD + 4),
+            ("c", OLD + 6),
+        ];
+        let archive = archive_of(
+            Format::Ustar,
+            &[
+                (at_time("d", Kind::Directory, 0, times[0].1), b""),
+                (at_time("d/a", Kind::File, 3, times[1].1), b"aaa"),
+                (at_time("d/e", Kind::Directory, 0, times[2].1), b""),
+                (at_time("d/e/b", Kind::File, 1, times[3].1), b"b"),
+                (at_time("c", Kind::File, 0, times[4].1), b""),
+            ],
+        );
+        let mut host = Host::new("read-times");
+        host.reading(&archive, 100);
+        assert!(ran(&mut host, "-r"), "{}", host.said);
+        for (path, at) in times {
+            assert_eq!(when(&mut host, path), at, "{path}");
+        }
+        changed_at(&host, "c", OLD + 100);
+        changed_at(&host, "d", OLD + 50);
+        host.reading(&archive, 100);
+        assert!(ran(&mut host, "-rk"));
+        assert_eq!(
+            when(&mut host, "c"),
+            OLD + 100,
+            "-k keeps a file there with its time"
+        );
+        assert_eq!(
+            when(&mut host, "d"),
+            OLD,
+            "a directory there takes its member's time"
+        );
+        let begun = now();
+        let mut fresh = Host::new("read-untimed");
+        fresh.reading(&archive, 100);
+        assert!(ran(&mut fresh, "-r -p m"));
+        for (path, _) in times {
+            assert!(
+                when(&mut fresh, path) >= begun,
+                "with -p m {path} changed as it was made"
+            );
+        }
+    }
+
+    #[test]
+    fn read_mode_keeps_the_times_tar_wrote() {
+        let host = Host::new("theirs-times");
+        host.put("src/a", b"hello\n");
+        host.put("src/d/x", b"xx");
+        let times = [("a", OLD), ("d/x", OLD + 2), ("d", OLD + 86_400)];
+        for (path, at) in times {
+            changed_at(&host, &format!("src/{path}"), at);
+        }
+        let tar = tool(
+            &host.root.join("src"),
+            "tar",
+            &["--format=ustar", "--sort=name", "-cf", "-", "a", "d"],
+            b"",
+        );
+        let mut into = Host::new("theirs-times-into");
+        into.reading(&tar, 333);
+        assert!(ran(&mut into, "-r"), "{}", into.said);
+        for (path, at) in times {
+            assert_eq!(when(&mut into, path), at, "{path}");
+        }
+    }
+
+    #[test]
+    fn copy_mode_copies_the_times_unless_p_m_says_not() {
+        let mut host = Host::new("copy-times");
+        host.put("src/a", b"a");
+        host.put("src/b/c", b"cc");
+        host.directory("dst");
+        host.directory("plain");
+        let times = [
+            ("a", OLD),
+            ("b/c", OLD + 2),
+            ("b", OLD + 86_400),
+            ("", OLD + 172_800),
+        ];
+        for (path, at) in times {
+            changed_at(&host, &joined("src", path), at);
+        }
+        assert!(ran(&mut host, "-rw src dst"), "{}", host.said);
+        for (path, at) in times {
+            assert_eq!(when(&mut host, &joined("dst/src", path)), at, "{path:?}");
+        }
+        let begun = now();
+        assert!(ran(&mut host, "-rw -p m src plain"));
+        for (path, _) in times {
+            assert!(
+                when(&mut host, &joined("plain/src", path)) >= begun,
+                "with -p m {path:?} changed as it was copied"
+            );
+        }
     }
 
     #[test]

@@ -127,7 +127,8 @@ struct Frame {
 type Array = BTreeMap<Vec<u8>, Value>;
 
 /// The record at hand: `$0` and its fields, each made from the other
-/// only when it is wanted.
+/// only when it is wanted. The first is empty, and so are its fields.
+#[derive(Default)]
 struct Record {
     /// `$0`, unless a field changed since.
     whole: Vec<u8>,
@@ -307,14 +308,7 @@ impl<'p> Awk<'p> {
             arrays: alloc::vec![argv, Array::new()],
             free: Vec::new(),
             frames: Vec::new(),
-            record: Record {
-                whole: Vec::new(),
-                stale: false,
-                fields: Vec::new(),
-                split: true,
-                fs: b" ".to_vec(),
-                paragraph: false,
-            },
+            record: Record::default(),
             ranges: alloc::vec![false; program.rules.len()],
             main: Main {
                 next: 1,
@@ -693,9 +687,8 @@ impl<'p> Awk<'p> {
         if n > MOST_FIELDS {
             return fatal(format!("no field past {MOST_FIELDS} can be made"));
         }
-        if self.record.fields.len() < n {
-            self.record.fields.resize(n, Value::Unset);
-        }
+        let len = self.record.fields.len().max(n);
+        self.record.fields.resize(len, Value::Unset);
         self.record.fields[n - 1] = value;
         self.record.stale = true;
         Ok(())
@@ -1440,10 +1433,8 @@ impl<'p> Awk<'p> {
                     return Ok(text(b""));
                 }
                 let len = printf::chars(&bytes) as f64;
-                let (from, to) = (start.max(1.0), end.min(len + 1.0));
-                if from.is_nan() || to.is_nan() || to <= from {
-                    return Ok(text(b""));
-                }
+                let from = start.max(1.0);
+                let to = end.min(len + 1.0).max(from);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let (from, to) = (from as usize - 1, to as usize - 1);
                 text(char_span(&bytes, from, to))
@@ -1583,7 +1574,7 @@ impl<'p> Awk<'p> {
                                 pieces.push(bytes[at..span.start].to_vec());
                                 at = span.end;
                             }
-                            Some(span) if span.start < bytes.len() => {
+                            Some(span) => {
                                 // An empty match parts nothing.
                                 let next =
                                     span.start + printf::first_chars(&bytes[span.start..], 1).len();
@@ -1676,9 +1667,6 @@ impl<'p> Awk<'p> {
             let step = || start + printf::first_chars(&bytes[start..], 1).len().max(1);
             if start == end && last_end == Some(start) {
                 // An empty match right after another is none.
-                if start >= bytes.len() {
-                    break;
-                }
                 at = step();
                 continue;
             }
@@ -1690,14 +1678,7 @@ impl<'p> Awk<'p> {
             if !all {
                 break;
             }
-            if start == end {
-                if start >= bytes.len() {
-                    break;
-                }
-                at = step();
-            } else {
-                at = end;
-            }
+            at = if start == end { step() } else { end };
         }
         if count > 0 {
             changed.extend_from_slice(&bytes[copied..]);

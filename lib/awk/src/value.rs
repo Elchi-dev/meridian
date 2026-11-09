@@ -40,9 +40,7 @@ pub(crate) fn number_len(bytes: &[u8]) -> usize {
     let mut fraction = 0;
     if bytes.get(at) == Some(&b'.') {
         fraction = digits(at + 1);
-        if whole + fraction > 0 {
-            at += 1 + fraction;
-        }
+        at += 1 + fraction;
     }
     if whole + fraction == 0 {
         return 0;
@@ -109,7 +107,7 @@ pub fn number_text(x: f64, form: &[u8]) -> Vec<u8> {
         return Vec::from(if x.is_sign_negative() { "-nan" } else { "nan" });
     }
     if x.is_infinite() {
-        return Vec::from(if x < 0.0 { "-inf" } else { "inf" });
+        return Vec::from(if x.is_sign_negative() { "-inf" } else { "inf" });
     }
     match whole(x) {
         Some(n) => Vec::from(alloc::format!("{n}")),

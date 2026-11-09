@@ -31,7 +31,8 @@ pub struct Spec {
     pub alternate: bool,
     /// `0`: zeros rather than blanks in front of a number.
     pub zero: bool,
-    pub width: Option<usize>,
+    /// The least room the value takes, 0 when none is asked for.
+    pub width: usize,
     pub precision: Option<usize>,
     pub letter: u8,
 }
@@ -80,9 +81,7 @@ pub fn parse(text: &[u8]) -> Option<(Spec, Stars, usize)> {
         at += 1;
     } else {
         let (width, len) = digits(&text[at..]);
-        if len > 0 {
-            spec.width = Some(width);
-        }
+        spec.width = width;
         at += len;
     }
     if text.get(at) == Some(&b'.') {
@@ -124,11 +123,7 @@ fn shown(sign: Sign) -> &'static str {
 /// blanks before or after.
 fn padded(spec: &Spec, lead: &str, body: &str, zeros: bool) -> String {
     let len = lead.chars().count() + body.chars().count();
-    let width = spec.width.unwrap_or(0);
-    if len >= width {
-        return format!("{lead}{body}");
-    }
-    let room = width - len;
+    let room = spec.width.saturating_sub(len);
     if spec.left {
         format!("{lead}{body}{}", " ".repeat(room))
     } else if spec.zero && zeros {
@@ -249,7 +244,7 @@ pub fn integer(spec: &Spec, n: i128) -> String {
     let signed = matches!(letter, b'd' | b'i');
     let magnitude = if signed {
         n.unsigned_abs()
-    } else if n < 0 {
+    } else if n.is_negative() {
         let low = i64::try_from(n).unwrap_or(i64::MIN);
         u128::from(low.cast_unsigned())
     } else {
@@ -265,9 +260,7 @@ pub fn integer(spec: &Spec, n: i128) -> String {
         if precision == 0 && magnitude == 0 {
             digits.clear();
         }
-        if digits.len() < precision {
-            digits = "0".repeat(precision - digits.len()) + &digits;
-        }
+        digits = "0".repeat(precision.saturating_sub(digits.len())) + &digits;
     }
     if letter == b'o' && spec.alternate && !digits.starts_with('0') {
         digits.insert(0, '0');
@@ -1560,7 +1553,7 @@ mod tests {
                     sign: Sign::Plus,
                     alternate: true,
                     zero: true,
-                    width: Some(12),
+                    width: 12,
                     precision: Some(5),
                     letter: b'd'
                 },
@@ -1589,7 +1582,7 @@ mod tests {
         );
         assert_eq!(
             parsed("99999999999999999999s").map(|p| p.0.width),
-            Some(Some(MOST))
+            Some(MOST)
         );
         assert_eq!(parsed("q"), None);
         assert_eq!(parsed("5"), None);

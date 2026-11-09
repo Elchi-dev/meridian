@@ -44,7 +44,7 @@ pub fn first_chars(bytes: &[u8], n: usize) -> &[u8] {
 /// `body` in the field `spec`'s width asks for, with blanks before or,
 /// with `-`, after.
 fn padded(spec: &Spec, body: &[u8]) -> Vec<u8> {
-    let room = spec.width.unwrap_or(0).saturating_sub(chars(body));
+    let room = spec.width.saturating_sub(chars(body));
     let blanks = core::iter::repeat_n(b' ', room);
     if spec.left {
         body.iter().copied().chain(blanks).collect()
@@ -95,12 +95,10 @@ pub fn sprintf(form: &[u8], args: &[Value], convfmt: &[u8]) -> Vec<u8> {
         at += len;
         if stars.width {
             let width = format::whole(next().number());
-            spec.left |= width < 0;
-            spec.width = Some(
-                usize::try_from(width.unsigned_abs())
-                    .unwrap_or(format::MOST)
-                    .min(format::MOST),
-            );
+            spec.left |= width.is_negative();
+            spec.width = usize::try_from(width.unsigned_abs())
+                .unwrap_or(format::MOST)
+                .min(format::MOST);
         }
         if stars.precision {
             let precision = format::whole(next().number());

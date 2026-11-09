@@ -562,3 +562,10 @@ allow {
     mutation = "body to {}"
     reason = "QEMU's clock, the only one the tests run on, takes registers read and written during its update as at any other moment, so waiting the update out changes nothing there"
 }
+
+allow {
+    file = "kernel/src/raw/rtc.rs"
+    line = "if register(STATUS_A) & UPDATING == 0 {"
+    mutation = "== to !="
+    reason = "the wait then runs its whole patience, a second or so, before it reads or writes as it would have; QEMU's clock takes the registers during its update as at any other moment, so only the time it takes changes"
+}

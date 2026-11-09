@@ -21,7 +21,7 @@ type Outcome = Result<(), &'static str>;
 
 type Check = fn() -> Outcome;
 
-const CHECKS: [(&str, Check); 174] = [
+const CHECKS: [(&str, Check); 175] = [
     ("log", lines),
     ("log.format", formatted),
     ("ticks", time_goes_on),
@@ -191,6 +191,7 @@ const CHECKS: [(&str, Check); 174] = [
     ("tools.file", file_names_kinds),
     ("tools.pax", pax_reads_and_writes_archives),
     ("tools.date", date_tells_the_time),
+    ("tools.cal", cal_writes_calendars),
     ("tools.names", basename_dirname_and_tr),
     ("tools.tr.long", tr_on_a_long_file),
     ("tools.cut.tee", cut_and_tee),
@@ -2682,14 +2683,14 @@ fn tools_given_nothing() -> Outcome {
 /// went wrong on the shell's standard error meanwhile.
 fn the_shells_own_commands_in_pipes() -> Outcome {
     let listed: &[u8] = if booted_from_disk() {
-        b"134\n"
+        b"136\n"
     } else {
         b"/System/Boot/meridian/programs: no such file\n0\ngrep ended with 1\n"
     };
     expect(
         shell_on("ls /System/Boot/meridian/programs | grep -c mexec")?
             == ran(u64::from(!booted_from_disk()), listed),
-        "ls should write the programs' names into the pipe, sixty-seven twice",
+        "ls should write the programs' names into the pipe, sixty-eight twice",
     )?;
     expect(
         same(
@@ -5579,6 +5580,32 @@ fn date_tells_the_time() -> Outcome {
             && said.ends_with(b" UTC 2026\n"),
         "date alone should write the time in the C locale's form",
     )
+}
+
+/// cal writes the month the time of day falls in, November 2026 on test
+/// machines, and the one England changed its calendar in, and says what
+/// it cannot take.
+fn cal_writes_calendars() -> Outcome {
+    let changed: String = include_str!("../testdata/cal/months.txt")
+        .split_inclusive('\n')
+        .take(8)
+        .collect();
+    let wanted = alloc::format!("{}{changed}", include_str!("../testdata/cal/11-2026.txt"));
+    let checked = same(&shell_on("cal; cal 9 1752")?, &ran(0, wanted.as_bytes()));
+    expect(
+        checked,
+        "cal should write the month at hand and September 1752, its eleven days gone",
+    )?;
+    let checked = same(
+        &shell_on("cal 13 2026; cal 1 0; cal -y")?,
+        &ran(
+            1,
+            b"cal: 13 is no month from 1 to 12\ncal ended with 1\n\
+              cal: 0 is no year from 1 to 9999\ncal ended with 1\n\
+              cal: -y is no option\ncal ended with 1\n",
+        ),
+    );
+    expect(checked, "cal should say what month or year it has not")
 }
 
 /// cat as a program says what words it cannot take and writes a file

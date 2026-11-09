@@ -301,3 +301,7 @@ test = true
 [[example]]
 name = "date"
 test = true
+
+[[example]]
+name = "cal"
+test = true

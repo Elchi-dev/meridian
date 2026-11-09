@@ -145,6 +145,8 @@ var (
 	Pax = Part{Package: "program", Target: "x86_64-unknown-none", File: "pax", Example: "pax"}
 	// Date writes the date and the time of day.
 	Date = Part{Package: "program", Target: "x86_64-unknown-none", File: "date", Example: "date"}
+	// Cal writes calendars.
+	Cal = Part{Package: "program", Target: "x86_64-unknown-none", File: "cal", Example: "cal"}
 	// Expand turns tabs into spaces.
 	Expand = Part{Package: "program", Target: "x86_64-unknown-none", File: "expand", Example: "expand"}
 	// Unexpand turns spaces into tabs.
@@ -162,7 +164,7 @@ var (
 	// test image's checks of what a program is handed.
 	Arguments = Part{Package: "program", Target: "x86_64-unknown-none", File: "arguments", Example: "arguments"}
 	// Programs are what every image carries for the kernel to start.
-	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False, Xargs, Cksum, Tsort, Diff, Patch, Find, Csplit, Pathchk, Dd, Rm, Mkdir, Rmdir, Cat, Awk, Ls, Cp, Mv, Strings, Du, Touch, Unlink, Ed, Uuencode, Uudecode, Bc, Compress, Uncompress, Zcat, File, Pax, Date}
+	Programs = []Part{Hello, Shell, Init, Wc, Head, Grep, Sort, Tail, Uniq, Basename, Dirname, Tr, Cut, Tee, Sed, Expr, Sleep, Cmp, Comm, Paste, Fold, Nl, Od, Expand, Unexpand, Join, Split, Echo, Printf, Test, True, False, Xargs, Cksum, Tsort, Diff, Patch, Find, Csplit, Pathchk, Dd, Rm, Mkdir, Rmdir, Cat, Awk, Ls, Cp, Mv, Strings, Du, Touch, Unlink, Ed, Uuencode, Uudecode, Bc, Compress, Uncompress, Zcat, File, Pax, Date, Cal}
 	// TestPrograms are what test images carry on top.
 	TestPrograms = []Part{ExitWith, WhoAmI, Threads, Arguments}
 )

@@ -209,7 +209,7 @@ Loader and UEFI:
 - [x] `compress`, `uncompress` and `zcat`
 - [x] `file`
 - [x] `pax`
-- [x] `date`, in UTC
+- [x] `date`, in UTC, and `cal`
 - [ ] Time zones, and setting the time
 - [ ] More command-line tools
 - [x] Start programs in `/System/Boot/meridian/programs` from the copies the loader read, rather than reading the disk again each time

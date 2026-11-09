@@ -180,12 +180,8 @@ impl Decoder {
 
     /// What the first bytes of `bytes` hold.
     pub fn step(&mut self, bytes: &[u8]) -> Step {
-        let width = match self.set {
-            Charset::Utf16 => 2,
-            Charset::Utf32 => 4,
-            _ => 0,
-        };
-        if width > 0 && !self.begun {
+        if let (Charset::Utf16 | Charset::Utf32, false) = (self.set, self.begun) {
+            let width = if self.set == Charset::Utf16 { 2 } else { 4 };
             let Some(first) = bytes.get(..width) else {
                 return Step::More;
             };
@@ -584,6 +580,11 @@ mod tests {
             read(Charset::Utf32, b"\xff\xfe\x00\x00a\x00\x00\x00"),
             (vec!['a'], None)
         );
+        assert_eq!(
+            read(Charset::Utf16, b"\xfe\xff\xfe\xff\x00a"),
+            (vec!['\u{feff}', 'a'], None),
+            "a mark right after the mark is a character"
+        );
         let mut decoder = Decoder::new(Charset::Utf16);
         assert_eq!(decoder.step(b"\xfe"), Step::More, "half a mark");
         assert_eq!(
@@ -854,6 +855,8 @@ mod tests {
         );
         assert_eq!(written(Charset::Ibm437, '\u{e9}'), Some(vec![0x82]));
         assert_eq!(written(Charset::Ibm437, '\u{20ac}'), None);
+        assert_eq!(written(Charset::Ibm437, '\u{80}'), None, "nor a C1 control");
+        assert_eq!(written(Charset::Ibm437, '\u{7f}'), Some(vec![0x7f]));
         assert_eq!(read(Charset::Ascii, 0x80), Step::Bad(1));
         assert_eq!(written(Charset::Ascii, '\u{e9}'), None);
         assert_eq!(written(Charset::Latin1, '\u{ff}'), Some(vec![0xff]));

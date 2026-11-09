@@ -340,6 +340,21 @@ mod tests {
     }
 
     #[test]
+    fn the_registers_and_their_bits_are_the_mc146818_s() {
+        assert_eq!(
+            [
+                SECONDS, MINUTES, HOURS, DAY, MONTH, YEAR, STATUS_A, STATUS_B
+            ],
+            [0x00, 0x02, 0x04, 0x07, 0x08, 0x09, 0x0a, 0x0b]
+        );
+        assert_eq!(
+            [UPDATING, SET, BINARY, HOURS_24, PM],
+            [0x80, 0x80, 0x04, 0x02, 0x80],
+            "as its data sheet gives them"
+        );
+    }
+
+    #[test]
     fn decimal_digits_take_four_bits_each() {
         for n in 0..100u8 {
             assert_eq!(from_bcd(bcd(n)), Some(n), "{n}");
